@@ -9,6 +9,9 @@ on:
 permissions:
   contents: read
 
+env:
+  PRE_COMMIT_VERSION: "4.6.1"
+
 jobs:
   validate:
     runs-on: ubuntu-latest
@@ -21,11 +24,23 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Validate Agent Skills structure
-        run: python3 scripts/validate_skills.py
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
 
-      - name: Test bundled scripts
-        run: python3 -m unittest discover -s tests -v
+      - name: Validate repository contracts
+        run: |
+          python3 scripts/validate_skills.py
+          python3 -m unittest discover -s tests -v
 
-      - name: Verify skills CLI discovery
-        run: npx --yes skills@1.5.20 add . --list
+      - name: Validate the official Agent Skills format
+        run: ./scripts/check-agent-skills-spec.sh
+
+      - name: Verify skills.sh discovery and installation
+        run: ./scripts/check-skills-cli.sh
+
+      - name: Require the complete pre-commit gate
+        run: |
+          python3 -m pip install "pre-commit==${PRE_COMMIT_VERSION}"
+          pre-commit run --all-files
