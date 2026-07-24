@@ -16,6 +16,7 @@ from typing import Any
 
 DEFAULT_API_URL = "https://api.github.com"
 API_VERSION = "2022-11-28"
+MAX_SEARCH_RESULTS = 1_000
 OWNER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,38}$")
 REPOSITORY_NAME_RE = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
 
@@ -28,6 +29,15 @@ def positive_int(value: str) -> int:
     parsed = int(value)
     if parsed < 1:
         raise argparse.ArgumentTypeError("must be at least 1")
+    return parsed
+
+
+def search_result_limit(value: str) -> int:
+    parsed = positive_int(value)
+    if parsed > MAX_SEARCH_RESULTS:
+        raise argparse.ArgumentTypeError(
+            f"must not exceed GitHub Search's {MAX_SEARCH_RESULTS}-result limit"
+        )
     return parsed
 
 
@@ -70,9 +80,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--limit",
-        type=positive_int,
+        type=search_result_limit,
         default=30,
-        help="Maximum results to return (default: 30)",
+        help=f"Maximum results to return, up to {MAX_SEARCH_RESULTS} (default: 30)",
     )
     parser.add_argument(
         "--body-chars",

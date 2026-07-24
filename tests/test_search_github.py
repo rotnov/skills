@@ -57,6 +57,11 @@ class SearchGithubTests(unittest.TestCase):
         self.assertEqual(search_github.compact_text("abcdef", 4), "abc…")
         self.assertEqual(search_github.compact_text("abcdef", 0), "")
 
+    def test_search_result_limit_enforces_github_cap(self) -> None:
+        self.assertEqual(search_github.search_result_limit("1000"), 1000)
+        with self.assertRaises(argparse.ArgumentTypeError):
+            search_github.search_result_limit("1001")
+
     def test_repository_from_enterprise_api_url(self) -> None:
         self.assertEqual(
             search_github.repository_from_api_url(
