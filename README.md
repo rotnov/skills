@@ -44,9 +44,10 @@ public searches but raises GitHub API limits.
 ## Evolution
 
 This repository supports project-wide and per-skill
-[iEvo](https://github.com/ievo-ai/skills) overlays. The published skill bodies
-remain stable; local lessons live under `.ievo/evolution/` and are loaded by
-portable marker instructions.
+[iEvo](https://github.com/ievo-ai/skills) overlays for authoring. Local lessons
+live under `.ievo/evolution/`; repository instructions load them while a skill
+is being maintained. Published skill bodies deliberately contain no hidden
+overlay loader or machine-local path.
 
 Run `ievo:evo` with an explicit skill target when a correction should persist.
 Local overlays do not post or push anything upstream automatically. Promote a

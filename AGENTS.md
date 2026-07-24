@@ -27,8 +27,11 @@
   `ievo:evo`.
 - Route corrections specific to one skill to
   `.ievo/evolution/skills/<skill-name>.md`.
-- Include the standard iEvo skill marker immediately after frontmatter in
-  every new `SKILL.md`, using that skill's exact name.
+- Before creating or changing `skills/<skill-name>/`, read the project overlay
+  and that skill's overlay when they exist.
+- Never embed iEvo loader directives, hidden instructions, or local
+  `.ievo/evolution/` paths in a publishable `SKILL.md`. Evolution overlays are
+  authoring inputs, not part of the installed skill's runtime contract.
 - Keep overlays separate from the published skill body. Promote an evolution
   into the body only after review, tests, and applicability checks.
 - Never post, comment, push, or open an upstream issue solely because an

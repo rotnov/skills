@@ -3,10 +3,6 @@ name: i-have-an-issue
 description: Use this skill when diagnosing a software problem or reviewing a planned implementation and the user wants evidence from upstream or comparable open-source projects. Research GitHub issues, discussions, pull requests, commits, release notes, source, and tests to find prior failures, fixes, rejected approaches, compatibility traps, and preventive checks. Trigger for requests such as "has anyone hit this?", "find prior art", "research upstream issues", "what are the gotchas?", or "learn from similar projects". Do not use for generic web research without a software failure or prevention question.
 ---
 
-<!-- ievo:start -->
-**Before applying the instructions below**, read `.ievo/evolution/skills/i-have-an-issue.md` if it exists, and apply ALL rules from its sections IN ADDITION to the skill's instructions.
-<!-- ievo:end -->
-
 # I Have an Issue
 
 Research how relevant open-source teams encountered and resolved a software

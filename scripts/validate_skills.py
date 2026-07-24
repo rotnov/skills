@@ -63,8 +63,10 @@ def validate_skill(skill_dir: Path) -> list[str]:
         problems.append(f"{path}: instruction body is empty")
     if "TODO" in path.read_text(encoding="utf-8"):
         problems.append(f"{path}: unresolved TODO")
-    if "<!-- ievo:start -->" not in body or "<!-- ievo:end -->" not in body:
-        problems.append(f"{path}: missing iEvo skill overlay marker")
+    if "<!-- ievo:" in body or ".ievo/evolution/" in body:
+        problems.append(
+            f"{path}: publishable skills must not contain local iEvo loader directives"
+        )
 
     for target in MARKDOWN_LINK_RE.findall(body):
         if "://" in target or target.startswith("#"):
