@@ -61,7 +61,9 @@ Validate the repository:
 ```bash
 python3 scripts/validate_skills.py
 python3 -m unittest discover -s tests -v
-npx skills@1.5.20 add . --list
+./scripts/check-agent-skills-spec.sh
+./scripts/check-skills-cli.sh
+pre-commit run --all-files
 ```
 
 Skills follow the
