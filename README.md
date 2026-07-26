@@ -30,6 +30,26 @@ Use it without installing:
 npx skills use rotnov/skills@i-have-an-issue
 ```
 
+### `propose-skill`
+
+Extract a demonstrated practice from the current session, decide whether it is
+specific and reusable enough to become an Agent Skill, check for duplicates,
+and draft a structured proposal issue for `rotnov/skills`. Public issue writes
+require an exact preview and explicit approval; raw conversation and private
+material are never published.
+
+Install it with the [skills CLI](https://skills.sh/):
+
+```bash
+npx skills add rotnov/skills --skill propose-skill
+```
+
+Use it without installing:
+
+```bash
+npx skills use rotnov/skills@propose-skill
+```
+
 ## Compatibility
 
 The canonical behavior lives in standard `SKILL.md` files and works with
@@ -40,6 +60,10 @@ client metadata does not change the behavior contract.
 public source history: a native GitHub connector, `gh`, a browser, or Python 3
 for its standard-library search fallback. Authentication is optional for
 public searches but raises GitHub API limits.
+
+`propose-skill` can draft locally. Duplicate search requires public GitHub
+read access; publishing requires an authenticated GitHub tool and explicit
+approval of the exact public payload.
 
 ## Evolution
 

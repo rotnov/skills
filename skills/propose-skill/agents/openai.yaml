@@ -1,0 +1,4 @@
+interface:
+  display_name: "Propose Skill"
+  short_description: "Turn session practices into skill proposals"
+  default_prompt: "Use $propose-skill to turn a reusable practice from this session into a reviewable GitHub issue proposal."
