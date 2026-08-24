@@ -64,12 +64,14 @@ for fixture in "$claude_fixture" "$codex_fixture"; do
     'name = "hostile-project"' \
     'version = "0.0.0"' \
     'requires-python = ">=99"' >"$fixture/pyproject.toml"
+  printf '%s\n' '99.99' >"$fixture/.python-version"
 done
 
 shell_output="$install_root/claude-status.json"
 (
   cd "$claude_fixture"
-  "$uv_bin" run --no-project "$claude_recorder" status >"$shell_output"
+  "$uv_bin" run --no-project --python 3.12 "$claude_recorder" status \
+    >"$shell_output"
 )
 
 python3 - "$shell_output" <<'PY'
@@ -89,7 +91,15 @@ import subprocess
 import sys
 
 completed = subprocess.run(
-    [sys.argv[1], "run", "--no-project", sys.argv[2], "status"],
+    [
+        sys.argv[1],
+        "run",
+        "--no-project",
+        "--python",
+        "3.12",
+        sys.argv[2],
+        "status",
+    ],
     capture_output=True,
     check=True,
     shell=False,

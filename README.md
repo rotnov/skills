@@ -68,8 +68,10 @@ The canonical behavior lives in standard `SKILL.md` files and works with
 Agent Skills-compatible clients, including Codex and Claude Code. Optional
 client metadata does not change the behavior contract.
 
-`active-learning` requires Git, `uv`, Python 3.12 or newer, and a platform
-with safe no-follow directory-descriptor operations for recording mutations.
+`active-learning` requires Git, `uv`, and a platform with safe no-follow
+directory-descriptor operations for recording mutations. Recorder commands explicitly
+select Python 3.12 through `uv`, isolating them from the host project's dependency
+metadata and Python pin.
 Continuation in a later task is explicit through `active-learning resume`.
 Its `evals/evals.json` contains unscored portable scenarios; this repository
 publishes no benchmark score for this version.

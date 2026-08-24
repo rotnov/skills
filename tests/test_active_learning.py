@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import re
 import runpy
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -97,6 +99,7 @@ class ActiveLearningSkillTests(unittest.TestCase):
         self.assertIn("cooperative recorder concurrency", design)
         self.assertIn("accidental changes and symlinks", design)
         self.assertIn("unsupported concurrent external namespace mutation", design)
+        self.assertIn("uv run --no-project --python 3.12", design)
         self.assertNotIn("symlink and directory-swap defenses", design)
 
     def test_recorder_is_resolved_from_the_loaded_skill(self) -> None:
@@ -107,7 +110,24 @@ class ActiveLearningSkillTests(unittest.TestCase):
             text,
         )
         self.assertIn("the absolute directory containing this loaded `SKILL.md`", text)
-        self.assertIn('["uv", "run", "--no-project", RECORDER', text)
+        self.assertIn(
+            '["uv", "run", "--no-project", "--python", "3.12", RECORDER',
+            text,
+        )
+
+    def test_every_documented_recorder_argv_selects_python_312(self) -> None:
+        text = SKILL.read_text(encoding="utf-8")
+        invocations = re.findall(r'^\["uv", "run",.*$', text, flags=re.MULTILINE)
+
+        self.assertGreater(len(invocations), 0)
+        for invocation in invocations:
+            with self.subTest(invocation=invocation):
+                self.assertTrue(
+                    invocation.startswith(
+                        '["uv", "run", "--no-project", "--python", "3.12", '
+                    ),
+                    invocation,
+                )
 
     def test_recorder_invocation_supports_shell_string_tools(self) -> None:
         text = SKILL.read_text(encoding="utf-8")
@@ -120,7 +140,10 @@ class ActiveLearningSkillTests(unittest.TestCase):
     def test_recorder_invocation_is_isolated_from_the_host_project(self) -> None:
         text = SKILL.read_text(encoding="utf-8")
 
-        self.assertIn('["uv", "run", "--no-project", RECORDER', text)
+        self.assertIn(
+            '["uv", "run", "--no-project", "--python", "3.12", RECORDER',
+            text,
+        )
         self.assertNotIn('["uv", "run", RECORDER', text)
 
         with tempfile.TemporaryDirectory(dir=REPOSITORY_ROOT) as temporary:
@@ -129,8 +152,22 @@ class ActiveLearningSkillTests(unittest.TestCase):
                 'requires-python = ">=99"\n',
                 encoding="utf-8",
             )
+            Path(temporary, ".python-version").write_text(
+                "99.99\n",
+                encoding="utf-8",
+            )
+            uv = shutil.which("uv")
+            self.assertIsNotNone(uv, "uv is required for the recorder smoke test")
             result = subprocess.run(
-                [sys.executable, str(RECORDER), "status"],
+                [
+                    uv,
+                    "run",
+                    "--no-project",
+                    "--python",
+                    "3.12",
+                    str(RECORDER),
+                    "status",
+                ],
                 cwd=temporary,
                 capture_output=True,
                 text=True,
@@ -138,7 +175,17 @@ class ActiveLearningSkillTests(unittest.TestCase):
             )
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("active", json.loads(result.stdout))
+        self.assertEqual(json.loads(result.stdout), {"active": False})
+
+    def test_cross_client_smoke_covers_hostile_python_pin(self) -> None:
+        smoke = (REPOSITORY_ROOT / "scripts/check-skills-cli.sh").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn(".python-version", smoke)
+        self.assertIn("99.99", smoke)
+        self.assertRegex(smoke, r'"--python",\s+"3\.12"')
+        self.assertIn('run --no-project --python 3.12 "$claude_recorder"', smoke)
 
     def test_owner_update_uses_the_routed_canonical_path(self) -> None:
         text = SKILL.read_text(encoding="utf-8")

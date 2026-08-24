@@ -61,9 +61,9 @@ copies transcripts, secrets, source bodies, or raw external content. Safe tokens
 transported as logical argv values through a structured command API or a correctly
 quoted shell-string fallback.
 
-Every invocation uses `uv run --no-project` and resolves `recording.py` relative to the
-loaded `SKILL.md`. This prevents host-project dependency resolution and avoids assuming
-an installation directory.
+Every invocation uses `uv run --no-project --python 3.12` and resolves `recording.py`
+relative to the loaded `SKILL.md`. This prevents host-project dependency and Python-pin
+resolution and avoids assuming an installation directory.
 
 Recorder writers cooperate through the per-worktree writer lock. The Git metadata
 namespace must not be concurrently renamed or modified outside the recorder. No-follow

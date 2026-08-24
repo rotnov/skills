@@ -33,11 +33,12 @@ description: >-
 Resolve the absolute directory containing this loaded `SKILL.md`, then derive
 `RECORDER` as the absolute path to its `scripts/recording.py`. `RECORDER` below is
 notation for that already-resolved argv value; it is not an environment variable or
-literal argument. Prefix every recorder command with `uv run --no-project` so the
-workload's Python project is neither discovered nor synchronized. Prefer a structured
-command API with each shown value as a distinct argument. If the command tool accepts
-only a shell string, shell-quote every argument using the current shell's
-argument-quoting rules, then join them; never interpolate raw text.
+literal argument. Prefix every recorder command with
+`uv run --no-project --python 3.12` so the workload's Python project and Python pin are
+neither discovered nor synchronized. Prefer a structured command API with each shown
+value as a distinct argument. If the command tool accepts only a shell string,
+shell-quote every argument using the current shell's argument-quoting rules, then join
+them; never interpolate raw text.
 
 Never pass raw user, tool, log, or artifact text to the recorder. Rewrite a checkpoint
 concisely in English using only agent-authored safe ASCII tokens matching
@@ -51,8 +52,8 @@ optional text instead of weakening transport.
 Run one of:
 
 ```text
-["uv", "run", "--no-project", RECORDER, "start"]
-["uv", "run", "--no-project", RECORDER, "start", "--label", "review", "session"]
+["uv", "run", "--no-project", "--python", "3.12", RECORDER, "start"]
+["uv", "run", "--no-project", "--python", "3.12", RECORDER, "start", "--label", "review", "session"]
 ```
 
 If another recording is active, stop and report its ID; never replace it. If safe
@@ -76,7 +77,7 @@ cannot reactivate itself solely because state exists. When the user says
 `active-learning resume`, reload this skill, resolve `RECORDER`, and run:
 
 ```text
-["uv", "run", "--no-project", RECORDER, "status"]
+["uv", "run", "--no-project", "--python", "3.12", RECORDER, "status"]
 ```
 
 For an open recording, resume checkpoints. For `active=false`, report that there is no
@@ -97,7 +98,7 @@ If context loss discarded the bearer claim, inspect `status`, explain that the e
 cannot be resumed, and ask for explicit permission to adopt it. Only after approval run:
 
 ```text
-["uv", "run", "--no-project", RECORDER, "adopt-end", "--recording-id",
+["uv", "run", "--no-project", "--python", "3.12", RECORDER, "adopt-end", "--recording-id",
  "{recording id from status}", "--revision", "{revision from status}",
  "--user-authorized"]
 ```

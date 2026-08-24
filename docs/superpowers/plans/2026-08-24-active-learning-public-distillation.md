@@ -23,8 +23,8 @@ source environment.
   resume`, and `active-learning end`.
 - Resolve `recording.py` relative to the loaded `SKILL.md`; never assume an install
   root.
-- Invoke the recorder with `uv run --no-project` through structured argv or a safely
-  quoted shell-string fallback.
+- Invoke the recorder with `uv run --no-project --python 3.12` through structured argv
+  or a safely quoted shell-string fallback.
 - Keep recorder state below the current worktree's resolved Git metadata and out of
   tracked files.
 - Require explicit approval before every durable lesson-driven mutation.
@@ -48,8 +48,9 @@ source environment.
 
 **Interfaces:**
 
-- Consumes: recorder argv prefix `uv run --no-project {absolute recorder path}` and
-  internal commands from `scripts/recording.py`.
+- Consumes: recorder argv prefix
+  `uv run --no-project --python 3.12 {absolute recorder path}` and internal commands
+  from `scripts/recording.py`.
 - Produces: the public `start`, `resume`, and `end` behavior contract plus six portable
   owner-resolution evaluation scenarios.
 
