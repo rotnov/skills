@@ -472,6 +472,7 @@ def write_atomic_to(
             os.fsync(descriptor)
         finally:
             os.close(descriptor)
+        verify_directory_identity(directory)
         os.replace(
             temporary_name,
             "active.json",
@@ -704,6 +705,7 @@ def close_recording(
             raise RecordingError(
                 "recording revision changed; resume and re-evaluate before closing"
             )
+        verify_directory_identity(directory)
         os.unlink("active.json", dir_fd=directory.descriptor)
     return {"active": False, "recording_id": recording_id}
 

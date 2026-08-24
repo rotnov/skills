@@ -361,6 +361,66 @@ class RecorderTestCase(unittest.TestCase):
                 )
         self.assertEqual(list(state_dir.glob(".active-*.json")), [])
 
+    @unittest.skipIf(os.name == "nt", "descriptor identity defenses require POSIX")
+    def test_directory_swap_during_write_preserves_detached_state(self) -> None:
+        repo = self.init_repo("swap-during-write")
+        recording.start_recording(repo, None)
+        state_dir = self.state_file(repo).parent
+        original_state = (state_dir / "active.json").read_bytes()
+        escaped = self.root / "escaped-during-write"
+        replacement_marker = b"replacement unchanged"
+        real_write_all = recording.write_all
+
+        def write_then_swap(descriptor: int, encoded: bytes) -> None:
+            real_write_all(descriptor, encoded)
+            state_dir.rename(escaped)
+            state_dir.mkdir()
+            (state_dir / "marker").write_bytes(replacement_marker)
+
+        with mock.patch.object(recording, "write_all", side_effect=write_then_swap):
+            with self.assertRaisesRegex(recording.RecordingError, "directory changed"):
+                recording.add_note(
+                    repo,
+                    {"kind": "action", "summary": "swap", "evidence": None},
+                )
+
+        self.assertEqual((state_dir / "marker").read_bytes(), replacement_marker)
+        self.assertTrue((escaped / "active.json").exists())
+        self.assertEqual((escaped / "active.json").read_bytes(), original_state)
+
+    @unittest.skipIf(os.name == "nt", "descriptor identity defenses require POSIX")
+    def test_directory_swap_during_claim_check_preserves_detached_state(self) -> None:
+        repo = self.init_repo("swap-during-claim-check")
+        started = recording.start_recording(repo, None)
+        prepared = recording.prepare_end(repo)
+        state_dir = self.state_file(repo).parent
+        original_state = (state_dir / "active.json").read_bytes()
+        escaped = self.root / "escaped-during-claim-check"
+        replacement_marker = b"replacement unchanged"
+        real_claim_matches = recording.claim_matches
+
+        def check_then_swap(payload: dict[str, object], claim_id: str) -> bool:
+            matches = real_claim_matches(payload, claim_id)
+            state_dir.rename(escaped)
+            state_dir.mkdir()
+            (state_dir / "marker").write_bytes(replacement_marker)
+            return matches
+
+        with mock.patch.object(
+            recording, "claim_matches", side_effect=check_then_swap
+        ):
+            with self.assertRaisesRegex(recording.RecordingError, "directory changed"):
+                recording.close_recording(
+                    repo,
+                    str(started["recording_id"]),
+                    str(prepared["claim_id"]),
+                    int(prepared["revision"]),
+                )
+
+        self.assertEqual((state_dir / "marker").read_bytes(), replacement_marker)
+        self.assertTrue((escaped / "active.json").exists())
+        self.assertEqual((escaped / "active.json").read_bytes(), original_state)
+
     def test_unsupported_descriptor_backend_never_mutates(self) -> None:
         repo = self.init_repo()
         with mock.patch.object(recording, "descriptor_backend_supported", return_value=False):
