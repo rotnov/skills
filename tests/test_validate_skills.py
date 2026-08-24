@@ -1,0 +1,43 @@
+from __future__ import annotations
+
+import importlib.util
+import tempfile
+import unittest
+from pathlib import Path
+
+
+SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "validate_skills.py"
+SPEC = importlib.util.spec_from_file_location("validate_skills", SCRIPT)
+assert SPEC and SPEC.loader
+validate_skills = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(validate_skills)
+
+
+class ValidateSkillsTests(unittest.TestCase):
+    def test_parse_frontmatter_accepts_folded_description(self) -> None:
+        content = """---
+name: active-learning
+description: >-
+  Run a bounded active-learning loop over a real work session: record decisions,
+  failures, recoveries, and user corrections.
+---
+
+# Active Learning
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "SKILL.md"
+            path.write_text(content, encoding="utf-8")
+
+            fields, body = validate_skills.parse_frontmatter(path)
+
+        self.assertEqual(fields["name"], "active-learning")
+        self.assertEqual(
+            fields["description"],
+            "Run a bounded active-learning loop over a real work session: "
+            "record decisions, failures, recoveries, and user corrections.",
+        )
+        self.assertEqual(body, "# Active Learning")
+
+
+if __name__ == "__main__":
+    unittest.main()

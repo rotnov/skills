@@ -1,0 +1,18 @@
+{
+  "with_skill": {
+    "invocation-is-not-ownership": "",
+    "external-owner-with-origin": "",
+    "external-owner-without-origin": "",
+    "cross-repository-owner": "",
+    "no-existing-owner": "",
+    "nothing-reusable": ""
+  },
+  "without_skill": {
+    "invocation-is-not-ownership": "Assigned one owner without applying the ambiguity gate or comparing active-learning responsibility.",
+    "external-owner-with-origin": "Proposed an upstream contribution instead of importing the external-only owner into the project before adaptation.",
+    "external-owner-without-origin": "",
+    "cross-repository-owner": "Used the right repository worktree but did not preserve the source recording until verification.",
+    "no-existing-owner": "Proposed a new skill without showing owner-search evidence or a concrete trigger and boundary.",
+    "nothing-reusable": "Correctly chose no durable change but omitted claim-safe compare-and-close."
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "baseline": "clean context without active-learning",
+  "candidate": "active-learning iteration 1",
+  "assertion_grading": {
+    "with_skill": {"passed": 26, "total": 26, "pass_rate": 1.0},
+    "without_skill": {"passed": 14, "total": 26, "pass_rate": 0.538462},
+    "pass_rate_delta": 0.461538
+  },
+  "cost": {
+    "with_skill_output_words": 243,
+    "without_skill_output_words": 166,
+    "output_word_delta": 77,
+    "output_word_delta_rate": 0.463855,
+    "duration_seconds": null,
+    "total_tokens": null,
+    "note": "The collaboration runtime did not expose duration or token metadata; output words are retained as the available size proxy."
+  },
+  "verdict": "Keep the skill. It adds 46.2 percentage points on ownership ambiguity, import-before-adaptation, cross-repository recording continuity, explicit new-skill gating, and claim-safe close behavior. The 77-word aggregate increase is justified by those safety-critical decisions."
+}

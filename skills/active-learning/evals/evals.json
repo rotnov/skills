@@ -1,0 +1,70 @@
+[
+  {
+    "id": "invocation-is-not-ownership",
+    "prompt": "A prepared active-learning end snapshot records that data-export ran during the session. The reusable correction is that every new task must detect an already-active recording before selecting task skills. Produce the routing proposal, without editing files.",
+    "expected_output": "Ownership is resolved from responsibility rather than invocation history. data-export receives no preference, ambiguity is surfaced, and no write occurs before approval.",
+    "assertions": [
+      "the invoked data-export skill is not treated as the automatic owner",
+      "the correction is compared against startup and active-learning responsibilities",
+      "ambiguous ownership requires user selection",
+      "a lesson-owner-change proposal precedes every write"
+    ]
+  },
+  {
+    "id": "external-owner-with-origin",
+    "prompt": "A prepared end snapshot has one reusable lesson refining an installed release-helper skill. It exists only in a plugin cache, whose manifest identifies https://github.com/example/skills, path skills/release-helper, version commit 0123456789abcdef0123456789abcdef01234567. No project skill owns release preparation. Produce the disposition only.",
+    "expected_output": "The cache is discovery-only. Its repository and skill path identify the import source; import-skill freshens and pins that origin before adaptation, and no competing skill is created.",
+    "assertions": [
+      "the plugin cache is not edited",
+      "the supplied repository and skill path are resolved before import",
+      "import-skill freshens the origin and records its pinned commit",
+      "import-skill precedes project adaptation",
+      "no differently named competing skill is proposed"
+    ]
+  },
+  {
+    "id": "external-owner-without-origin",
+    "prompt": "A prepared end snapshot points to ~/.agents/skills/release-helper/SKILL.md as the only plausible owner, but the file has no provenance metadata, is outside Git, and no plugin manifest identifies an origin. Produce the disposition only.",
+    "expected_output": "The workflow stops and asks the user for an authoritative origin. It neither copies the cache, edits it, nor invents a new competing skill.",
+    "assertions": [
+      "unresolved provenance is an explicit blocker",
+      "the user is asked for the authoritative repository or source",
+      "the cache is not copied or edited",
+      "no competing skill is created"
+    ]
+  },
+  {
+    "id": "cross-repository-owner",
+    "prompt": "A prepared end snapshot in the current worktree resolves one lesson to a release skill owned by another repository. Produce the approved-write next step without performing it.",
+    "expected_output": "The current umbrella checkout is not used for the edit. The recording remains resumable while the user approves a handoff to the owning repository worktree.",
+    "assertions": [
+      "the submodule checkout is not edited",
+      "a handoff to the owning repository worktree is required",
+      "the active recording remains in end phase until the external update is verified",
+      "the handoff occurs only after user approval"
+    ]
+  },
+  {
+    "id": "no-existing-owner",
+    "prompt": "A prepared end snapshot contains one verified, reusable workflow for a new project responsibility. Searches of project, umbrella, managed-repository, user, and plugin skills find no semantic owner. Produce the disposition only.",
+    "expected_output": "The workflow proposes a new project skill through create-skill, explains its boundary, and waits for explicit user approval before creating anything.",
+    "assertions": [
+      "the absence of an owner is stated with search evidence",
+      "create-skill is the proposed disposition",
+      "the proposed skill boundary and trigger are shown",
+      "explicit user approval is required before creation",
+      "no skill is created in the disposition step"
+    ]
+  },
+  {
+    "id": "nothing-reusable",
+    "prompt": "A prepared end snapshot only records the temporary port used by today's test server. There were no corrections, reusable procedures, or repeated recovery patterns. Produce the end disposition.",
+    "expected_output": "The temporary value is rejected as a one-off fact. No skill changes are proposed, validation has nothing to run, and compare-and-close may finish the recording.",
+    "assertions": [
+      "the temporary port is rejected as a one-off fact",
+      "no existing skill is edited",
+      "no new skill is proposed",
+      "close uses the prepared claim and revision"
+    ]
+  }
+]

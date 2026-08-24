@@ -1,0 +1,135 @@
+{
+  "method": "Strict blind assertion grading; omission is not evidence",
+  "results": [
+    {
+      "case": "invocation-is-not-ownership",
+      "with_skill": {
+        "passed": 4,
+        "total": 4,
+        "evidence": [
+          "Data-export is explicitly rejected as the automatic owner.",
+          "Startup and active-learning responsibilities are compared.",
+          "The user must resolve the resulting ambiguity.",
+          "The proposal explicitly precedes every write."
+        ]
+      },
+      "without_skill": {
+        "passed": 1,
+        "total": 4,
+        "failed_evidence": [
+          "Active-learning responsibility is not compared.",
+          "Ownership is assigned without surfacing ambiguity.",
+          "The response does not require the proposal to precede every write."
+        ]
+      }
+    },
+    {
+      "case": "external-owner-with-origin",
+      "with_skill": {
+        "passed": 5,
+        "total": 5,
+        "evidence": [
+          "The cache is discovery-only.",
+          "Repository and skill path are resolved before import.",
+          "Import-skill freshens and pins the source.",
+          "Import precedes adaptation.",
+          "A competing skill is explicitly rejected."
+        ]
+      },
+      "without_skill": {
+        "passed": 1,
+        "total": 5,
+        "failed_evidence": [
+          "It proposes an upstream contribution rather than import-skill.",
+          "No freshening or project-copy adaptation is described.",
+          "A competing project skill is not explicitly ruled out."
+        ]
+      }
+    },
+    {
+      "case": "external-owner-without-origin",
+      "with_skill": {
+        "passed": 4,
+        "total": 4,
+        "evidence": [
+          "Unresolved provenance stops the workflow.",
+          "The user is asked for the authoritative repository and path.",
+          "The cache cannot be copied or edited.",
+          "A competing skill cannot be created."
+        ]
+      },
+      "without_skill": {
+        "passed": 4,
+        "total": 4,
+        "failed_evidence": []
+      }
+    },
+    {
+      "case": "cross-repository-owner",
+      "with_skill": {
+        "passed": 4,
+        "total": 4,
+        "evidence": [
+          "The umbrella submodule checkout is explicitly excluded.",
+          "The change is handed to the owning repository worktree after approval.",
+          "The recording remains claimed until verification.",
+          "Approval precedes handoff."
+        ]
+      },
+      "without_skill": {
+        "passed": 3,
+        "total": 4,
+        "failed_evidence": [
+          "It does not preserve the active recording in end phase until verification."
+        ]
+      }
+    },
+    {
+      "case": "no-existing-owner",
+      "with_skill": {
+        "passed": 5,
+        "total": 5,
+        "evidence": [
+          "All searched skill surfaces are named as evidence.",
+          "Create-skill is the proposed disposition.",
+          "A concrete trigger and responsibility boundary are shown.",
+          "Explicit approval gates creation.",
+          "Nothing is created during disposition."
+        ]
+      },
+      "without_skill": {
+        "passed": 3,
+        "total": 5,
+        "failed_evidence": [
+          "No owner-search evidence is stated.",
+          "No concrete trigger or boundary is shown."
+        ]
+      }
+    },
+    {
+      "case": "nothing-reusable",
+      "with_skill": {
+        "passed": 4,
+        "total": 4,
+        "evidence": [
+          "The temporary port is explicitly rejected as one-off.",
+          "No edit or new skill is proposed.",
+          "No validation is invented.",
+          "Compare-and-close uses the exact ID, claim, and revision."
+        ]
+      },
+      "without_skill": {
+        "passed": 2,
+        "total": 4,
+        "failed_evidence": [
+          "It does not explicitly classify the port as one-off.",
+          "It omits claim-and-revision compare-and-close."
+        ]
+      }
+    }
+  ],
+  "totals": {
+    "with_skill": {"passed": 26, "total": 26, "pass_rate": 1.0},
+    "without_skill": {"passed": 14, "total": 26, "pass_rate": 0.538462}
+  }
+}
