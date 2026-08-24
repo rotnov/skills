@@ -30,22 +30,24 @@ own what was learned. This changes skills, not the underlying model.
 Resolve the absolute directory containing this loaded `SKILL.md`, then derive
 `RECORDER` as the absolute path to its `scripts/recording.py`. `RECORDER` below is
 notation for that already-resolved argv value; it is not an environment variable or
-text to pass literally. For every recorder command, invoke `uv` through the runtime's
-structured command API with each shown value as a distinct argument. Never assemble
-the command in a shell string.
+text to pass literally. Prefix every recorder command with `uv run --no-project` so
+the workload's Python project is neither discovered nor synchronized. Prefer a
+structured command API with each shown value as a distinct argument. If the command
+tool accepts only a shell string, shell-quote every argument using the current shell's
+argument-quoting rules, then join them; never interpolate raw text.
 
 ## Safe text transport
 
 Never pass raw user, tool, log, or artifact text to the recorder. Rewrite the material
 checkpoint concisely in English using only agent-authored safe ASCII tokens matching
-`[A-Za-z0-9][A-Za-z0-9._:/-]*`. Pass those tokens as distinct argv values through the runtime's
-structured command API; the recorder validates them before opening or changing state.
-Do not use shell interpolation, `eval`, environment variables, pipes, heredocs, temporary
-files, or manual quoting. For example, a labeled start uses these executable and argv
-values:
+`[A-Za-z0-9][A-Za-z0-9._:/-]*`. Treat those tokens as distinct logical argv values and
+transport them through the structured API or shell-quoted fallback above; the recorder
+validates them before opening or changing state. Do not use shell interpolation, `eval`,
+environment variables, pipes, heredocs, temporary files, or ad hoc quoting. For example,
+a labeled start uses these executable and argv values:
 
 ```text
-["uv", "run", RECORDER, "start", "--label", "review", "session"]
+["uv", "run", "--no-project", RECORDER, "start", "--label", "review", "session"]
 ```
 
 This token vocabulary deliberately excludes quotes, backticks, `$`, parentheses,
@@ -57,7 +59,7 @@ cannot be written, skip the optional label or checkpoint rather than weakening t
 Without a label:
 
 ```text
-["uv", "run", RECORDER, "start"]
+["uv", "run", "--no-project", RECORDER, "start"]
 ```
 
 With a label, run the safe-token form above.
@@ -83,7 +85,7 @@ user says `active-learning continue`; then reload this skill, resolve `RECORDER`
 invoke:
 
 ```text
-["uv", "run", RECORDER, "status"]
+["uv", "run", "--no-project", RECORDER, "status"]
 ```
 
 When status reports an open recording, continue adding material checkpoints. When it
@@ -109,7 +111,7 @@ current end cannot be resumed, and ask for explicit permission to adopt it. Only
 that approval run:
 
 ```text
-["uv", "run", RECORDER, "adopt-end", "--recording-id",
+["uv", "run", "--no-project", RECORDER, "adopt-end", "--recording-id",
  "{recording id from status}", "--revision", "{revision from status}",
  "--user-authorized"]
 ```
@@ -167,7 +169,8 @@ approval.
 
 ### 5. Apply through the owner
 
-- Owner in this repository: patch its canonical `.claude/skills/{name}/` source.
+- Owner in this repository: patch the canonical owner path established during routing
+  in this Git checkout; never infer canon from the loaded or installed copy.
 - Owner in another repository: stop and request a task handoff to a worktree of that
   repository. Never edit through a submodule checkout. On return, verify its result.
 - External-only owner: invoke `import-skill` with the verified origin and preserve all
