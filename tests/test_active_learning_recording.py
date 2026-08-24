@@ -158,6 +158,37 @@ class RecorderTestCase(unittest.TestCase):
         with self.assertRaisesRegex(recording.RecordingError, "end phase"):
             recording.add_note(repo, event)
 
+    @unittest.skipUnless(
+        recording.DESCRIPTOR_BACKEND_SUPPORTED,
+        "cooperative writer locking requires the descriptor backend",
+    )
+    def test_cooperating_writer_waits_for_lock_release_before_mutating(self) -> None:
+        repo = self.init_repo()
+        started = recording.start_recording(repo, None)
+        path = self.state_file(repo)
+        original_bytes = path.read_bytes()
+        original_revision = int(started["revision"])
+        event = {
+            "kind": "action",
+            "summary": "record after lock release",
+            "evidence": "test",
+        }
+
+        current = recording.repository(repo)
+        with recording.locked(repo, current):
+            with self.assertRaisesRegex(recording.RecordingError, "state is locked"):
+                recording.add_note(repo, event)
+            self.assertEqual(path.read_bytes(), original_bytes)
+            self.assertEqual(self.read_json(path)["revision"], original_revision)
+
+        mutated = recording.add_note(repo, event)
+
+        self.assertEqual(mutated["revision"], original_revision + 1)
+        self.assertEqual(mutated["events"][0]["kind"], event["kind"])
+        self.assertEqual(mutated["events"][0]["summary"], event["summary"])
+        self.assertEqual(mutated["events"][0]["evidence"], event["evidence"])
+        self.assertNotEqual(path.read_bytes(), original_bytes)
+
     def test_prepare_resume_and_compare_close(self) -> None:
         repo = self.init_repo()
         started = recording.start_recording(repo, None)
