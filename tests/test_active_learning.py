@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import runpy
 import subprocess
 import sys
 import tempfile
@@ -16,6 +17,42 @@ SKILL = (
 )
 RECORDER = SKILL.parent / "scripts" / "recording.py"
 REPOSITORY_ROOT = SKILL.parents[2]
+FORBIDDEN_PUBLIC_TERMS = (
+    "active-learning continue",
+    "import-skill",
+    "create-skill",
+    "ievo",
+    "umbrella",
+    "managed-repository",
+    "submodule checkout",
+    '.claude/skills/*/skill.md',
+    '.agents/skills/*/skill.md',
+    '.codex/skills/*/skill.md',
+)
+
+
+def published_texts() -> dict[Path, str]:
+    listed = subprocess.run(
+        (
+            "git",
+            "ls-files",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "skills/active-learning",
+        ),
+        cwd=REPOSITORY_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.splitlines()
+    return {
+        REPOSITORY_ROOT / relative: (REPOSITORY_ROOT / relative).read_text(
+            encoding="utf-8"
+        )
+        for relative in listed
+        if (REPOSITORY_ROOT / relative).is_file()
+    }
 
 
 class ActiveLearningSkillTests(unittest.TestCase):
@@ -28,16 +65,6 @@ class ActiveLearningSkillTests(unittest.TestCase):
         )
         self.assertIn("the absolute directory containing this loaded `SKILL.md`", text)
         self.assertIn('["uv", "run", "--no-project", RECORDER', text)
-
-    def test_cross_task_continuation_is_explicit(self) -> None:
-        text = SKILL.read_text(encoding="utf-8")
-
-        self.assertIn('"active-learning continue"', text)
-        self.assertIn("does not run `status` automatically", text)
-        self.assertNotIn(
-            "The project startup workflow checks `status` on every new task.",
-            text,
-        )
 
     def test_recorder_invocation_supports_shell_string_tools(self) -> None:
         text = SKILL.read_text(encoding="utf-8")
@@ -75,6 +102,83 @@ class ActiveLearningSkillTests(unittest.TestCase):
 
         self.assertNotIn("canonical `.claude/skills/{name}/` source", text)
         self.assertIn("canonical owner path established during routing", text)
+
+    def test_published_package_has_no_project_specific_dependencies(self) -> None:
+        texts = published_texts()
+        combined = "\n".join(texts.values()).lower()
+
+        for forbidden in FORBIDDEN_PUBLIC_TERMS:
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, combined)
+        skill = texts[SKILL]
+        self.assertIn('"active-learning resume"', skill)
+        self.assertIn("available project import workflow", " ".join(skill.split()))
+        self.assertIn("Agent Skills specification", skill)
+
+        recorder_text = texts[RECORDER]
+        self.assertNotIn("def skill_catalog(", recorder_text)
+        self.assertIn("SCHEMA_VERSION = 2", recorder_text)
+
+    def test_schema_one_state_is_normalized_and_persisted_as_schema_two(self) -> None:
+        recorder = runpy.run_path(str(RECORDER))
+
+        with tempfile.TemporaryDirectory() as temporary:
+            project = Path(temporary)
+            subprocess.run(("git", "init", "-q"), cwd=project, check=True)
+            Path(project, "README.md").write_text("fixture\n", encoding="utf-8")
+            subprocess.run(("git", "add", "README.md"), cwd=project, check=True)
+            subprocess.run(
+                (
+                    "git",
+                    "-c",
+                    "user.name=Active Learning Test",
+                    "-c",
+                    "user.email=active-learning@example.invalid",
+                    "commit",
+                    "-qm",
+                    "Create fixture",
+                ),
+                cwd=project,
+                check=True,
+            )
+            subprocess.run(
+                (sys.executable, str(RECORDER), "start"),
+                cwd=project,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            git_directory = Path(
+                subprocess.run(
+                    ("git", "rev-parse", "--absolute-git-dir"),
+                    cwd=project,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                ).stdout.strip()
+            )
+            state_path = git_directory / "active-learning" / "active.json"
+            legacy = json.loads(state_path.read_text(encoding="utf-8"))
+            legacy["schema_version"] = 1
+            legacy["skill_catalog"] = []
+            state_path.write_text(json.dumps(legacy), encoding="utf-8")
+
+            normalized = recorder["read_active"](project)
+
+            self.assertEqual(normalized["schema_version"], 2)
+            self.assertNotIn("skill_catalog", normalized)
+
+            recorder["add_note"](
+                project,
+                {
+                    "kind": "decision",
+                    "summary": "portable owner routing",
+                    "evidence": None,
+                },
+            )
+            persisted = json.loads(state_path.read_text(encoding="utf-8"))
+            self.assertEqual(persisted["schema_version"], 2)
+            self.assertNotIn("skill_catalog", persisted)
 
 
 if __name__ == "__main__":

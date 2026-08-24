@@ -17,7 +17,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 MAX_EVENTS = 200
 MAX_LABEL_CHARS = 500
 MAX_SUMMARY_CHARS = 2_000
@@ -216,37 +216,6 @@ def timestamp() -> str:
     return datetime.now(UTC).isoformat()
 
 
-def skill_catalog(root: Path) -> list[dict[str, object]]:
-    entries: dict[str, dict[str, object]] = {}
-    resolved_root = root.resolve()
-    for pattern in (
-        ".claude/skills/*/SKILL.md",
-        ".agents/skills/*/SKILL.md",
-        ".codex/skills/*/SKILL.md",
-    ):
-        for surface in sorted(root.glob(pattern)):
-            if not surface.is_file():
-                continue
-            canonical = surface.resolve()
-            if not canonical.is_relative_to(resolved_root):
-                raise RecordingError(
-                    f"skill surface escapes project root: {surface} -> {canonical}"
-                )
-            key = str(canonical)
-            entry = entries.setdefault(
-                key,
-                {
-                    "canonical_path": key,
-                    "sha256": hashlib.sha256(canonical.read_bytes()).hexdigest(),
-                    "surfaces": [],
-                },
-            )
-            surfaces = entry["surfaces"]
-            assert isinstance(surfaces, list)
-            surfaces.append(surface.relative_to(root).as_posix())
-    return sorted(entries.values(), key=lambda item: str(item["canonical_path"]))
-
-
 def valid_sha256(value: object) -> bool:
     return (
         isinstance(value, str)
@@ -268,21 +237,20 @@ def validate_state(
         "started_at",
         "label",
         "repository",
-        "skill_catalog",
         "events",
         "end_claim",
     }
+    schema_version = payload.get("schema_version")
+    if type(schema_version) is not int or schema_version not in (1, SCHEMA_VERSION):
+        raise RecordingError(f"unsupported recording schema at {path}")
+    if schema_version == 1:
+        required.add("skill_catalog")
     missing = sorted(required - payload.keys())
     if missing:
         raise RecordingError(f"recording state has missing keys at {path}: {missing}")
     extra = sorted(payload.keys() - required)
     if extra:
         raise RecordingError(f"recording state has unknown keys at {path}: {extra}")
-    if (
-        type(payload["schema_version"]) is not int
-        or payload["schema_version"] != SCHEMA_VERSION
-    ):
-        raise RecordingError(f"unsupported recording schema at {path}")
     if not isinstance(payload["recording_id"], str) or not payload["recording_id"]:
         raise RecordingError(f"recording_id must be a non-empty string at {path}")
     if type(payload["revision"]) is not int or payload["revision"] < 0:
@@ -359,30 +327,37 @@ def validate_state(
     ):
         raise RecordingError(f"ending recording has an invalid claim at {path}")
 
-    catalog = payload["skill_catalog"]
-    if not isinstance(catalog, list):
-        raise RecordingError(f"skill_catalog must be a list at {path}")
-    for index, entry in enumerate(catalog):
-        if not isinstance(entry, dict) or set(entry) != {
-            "canonical_path",
-            "sha256",
-            "surfaces",
-        }:
-            raise RecordingError(f"skill catalog entry {index} is malformed at {path}")
-        if (
-            not isinstance(entry["canonical_path"], str)
-            or not entry["canonical_path"]
-            or not valid_sha256(entry["sha256"])
-        ):
-            raise RecordingError(
-                f"skill catalog entry {index} paths are malformed at {path}"
-            )
-        if not isinstance(entry["surfaces"], list) or not all(
-            isinstance(surface, str) and surface for surface in entry["surfaces"]
-        ):
-            raise RecordingError(
-                f"skill catalog entry {index} surfaces are malformed at {path}"
-            )
+    if schema_version == 1:
+        catalog = payload["skill_catalog"]
+        if not isinstance(catalog, list):
+            raise RecordingError(f"skill_catalog must be a list at {path}")
+        for index, entry in enumerate(catalog):
+            if not isinstance(entry, dict) or set(entry) != {
+                "canonical_path",
+                "sha256",
+                "surfaces",
+            }:
+                raise RecordingError(
+                    f"skill catalog entry {index} is malformed at {path}"
+                )
+            if (
+                not isinstance(entry["canonical_path"], str)
+                or not entry["canonical_path"]
+                or not valid_sha256(entry["sha256"])
+            ):
+                raise RecordingError(
+                    f"skill catalog entry {index} paths are malformed at {path}"
+                )
+            if not isinstance(entry["surfaces"], list) or not all(
+                isinstance(surface, str) and surface for surface in entry["surfaces"]
+            ):
+                raise RecordingError(
+                    f"skill catalog entry {index} surfaces are malformed at {path}"
+                )
+        normalized = dict(payload)
+        normalized.pop("skill_catalog")
+        normalized["schema_version"] = SCHEMA_VERSION
+        return normalized
     return payload
 
 
@@ -557,7 +532,6 @@ def start_recording(cwd: Path, label: str | None) -> dict[str, object]:
             "started_at": timestamp(),
             "label": label,
             "repository": current,
-            "skill_catalog": skill_catalog(Path(str(current["root"]))),
             "events": [],
             "end_claim": None,
         }

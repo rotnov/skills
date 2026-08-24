@@ -1,70 +1,68 @@
 [
   {
     "id": "invocation-is-not-ownership",
-    "prompt": "A prepared active-learning end snapshot records that data-export ran during the session. The reusable correction is that every new task must detect an already-active recording before selecting task skills. Produce the routing proposal, without editing files.",
-    "expected_output": "Ownership is resolved from responsibility rather than invocation history. data-export receives no preference, ambiguity is surfaced, and no write occurs before approval.",
+    "prompt": "A claimed active-learning snapshot records that a data-export skill ran during the session. The reusable correction concerns the project's task-start procedure. Produce the owner-resolution proposal without editing files.",
+    "expected_output": "Resolve responsibility without preferring the invoked skill. Compare the correction with plausible canonical owners, surface ambiguity, and wait for approval before any write.",
     "assertions": [
-      "the invoked data-export skill is not treated as the automatic owner",
-      "the correction is compared against startup and active-learning responsibilities",
+      "the invoked skill receives no ownership preference",
+      "responsibility and boundary determine plausible owners",
       "ambiguous ownership requires user selection",
-      "a lesson-owner-change proposal precedes every write"
+      "a mutation preview precedes every write"
     ]
   },
   {
     "id": "external-owner-with-origin",
-    "prompt": "A prepared end snapshot has one reusable lesson refining an installed release-helper skill. It exists only in a plugin cache, whose manifest identifies https://github.com/example/skills, path skills/release-helper, version commit 0123456789abcdef0123456789abcdef01234567. No project skill owns release preparation. Produce the disposition only.",
-    "expected_output": "The cache is discovery-only. Its repository and skill path identify the import source; import-skill freshens and pins that origin before adaptation, and no competing skill is created.",
+    "prompt": "A claimed snapshot has one reusable lesson for an installed-only release-helper skill. Authoritative metadata identifies its source repository, skill path, and pinned revision. No project skill owns release preparation. Produce the disposition only.",
+    "expected_output": "Preserve origin and pinned revision before project adaptation. Treat the installed copy as discovery-only and propose bringing the authoritative source into the project after approval.",
     "assertions": [
-      "the plugin cache is not edited",
-      "the supplied repository and skill path are resolved before import",
-      "import-skill freshens the origin and records its pinned commit",
-      "import-skill precedes project adaptation",
-      "no differently named competing skill is proposed"
+      "the installed cache is not edited or copied",
+      "the authoritative repository and skill path are resolved",
+      "the pinned revision and provenance are preserved",
+      "project adaptation follows source acquisition and approval"
     ]
   },
   {
     "id": "external-owner-without-origin",
-    "prompt": "A prepared end snapshot points to ~/.agents/skills/release-helper/SKILL.md as the only plausible owner, but the file has no provenance metadata, is outside Git, and no plugin manifest identifies an origin. Produce the disposition only.",
-    "expected_output": "The workflow stops and asks the user for an authoritative origin. It neither copies the cache, edits it, nor invents a new competing skill.",
+    "prompt": "A claimed snapshot points to an installed release-helper skill as the only plausible owner, but the file is outside Git and no metadata identifies an authoritative origin. Produce the disposition only.",
+    "expected_output": "Stop for authoritative provenance without editing the cache. Ask the user for the source repository and skill path, and keep the recording resumable.",
     "assertions": [
       "unresolved provenance is an explicit blocker",
-      "the user is asked for the authoritative repository or source",
-      "the cache is not copied or edited",
+      "the user is asked for the authoritative repository and path",
+      "the installed cache is not copied or edited",
       "no competing skill is created"
     ]
   },
   {
     "id": "cross-repository-owner",
-    "prompt": "A prepared end snapshot in the current worktree resolves one lesson to a release skill owned by another repository. Produce the approved-write next step without performing it.",
-    "expected_output": "The current umbrella checkout is not used for the edit. The recording remains resumable while the user approves a handoff to the owning repository worktree.",
+    "prompt": "A claimed snapshot resolves one reusable lesson to a skill owned by another Git repository. Produce the approved-write next step without performing it.",
+    "expected_output": "Update only in the owning repository after approval. Keep the current recording resumable until the external update is verified.",
     "assertions": [
-      "the submodule checkout is not edited",
-      "a handoff to the owning repository worktree is required",
-      "the active recording remains in end phase until the external update is verified",
-      "the handoff occurs only after user approval"
+      "the current repository is not used for the edit",
+      "the owning repository's own checkout is required",
+      "the recording remains claimed until verification",
+      "the update occurs only after user approval"
     ]
   },
   {
     "id": "no-existing-owner",
-    "prompt": "A prepared end snapshot contains one verified, reusable workflow for a new project responsibility. Searches of project, umbrella, managed-repository, user, and plugin skills find no semantic owner. Produce the disposition only.",
-    "expected_output": "The workflow proposes a new project skill through create-skill, explains its boundary, and waits for explicit user approval before creating anything.",
+    "prompt": "A claimed snapshot contains one verified reusable workflow for a new project responsibility. Repository evidence and authoritative origins reveal no semantic owner. Produce the disposition only.",
+    "expected_output": "Propose a spec-conforming project skill and wait for approval. Explain the skill's boundary and trigger without creating files.",
     "assertions": [
       "the absence of an owner is stated with search evidence",
-      "create-skill is the proposed disposition",
+      "the proposal conforms to the Agent Skills specification",
       "the proposed skill boundary and trigger are shown",
-      "explicit user approval is required before creation",
-      "no skill is created in the disposition step"
+      "explicit user approval is required before creation"
     ]
   },
   {
     "id": "nothing-reusable",
-    "prompt": "A prepared end snapshot only records the temporary port used by today's test server. There were no corrections, reusable procedures, or repeated recovery patterns. Produce the end disposition.",
-    "expected_output": "The temporary value is rejected as a one-off fact. No skill changes are proposed, validation has nothing to run, and compare-and-close may finish the recording.",
+    "prompt": "A claimed snapshot records only the temporary port used by today's test server. It contains no correction, reusable procedure, or repeatable recovery. Produce the end disposition.",
+    "expected_output": "Make no skill change and close the claimed snapshot. Reject the temporary value as a one-off fact and use the prepared claim and revision.",
     "assertions": [
       "the temporary port is rejected as a one-off fact",
       "no existing skill is edited",
       "no new skill is proposed",
-      "close uses the prepared claim and revision"
+      "close uses the claimed recording ID and revision"
     ]
   }
 ]
