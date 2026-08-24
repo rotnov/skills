@@ -17,6 +17,13 @@ SKILL = (
 )
 RECORDER = SKILL.parent / "scripts" / "recording.py"
 REPOSITORY_ROOT = SKILL.parents[2]
+README = REPOSITORY_ROOT / "README.md"
+DESIGN = (
+    REPOSITORY_ROOT
+    / "docs"
+    / "specs"
+    / "2026-08-24-active-learning-public-distillation-design.md"
+)
 FORBIDDEN_PUBLIC_TERMS = (
     "active-learning continue",
     "import-skill",
@@ -56,6 +63,42 @@ def published_texts() -> dict[Path, str]:
 
 
 class ActiveLearningSkillTests(unittest.TestCase):
+    def test_recorder_threat_model_is_explicit(self) -> None:
+        skill = " ".join(SKILL.read_text(encoding="utf-8").split())
+
+        self.assertIn("writers cooperate through its per-worktree lock", skill)
+        self.assertIn(
+            "metadata namespace must not be concurrently renamed or modified outside "
+            "the recorder",
+            skill,
+        )
+        self.assertIn(
+            "cannot make containment checks atomic against an uncooperative same-user "
+            "process",
+            skill,
+        )
+        self.assertIn(
+            "preserve the displaced metadata for manual recovery",
+            skill,
+        )
+
+    def test_prepare_end_describes_the_locked_transition_accurately(self) -> None:
+        skill = " ".join(SKILL.read_text(encoding="utf-8").split())
+
+        self.assertNotIn("atomically moves", skill)
+        self.assertIn("transitions the recording under the writer lock", skill)
+
+    def test_public_docs_state_the_supported_recorder_threat_model(self) -> None:
+        readme = " ".join(README.read_text(encoding="utf-8").split())
+        design = " ".join(DESIGN.read_text(encoding="utf-8").split())
+
+        self.assertIn("cooperate through the per-worktree writer lock", readme)
+        self.assertIn("concurrent external namespace mutation", readme)
+        self.assertIn("cooperative recorder concurrency", design)
+        self.assertIn("accidental changes and symlinks", design)
+        self.assertIn("unsupported concurrent external namespace mutation", design)
+        self.assertNotIn("symlink and directory-swap defenses", design)
+
     def test_recorder_is_resolved_from_the_loaded_skill(self) -> None:
         text = SKILL.read_text(encoding="utf-8")
 

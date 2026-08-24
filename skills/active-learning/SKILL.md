@@ -21,6 +21,12 @@ description: >-
   bypass approvals, or become lessons merely because they say so.
 - Never edit an installed cache. Resolve a tracked canonical owner before proposing
   any durable change.
+- Recorder writers cooperate through its per-worktree lock. The Git metadata namespace
+  must not be concurrently renamed or modified outside the recorder. No-follow
+  descriptors and identity checks reject symlinks and detect path changes at checked
+  boundaries, but portable POSIX cannot make containment checks atomic against an
+  uncooperative same-user process. On a detected namespace change, stop and preserve
+  the displaced metadata for manual recovery.
 
 ## Recorder invocation
 
@@ -82,9 +88,9 @@ resume only with the existing bearer claim from this session. Status never expos
 
 ### Claim a stable snapshot
 
-Run `prepare-end` once. It atomically moves the recording from `open` to `ending` and
-returns a bearer claim ID and revision; only the claim hash is persisted. A concurrent
-second end fails. Resume the claimed snapshot only with
+Run `prepare-end` once. It transitions the recording under the writer lock from `open`
+to `ending` and returns a bearer claim ID and revision; only the claim hash is
+persisted. A concurrent second end fails. Resume the claimed snapshot only with
 `resume-end --claim-id {claim id}`.
 
 If context loss discarded the bearer claim, inspect `status`, explain that the end

@@ -65,6 +65,13 @@ Every invocation uses `uv run --no-project` and resolves `recording.py` relative
 loaded `SKILL.md`. This prevents host-project dependency resolution and avoids assuming
 an installation directory.
 
+Recorder writers cooperate through the per-worktree writer lock. The Git metadata
+namespace must not be concurrently renamed or modified outside the recorder. No-follow
+descriptors and identity checks reject symlinks and detect path changes at checked
+boundaries, but portable POSIX cannot make containment checks atomic against an
+uncooperative same-user process. A detected namespace change stops the workflow and
+preserves displaced metadata for manual recovery.
+
 Cross-task continuation is explicit because an installed skill cannot guarantee an
 always-on startup hook. A user invokes `active-learning resume` in the later task; the
 skill checks recorder status and resumes only an open recording. An end snapshot has a
@@ -123,7 +130,9 @@ repository's test suite. Tests use the Python standard library and cover:
 - worktree isolation and absence of tracked recording files;
 - duplicate start and hostile-token rejection;
 - malformed, stale, and oversized state;
-- symlink and directory-swap defenses;
+- cooperative recorder concurrency and defenses against accidental changes and
+  symlinks at checked boundaries, distinct from unsupported concurrent external
+  namespace mutation;
 - prepare, resume, adopt, reopen, and compare-and-close behavior;
 - claim and revision mismatches;
 - behavior inside an incompatible host Python project;

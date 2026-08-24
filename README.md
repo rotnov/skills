@@ -73,6 +73,10 @@ with safe no-follow directory-descriptor operations for recording mutations.
 Continuation in a later task is explicit through `active-learning resume`.
 Its `evals/evals.json` contains unscored portable scenarios; this repository
 publishes no benchmark score for this version.
+Recorder writers must cooperate through the per-worktree writer lock; no other
+process may concurrently rename or modify the Git metadata namespace. No-follow and
+identity checks defend checked boundaries against symlinks and accidental changes,
+not concurrent external namespace mutation; detected changes stop for manual recovery.
 
 `i-have-an-issue` requires network access and at least one way to inspect
 public source history: a native GitHub connector, `gh`, a browser, or Python 3
