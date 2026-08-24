@@ -447,6 +447,7 @@ def write_atomic_to(
 ) -> None:
     path = directory.path / "active.json"
     validate_state(payload, current, path)
+    verify_directory_identity(directory)
     encoded = (
         json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     ).encode()
@@ -465,6 +466,7 @@ def write_atomic_to(
             dir_fd=directory.descriptor,
         )
         try:
+            verify_directory_identity(directory)
             write_all(descriptor, encoded)
             os.fchmod(descriptor, 0o600)
             os.fsync(descriptor)
