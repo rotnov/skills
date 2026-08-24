@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -59,7 +60,7 @@ class ActiveLearningSkillTests(unittest.TestCase):
                 encoding="utf-8",
             )
             result = subprocess.run(
-                ["uv", "run", "--no-project", str(RECORDER), "status"],
+                [sys.executable, str(RECORDER), "status"],
                 cwd=temporary,
                 capture_output=True,
                 text=True,
