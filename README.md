@@ -5,6 +5,18 @@ engineering.
 
 ## Available skills
 
+### `active-learning`
+
+Run a bounded learning loop over a real work session. It records concise checkpoints
+outside the working tree, extracts reusable lessons, resolves each lesson to its
+canonical project skill, and applies only user-approved changes.
+
+Install it with the [skills CLI](https://skills.sh/):
+
+```bash
+npx skills add rotnov/skills --skill active-learning
+```
+
 ### `i-have-an-issue`
 
 Research how upstream and comparable open-source projects encountered, fixed,
@@ -55,6 +67,12 @@ npx skills use rotnov/skills@propose-skill
 The canonical behavior lives in standard `SKILL.md` files and works with
 Agent Skills-compatible clients, including Codex and Claude Code. Optional
 client metadata does not change the behavior contract.
+
+`active-learning` requires Git, `uv`, Python 3.12 or newer, and a platform
+with safe no-follow directory-descriptor operations for recording mutations.
+Continuation in a later task is explicit through `active-learning resume`.
+Its `evals/evals.json` contains unscored portable scenarios; this repository
+publishes no benchmark score for this version.
 
 `i-have-an-issue` requires network access and at least one way to inspect
 public source history: a native GitHub connector, `gh`, a browser, or Python 3
