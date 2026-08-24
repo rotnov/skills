@@ -26,6 +26,13 @@ DESIGN = (
     / "specs"
     / "2026-08-24-active-learning-public-distillation-design.md"
 )
+PLAN = (
+    REPOSITORY_ROOT
+    / "docs"
+    / "superpowers"
+    / "plans"
+    / "2026-08-24-active-learning-public-distillation.md"
+)
 FORBIDDEN_PUBLIC_TERMS = (
     "active-learning continue",
     "import-skill",
@@ -186,6 +193,28 @@ class ActiveLearningSkillTests(unittest.TestCase):
         self.assertIn("99.99", smoke)
         self.assertRegex(smoke, r'"--python",\s+"3\.12"')
         self.assertIn('run --no-project --python 3.12 "$claude_recorder"', smoke)
+
+    def test_implementation_plan_selects_python_312_in_both_invocation_forms(
+        self,
+    ) -> None:
+        plan = PLAN.read_text(encoding="utf-8")
+        normalized = " ".join(plan.split())
+
+        self.assertNotIn(
+            "In Compatibility, state that it requires Git, `uv`, Python 3.12+",
+            plan,
+        )
+        self.assertIn("selects Python 3.12 through `uv`", normalized)
+        self.assertIn('.python-version` containing `99.99', normalized)
+        self.assertIn(
+            '`"$uv_bin" run --no-project --python 3.12 "$recorder" status`',
+            normalized,
+        )
+        self.assertIn(
+            '[uv_bin, "run", "--no-project", "--python", "3.12", recorder, '
+            '"status"]',
+            normalized,
+        )
 
     def test_owner_update_uses_the_routed_canonical_path(self) -> None:
         text = SKILL.read_text(encoding="utf-8")

@@ -419,9 +419,10 @@ npx skills add rotnov/skills --skill active-learning
 ```
 ```
 
-In Compatibility, state that it requires Git, `uv`, Python 3.12+, and a platform with
-safe no-follow directory-descriptor operations for recording mutations. State that
-later-task continuation is explicit through `active-learning resume`.
+In Compatibility, state that it requires Git, `uv`, and a platform with safe no-follow
+directory-descriptor operations for recording mutations, and that each recorder
+invocation selects Python 3.12 through `uv`. State that later-task continuation is
+explicit through `active-learning resume`.
 State that `evals/evals.json` contains unscored portable scenarios and that the
 repository publishes no benchmark score for this version.
 
@@ -435,11 +436,13 @@ exactly `uv==0.11.7`, and use that binary. After the existing skills CLI copy in
    `.agents/skills/active-learning/scripts/recording.py` exist;
 2. create one Git fixture per installed client under a directory whose path contains a
    space;
-3. write a `pyproject.toml` declaring `requires-python = ">=99"`;
+3. write a `pyproject.toml` declaring `requires-python = ">=99"` and a
+   `.python-version` containing `99.99`;
 4. from each fixture, invoke the installed recorder with the shell-string form
-   `"$uv_bin" run --no-project "$recorder" status`;
+   `"$uv_bin" run --no-project --python 3.12 "$recorder" status`;
 5. invoke the other installed copy from Python with the structured argv vector
-   `[uv_bin, "run", "--no-project", recorder, "status"]` and `shell=False`;
+   `[uv_bin, "run", "--no-project", "--python", "3.12", recorder, "status"]` and
+   `shell=False`;
 6. parse both outputs with Python and assert each is `{"active": false}`.
 
 This one smoke proves the supporting script is copied, resolution from each installed
