@@ -3,50 +3,57 @@ set -eu
 
 repo_root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 install_root=$(mktemp -d "${TMPDIR:-/tmp}/rotnov skills-cli.XXXXXX")
-uv_version="0.11.7"
 
 cleanup() {
   rm -rf -- "$install_root"
 }
 trap cleanup EXIT HUP INT TERM
 
-uv_bin=""
-if command -v uv >/dev/null 2>&1; then
-  uv_candidate=$(command -v uv)
-  set -- $("$uv_candidate" --version)
-  if [ "${1:-}" = "uv" ] && [ "${2:-}" = "$uv_version" ]; then
-    uv_bin=$uv_candidate
-  fi
+if ! command -v uv >/dev/null 2>&1; then
+  echo "error: uv is required; install the version declared in pyproject.toml" >&2
+  exit 1
 fi
 
-if [ -z "$uv_bin" ]; then
-  uv_environment="$install_root/uv-$uv_version"
-  python3 -m venv "$uv_environment"
-  "$uv_environment/bin/python" -m pip install \
-    --disable-pip-version-check "uv==$uv_version" >/dev/null
-  uv_bin="$uv_environment/bin/uv"
-fi
-
-set -- $("$uv_bin" --version)
-test "${1:-}" = "uv"
-test "${2:-}" = "$uv_version"
+uv_bin=$(command -v uv)
+(
+  cd "$repo_root"
+  "$uv_bin" --version >/dev/null
+)
 
 (
   cd "$install_root"
   npx --yes skills@1.5.20 add "$repo_root" --list >/dev/null
-  npx --yes skills@1.5.20 add "$repo_root" \
-    --skill '*' -a claude-code codex --copy -y >/dev/null
 )
 
+learning_install_root=""
 for skill_dir in "$repo_root"/skills/*; do
   [ -d "$skill_dir" ] || continue
   skill_name=$(basename "$skill_dir")
-  test -f "$install_root/.claude/skills/$skill_name/SKILL.md"
-  test -f "$install_root/.agents/skills/$skill_name/SKILL.md"
+  skill_install_root="$install_root/$skill_name"
+  mkdir -p "$skill_install_root"
+
+  (
+    cd "$skill_install_root"
+    npx --yes skills@1.5.20 add "$repo_root" \
+      --skill "$skill_name" -a claude-code codex --copy -y >/dev/null
+  )
+
+  test -f "$skill_install_root/.claude/skills/$skill_name/SKILL.md"
+  test -f "$skill_install_root/.agents/skills/$skill_name/SKILL.md"
+  test "$(find "$skill_install_root/.claude/skills" \
+    -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')" -eq 1
+  test "$(find "$skill_install_root/.agents/skills" \
+    -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')" -eq 1
+
+  if [ "$skill_name" = "learning" ]; then
+    learning_install_root=$skill_install_root
+  fi
 done
 
-claude_recorder="$install_root/.claude/skills/learning/scripts/recording.py"
-codex_recorder="$install_root/.agents/skills/learning/scripts/recording.py"
+test -n "$learning_install_root"
+
+claude_recorder="$learning_install_root/.claude/skills/learning/scripts/recording.py"
+codex_recorder="$learning_install_root/.agents/skills/learning/scripts/recording.py"
 test -f "$claude_recorder"
 test -f "$codex_recorder"
 
@@ -74,7 +81,7 @@ shell_output="$install_root/claude-status.json"
     >"$shell_output"
 )
 
-python3 - "$shell_output" <<'PY'
+"$uv_bin" run --no-project --python 3.12 python - "$shell_output" <<'PY'
 import json
 import pathlib
 import sys
@@ -85,7 +92,8 @@ PY
 
 (
   cd "$codex_fixture"
-  python3 - "$uv_bin" "$codex_recorder" <<'PY'
+  "$uv_bin" run --no-project --python 3.12 python - \
+    "$uv_bin" "$codex_recorder" <<'PY'
 import json
 import subprocess
 import sys

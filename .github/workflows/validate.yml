@@ -9,9 +9,6 @@ on:
 permissions:
   contents: read
 
-env:
-  PRE_COMMIT_VERSION: "4.6.1"
-
 jobs:
   validate:
     runs-on: ubuntu-latest
@@ -19,23 +16,26 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
           node-version: "24"
 
       - name: Install pinned uv
-        run: python3 -m pip install "uv==0.11.7"
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+
+      - name: Install pinned Python
+        run: uv python install
+
+      - name: Sync locked development environment
+        run: |
+          uv lock --check
+          uv sync --frozen
 
       - name: Validate repository contracts
         run: |
-          python3 scripts/validate_skills.py
-          python3 -m unittest discover -s tests -v
+          uv run --frozen python scripts/validate_skills.py
+          uv run --frozen python -m unittest discover -s tests -v
 
       - name: Validate the official Agent Skills format
         run: ./scripts/check-agent-skills-spec.sh
@@ -44,6 +44,4 @@ jobs:
         run: ./scripts/check-skills-cli.sh
 
       - name: Require the complete pre-commit gate
-        run: |
-          python3 -m pip install "pre-commit==${PRE_COMMIT_VERSION}"
-          pre-commit run --all-files
+        run: uv run --frozen pre-commit run --all-files

@@ -107,15 +107,27 @@ cross-client behavior.
 
 ## Development
 
-Validate the repository:
+Install the pinned Python and locked development dependencies:
 
 ```bash
-python3 scripts/validate_skills.py
-python3 -m unittest discover -s tests -v
+uv python install
+uv lock --check
+uv sync --frozen
+```
+
+Validate the repository through the locked environment:
+
+```bash
+uv run --frozen python scripts/validate_skills.py
+uv run --frozen python -m unittest discover -s tests -v
 ./scripts/check-agent-skills-spec.sh
 ./scripts/check-skills-cli.sh
-pre-commit run --all-files
+uv run --frozen pre-commit run --all-files
 ```
+
+This is an unpackaged uv project: it manages repository tooling but does not
+build or publish a Python distribution. Skills remain published through the
+skills CLI.
 
 Skills follow the
 [Agent Skills specification](https://agentskills.io/specification).

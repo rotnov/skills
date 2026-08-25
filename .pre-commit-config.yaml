@@ -1,6 +1,13 @@
 repos:
   - repo: local
     hooks:
+      - id: uv-lock
+        name: uv lock is current
+        entry: uv lock --check
+        language: system
+        pass_filenames: false
+        files: '^(\.python-version|pyproject\.toml|uv\.lock)$'
+
       - id: agentskills-spec
         name: Official Agent Skills specification
         entry: python scripts/check_agentskills_spec.py
@@ -8,18 +15,18 @@ repos:
         additional_dependencies:
           - "skills-ref @ git+https://github.com/agentskills/agentskills.git@38a2ff82958afee88dadf4831509e6f7e9d8ef4e#subdirectory=skills-ref"
         pass_filenames: false
-        files: '^(\.pre-commit-config\.yaml$|skills/|scripts/check_agentskills_spec\.py$|scripts/check-agent-skills-spec\.sh$|AGENTS\.md$)'
+        files: '^(\.pre-commit-config\.yaml$|pyproject\.toml$|uv\.lock$|skills/|scripts/check_agentskills_spec\.py$|scripts/check-agent-skills-spec\.sh$|AGENTS\.md$)'
 
       - id: repository-skill-contracts
         name: Repository skill contracts
-        entry: python3 scripts/validate_skills.py
+        entry: uv run --frozen python scripts/validate_skills.py
         language: system
         pass_filenames: false
-        files: '^(\.pre-commit-config\.yaml$|skills/|scripts/validate_skills\.py$|AGENTS\.md$)'
+        files: '^(\.pre-commit-config\.yaml$|\.python-version$|pyproject\.toml$|uv\.lock$|skills/|scripts/validate_skills\.py$|AGENTS\.md$)'
 
       - id: skills-sh-install-smoke
         name: skills.sh cross-client install smoke
         entry: ./scripts/check-skills-cli.sh
         language: system
         pass_filenames: false
-        files: '^(\.pre-commit-config\.yaml$|skills/|scripts/check-skills-cli\.sh$|AGENTS\.md$)'
+        files: '^(\.pre-commit-config\.yaml$|\.python-version$|pyproject\.toml$|uv\.lock$|skills/|scripts/check-skills-cli\.sh$|AGENTS\.md$)'
