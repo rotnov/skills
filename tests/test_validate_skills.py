@@ -16,12 +16,12 @@ SPEC.loader.exec_module(validate_skills)
 class ValidateSkillsTests(unittest.TestCase):
     def test_parse_frontmatter_accepts_folded_description(self) -> None:
         content = """---
-name: learn-from-session
+name: learning
 description: >-
   Use when a user asks to learn from a real work session or resume a prior session.
 ---
 
-# Learn from Session
+# Learning
 """
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "SKILL.md"
@@ -29,13 +29,13 @@ description: >-
 
             fields, body = validate_skills.parse_frontmatter(path)
 
-        self.assertEqual(fields["name"], "learn-from-session")
+        self.assertEqual(fields["name"], "learning")
         self.assertEqual(
             fields["description"],
             "Use when a user asks to learn from a real work session or resume a "
             "prior session.",
         )
-        self.assertEqual(body, "# Learn from Session")
+        self.assertEqual(body, "# Learning")
 
 
 if __name__ == "__main__":

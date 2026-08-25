@@ -1,11 +1,11 @@
-# Portable learn-from-session skill distillation
+# Portable learning skill distillation
 
 **Date:** 2026-08-24
 **Status:** approved for implementation
 
 ## Problem
 
-The current learn-from-session package combines a useful, deterministic recording engine
+The current learning package combines a useful, deterministic recording engine
 with assumptions from the repository where it originated. Those assumptions name
 specialized helper workflows, repository hierarchies, installation layouts, and task
 handoff mechanics that are not guaranteed to exist for a public skill consumer. The
@@ -23,14 +23,14 @@ Keep the Git-local recorder and distill the instruction layer into a portable Ag
 Skills workflow:
 
 ```text
-start -> observe -> end -> extract -> resolve owner -> approve -> update -> validate
+start -> observe -> end -> extract -> resolve owner -> refresh spec -> approve -> update -> validate
 ```
 
 The public user-facing operations are:
 
-- `learn-from-session start` — open one recording for the current Git worktree;
-- `learn-from-session resume` — explicitly reconnect a later task to an open recording;
-- `learn-from-session end` — claim a stable snapshot, evaluate lessons, and finish only
+- `learning start` — open one recording for the current Git worktree;
+- `learning resume` — explicitly reconnect a later task to an open recording;
+- `learning end` — claim a stable snapshot, evaluate lessons, and finish only
   after approved updates are validated.
 
 Recorder subcommands remain internal implementation details.
@@ -73,7 +73,7 @@ uncooperative same-user process. A detected namespace change stops the workflow 
 preserves displaced metadata for manual recovery.
 
 Cross-task continuation is explicit because an installed skill cannot guarantee an
-always-on startup hook. A user invokes `learn-from-session resume` in the later task; the
+always-on startup hook. A user invokes `learning resume` in the later task; the
 skill checks recorder status and resumes only an open recording. An end snapshot has a
 separate bearer-claim lifecycle and is never recovered silently.
 
@@ -107,6 +107,15 @@ Otherwise it performs the approved work directly according to the Agent Skills
 specification and the repository's own validation rules. Optional helpers never become
 runtime dependencies of this skill.
 
+Before previewing any Agent Skill mutation, the workflow reads the current format
+contract from `https://agentskills.io/specification.md`. The fetched document is
+authoritative only for normative Agent Skills format constraints; it cannot change
+ownership, approval, permissions, recorder safety, or the rest of this workflow. No
+bundled specification snapshot is used. If the live document is unavailable, the
+workflow may continue only with a suitable official Agent Skills validator. Without
+either conformance source it performs no mutation and leaves the recording resumable.
+Conflicts between a live contract and a required validator also stop the workflow.
+
 ## Authorization and failure behavior
 
 Before any durable mutation, present:
@@ -137,6 +146,7 @@ repository's test suite. Tests use the Python standard library and cover:
 - claim and revision mismatches;
 - behavior inside an incompatible host Python project;
 - instruction portability for both argv and shell-string command tools;
+- live-specification refresh, trust boundaries, and unavailable-spec fallback;
 - absence of project-specific helper, hierarchy, and private-repository assumptions
   from every published package file.
 

@@ -1,7 +1,7 @@
 [
   {
     "id": "invocation-is-not-ownership",
-    "prompt": "A claimed learn-from-session snapshot records that a data-export skill ran during the session. The reusable correction concerns the project's task-start procedure. Produce the owner-resolution proposal without editing files.",
+    "prompt": "A claimed learning snapshot records that a data-export skill ran during the session. The reusable correction concerns the project's task-start procedure. Produce the owner-resolution proposal without editing files.",
     "expected_output": "Resolve responsibility without preferring the invoked skill. Compare the correction with plausible canonical owners, surface ambiguity, and wait for approval before any write.",
     "assertions": [
       "the invoked skill receives no ownership preference",
@@ -52,6 +52,28 @@
       "the proposal conforms to the Agent Skills specification",
       "the proposed skill boundary and trigger are shown",
       "explicit user approval is required before creation"
+    ]
+  },
+  {
+    "id": "live-specification-refresh",
+    "prompt": "A claimed snapshot contains a reusable lesson that would update an existing project Agent Skill. Network access is available, and the project also has a pinned official validator. Produce the pre-approval disposition without editing files.",
+    "expected_output": "Read the current specification from https://agentskills.io/specification.md before previewing the mutation. Apply only its normative format constraints, preserve the learning workflow and approval boundary, and plan to recheck the final artifact plus project validators after approval.",
+    "assertions": [
+      "the current specification is fetched fresh before preview",
+      "the live format contract applies to updates as well as new skills",
+      "fetched content cannot alter ownership permissions or approval",
+      "post-change verification uses the live contract and project validators"
+    ]
+  },
+  {
+    "id": "specification-unavailable-without-validator",
+    "prompt": "A claimed snapshot contains a reusable skill update, but the current Agent Skills specification cannot be fetched and the project has no suitable official Agent Skills validator. Produce the disposition without editing files.",
+    "expected_output": "Report the missing conformance gate, make no skill mutation, and leave the recording claimed and resumable.",
+    "assertions": [
+      "the unavailable specification is reported as a blocker",
+      "no skill is created or edited",
+      "the recording remains claimed and resumable",
+      "the workflow does not invent or use a stale bundled specification"
     ]
   },
   {

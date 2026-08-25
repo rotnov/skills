@@ -45,8 +45,8 @@ for skill_dir in "$repo_root"/skills/*; do
   test -f "$install_root/.agents/skills/$skill_name/SKILL.md"
 done
 
-claude_recorder="$install_root/.claude/skills/learn-from-session/scripts/recording.py"
-codex_recorder="$install_root/.agents/skills/learn-from-session/scripts/recording.py"
+claude_recorder="$install_root/.claude/skills/learning/scripts/recording.py"
+codex_recorder="$install_root/.agents/skills/learning/scripts/recording.py"
 test -f "$claude_recorder"
 test -f "$codex_recorder"
 

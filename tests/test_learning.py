@@ -14,7 +14,7 @@ from pathlib import Path
 SKILL = (
     Path(__file__).resolve().parents[1]
     / "skills"
-    / "learn-from-session"
+    / "learning"
     / "SKILL.md"
 )
 RECORDER = SKILL.parent / "scripts" / "recording.py"
@@ -24,17 +24,17 @@ DESIGN = (
     REPOSITORY_ROOT
     / "docs"
     / "specs"
-    / "2026-08-24-learn-from-session-public-distillation-design.md"
+    / "2026-08-24-learning-public-distillation-design.md"
 )
 PLAN = (
     REPOSITORY_ROOT
     / "docs"
     / "superpowers"
     / "plans"
-    / "2026-08-24-learn-from-session-public-distillation.md"
+    / "2026-08-24-learning-public-distillation.md"
 )
 FORBIDDEN_PUBLIC_TERMS = (
-    "learn-from-session continue",
+    "learning continue",
     "import-skill",
     "create-skill",
     "ievo",
@@ -55,7 +55,7 @@ def published_texts() -> dict[Path, str]:
             "--cached",
             "--others",
             "--exclude-standard",
-            "skills/learn-from-session",
+            "skills/learning",
         ),
         cwd=REPOSITORY_ROOT,
         check=True,
@@ -71,16 +71,31 @@ def published_texts() -> dict[Path, str]:
     }
 
 
-class LearnFromSessionSkillTests(unittest.TestCase):
-    def test_public_skill_name_is_learn_from_session(self) -> None:
-        renamed = REPOSITORY_ROOT / "skills" / "learn-from-session"
-        skill_text = (renamed / "SKILL.md").read_text(encoding="utf-8")
+class LearningSkillTests(unittest.TestCase):
+    def test_public_skill_name_is_learning(self) -> None:
+        renamed = REPOSITORY_ROOT / "skills" / "learning"
 
         self.assertTrue(renamed.is_dir())
-        self.assertFalse((REPOSITORY_ROOT / "skills" / "active-learning").exists())
-        self.assertIn("name: learn-from-session", skill_text)
+        self.assertFalse(
+            (REPOSITORY_ROOT / "skills" / "learn-from-session").exists()
+        )
+        skill_text = (renamed / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("name: learning", skill_text)
         self.assertIn("description: >-\n  Use when", skill_text)
         self.assertNotIn("Capture reusable lessons", skill_text)
+
+    def test_end_refreshes_the_agent_skills_spec_before_skill_mutations(self) -> None:
+        skill = SKILL.read_text(encoding="utf-8")
+        normalized = " ".join(skill.split())
+
+        specification = "https://agentskills.io/specification.md"
+        self.assertIn(specification, skill)
+        self.assertLess(skill.index(specification), skill.index("### Approve mutations"))
+        self.assertIn("read the current specification fresh", normalized)
+        self.assertIn("normative Agent Skills format constraints", normalized)
+        self.assertIn("cannot change this workflow", normalized)
+        self.assertIn("suitable official validator", normalized)
+        self.assertIn("leave the recording claimed and resumable", normalized)
 
     def test_recorder_threat_model_is_explicit(self) -> None:
         skill = " ".join(SKILL.read_text(encoding="utf-8").split())
@@ -123,7 +138,7 @@ class LearnFromSessionSkillTests(unittest.TestCase):
         text = SKILL.read_text(encoding="utf-8")
 
         self.assertNotIn(
-            ".claude/skills/learn-from-session/scripts/recording.py",
+            ".claude/skills/learning/scripts/recording.py",
             text,
         )
         self.assertIn("the absolute directory containing this loaded `SKILL.md`", text)
@@ -240,7 +255,7 @@ class LearnFromSessionSkillTests(unittest.TestCase):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, combined)
         skill = texts[SKILL]
-        self.assertIn('"learn-from-session resume"', skill)
+        self.assertIn('"learning resume"', skill)
         self.assertIn("available project import workflow", " ".join(skill.split()))
         self.assertIn("Agent Skills specification", skill)
 
@@ -260,9 +275,9 @@ class LearnFromSessionSkillTests(unittest.TestCase):
                 (
                     "git",
                     "-c",
-                    "user.name=Learn from Session Test",
+                    "user.name=Learning Test",
                     "-c",
-                    "user.email=learn-from-session@example.invalid",
+                    "user.email=learning@example.invalid",
                     "commit",
                     "-qm",
                     "Create fixture",
@@ -286,7 +301,7 @@ class LearnFromSessionSkillTests(unittest.TestCase):
                     text=True,
                 ).stdout.strip()
             )
-            state_path = git_directory / "learn-from-session" / "active.json"
+            state_path = git_directory / "learning" / "active.json"
             legacy = json.loads(state_path.read_text(encoding="utf-8"))
             legacy["schema_version"] = 1
             legacy["skill_catalog"] = []
