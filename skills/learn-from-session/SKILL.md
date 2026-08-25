@@ -1,12 +1,11 @@
 ---
-name: active-learning
+name: learn-from-session
 description: >-
-  Capture reusable lessons from a work session and propose approved updates to the
-  skill that owns them. Use when the user asks to learn from the current session or
-  says "active-learning start", "active-learning resume", or "active-learning end".
+  Use when the user asks to learn from the current work session or says
+  "learn-from-session start", "learn-from-session resume", or "learn-from-session end".
 ---
 
-# Active Learning
+# Learn from Session
 
 ## Boundaries
 
@@ -56,7 +55,7 @@ Run one of:
 If another recording is active, stop and report its ID; never replace it. If safe
 no-follow directory descriptors are unavailable, `start` fails closed. Do not replace
 the state engine with pathname-based writes. After success, tell the user that a later
-task requires the explicit phrase `active-learning resume`.
+task requires the explicit phrase `learn-from-session resume`.
 
 ## Observe
 
@@ -71,7 +70,7 @@ source bodies, secrets, or large output.
 
 Cross-task resumption is explicit. This skill does not run `status` automatically and
 cannot reactivate itself solely because state exists. When the user says
-`active-learning resume`, reload this skill, resolve `RECORDER`, and run:
+`learn-from-session resume`, reload this skill, resolve `RECORDER`, and run:
 
 ```text
 ["uv", "run", "--no-project", "--python", "3.12", RECORDER, "status"]

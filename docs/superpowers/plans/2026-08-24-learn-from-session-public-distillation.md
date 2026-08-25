@@ -4,7 +4,7 @@
 > user explicitly selects delegated execution; otherwise use `executing-plans`.
 > Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Publish a self-contained active-learning skill that retains the safe
+**Goal:** Publish a self-contained learn-from-session skill that retains the safe
 Git-local recorder while removing repository-specific workflows, terminology, and
 stale evaluation evidence.
 
@@ -19,8 +19,8 @@ source environment.
 
 ## Global Constraints
 
-- The only public user operations are `active-learning start`, `active-learning
-  resume`, and `active-learning end`.
+- The only public user operations are `learn-from-session start`, `learn-from-session
+  resume`, and `learn-from-session end`.
 - Resolve `recording.py` relative to the loaded `SKILL.md`; never assume an install
   root.
 - Invoke the recorder with `uv run --no-project --python 3.12` through structured argv
@@ -39,12 +39,12 @@ source environment.
 
 **Files:**
 
-- Modify: `tests/test_active_learning.py`
-- Modify: `skills/active-learning/SKILL.md`
-- Modify: `skills/active-learning/scripts/recording.py`
-- Replace: `skills/active-learning/evals/evals.json`
-- Delete: `skills/active-learning/evals/benchmark.json`
-- Delete: `skills/active-learning/evals/iteration-1/`
+- Modify: `tests/test_learn_from_session.py`
+- Modify: `skills/learn-from-session/SKILL.md`
+- Modify: `skills/learn-from-session/scripts/recording.py`
+- Replace: `skills/learn-from-session/evals/evals.json`
+- Delete: `skills/learn-from-session/evals/benchmark.json`
+- Delete: `skills/learn-from-session/evals/iteration-1/`
 
 **Interfaces:**
 
@@ -56,12 +56,12 @@ source environment.
 
 - [ ] **Step 1: Expand the failing portability contract test**
 
-Replace the narrow project-specific test in `tests/test_active_learning.py` with a scan
+Replace the narrow project-specific test in `tests/test_learn_from_session.py` with a scan
 of every published text artifact:
 
 ```python
 FORBIDDEN_PUBLIC_TERMS = (
-    "active-learning continue",
+    "learn-from-session continue",
     "import-skill",
     "create-skill",
     "ievo",
@@ -77,7 +77,7 @@ FORBIDDEN_PUBLIC_TERMS = (
 def published_texts() -> dict[Path, str]:
     listed = subprocess.run(
         ("git", "ls-files", "--cached", "--others", "--exclude-standard",
-         "skills/active-learning"),
+         "skills/learn-from-session"),
         cwd=SKILL.parents[2],
         check=True,
         capture_output=True,
@@ -100,7 +100,7 @@ def test_published_package_has_no_project_specific_dependencies(self) -> None:
         with self.subTest(forbidden=forbidden):
             self.assertNotIn(forbidden, combined)
     skill = texts[SKILL]
-    self.assertIn('"active-learning resume"', skill)
+    self.assertIn('"learn-from-session resume"', skill)
     self.assertIn("available project import workflow", " ".join(skill.split()))
     self.assertIn("Agent Skills specification", skill)
 ```
@@ -110,7 +110,7 @@ def test_published_package_has_no_project_specific_dependencies(self) -> None:
 Run:
 
 ```bash
-python3 -m unittest discover -s tests -p 'test_active_learning.py' -v
+python3 -m unittest discover -s tests -p 'test_learn_from_session.py' -v
 ```
 
 Expected: FAIL for the old `continue` trigger and project-specific terms in
@@ -147,7 +147,7 @@ Keep the frontmatter description below 1024 characters and use these sections in
 order:
 
 ```markdown
-# Active Learning
+# Learn from Session
 
 ## Boundaries
 ## Recorder invocation
@@ -185,7 +185,7 @@ transport, and compare-and-close rule.
 
 - [ ] **Step 5: Replace the current evaluation specification**
 
-Write six portable cases in `skills/active-learning/evals/evals.json` with these IDs and
+Write six portable cases in `skills/learn-from-session/evals/evals.json` with these IDs and
 required outcomes:
 
 ```json
@@ -211,18 +211,18 @@ no quality score may be claimed from this file.
 Delete only the historical evaluation results named by the approved design:
 
 ```bash
-git rm skills/active-learning/evals/benchmark.json
-git rm -r skills/active-learning/evals/iteration-1
+git rm skills/learn-from-session/evals/benchmark.json
+git rm -r skills/learn-from-session/evals/iteration-1
 ```
 
-Expected: `skills/active-learning/evals/` contains only `evals.json`.
+Expected: `skills/learn-from-session/evals/` contains only `evals.json`.
 
 - [ ] **Step 7: Verify GREEN and validate the skill**
 
 Run:
 
 ```bash
-python3 -m unittest discover -s tests -p 'test_active_learning.py' -v
+python3 -m unittest discover -s tests -p 'test_learn_from_session.py' -v
 python3 scripts/validate_skills.py
 ./scripts/check-agent-skills-spec.sh
 ./scripts/check-skills-cli.sh
@@ -233,8 +233,8 @@ Expected: every command exits 0; no forbidden public term is found.
 - [ ] **Step 8: Commit the distilled contract**
 
 ```bash
-git add skills/active-learning tests/test_active_learning.py
-git commit -m "Distill active-learning for public use"
+git add skills/learn-from-session tests/test_learn_from_session.py
+git commit -m "Distill learn-from-session for public use"
 ```
 
 ---
@@ -243,9 +243,9 @@ git commit -m "Distill active-learning for public use"
 
 **Files:**
 
-- Create: `tests/test_active_learning_recording.py`
+- Create: `tests/test_learn_from_session_recording.py`
 - Modify only if a characterization test exposes a defect:
-  `skills/active-learning/scripts/recording.py`
+  `skills/learn-from-session/scripts/recording.py`
 
 **Interfaces:**
 
@@ -276,8 +276,8 @@ from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = ROOT / "skills/active-learning/scripts/recording.py"
-SPEC = importlib.util.spec_from_file_location("active_learning_recording", SCRIPT)
+SCRIPT = ROOT / "skills/learn-from-session/scripts/recording.py"
+SPEC = importlib.util.spec_from_file_location("learn_from_session_recording", SCRIPT)
 assert SPEC and SPEC.loader
 recording = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(recording)
@@ -340,7 +340,7 @@ Implement the following exact matrix:
 | --- | --- |
 | `test_malformed_or_stale_states_fail_closed` | Mutate the persisted JSON once per subtest, write it back, assert `read_active` raises the expected message, and assert the state file still exists. |
 | `test_invalid_utf8_and_oversized_states_fail_closed` | Replace state first with `b"\xff"` and then with `MAX_STATE_BYTES + 1` spaces; assert `malformed` and `exceeds` respectively. |
-| `test_state_symlinks_fail_closed` | On non-Windows, test regular and dangling `active.json` links plus an `active-learning` directory link; assert regular-file/directory errors and no writes outside Git metadata. |
+| `test_state_symlinks_fail_closed` | On non-Windows, test regular and dangling `active.json` links plus a `learn-from-session` directory link; assert regular-file/directory errors and no writes outside Git metadata. |
 | `test_directory_swap_and_atomic_write_failure_fail_closed` | On non-Windows, swap the held directory before mutation and during child creation, assert the descriptor identity error and unchanged outside state; separately patch `write_all` to raise and assert no temporary file remains. |
 | `test_unsupported_descriptor_backend_never_mutates` | Patch `descriptor_backend_supported` false; absent state returns inactive/unavailable, start raises `cannot safely write`, and an existing state directory makes status fail rather than inspect it. |
 
@@ -368,7 +368,7 @@ Capture CLI output with `contextlib.redirect_stdout(io.StringIO())` and stderr w
 Run:
 
 ```bash
-python3 -m unittest discover -s tests -p 'test_active_learning_recording.py' -v
+python3 -m unittest discover -s tests -p 'test_learn_from_session_recording.py' -v
 ```
 
 Expected: PASS on supported descriptor platforms, with only the explicit Windows
@@ -379,8 +379,8 @@ before changing `recording.py`; do not weaken or skip the invariant.
 
 ```bash
 python3 -m unittest discover -s tests -v
-git add tests/test_active_learning_recording.py skills/active-learning/scripts/recording.py
-git commit -m "Test active-learning recorder lifecycle"
+git add tests/test_learn_from_session_recording.py skills/learn-from-session/scripts/recording.py
+git commit -m "Test learn-from-session recorder lifecycle"
 ```
 
 Expected: all repository tests pass; `recording.py` remains unchanged unless a verified
@@ -401,12 +401,12 @@ defect required a separate tested fix.
 - Consumes: the final `start`, `resume`, and `end` contract and its Git/uv requirements.
 - Produces: accurate public discovery and a verified pull-request head.
 
-- [ ] **Step 1: Add the active-learning README entry**
+- [ ] **Step 1: Add the learn-from-session README entry**
 
-Add an `active-learning` section before `i-have-an-issue` with this content:
+Add a `learn-from-session` section before `i-have-an-issue` with this content:
 
 ```markdown
-### `active-learning`
+### `learn-from-session`
 
 Run a bounded learning loop over a real work session. It records concise checkpoints
 outside the working tree, extracts reusable lessons, resolves each lesson to its
@@ -415,14 +415,14 @@ canonical project skill, and applies only user-approved changes.
 Install it with the [skills CLI](https://skills.sh/):
 
 ```bash
-npx skills add rotnov/skills --skill active-learning
+npx skills add rotnov/skills --skill learn-from-session
 ```
 ```
 
 In Compatibility, state that it requires Git, `uv`, and a platform with safe no-follow
 directory-descriptor operations for recording mutations, and that each recorder
 invocation selects Python 3.12 through `uv`. State that later-task continuation is
-explicit through `active-learning resume`.
+explicit through `learn-from-session resume`.
 State that `evals/evals.json` contains unscored portable scenarios and that the
 repository publishes no benchmark score for this version.
 
@@ -432,8 +432,8 @@ In `scripts/check-skills-cli.sh`, pin `uv_version="0.11.7"`. Use an existing `uv
 its version matches; otherwise create a temporary venv below `install_root`, install
 exactly `uv==0.11.7`, and use that binary. After the existing skills CLI copy install:
 
-1. assert both `.claude/skills/active-learning/scripts/recording.py` and
-   `.agents/skills/active-learning/scripts/recording.py` exist;
+1. assert both `.claude/skills/learn-from-session/scripts/recording.py` and
+   `.agents/skills/learn-from-session/scripts/recording.py` exist;
 2. create one Git fixture per installed client under a directory whose path contains a
    space;
 3. write a `pyproject.toml` declaring `requires-python = ">=99"` and a
@@ -467,7 +467,7 @@ tests.
 - [ ] **Step 4: Scan the public package**
 
 ```bash
-rg -ni 'active-learning continue|import-skill|create-skill|ievo|umbrella|managed-repository|submodule checkout|amplifier|godfather|meddylib|surgent|SCRUM-[0-9]+' skills/active-learning
+rg -ni 'learn-from-session continue|import-skill|create-skill|ievo|umbrella|managed-repository|submodule checkout|amplifier|godfather|meddylib|surgent|SCRUM-[0-9]+' skills/learn-from-session
 ```
 
 Expected: no matches.
@@ -476,7 +476,7 @@ Expected: no matches.
 
 ```bash
 git add README.md scripts/check-skills-cli.sh
-git commit -m "Document portable active-learning workflow"
+git commit -m "Document portable learn-from-session workflow"
 git push origin codex/add-active-learning
 ```
 

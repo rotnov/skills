@@ -1,11 +1,11 @@
-# Portable active-learning skill distillation
+# Portable learn-from-session skill distillation
 
 **Date:** 2026-08-24
 **Status:** approved for implementation
 
 ## Problem
 
-The current active-learning package combines a useful, deterministic recording engine
+The current learn-from-session package combines a useful, deterministic recording engine
 with assumptions from the repository where it originated. Those assumptions name
 specialized helper workflows, repository hierarchies, installation layouts, and task
 handoff mechanics that are not guaranteed to exist for a public skill consumer. The
@@ -28,9 +28,9 @@ start -> observe -> end -> extract -> resolve owner -> approve -> update -> vali
 
 The public user-facing operations are:
 
-- `active-learning start` — open one recording for the current Git worktree;
-- `active-learning resume` — explicitly reconnect a later task to an open recording;
-- `active-learning end` — claim a stable snapshot, evaluate lessons, and finish only
+- `learn-from-session start` — open one recording for the current Git worktree;
+- `learn-from-session resume` — explicitly reconnect a later task to an open recording;
+- `learn-from-session end` — claim a stable snapshot, evaluate lessons, and finish only
   after approved updates are validated.
 
 Recorder subcommands remain internal implementation details.
@@ -73,7 +73,7 @@ uncooperative same-user process. A detected namespace change stops the workflow 
 preserves displaced metadata for manual recovery.
 
 Cross-task continuation is explicit because an installed skill cannot guarantee an
-always-on startup hook. A user invokes `active-learning resume` in the later task; the
+always-on startup hook. A user invokes `learn-from-session resume` in the later task; the
 skill checks recorder status and resumes only an open recording. An end snapshot has a
 separate bearer-claim lifecycle and is never recovered silently.
 

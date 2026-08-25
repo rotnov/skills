@@ -14,7 +14,7 @@ from pathlib import Path
 SKILL = (
     Path(__file__).resolve().parents[1]
     / "skills"
-    / "active-learning"
+    / "learn-from-session"
     / "SKILL.md"
 )
 RECORDER = SKILL.parent / "scripts" / "recording.py"
@@ -24,17 +24,17 @@ DESIGN = (
     REPOSITORY_ROOT
     / "docs"
     / "specs"
-    / "2026-08-24-active-learning-public-distillation-design.md"
+    / "2026-08-24-learn-from-session-public-distillation-design.md"
 )
 PLAN = (
     REPOSITORY_ROOT
     / "docs"
     / "superpowers"
     / "plans"
-    / "2026-08-24-active-learning-public-distillation.md"
+    / "2026-08-24-learn-from-session-public-distillation.md"
 )
 FORBIDDEN_PUBLIC_TERMS = (
-    "active-learning continue",
+    "learn-from-session continue",
     "import-skill",
     "create-skill",
     "ievo",
@@ -55,7 +55,7 @@ def published_texts() -> dict[Path, str]:
             "--cached",
             "--others",
             "--exclude-standard",
-            "skills/active-learning",
+            "skills/learn-from-session",
         ),
         cwd=REPOSITORY_ROOT,
         check=True,
@@ -71,7 +71,17 @@ def published_texts() -> dict[Path, str]:
     }
 
 
-class ActiveLearningSkillTests(unittest.TestCase):
+class LearnFromSessionSkillTests(unittest.TestCase):
+    def test_public_skill_name_is_learn_from_session(self) -> None:
+        renamed = REPOSITORY_ROOT / "skills" / "learn-from-session"
+        skill_text = (renamed / "SKILL.md").read_text(encoding="utf-8")
+
+        self.assertTrue(renamed.is_dir())
+        self.assertFalse((REPOSITORY_ROOT / "skills" / "active-learning").exists())
+        self.assertIn("name: learn-from-session", skill_text)
+        self.assertIn("description: >-\n  Use when", skill_text)
+        self.assertNotIn("Capture reusable lessons", skill_text)
+
     def test_recorder_threat_model_is_explicit(self) -> None:
         skill = " ".join(SKILL.read_text(encoding="utf-8").split())
 
@@ -113,7 +123,7 @@ class ActiveLearningSkillTests(unittest.TestCase):
         text = SKILL.read_text(encoding="utf-8")
 
         self.assertNotIn(
-            ".claude/skills/active-learning/scripts/recording.py",
+            ".claude/skills/learn-from-session/scripts/recording.py",
             text,
         )
         self.assertIn("the absolute directory containing this loaded `SKILL.md`", text)
@@ -230,7 +240,7 @@ class ActiveLearningSkillTests(unittest.TestCase):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, combined)
         skill = texts[SKILL]
-        self.assertIn('"active-learning resume"', skill)
+        self.assertIn('"learn-from-session resume"', skill)
         self.assertIn("available project import workflow", " ".join(skill.split()))
         self.assertIn("Agent Skills specification", skill)
 
@@ -250,9 +260,9 @@ class ActiveLearningSkillTests(unittest.TestCase):
                 (
                     "git",
                     "-c",
-                    "user.name=Active Learning Test",
+                    "user.name=Learn from Session Test",
                     "-c",
-                    "user.email=active-learning@example.invalid",
+                    "user.email=learn-from-session@example.invalid",
                     "commit",
                     "-qm",
                     "Create fixture",
@@ -276,7 +286,7 @@ class ActiveLearningSkillTests(unittest.TestCase):
                     text=True,
                 ).stdout.strip()
             )
-            state_path = git_directory / "active-learning" / "active.json"
+            state_path = git_directory / "learn-from-session" / "active.json"
             legacy = json.loads(state_path.read_text(encoding="utf-8"))
             legacy["schema_version"] = 1
             legacy["skill_catalog"] = []

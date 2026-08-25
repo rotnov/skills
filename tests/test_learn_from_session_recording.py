@@ -14,8 +14,8 @@ from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = ROOT / "skills/active-learning/scripts/recording.py"
-SPEC = importlib.util.spec_from_file_location("active_learning_recording", SCRIPT)
+SCRIPT = ROOT / "skills/learn-from-session/scripts/recording.py"
+SPEC = importlib.util.spec_from_file_location("learn_from_session_recording", SCRIPT)
 assert SPEC and SPEC.loader
 recording = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(recording)
@@ -310,7 +310,7 @@ class RecorderTestCase(unittest.TestCase):
         for index, dangling in enumerate((False, True)):
             with self.subTest(kind="dangling" if dangling else "regular"):
                 repo = self.init_repo(f"state-link-{index}")
-                state_dir = Path(git(repo, "rev-parse", "--absolute-git-dir")) / "active-learning"
+                state_dir = Path(git(repo, "rev-parse", "--absolute-git-dir")) / "learn-from-session"
                 state_dir.mkdir()
                 outside = self.root / f"outside-{index}.json"
                 if not dangling:
@@ -327,7 +327,7 @@ class RecorderTestCase(unittest.TestCase):
         git_dir = Path(git(repo, "rev-parse", "--absolute-git-dir"))
         outside_dir = self.root / "outside-directory"
         outside_dir.mkdir()
-        (git_dir / "active-learning").symlink_to(outside_dir, target_is_directory=True)
+        (git_dir / "learn-from-session").symlink_to(outside_dir, target_is_directory=True)
         with self.assertRaisesRegex(recording.RecordingError, "real directory"):
             recording.start_recording(repo, None)
         self.assertEqual(list(outside_dir.iterdir()), [])
@@ -465,7 +465,7 @@ class RecorderTestCase(unittest.TestCase):
             )
             with self.assertRaisesRegex(recording.RecordingError, "cannot safely write"):
                 recording.start_recording(repo, None)
-        state_dir = Path(git(repo, "rev-parse", "--absolute-git-dir")) / "active-learning"
+        state_dir = Path(git(repo, "rev-parse", "--absolute-git-dir")) / "learn-from-session"
         state_dir.mkdir()
         marker = state_dir / "marker"
         marker.write_text("unchanged", encoding="utf-8")

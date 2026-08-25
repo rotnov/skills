@@ -97,7 +97,7 @@ def verify_directory_identity(directory: RecordingDirectory) -> None:
     verifier = -1
     try:
         verifier = os.open(
-            "active-learning",
+            "learn-from-session",
             directory_flags(),
             dir_fd=directory.git_descriptor,
         )
@@ -125,7 +125,7 @@ def opened_state_directory(
 ) -> Iterator[RecordingDirectory | None]:
     repository_state = repository(cwd) if current is None else current
     git_dir = Path(str(repository_state["git_dir"]))
-    path = git_dir / "active-learning"
+    path = git_dir / "learn-from-session"
     if not descriptor_backend_supported():
         action = "write" if create else "inspect"
         raise RecordingError(
@@ -138,12 +138,12 @@ def opened_state_directory(
             git_descriptor = os.open(git_dir, directory_flags())
             if create:
                 try:
-                    os.mkdir("active-learning", mode=0o700, dir_fd=git_descriptor)
+                    os.mkdir("learn-from-session", mode=0o700, dir_fd=git_descriptor)
                 except FileExistsError:
                     pass
             try:
                 descriptor = os.open(
-                    "active-learning", directory_flags(), dir_fd=git_descriptor
+                    "learn-from-session", directory_flags(), dir_fd=git_descriptor
                 )
             except FileNotFoundError:
                 if create:
@@ -176,7 +176,7 @@ def opened_state_directory(
 
 
 def state_path(cwd: Path) -> Path:
-    return Path(str(repository(cwd)["git_dir"])) / "active-learning" / "active.json"
+    return Path(str(repository(cwd)["git_dir"])) / "learn-from-session" / "active.json"
 
 
 @contextmanager
@@ -400,7 +400,7 @@ def read_active_from(
         )
     except FileNotFoundError as error:
         raise RecordingError(
-            "no active recording; run active-learning start first"
+            "no active recording; run learn-from-session start first"
         ) from error
     except OSError as error:
         raise RecordingError(
@@ -430,7 +430,7 @@ def read_active(cwd: Path) -> dict[str, object]:
     current = repository(cwd)
     with opened_state_directory(cwd, current=current) as directory:
         if directory is None:
-            raise RecordingError("no active recording; run active-learning start first")
+            raise RecordingError("no active recording; run learn-from-session start first")
         return read_active_from(current, directory)
 
 
@@ -567,7 +567,7 @@ def add_note(cwd: Path, event: dict[str, object]) -> dict[str, object]:
 def recording_status(cwd: Path) -> dict[str, object]:
     current = repository(cwd)
     if not descriptor_backend_supported():
-        directory = Path(str(current["git_dir"])) / "active-learning"
+        directory = Path(str(current["git_dir"])) / "learn-from-session"
         try:
             directory.lstat()
         except FileNotFoundError:
@@ -712,7 +712,7 @@ def close_recording(
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(
-        description="Manage worktree-local active-learning state."
+        description="Manage worktree-local learn-from-session state."
     )
     commands = result.add_subparsers(dest="command", required=True)
     start = commands.add_parser("start", help="open a recording")

@@ -1,7 +1,7 @@
 [
   {
     "id": "invocation-is-not-ownership",
-    "prompt": "A claimed active-learning snapshot records that a data-export skill ran during the session. The reusable correction concerns the project's task-start procedure. Produce the owner-resolution proposal without editing files.",
+    "prompt": "A claimed learn-from-session snapshot records that a data-export skill ran during the session. The reusable correction concerns the project's task-start procedure. Produce the owner-resolution proposal without editing files.",
     "expected_output": "Resolve responsibility without preferring the invoked skill. Compare the correction with plausible canonical owners, surface ambiguity, and wait for approval before any write.",
     "assertions": [
       "the invoked skill receives no ownership preference",

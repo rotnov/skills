@@ -16,13 +16,12 @@ SPEC.loader.exec_module(validate_skills)
 class ValidateSkillsTests(unittest.TestCase):
     def test_parse_frontmatter_accepts_folded_description(self) -> None:
         content = """---
-name: active-learning
+name: learn-from-session
 description: >-
-  Run a bounded active-learning loop over a real work session: record decisions,
-  failures, recoveries, and user corrections.
+  Use when a user asks to learn from a real work session or resume a prior session.
 ---
 
-# Active Learning
+# Learn from Session
 """
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "SKILL.md"
@@ -30,13 +29,13 @@ description: >-
 
             fields, body = validate_skills.parse_frontmatter(path)
 
-        self.assertEqual(fields["name"], "active-learning")
+        self.assertEqual(fields["name"], "learn-from-session")
         self.assertEqual(
             fields["description"],
-            "Run a bounded active-learning loop over a real work session: "
-            "record decisions, failures, recoveries, and user corrections.",
+            "Use when a user asks to learn from a real work session or resume a "
+            "prior session.",
         )
-        self.assertEqual(body, "# Active Learning")
+        self.assertEqual(body, "# Learn from Session")
 
 
 if __name__ == "__main__":
