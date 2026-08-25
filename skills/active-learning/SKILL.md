@@ -1,12 +1,9 @@
 ---
 name: active-learning
 description: >-
-  Run a bounded learning loop over a real work session: capture decisions,
-  failures, recoveries, and corrections; extract reusable lessons; resolve each
-  lesson to its canonical owner; and validate approved updates. Use when the user
-  says "active-learning start", "active-learning resume", or "active-learning end";
-  asks to learn from the current session; or wants live workflow experience folded
-  into durable project skills.
+  Capture reusable lessons from a work session and propose approved updates to the
+  skill that owns them. Use when the user asks to learn from the current session or
+  says "active-learning start", "active-learning resume", or "active-learning end".
 ---
 
 # Active Learning
