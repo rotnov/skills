@@ -407,7 +407,7 @@ defect required a separate tested fix.
 
 Add a `learning` section before `i-have-an-issue` with this content:
 
-```markdown
+````markdown
 ### `learning`
 
 Run a bounded learning loop over a real work session. It records concise checkpoints
@@ -419,7 +419,7 @@ Install it with the [skills CLI](https://skills.sh/):
 ```bash
 npx skills add rotnov/skills --skill learning
 ```
-```
+````
 
 In Compatibility, state that it requires Git, `uv`, and a platform with safe no-follow
 directory-descriptor operations for recording mutations, and that each recorder

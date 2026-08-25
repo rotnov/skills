@@ -30,3 +30,12 @@ repos:
         language: system
         pass_filenames: false
         files: '^(\.pre-commit-config\.yaml$|\.python-version$|pyproject\.toml$|uv\.lock$|skills/|scripts/check-skills-cli\.sh$|AGENTS\.md$)'
+
+  - repo: https://github.com/DavidAnson/markdownlint-cli2
+    rev: b82a6c8896e491b9cb377a99ff3412131920681b # v0.23.2
+    hooks:
+      - id: markdownlint-cli2
+        args:
+          - "**/*.md"
+        always_run: true
+        pass_filenames: false
