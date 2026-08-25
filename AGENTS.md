@@ -33,6 +33,29 @@
 - Test the primary success, failure, and fallback paths without assuming a
   client-specific connector.
 
+## Token efficiency and skill independence
+
+- Keep `description` as a short routing contract: say only what the skill does
+  and when to use it. Put workflow steps, feature inventories, and edge cases
+  in the body or references instead of frontmatter.
+- Keep `SKILL.md` limited to the core workflow, decisions, and reference
+  routing needed on every invocation. Move detailed guidance into
+  one-level-deep `references/` files and state the exact condition for reading
+  each file. Never instruct an agent to preload every reference.
+- Do not duplicate normative specifications, generic tool documentation, or
+  the same guidance across the body and references. Link to the authoritative
+  source or keep one canonical local explanation.
+- Each publishable skill must remain independently installable and runnable
+  when only its own directory is copy-installed. Do not depend at runtime on
+  sibling skills, repository-root files, `.agents/`, `.claude/`, or local
+  evolution overlays.
+- Keep every required script, reference, and asset inside the skill directory.
+  Declare external executables and network requirements explicitly, and make
+  failure or fallback behavior self-contained.
+- Smoke-test every skill as an individual clean copy-install for both Codex
+  and Claude Code. Installing all repository skills together is not evidence
+  of independence.
+
 ## Pull requests and pre-commit
 
 - Merge every repository change through a pull request. Never push directly to
@@ -66,11 +89,13 @@
 Before committing:
 
 ```bash
-python3 scripts/validate_skills.py
-python3 -m unittest discover -s tests -v
+uv lock --check
+uv sync --frozen
+uv run --frozen python scripts/validate_skills.py
+uv run --frozen python -m unittest discover -s tests -v
 ./scripts/check-agent-skills-spec.sh
 ./scripts/check-skills-cli.sh
-pre-commit run --all-files
+uv run --frozen pre-commit run --all-files
 ```
 
 <!-- ievo:start -->

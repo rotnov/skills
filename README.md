@@ -5,6 +5,18 @@ engineering.
 
 ## Available skills
 
+### `learning`
+
+Run a bounded learning loop over a real work session. It records concise checkpoints
+outside the working tree, extracts reusable lessons, resolves each lesson to its
+canonical project skill, and applies only user-approved changes.
+
+Install it with the [skills CLI](https://skills.sh/):
+
+```bash
+npx skills add rotnov/skills --skill learning
+```
+
 ### `i-have-an-issue`
 
 Research how upstream and comparable open-source projects encountered, fixed,
@@ -56,6 +68,21 @@ The canonical behavior lives in standard `SKILL.md` files and works with
 Agent Skills-compatible clients, including Codex and Claude Code. Optional
 client metadata does not change the behavior contract.
 
+`learning` requires Git, `uv`, and a platform with safe no-follow
+directory-descriptor operations for recording mutations. Recorder commands explicitly
+select Python 3.12 through `uv`, isolating them from the host project's dependency
+metadata and Python pin.
+Continuation in a later task is explicit through `learning resume`.
+Before proposing a skill mutation at `learning end`, the workflow reads the current
+Agent Skills specification. If it is unavailable, mutation requires a suitable
+official Agent Skills validator; without either source the recording remains resumable.
+Its `evals/evals.json` contains unscored portable scenarios; this repository
+publishes no benchmark score for this version.
+Recorder writers must cooperate through the per-worktree writer lock; no other
+process may concurrently rename or modify the Git metadata namespace. No-follow and
+identity checks defend checked boundaries against symlinks and accidental changes,
+not concurrent external namespace mutation; detected changes stop for manual recovery.
+
 `i-have-an-issue` requires network access and at least one way to inspect
 public source history: a native GitHub connector, `gh`, a browser, or Python 3
 for its standard-library search fallback. Authentication is optional for
@@ -80,15 +107,27 @@ cross-client behavior.
 
 ## Development
 
-Validate the repository:
+Install the pinned Python and locked development dependencies:
 
 ```bash
-python3 scripts/validate_skills.py
-python3 -m unittest discover -s tests -v
+uv python install
+uv lock --check
+uv sync --frozen
+```
+
+Validate the repository through the locked environment:
+
+```bash
+uv run --frozen python scripts/validate_skills.py
+uv run --frozen python -m unittest discover -s tests -v
 ./scripts/check-agent-skills-spec.sh
 ./scripts/check-skills-cli.sh
-pre-commit run --all-files
+uv run --frozen pre-commit run --all-files
 ```
+
+This is an unpackaged uv project: it manages repository tooling but does not
+build or publish a Python distribution. Skills remain published through the
+skills CLI.
 
 Skills follow the
 [Agent Skills specification](https://agentskills.io/specification).

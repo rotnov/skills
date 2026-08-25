@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import re
 import sys
+import textwrap
 from pathlib import Path
 
 
@@ -25,13 +26,43 @@ def parse_frontmatter(path: Path) -> tuple[dict[str, str], str]:
         raise ValueError("frontmatter has no closing delimiter") from error
 
     fields: dict[str, str] = {}
-    for line in lines[1:closing]:
+    frontmatter = lines[1:closing]
+    index = 0
+    while index < len(frontmatter):
+        line = frontmatter[index]
         if not line.strip():
+            index += 1
             continue
+        if line[0].isspace():
+            raise ValueError(f"unsupported frontmatter line: {line!r}")
         if ":" not in line:
             raise ValueError(f"unsupported frontmatter line: {line!r}")
         key, value = line.split(":", 1)
-        fields[key.strip()] = value.strip().strip("\"'")
+        value = value.strip()
+        if value in {">", ">-", ">+", "|", "|-", "|+"}:
+            indicator = value
+            block_lines: list[str] = []
+            index += 1
+            while index < len(frontmatter):
+                continuation = frontmatter[index]
+                if continuation and not continuation[0].isspace():
+                    break
+                block_lines.append(continuation)
+                index += 1
+
+            value = textwrap.dedent("\n".join(block_lines))
+            if indicator.startswith(">"):
+                value = "\n".join(
+                    " ".join(paragraph.splitlines())
+                    for paragraph in value.split("\n\n")
+                )
+            if indicator.endswith("-"):
+                value = value.rstrip("\n")
+            fields[key.strip()] = value
+            continue
+
+        fields[key.strip()] = value.strip("\"'")
+        index += 1
     body = "\n".join(lines[closing + 1 :]).strip()
     return fields, body
 

@@ -2,20 +2,13 @@
 set -eu
 
 repo_root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
-reference_checkout="38a2ff82958afee88dadf4831509e6f7e9d8ef4e"
-validator_env=$(mktemp -d "${TMPDIR:-/tmp}/rotnov-skills-ref.XXXXXX")
 
-cleanup() {
-  rm -rf -- "$validator_env"
-}
-trap cleanup EXIT HUP INT TERM
+if ! command -v uv >/dev/null 2>&1; then
+  echo "error: uv is required; install the version declared in pyproject.toml" >&2
+  exit 1
+fi
 
-python3 -m venv "$validator_env"
-"$validator_env/bin/python" -m pip install \
-  --disable-pip-version-check \
-  --quiet \
-  "git+https://github.com/agentskills/agentskills.git@$reference_checkout#subdirectory=skills-ref"
-
-"$validator_env/bin/python" "$repo_root/scripts/check_agentskills_spec.py"
+cd "$repo_root"
+uv run --frozen python scripts/check_agentskills_spec.py
 
 echo "Pinned agentskills.io reference validation: valid"

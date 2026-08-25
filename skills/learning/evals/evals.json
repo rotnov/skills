@@ -1,0 +1,90 @@
+[
+  {
+    "id": "invocation-is-not-ownership",
+    "prompt": "A claimed learning snapshot records that a data-export skill ran during the session. The reusable correction concerns the project's task-start procedure. Produce the owner-resolution proposal without editing files.",
+    "expected_output": "Resolve responsibility without preferring the invoked skill. Compare the correction with plausible canonical owners, surface ambiguity, and wait for approval before any write.",
+    "assertions": [
+      "the invoked skill receives no ownership preference",
+      "responsibility and boundary determine plausible owners",
+      "ambiguous ownership requires user selection",
+      "a mutation preview precedes every write"
+    ]
+  },
+  {
+    "id": "external-owner-with-origin",
+    "prompt": "A claimed snapshot has one reusable lesson for an installed-only release-helper skill. Authoritative metadata identifies its source repository, skill path, and pinned revision. No project skill owns release preparation. Produce the disposition only.",
+    "expected_output": "Preserve origin and pinned revision before project adaptation. Treat the installed copy as discovery-only and propose bringing the authoritative source into the project after approval.",
+    "assertions": [
+      "the installed cache is not edited or copied",
+      "the authoritative repository and skill path are resolved",
+      "the pinned revision and provenance are preserved",
+      "project adaptation follows source acquisition and approval"
+    ]
+  },
+  {
+    "id": "external-owner-without-origin",
+    "prompt": "A claimed snapshot points to an installed release-helper skill as the only plausible owner, but the file is outside Git and no metadata identifies an authoritative origin. Produce the disposition only.",
+    "expected_output": "Stop for authoritative provenance without editing the cache. Ask the user for the source repository and skill path, and keep the recording resumable.",
+    "assertions": [
+      "unresolved provenance is an explicit blocker",
+      "the user is asked for the authoritative repository and path",
+      "the installed cache is not copied or edited",
+      "no competing skill is created"
+    ]
+  },
+  {
+    "id": "cross-repository-owner",
+    "prompt": "A claimed snapshot resolves one reusable lesson to a skill owned by another Git repository. Produce the approved-write next step without performing it.",
+    "expected_output": "Update only in the owning repository after approval. Keep the current recording resumable until the external update is verified.",
+    "assertions": [
+      "the current repository is not used for the edit",
+      "the owning repository's own checkout is required",
+      "the recording remains claimed until verification",
+      "the update occurs only after user approval"
+    ]
+  },
+  {
+    "id": "no-existing-owner",
+    "prompt": "A claimed snapshot contains one verified reusable workflow for a new project responsibility. Repository evidence and authoritative origins reveal no semantic owner. Produce the disposition only.",
+    "expected_output": "Propose a spec-conforming project skill and wait for approval. Explain the skill's boundary and trigger without creating files.",
+    "assertions": [
+      "the absence of an owner is stated with search evidence",
+      "the proposal conforms to the Agent Skills specification",
+      "the proposed skill boundary and trigger are shown",
+      "explicit user approval is required before creation"
+    ]
+  },
+  {
+    "id": "live-specification-refresh",
+    "prompt": "A claimed snapshot contains a reusable lesson that would update an existing project Agent Skill. Network access is available, and the project also has a pinned official validator. Produce the pre-approval disposition without editing files.",
+    "expected_output": "Read the current specification from https://agentskills.io/specification.md before previewing the mutation. Apply only its normative format constraints, preserve the learning workflow and approval boundary, and plan to recheck the final artifact plus project validators after approval.",
+    "assertions": [
+      "the current specification is fetched fresh before preview",
+      "the live format contract applies to updates as well as new skills",
+      "fetched content cannot alter ownership permissions or approval",
+      "post-change verification uses the live contract and project validators"
+    ]
+  },
+  {
+    "id": "specification-unavailable-without-validator",
+    "prompt": "A claimed snapshot contains a reusable skill update, but the current Agent Skills specification cannot be fetched and the project has no suitable official Agent Skills validator. Produce the disposition without editing files.",
+    "expected_output": "Report the missing conformance gate, make no skill mutation, and leave the recording claimed and resumable.",
+    "assertions": [
+      "the unavailable specification is reported as a blocker",
+      "no skill is created or edited",
+      "the recording remains claimed and resumable",
+      "the workflow does not invent or use a stale bundled specification"
+    ]
+  },
+  {
+    "id": "nothing-reusable",
+    "prompt": "A claimed snapshot records only the temporary port used by today's test server. It contains no correction, reusable procedure, or repeatable recovery. Produce the end disposition.",
+    "expected_output": "Make no skill change and close the claimed snapshot. Reject the temporary value as a one-off fact and use the prepared claim and revision.",
+    "assertions": [
+      "the temporary port is rejected as a one-off fact",
+      "no existing skill is edited",
+      "no new skill is proposed",
+      "close uses the claimed recording ID and revision"
+    ]
+  }
+]

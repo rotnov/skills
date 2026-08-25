@@ -1,0 +1,16 @@
+[project]
+name = "rotnov-skills"
+version = "0.0.0"
+description = "Development environment for the rotnov/skills repository"
+requires-python = ">=3.12,<3.13"
+dependencies = []
+
+[dependency-groups]
+dev = [
+  "pre-commit==4.6.1",
+  "skills-ref @ git+https://github.com/agentskills/agentskills.git@38a2ff82958afee88dadf4831509e6f7e9d8ef4e#subdirectory=skills-ref",
+]
+
+[tool.uv]
+package = false
+required-version = "==0.11.7"
