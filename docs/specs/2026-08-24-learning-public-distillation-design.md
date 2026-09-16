@@ -30,6 +30,9 @@ The public user-facing operations are:
 
 - `learning start` — open one recording for the current Git worktree;
 - `learning resume` — explicitly reconnect a later task to an open recording;
+- `learning flush` — process a claimed snapshot through the same approval and
+  validation gates as `end`, then clear processed checkpoints and keep the same
+  recording open for subsequent work;
 - `learning end` — claim a stable snapshot, evaluate lessons, and finish only
   after approved updates are validated.
 
@@ -42,7 +45,7 @@ The distilled package contains:
 - `SKILL.md` — the portable lifecycle, lesson filter, owner resolution, approval gate,
   and validation contract;
 - `scripts/recording.py` — deterministic Git-local state management, unchanged except
-  for changes required by verified portability defects;
+  for changes required by verified portability defects and lifecycle extensions;
 - `evals/evals.json` — a small set of current, portable behavioral scenarios;
 - repository tests for the instruction contract and recorder lifecycle.
 
@@ -76,6 +79,14 @@ Cross-task continuation is explicit because an installed skill cannot guarantee 
 always-on startup hook. A user invokes `learning resume` in the later task; the
 skill checks recorder status and resumes only an open recording. An end snapshot has a
 separate bearer-claim lifecycle and is never recovered silently.
+
+After a successful flush, the recording retains its ID, label, and start time. Its
+revision advances, processed events and the end claim are cleared, and later notes
+belong to the next snapshot. Failures before atomic replacement preserve the claimed
+snapshot for retry. If directory synchronization fails after replacement, the new
+state is already visible but crash durability is unconfirmed. Inspect status before
+retrying; never reuse the old claim or reapply processed lessons after a visible flush.
+Flushing does not change the explicit cross-task resumption contract.
 
 ## Lesson and owner resolution
 

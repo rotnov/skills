@@ -10,6 +10,8 @@ engineering.
 Run a bounded learning loop over a real work session. It records concise checkpoints
 outside the working tree, extracts reusable lessons, resolves each lesson to its
 canonical project skill, and applies only user-approved changes.
+Use `learning flush` to apply accumulated lessons and keep the recording open, or
+`learning end` to apply them and stop recording.
 
 Install it with the [skills CLI](https://skills.sh/):
 
@@ -73,7 +75,7 @@ directory-descriptor operations for recording mutations. Recorder commands expli
 select Python 3.12 through `uv`, isolating them from the host project's dependency
 metadata and Python pin.
 Continuation in a later task is explicit through `learning resume`.
-Before proposing a skill mutation at `learning end`, the workflow reads the current
+Before proposing a skill mutation at `learning end` or `learning flush`, the workflow reads the current
 Agent Skills specification. If it is unavailable, mutation requires a suitable
 official Agent Skills validator; without either source the recording remains resumable.
 Its `evals/evals.json` contains unscored portable scenarios; this repository
