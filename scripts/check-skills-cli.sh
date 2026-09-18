@@ -118,4 +118,51 @@ assert status == {"active": False}, status
 PY
 )
 
-echo "Pinned skills.sh CLI discovery and cross-client installation: valid"
+"$uv_bin" run --no-project --python 3.12 python - \
+  "$uv_bin" "$claude_recorder" "$claude_fixture" \
+  "$codex_recorder" "$codex_fixture" <<'PY'
+import json
+import subprocess
+import sys
+
+
+def invoke(recorder, fixture, *arguments):
+    completed = subprocess.run(
+        [sys.argv[1], "run", "--no-project", "--python", "3.12", recorder, *arguments],
+        cwd=fixture,
+        capture_output=True,
+        check=True,
+        text=True,
+    )
+    return json.loads(completed.stdout)
+
+
+for recorder, fixture in ((sys.argv[2], sys.argv[3]), (sys.argv[4], sys.argv[5])):
+    started = invoke(recorder, fixture, "start", "--label", "install", "smoke")
+    invoke(recorder, fixture, "note", "--kind", "decision", "--summary", "processed")
+    claimed = invoke(recorder, fixture, "prepare-end")
+    flushed = invoke(
+        recorder, fixture, "flush",
+        "--recording-id", claimed["recording_id"],
+        "--claim-id", claimed["claim_id"],
+        "--revision", str(claimed["revision"]),
+    )
+    assert flushed["recording_id"] == started["recording_id"], flushed
+    assert flushed["label"] == "install smoke", flushed
+    assert flushed["phase"] == "open", flushed
+    assert flushed["revision"] == 3, flushed
+    assert flushed["events"] == [], flushed
+    assert flushed["end_claim"] is None, flushed
+    invoke(recorder, fixture, "note", "--kind", "outcome", "--summary", "subsequent")
+    next_claim = invoke(recorder, fixture, "prepare-end")
+    assert [event["summary"] for event in next_claim["events"]] == ["subsequent"]
+    invoke(
+        recorder, fixture, "close",
+        "--recording-id", next_claim["recording_id"],
+        "--claim-id", next_claim["claim_id"],
+        "--revision", str(next_claim["revision"]),
+    )
+    assert invoke(recorder, fixture, "status") == {"active": False}
+PY
+
+echo "Pinned skills.sh CLI discovery, cross-client installation, and flush lifecycle: valid"

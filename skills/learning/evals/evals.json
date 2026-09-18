@@ -1,5 +1,26 @@
 [
   {
+    "id": "flush-and-continue",
+    "prompt": "A claimed learning snapshot has been fully applied and verified. The user requested learning flush rather than learning end. Produce the final recorder action and continuation behavior for this task and a later task.",
+    "expected_output": "Flush using the exact claimed recording ID, claim ID, and revision. Clear processed checkpoints and claim while keeping the same recording open. Continue new checkpoints in this task; a later task still requires explicit learning resume.",
+    "assertions": [
+      "flush uses the exact claimed recording ID claim ID and revision",
+      "processed checkpoints and claim are cleared",
+      "the same recording remains open for new checkpoints",
+      "a later task still requires explicit learning resume"
+    ]
+  },
+  {
+    "id": "flush-validation-failure",
+    "prompt": "The user requested learning flush. A claimed snapshot contains an approved skill edit, but its required validation fails. State the recorder action without editing files.",
+    "expected_output": "Do not flush or close. Report the validation failure and preserve the claimed snapshot, events, and claim for resumption after verification.",
+    "assertions": [
+      "flush is not called before successful validation",
+      "close is not substituted for flush",
+      "the claimed snapshot remains resumable"
+    ]
+  },
+  {
     "id": "invocation-is-not-ownership",
     "prompt": "A claimed learning snapshot records that a data-export skill ran during the session. The reusable correction concerns the project's task-start procedure. Produce the owner-resolution proposal without editing files.",
     "expected_output": "Resolve responsibility without preferring the invoked skill. Compare the correction with plausible canonical owners, surface ambiguity, and wait for approval before any write.",

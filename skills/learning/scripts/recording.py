@@ -479,7 +479,13 @@ def write_atomic_to(
             src_dir_fd=directory.descriptor,
             dst_dir_fd=directory.descriptor,
         )
-        os.fsync(directory.descriptor)
+        try:
+            os.fsync(directory.descriptor)
+        except OSError as error:
+            raise RecordingError(
+                f"recording state was replaced but directory sync failed at {path}; "
+                "crash durability is unconfirmed; inspect status before retrying"
+            ) from error
     except OSError as error:
         raise RecordingError(f"cannot write recording state at {path}") from error
     finally:
@@ -691,23 +697,51 @@ def reopen_recording(cwd: Path, claim_id: str) -> dict[str, object]:
     return mutate(cwd, reopen)
 
 
+def require_claimed_snapshot(
+    payload: dict[str, object],
+    recording_id: str,
+    claim_id: str,
+    expected_revision: int,
+    action: str,
+) -> None:
+    if payload["recording_id"] != recording_id:
+        raise RecordingError("recording id does not match the active recording")
+    if not claim_matches(payload, claim_id):
+        raise RecordingError("claim id does not match the active end phase")
+    if payload["revision"] != expected_revision:
+        raise RecordingError(
+            f"recording revision changed; resume and re-evaluate before {action}"
+        )
+
+
 def close_recording(
     cwd: Path, recording_id: str, claim_id: str, expected_revision: int
 ) -> dict[str, object]:
     current = repository(cwd)
     with locked(cwd, current) as directory:
         payload = read_active_from(current, directory)
-        if payload["recording_id"] != recording_id:
-            raise RecordingError("recording id does not match the active recording")
-        if not claim_matches(payload, claim_id):
-            raise RecordingError("claim id does not match the active end phase")
-        if payload["revision"] != expected_revision:
-            raise RecordingError(
-                "recording revision changed; resume and re-evaluate before closing"
-            )
+        require_claimed_snapshot(
+            payload, recording_id, claim_id, expected_revision, "closing"
+        )
         verify_directory_identity(directory)
         os.unlink("active.json", dir_fd=directory.descriptor)
     return {"active": False, "recording_id": recording_id}
+
+
+def flush_recording(
+    cwd: Path, recording_id: str, claim_id: str, expected_revision: int
+) -> dict[str, object]:
+    def flush(payload: dict[str, object]) -> dict[str, object]:
+        require_claimed_snapshot(
+            payload, recording_id, claim_id, expected_revision, "flushing"
+        )
+        payload["phase"] = "open"
+        payload["revision"] = int(payload["revision"]) + 1
+        payload["events"] = []
+        payload["end_claim"] = None
+        return payload
+
+    return mutate(cwd, flush)
 
 
 def parser() -> argparse.ArgumentParser:
@@ -739,6 +773,12 @@ def parser() -> argparse.ArgumentParser:
     close.add_argument("--recording-id", required=True)
     close.add_argument("--claim-id", required=True)
     close.add_argument("--revision", required=True, type=int)
+    flush = commands.add_parser(
+        "flush", help="complete a claimed snapshot and continue recording"
+    )
+    flush.add_argument("--recording-id", required=True)
+    flush.add_argument("--claim-id", required=True)
+    flush.add_argument("--revision", required=True, type=int)
     return result
 
 
@@ -778,6 +818,10 @@ def main(argv: list[str] | None = None) -> int:
             )
         elif arguments.command == "reopen":
             result = reopen_recording(cwd, arguments.claim_id)
+        elif arguments.command == "flush":
+            result = flush_recording(
+                cwd, arguments.recording_id, arguments.claim_id, arguments.revision
+            )
         else:
             result = close_recording(
                 cwd, arguments.recording_id, arguments.claim_id, arguments.revision

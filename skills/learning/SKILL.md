@@ -2,7 +2,7 @@
 name: learning
 description: >-
   Use when the user asks to learn from the current work session or says
-  "learning start", "learning resume", or "learning end".
+  "learning start", "learning resume", "learning flush", or "learning end".
 ---
 
 # Learning
@@ -81,7 +81,13 @@ recording to resume. For `available=false`, explain that recording is unavailabl
 continue the task without it. For `phase=ending`, do not add notes or start another end;
 resume only with the existing bearer claim from this session. Status never exposes it.
 
-## End
+## End or flush
+
+`learning end` processes a stable snapshot and stops recording after successful
+application. `learning flush` processes the same snapshot but keeps the same recording
+open afterward. Both operations use the workflow below; only the final recorder
+command differs. Flushing does not replace the explicit `learning resume` required
+in a later task.
 
 ### Claim a stable snapshot
 
@@ -172,21 +178,43 @@ A documented available project import workflow or skill-authoring workflow may p
 the approved operation, but neither is required. If this skill owns a lesson, update it
 last and finish the current run under the already-loaded instructions.
 
-### Validate and close
+### Validate and complete
 
 Recheck every changed skill against the same freshly fetched specification when it was
 available, then run focused tests and the project's applicable skill validators. Failed
 or conflicting validation leaves the recording claimed and resumable.
 
-After every approved result is verified, call `close` with the exact recording ID,
-claim ID, and revision returned by the claimed snapshot. A changed revision fails
-closed and requires re-evaluation. Report applied and skipped lessons, owners changed,
-validation evidence, and final inactive status.
+After every approved result is verified, complete the requested operation using the
+exact recording ID, claim ID, and revision returned by the claimed snapshot. A changed
+revision fails closed and requires re-evaluation.
+
+For `learning end`, call `close` and report final inactive status.
+
+For `learning flush`, call:
+
+```text
+["uv", "run", "--no-project", "--python", "3.12", RECORDER, "flush",
+ "--recording-id", "{recording id from claimed snapshot}", "--claim-id", "{claim id}",
+ "--revision", "{revision from claimed snapshot}"]
+```
+
+Successful flush atomically clears the processed checkpoints and end claim, increments
+the revision, and returns the same recording ID and label to `open`. Continue recording
+new checkpoints for subsequent work in the current task. Do not record already
+processed observations again.
+
+For either operation, report applied and skipped lessons, owners changed, validation
+evidence, and whether recording stopped or remains open.
 
 ## Failure behavior
 
+- If the recorder reports that state was replaced but directory sync failed, inspect
+  `status` before retrying. For a flush, the same recording ID in `open` with an
+  advanced revision means the new state is visible: do not reuse the old claim or
+  reapply processed lessons. Report that crash durability is unconfirmed.
 - Preserve active or claimed state after any ambiguity, refusal, failed validation,
   missing origin, unavailable owner checkout, or interrupted end.
 - Never guess ownership, provenance, a lost bearer claim, or user approval.
 - Never weaken recorder transport or state protections to make a platform pass.
-- If no reusable lesson remains, make no skill change and close the verified claim.
+- If no reusable lesson remains, make no skill change and complete the verified claim
+  with the requested `close` or `flush` operation.

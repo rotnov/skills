@@ -6,6 +6,7 @@ import importlib.util
 import io
 import json
 import os
+import stat
 import subprocess
 import tempfile
 import unittest
@@ -218,6 +219,144 @@ class RecorderTestCase(unittest.TestCase):
             {"active": False, "recording_id": started["recording_id"]},
         )
         self.assertEqual(recording.recording_status(repo), {"active": False})
+
+    def test_flush_clears_processed_events_and_continues_same_recording(self) -> None:
+        repo = self.init_repo()
+        started = recording.start_recording(repo, "review session")
+        recording.add_note(
+            repo,
+            {"kind": "decision", "summary": "processed lesson", "evidence": None},
+        )
+        prepared = recording.prepare_end(repo)
+
+        status, flushed = self.run_main(
+            repo,
+            "flush",
+            "--recording-id", started["recording_id"],
+            "--claim-id", prepared["claim_id"],
+            "--revision", str(prepared["revision"]),
+        )
+
+        self.assertEqual(status, 0)
+        self.assertEqual(flushed["recording_id"], started["recording_id"])
+        self.assertEqual(flushed["label"], "review session")
+        self.assertEqual(flushed["started_at"], started["started_at"])
+        self.assertEqual(flushed["repository"], started["repository"])
+        self.assertEqual(flushed["revision"], 3)
+        self.assertEqual(flushed["phase"], "open")
+        self.assertEqual(flushed["events"], [])
+        self.assertIsNone(flushed["end_claim"])
+        self.assertEqual(self.read_json(self.state_file(repo)), flushed)
+        with self.assertRaisesRegex(recording.RecordingError, "claim id"):
+            recording.resume_end(repo, prepared["claim_id"])
+
+        recording.add_note(
+            repo,
+            {"kind": "outcome", "summary": "new lesson", "evidence": None},
+        )
+        next_claim = recording.prepare_end(repo)
+        self.assertEqual(
+            [event["summary"] for event in next_claim["events"]], ["new lesson"]
+        )
+        self.assertNotEqual(next_claim["claim_id"], prepared["claim_id"])
+        recording.close_recording(
+            repo, started["recording_id"], next_claim["claim_id"], next_claim["revision"]
+        )
+        self.assertEqual(recording.recording_status(repo), {"active": False})
+
+    def test_flush_rejects_mismatches_and_replay_without_changing_state(self) -> None:
+        repo = self.init_repo()
+        started = recording.start_recording(repo, None)
+        path = self.state_file(repo)
+        original = path.read_bytes()
+        with self.assertRaisesRegex(recording.RecordingError, "claim id"):
+            recording.flush_recording(repo, started["recording_id"], "wrong", 0)
+        self.assertEqual(path.read_bytes(), original)
+
+        prepared = recording.prepare_end(repo)
+        original = path.read_bytes()
+        cases = (
+            ("wrong", prepared["claim_id"], prepared["revision"], "recording id"),
+            (started["recording_id"], "wrong", prepared["revision"], "claim id"),
+            (started["recording_id"], prepared["claim_id"], 0, "revision changed"),
+        )
+        for recording_id, claim_id, revision, message in cases:
+            with self.subTest(message=message):
+                with self.assertRaisesRegex(recording.RecordingError, message):
+                    recording.flush_recording(repo, recording_id, claim_id, revision)
+                self.assertEqual(path.read_bytes(), original)
+
+        recording.flush_recording(
+            repo, started["recording_id"], prepared["claim_id"], prepared["revision"]
+        )
+        original = path.read_bytes()
+        with self.assertRaisesRegex(recording.RecordingError, "claim id"):
+            recording.flush_recording(
+                repo, started["recording_id"], prepared["claim_id"], prepared["revision"]
+            )
+        self.assertEqual(path.read_bytes(), original)
+
+    def test_failed_flush_preserves_claim_and_events_for_retry(self) -> None:
+        repo = self.init_repo()
+        started = recording.start_recording(repo, None)
+        recording.add_note(
+            repo,
+            {"kind": "decision", "summary": "retain lesson", "evidence": None},
+        )
+        prepared = recording.prepare_end(repo)
+        path = self.state_file(repo)
+        original = path.read_bytes()
+
+        with mock.patch.object(recording.os, "replace", side_effect=OSError("write failure")):
+            with self.assertRaisesRegex(recording.RecordingError, "cannot write"):
+                recording.flush_recording(
+                    repo, started["recording_id"], prepared["claim_id"], prepared["revision"]
+                )
+
+        self.assertEqual(path.read_bytes(), original)
+        self.assertEqual(recording.resume_end(repo, prepared["claim_id"]), prepared)
+        self.assertEqual(list(path.parent.glob(".active-*.json")), [])
+        retried = recording.flush_recording(
+            repo, started["recording_id"], prepared["claim_id"], prepared["revision"]
+        )
+        self.assertEqual(retried["phase"], "open")
+        self.assertEqual(retried["events"], [])
+
+    def test_flush_reports_replaced_state_when_directory_sync_fails(self) -> None:
+        repo = self.init_repo()
+        started = recording.start_recording(repo, None)
+        recording.add_note(
+            repo,
+            {"kind": "decision", "summary": "processed lesson", "evidence": None},
+        )
+        prepared = recording.prepare_end(repo)
+        real_fsync = os.fsync
+
+        def fail_directory_sync(descriptor: int) -> None:
+            if stat.S_ISDIR(os.fstat(descriptor).st_mode):
+                raise OSError("injected directory sync failure")
+            real_fsync(descriptor)
+
+        error = io.StringIO()
+        with mock.patch.object(recording.os, "fsync", side_effect=fail_directory_sync):
+            with mock.patch("pathlib.Path.cwd", return_value=repo):
+                with contextlib.redirect_stderr(error):
+                    result = recording.main([
+                        "flush", "--recording-id", started["recording_id"],
+                        "--claim-id", prepared["claim_id"],
+                        "--revision", str(prepared["revision"]),
+                    ])
+
+        self.assertEqual(result, 2)
+        self.assertIn("state was replaced but directory sync failed", error.getvalue())
+        self.assertIn("inspect status before retrying", error.getvalue())
+        status = recording.recording_status(repo)
+        self.assertEqual(status["recording_id"], started["recording_id"])
+        self.assertEqual(status["phase"], "open")
+        self.assertEqual(status["revision"], 3)
+        self.assertEqual(status["event_count"], 0)
+        with self.assertRaisesRegex(recording.RecordingError, "claim id"):
+            recording.resume_end(repo, prepared["claim_id"])
 
     def test_lost_claim_requires_authorized_adoption_and_rotates(self) -> None:
         repo = self.init_repo()
