@@ -5,6 +5,29 @@ engineering.
 
 ## Available skills
 
+### `multi-agent-research`
+
+Investigate ambiguous questions through distinct research islands, controlled
+exchange of findings, and evidence-based acceptance. The instruction-only
+workflow adapts to actual host capabilities and reports when only single-context
+self-review is possible. It supplies no scheduler, persistent service, or
+financial controls.
+
+This is a local candidate; full behavioral validation and usefulness comparisons
+remain open. See the [evaluation status](docs/evals/multi-agent-research/candidate.md).
+
+Copy-install the current candidate from this checkout into a disposable project:
+
+```bash
+npx skills@1.5.20 add /absolute/path/to/this/checkout --skill multi-agent-research -a codex claude-code --copy -y
+```
+
+Invoke it with `$multi-agent-research` and a bounded research question. Edit the
+core workflow in `skills/multi-agent-research/SKILL.md` and the corresponding
+contract in its `references/` directory, then rerun the relevant scenarios and
+repository checks. The public `rotnov/skills` install becomes available only after
+this candidate is published through the repository's PR workflow.
+
 ### `learning`
 
 Run a bounded learning loop over a real work session. It records concise checkpoints
