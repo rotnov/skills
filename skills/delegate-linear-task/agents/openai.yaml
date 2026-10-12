@@ -1,0 +1,4 @@
+interface:
+  display_name: "Delegate Linear Task"
+  short_description: "Delegate, review, push source, and verify report handoffs"
+  default_prompt: "Use $delegate-linear-task to delegate this scoped task, apply its review contract and the active owner's trusted source-persistence requirement, verify any required commit/push with remote SHA readback, publish full evidence and a final TL;DR in Linear, and notify the coordinator."
