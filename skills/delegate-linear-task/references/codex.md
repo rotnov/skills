@@ -23,6 +23,10 @@ Typical capability mapping:
 | Resolve real team workflow states | `list_issue_statuses` |
 
 Use the verified canonical ID and link, not the first similarly titled issue.
+Apply the core decision and handoff gate before choosing write arguments:
+`issueId` comes from the verified issue binding, never a review/comment identifier
+or inferred numbering. With no binding, keep `issueId` unresolved and HOLD the
+dependent write; use internal parent clarification instead of a guessed issue.
 Keep unrelated fields intact. After a timeout, look for the matching issue or
 comment and exact intended content. If the outcome remains uncertain, leave it
 uncertain and notify the parent rather than issue another create blindly.
@@ -221,6 +225,9 @@ or any deployment/release/activation. Report progress while gates are pending.
 ## Receipt-based recovery
 
 Keep publication and parent notification as separate fields in the handoff:
+Use the core decision record here. For corrective source publication, explicitly
+bind all five source preflight fields: designated writer, origin, task branch,
+destination visibility/privacy suitability, and authorized source inventory.
 
 ```text
 Issue: EX-41 / verified link
@@ -233,7 +240,8 @@ Source persistence: scoped commit SHA, verified origin/task branch, matching
 Publication: verified comment ID and matching readback, or exact pending reason
 Parent notification: accepted internal enqueue receipt, or exact pending reason
 Decision: feasible with conditions; owner access pending
-Evidence / limits / next action: concise concrete references and acceptance step
+Evidence / limits: concise concrete references and pending gate
+Next action: named actor + concrete action/object + actual prerequisite
 ```
 
 When a worker says only "published," read the task and request the missing
@@ -241,3 +249,10 @@ internal notification. When a parent message arrives without a verified report,
 read the task or request publication/readback. Preserve the finished work; retry
 only the destination whose failure is known. Neither root reading nor human
 acceptance is established by a successful enqueue alone.
+
+Keep the report/readback/parent sequence inside every push recovery branch. A
+different or absent remote ref needs its own canonical pending-state report,
+exact readback and parent handoff, just as a failed read does. Copy the report's
+concrete next action into the parent message; if only a reference is available,
+read that action before claiming the handoff complete. An urgent blocker message
+may precede recovery, but does not replace the missing report/readback.

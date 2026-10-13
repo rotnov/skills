@@ -52,6 +52,40 @@ persistence contracts below; and this delivery rule:
 > limits, and next action. Send progress or blocker notifications when meaningful.
 > If either destination fails, report the exact pending destination and receipt.
 
+## Decision and handoff gate
+
+Before a target-dependent write or final handoff, bind the relevant fields below
+to actual evidence. Use this compact record in the working brief or result;
+do not fill missing facts by inference or repeat an entire checklist each turn.
+
+```text
+Task: verified issue ID/link + matching scope/owner + identity readback
+Decision: READY for the named action, or HOLD + missing evidence
+Source write, when applicable: designated writer; verified origin/task branch;
+  destination visibility/privacy suitability; authorized source paths
+Delivery: canonical report reference + exact readback; internal parent identity
+Next action: actor + concrete action/object + prerequisite, if any
+```
+
+A review, comment or commit identifier is not an issue ID. Neither adjacent case
+numbers nor a plausible URL establish that binding. If identity is unresolved,
+HOLD target-dependent publication/dispatch and ask the parent for the missing
+binding through the authorized internal channel; independent preparation may
+continue. Do not write to a guessed target to report that it is unverified.
+
+Apply the source-write fields even to a corrective commit that only adds omitted,
+already reviewed bytes. A generic "preflight passed" does not identify the writer,
+destination privacy or authorized source scope. Keep the affected write on HOLD
+until its missing field is verified; do not expose private payloads as evidence.
+
+The parent payload must contain the actual next action, not merely "see report"
+or "the report has a next step". Read it from the report if needed. For every
+push-readback outcome, including differing SHA, absent branch and failed read,
+publish the exact known state/pending gate to the bound canonical issue, verify
+the full report's readback, then notify the parent with that next action. If a
+delivery capability fails, retain the pending destination and send a truthful
+blocker through the available authorized channel; never invent a receipt.
+
 ## Required post-implementation review
 
 For Denis's delegated work, **implementation and meaningful checks → independent
