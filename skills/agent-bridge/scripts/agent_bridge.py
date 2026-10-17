@@ -58,7 +58,6 @@ CODEX_BUSY_WAIT_SECONDS = 900
 QUEUE_TIMEOUT_SECONDS = 6 * 3600
 WORKER_STALE_SECONDS = max(CODEX_TIMEOUT_SECONDS, QUEUE_TIMEOUT_SECONDS) + CODEX_BUSY_WAIT_SECONDS + 60
 CLAUDE_POST_STALE_SECONDS = 300
-STEER_STALE_SECONDS = CODEX_TIMEOUT_SECONDS + 300
 LIFECYCLE_WAIT_SECONDS = 10
 MODES = ("auto", "daemon", "exec", "queue")
 SANDBOXES = ("read-only", "workspace-write")
@@ -246,6 +245,35 @@ def _serialized(function):
     return wrapper
 
 
+def _modify_pair(name: str, change) -> dict:
+    """Read, change and write a binding under the lifecycle lock; a moved topic is not recreated."""
+    with _lifecycle():
+        pair = load_pair(name)
+        change(pair)
+        write_json(pair_dir(name) / "pair.json", pair)
+    return pair
+
+
+def _reserve(name: str, pid: int) -> tuple[str, Path]:
+    """Mark the topic as in use by a process; rename, removal and replacement wait for it."""
+    marker_id = uuid.uuid4().hex[:12]
+    marker = pair_dir(name) / f"worker-{marker_id}.lock"
+    _hold_marker(marker, pid)
+    return marker_id, marker
+
+
+@contextlib.contextmanager
+def _reserved(name: str):
+    """Keep the topic in place from before a message is written until its delivery is handed on."""
+    with _lifecycle():
+        load_pair(name)
+        _, marker = _reserve(name, os.getpid())
+    try:
+        yield
+    finally:
+        marker.unlink(missing_ok=True)
+
+
 @_serialized
 def create_pair(name: str, codex_session: str, codex_cwd: str | None, codex_args: list[str],
                 force: bool, mode: str = "auto", sandbox: str = "read-only") -> dict:
@@ -300,13 +328,14 @@ def refresh_claude(name: str | None = None) -> list[str]:
                                  if item["claude"]["session_id"] == current]
     refreshed = []
     for topic in names:
-        pair = load_pair(topic)
-        if pair["claude"]["session_id"] != current:
-            raise BridgeError(f"topic {topic!r} belongs to another Claude session")
-        pair["claude"]["socket"] = socket_path
-        if IS_WINDOWS:
-            pair["claude"]["token"] = os.environ.get("CLAUDE_CODE_MESSAGING_TOKEN", "")
-        write_json(pair_dir(topic) / "pair.json", pair)
+        def change(pair, topic=topic):
+            if pair["claude"]["session_id"] != current:
+                raise BridgeError(f"topic {topic!r} belongs to another Claude session")
+            pair["claude"]["socket"] = socket_path
+            if IS_WINDOWS:
+                pair["claude"]["token"] = os.environ.get("CLAUDE_CODE_MESSAGING_TOKEN", "")
+
+        _modify_pair(topic, change)
         log_event(topic, "claude_socket_refreshed")
         refreshed.append(topic)
     return refreshed
@@ -332,16 +361,18 @@ def rename_pair(old: str, new: str) -> dict:
 
 
 def update_pair(name: str, mode: str | None, sandbox: str | None) -> dict:
-    pair = load_pair(name)
-    if mode:
-        if mode not in MODES:
-            raise BridgeError(f"mode must be one of {MODES}")
-        pair["codex"]["mode"] = mode
-    if sandbox:
-        if sandbox not in SANDBOXES:
-            raise BridgeError(f"sandbox must be one of {SANDBOXES}")
-        pair["codex"]["sandbox"] = sandbox
-    write_json(pair_dir(name) / "pair.json", pair)
+    if mode and mode not in MODES:
+        raise BridgeError(f"mode must be one of {MODES}")
+    if sandbox and sandbox not in SANDBOXES:
+        raise BridgeError(f"sandbox must be one of {SANDBOXES}")
+
+    def change(pair):
+        if mode:
+            pair["codex"]["mode"] = mode
+        if sandbox:
+            pair["codex"]["sandbox"] = sandbox
+
+    pair = _modify_pair(name, change)
     log_event(name, "pair_updated", mode=pair["codex"].get("mode"), sandbox=pair["codex"].get("sandbox"))
     return pair
 
@@ -426,11 +457,11 @@ def queue_message(name: str, to: str, text: str, reply_to: str | None = None,
               chars=len(text), reply_to=reply_to)
     handshake = pair.get("handshake") or {}
     if verify_sender and sender == "codex" and reply_to and reply_to == handshake.get("message_id"):
-        handshake["return_path_verified"] = now()
-        handshake["verified_caller"] = bool(os.environ.get("CODEX_THREAD_ID"))
-        pair["handshake"] = handshake
-        write_json(pair_dir(name) / "pair.json", pair)
-        log_event(name, "handshake_return_path_verified", caller_checked=handshake["verified_caller"])
+        verified = {"return_path_verified": now(),
+                    "verified_caller": bool(os.environ.get("CODEX_THREAD_ID"))}
+        _modify_pair(name, lambda current: current.update(
+            handshake={**(current.get("handshake") or {}), **verified}))
+        log_event(name, "handshake_return_path_verified", caller_checked=verified["verified_caller"])
     return message
 
 
@@ -609,16 +640,16 @@ def needs_protocol(pair: dict, message: dict) -> bool:
 def send_handshake(name: str, wait: bool = False) -> dict:
     text = ("This thread is now paired with a Claude Code session on the topic above. "
             "Read the protocol at the top of this message and keep it for this topic.")
-    message = queue_message(name, "codex", text, kind="handshake")
-    pair = load_pair(name)
-    pair["handshake"] = {"message_id": message["id"], "queued": now(),
-                         "last_protocol_at": None, "return_path_verified": None}
-    write_json(pair_dir(name) / "pair.json", pair)
-    log_event(name, "handshake_queued", id=message["id"])
-    if wait:
-        deliver_to_codex(name)
-        return {"id": message["id"], "status": "processed"}
-    spawn_worker(name)
+    with _reserved(name):
+        message = queue_message(name, "codex", text, kind="handshake")
+        handshake = {"message_id": message["id"], "queued": now(),
+                     "last_protocol_at": None, "return_path_verified": None}
+        _modify_pair(name, lambda pair: pair.update(handshake=handshake))
+        log_event(name, "handshake_queued", id=message["id"])
+        if wait:
+            deliver_to_codex(name)
+            return {"id": message["id"], "status": "processed"}
+        spawn_worker(name)
     return {"id": message["id"], "status": "handshake queued; Codex will confirm the return path"}
 
 
@@ -741,10 +772,9 @@ def _delivery_in_progress(directory: Path) -> bool:
     if not codex:
         # active_turn.json is written only under codex.lock: without a live worker it is orphaned.
         (directory / "active_turn.json").unlink(missing_ok=True)
-    # Reservations held by a steer in progress or by a spawned worker until it exits.
-    reserved = [path for pattern, stale in (("steer-*.lock", STEER_STALE_SECONDS),
-                                            ("worker-*.lock", WORKER_STALE_SECONDS))
-                for path in directory.glob(pattern) if _live_lock(path, stale)]
+    # Reservations held by a send or steer in progress, or by a spawned worker until it exits.
+    reserved = [path for path in directory.glob("worker-*.lock")
+                if _live_lock(path, WORKER_STALE_SECONDS)]
     return codex or bool(reserved) or _live_lock(directory / "claude.lock", CLAUDE_POST_STALE_SECONDS)
 
 
@@ -918,11 +948,11 @@ def deliver_one(name: str, pair: dict, message: dict, busy_wait: int, timeout: i
             return
         archive(name, message, "sent", delivered=now(), route=route)
         if message.get("protocol_included"):
-            current = load_pair(name)
-            handshake = current.get("handshake") or {}
-            handshake["last_protocol_at"] = protocol_started
-            current["handshake"] = handshake
-            write_json(pair_dir(name) / "pair.json", current)
+            try:
+                _modify_pair(name, lambda current: current.update(handshake={
+                    **(current.get("handshake") or {}), "last_protocol_at": protocol_started}))
+            except BridgeError:
+                pass  # it only decides whether the protocol is resent; the answer still returns
         log_event(name, "codex_answered", id=message["id"], route=route, chars=len(answer),
                   protocol=bool(message.get("protocol_included")))
         queue_message(name, "claude", answer, reply_to=message["id"], kind="reply",
@@ -956,13 +986,11 @@ def deliver_to_codex(name: str, busy_wait: int = CODEX_BUSY_WAIT_SECONDS,
 
 def steer_codex(name: str, text: str, reply_to: str | None) -> dict:
     """Add a message to the active turn of a daemon-hosted Codex thread, now."""
-    # Held outside inbox-codex until the outcome is known, so no worker also sends it as a turn.
-    message = queue_message(name, "codex", text, reply_to=reply_to, kind="steer", box="steering")
-    # The topic stays busy (no rename or removal) during the steer; the await-turn worker's own
-    # marker then covers it until the steered turn's reply is posted.
-    marker = pair_dir(name) / f"steer-{message['id']}.lock"
-    _hold_marker(marker, os.getpid())
-    try:
+    # Reserved from before the write; the await-turn worker's own marker then covers the topic
+    # until the steered turn's reply is posted.
+    with _reserved(name):
+        # Held outside inbox-codex until the outcome is known, so no worker also sends it as a turn.
+        message = queue_message(name, "codex", text, reply_to=reply_to, kind="steer", box="steering")
         pair = load_pair(name)
         try:
             turn_id = codex_daemon.steer(pair["codex"]["session_id"], codex_prompt(pair, message))
@@ -981,8 +1009,6 @@ def steer_codex(name: str, text: str, reply_to: str | None) -> dict:
         spawn_worker(name, ["await-turn", name, turn_id, message["id"]])
         return {"id": message["id"], "status": f"steered into turn {turn_id}; its final answer "
                 "will arrive as a reply"}
-    finally:
-        marker.unlink(missing_ok=True)
 
 
 def await_turn_reply(name: str, turn_id: str, message_id: str) -> None:
@@ -1027,10 +1053,9 @@ def spawn_worker(name: str, command: list[str] | None = None) -> subprocess.Pope
     A worker-ID.lock marker reserves the topic from before the spawn until the worker exits,
     so a rename or removal cannot slip in before the worker takes its own lock.
     """
+    _reap_workers()
     directory = pair_dir(name)
-    marker_id = uuid.uuid4().hex[:12]
-    marker = directory / f"worker-{marker_id}.lock"
-    _hold_marker(marker, os.getpid())  # until the worker's pid is known
+    marker_id, marker = _reserve(name, os.getpid())  # until the worker's pid is known
     try:
         with open(directory / "worker.log", "a", encoding="utf-8") as stream:
             options = {"stdin": subprocess.DEVNULL, "stdout": stream, "stderr": stream}
@@ -1049,6 +1074,11 @@ def spawn_worker(name: str, command: list[str] | None = None) -> subprocess.Pope
     return worker
 
 
+def _reap_workers() -> None:
+    """Forget finished workers; polling also reaps them, so none lingers as a zombie."""
+    _WORKERS[:] = [worker for worker in _WORKERS if worker.poll() is None]
+
+
 def send(name: str, to: str, text: str, reply_to: str | None, wait: bool,
          steer: bool = False, priority: str = "next") -> dict:
     if steer:
@@ -1062,11 +1092,12 @@ def send(name: str, to: str, text: str, reply_to: str | None, wait: bool,
         delivered = deliver_to_claude(name)
         return {"id": message["id"], "status": "delivered" if message["id"] in delivered
                 else "queued"}
-    message = queue_message(name, to, text, reply_to=reply_to)
-    if wait:
-        deliver_to_codex(name)
-        return {"id": message["id"], "status": "processed"}
-    spawn_worker(name)
+    with _reserved(name):
+        message = queue_message(name, to, text, reply_to=reply_to)
+        if wait:
+            deliver_to_codex(name)
+            return {"id": message["id"], "status": "processed"}
+        spawn_worker(name)
     return {"id": message["id"], "status": "queued; Codex answer will arrive as a reply"}
 
 
@@ -1218,6 +1249,7 @@ def _dispatch(args) -> int:
         return 0
     else:
         while True:
+            _reap_workers()
             for item in all_pairs():
                 try:
                     if pending(item["name"], "claude"):

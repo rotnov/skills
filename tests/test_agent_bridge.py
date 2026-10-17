@@ -379,6 +379,27 @@ class Pairs(BridgeTestCase):
         self.assertIsInstance(raced[-1], bridge.BridgeError)
         self.assertEqual([item["name"] for item in bridge.all_pairs()], ["p1"])
 
+    def test_pair_updates_are_serialized_with_renames(self):
+        self.pair("p1")
+        write, outcome = bridge.write_json, []
+
+        def racing_write(path, value):
+            if path.name == "pair.json" and not outcome:
+                outcome.append(None)  # race once
+                # A rename runs after `pair set` read the binding, before it wrote it back.
+                try:
+                    bridge.rename_pair("p1", "p2")
+                    outcome[0] = "renamed"
+                except bridge.BridgeError:
+                    outcome[0] = "refused"
+            write(path, value)
+
+        with mock.patch.object(bridge, "LIFECYCLE_WAIT_SECONDS", 0.5), \
+                mock.patch.object(bridge, "write_json", racing_write):
+            bridge.update_pair("p1", "exec", None)
+        self.assertEqual(outcome, ["refused"])
+        self.assertEqual([item["name"] for item in bridge.all_pairs()], ["p1"])
+
     def test_rename_moves_the_topic_and_its_history(self):
         self.pair("p1")
         bridge.queue_message("p1", "codex", "kept in history")
@@ -584,6 +605,38 @@ class ClaudeToCodex(BridgeTestCase):
         self.assertEqual(list(bridge.pair_dir("p1").glob("worker-*.lock")), [])
         self.assertEqual(bridge.rename_pair("p1", "p2")["name"], "p2")
 
+    def test_a_send_reserves_the_topic_before_queueing(self):
+        self.pair()
+        write, outcome = bridge.write_json, []
+
+        def racing_write(path, value):
+            if path.parent.name == "inbox-codex" and not outcome:
+                outcome.append(None)  # race once
+                # A rename runs while the message is being written, before any worker exists.
+                try:
+                    bridge.rename_pair("p1", "p2")
+                    outcome[0] = "renamed"
+                except bridge.BridgeError:
+                    outcome[0] = "refused"
+            write(path, value)
+
+        with mock.patch.object(bridge, "write_json", racing_write):
+            bridge.send("p1", "codex", "async check", None, wait=False)
+        self.assertEqual(outcome, ["refused"])
+        self.assertIn("FAKE ANSWER: async check", self.inbox.texts(wait=15)[0])
+
+    def test_finished_workers_are_reaped(self):
+        self.pair()
+        first = bridge.spawn_worker("p1")  # nothing is queued, so it exits at once
+        deadline = time.time() + 15
+        while time.time() < deadline:
+            bridge._reap_workers()
+            if first.returncode is not None:
+                break
+            time.sleep(0.1)
+        self.assertIsNotNone(first.returncode)  # reaped, not left as a zombie
+        self.assertNotIn(first, bridge._WORKERS)
+
     def test_detached_worker_delivers_the_reply(self):
         self.pair()
         result = bridge.send("p1", "codex", "async check", None, wait=False)
@@ -734,7 +787,8 @@ class Steering(BridgeTestCase):
         self.assertTrue(state.exists(), "the worker never started a daemon turn")
         result = bridge.send("p1", "codex", "change of plan", None, False, steer=True)
         self.assertIn(f"answering message {first['id']}", result["status"])
-        self.assertEqual(list(bridge.pair_dir("p1").glob("steer-*.lock")), [])  # no worker owes it
+        # Only the delivering worker reserves the topic; the steer left no reservation behind.
+        self.assertEqual(len(list(bridge.pair_dir("p1").glob("worker-*.lock"))), 1)
         steer = [params for method, params in daemon.calls if method == "turn/steer"][0]
         self.assertEqual(steer["expectedTurnId"], "turn-1")
         reply = self.inbox.texts(wait=10)[0]
@@ -789,7 +843,7 @@ class Steering(BridgeTestCase):
             bridge.send("p1", "codex", "steer nothing", None, False, steer=True)
         self.assertEqual(len(list((bridge.pair_dir("p1") / "mail" / "failed").glob("*.json"))), 1)
         self.assertEqual(bridge.pending("p1", "codex"), [])  # a refused steer is not sent later
-        self.assertEqual(list(bridge.pair_dir("p1").glob("steer-*.lock")), [])
+        self.assertEqual(list(bridge.pair_dir("p1").glob("worker-*.lock")), [])
 
     def test_steer_needs_the_daemon(self):
         self.pair()
