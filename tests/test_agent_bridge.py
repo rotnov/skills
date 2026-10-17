@@ -1040,6 +1040,22 @@ class ShellCommands(unittest.TestCase):
 
 
 class Limits(BridgeTestCase):
+    def test_the_rate_check_reads_only_the_recent_log(self):
+        self.pair()
+        old = {"at": "2026-01-01T00:00:00+00:00", "event": "queued", "from": "claude"}
+        with open(bridge.pair_dir("p1") / "log.jsonl", "a", encoding="utf-8") as stream:
+            stream.write((json.dumps(old) + "\n") * 20_000)
+        seen, lines = [], bridge._lines_backwards
+
+        def counting(path, *args):
+            for line in lines(path, *args):
+                seen.append(line)
+                yield line
+
+        with mock.patch.object(bridge, "_lines_backwards", counting):
+            bridge.check_rate("p1", "claude")  # 20,000 old sends do not count, nor are read
+        self.assertTrue(0 < len(seen) < 10, len(seen))
+
     def test_size_and_rate_limits(self):
         self.pair()
         with self.assertRaises(bridge.BridgeError):
@@ -1188,6 +1204,23 @@ class DeliveryRoutes(BridgeTestCase):
         self.assertIn("Queued in the Codex thread", texts[0])
         self.assertIn("not answered within", texts[1])  # still in the queue: unknown, not failed
         self.assertNotIn("Delivery to Codex failed", texts[1])
+
+    def test_a_codex_queue_that_times_out_is_not_a_failure(self):
+        self.pair()
+        os.environ["FAKE_CODEX_ACTIVE_WRITER"] = "1"  # exec sees the desktop app: queue route
+        run = subprocess.run
+
+        def slow_queue(command, *args, **kwargs):
+            if command[1] == "queue":
+                raise subprocess.TimeoutExpired(command, 120)  # it may have reached the queue
+            return run(command, *args, **kwargs)
+
+        with mock.patch.object(bridge.subprocess, "run", slow_queue):
+            result = bridge.send("p1", "codex", "maybe queued", None, wait=True)
+        self.assertTrue((bridge.pair_dir("p1") / "mail" / "sent" / f"{result['id']}.json").exists())
+        notice = self.inbox.texts(wait=2)[0]
+        self.assertIn("may be in the Codex desktop queue", notice)
+        self.assertNotIn("Delivery to Codex failed", notice)
 
     def test_exec_active_writer_falls_back_to_queue(self):
         self.pair()
@@ -1460,6 +1493,18 @@ class Protocol(BridgeTestCase):
         self.assertNotIn("[agent-bridge protocol]", prompt)
         self.assertIn('(bridge: topic "p1"; your final message in this turn is returned', prompt)
         self.assertIn("send p1 --to claude", prompt)
+
+    def test_the_return_command_names_the_bridge_home(self):
+        self.pair()
+        command = bridge.bridge_command(bridge.load_pair("p1")) + " --text 'from the daemon'"
+        # A daemon- or desktop-hosted Codex never sees this process's AGENT_BRIDGE_HOME.
+        env = {key: value for key, value in os.environ.items()
+               if key not in ("AGENT_BRIDGE_HOME", "CLAUDE_CODE_SESSION_ID")}
+        env.update({"CODEX_THREAD_ID": CODEX_ID, "HOME": self.tmp.name})
+        result = subprocess.run(command, shell=True, env=env, capture_output=True, text=True,
+                                timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("from the daemon", self.inbox.texts(wait=2)[0])
 
     def test_a_renamed_topic_resends_the_protocol(self):
         self.pair("p1")

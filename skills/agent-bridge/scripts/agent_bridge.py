@@ -480,11 +480,16 @@ def check_rate(name: str, sender: str) -> None:
         return
     cutoff = time.time() - RATE_WINDOW_SECONDS
     recent = 0
-    for line in path.read_text(encoding="utf-8").splitlines()[-500:]:
-        record = json.loads(line)
-        if record.get("event") == "queued" and record.get("from") == sender:
+    # Newest first, stopping at the first record outside the window: never the whole history.
+    for line in _lines_backwards(path):
+        try:
+            record = json.loads(line)
             stamp = datetime.datetime.fromisoformat(record["at"]).timestamp()
-            recent += stamp >= cutoff
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+            continue
+        if stamp < cutoff:
+            break
+        recent += record.get("event") == "queued" and record.get("from") == sender
     if recent >= RATE_LIMIT:
         raise BridgeError(f"rate limit: {RATE_LIMIT} messages from {sender} in "
                           f"{RATE_WINDOW_SECONDS // 60} minutes; batch them or wait")
@@ -643,9 +648,15 @@ def bridge_invocation(for_codex: bool = False) -> str:
     a quoted path and doubles a single quote inside one.
     """
     python, script = sys.executable, str(Path(__file__).resolve())
+    # A configured home is named explicitly: a daemon- or desktop-hosted Codex runs the command
+    # without this process's environment.
+    bridge_home = str(home()) if "AGENT_BRIDGE_HOME" in os.environ else None
     if for_codex and IS_WINDOWS:
-        return f"& {_powershell_quote(python)} -I {_powershell_quote(script)}"
-    return shlex.join([python, "-I", script])
+        words = [_powershell_quote(python), "-I", _powershell_quote(script)]
+        if bridge_home:
+            words += ["--home", _powershell_quote(bridge_home)]
+        return "& " + " ".join(words)
+    return shlex.join([python, "-I", script, *(["--home", bridge_home] if bridge_home else [])])
 
 
 def _powershell_quote(text: str) -> str:
@@ -1133,7 +1144,13 @@ def _route_queue(name: str, pair: dict, message: dict, busy_wait: int, timeout: 
     try:
         result = subprocess.run(command, stdin=subprocess.DEVNULL, env=_codex_env(),
                                 capture_output=True, text=True, timeout=120)
-    except (OSError, subprocess.TimeoutExpired) as error:
+    except subprocess.TimeoutExpired as error:
+        # A timeout does not prove the queue refused it: it may run later, so do not retry it.
+        raise Unconfirmed("The message may be in the Codex desktop queue: `codex queue` did not "
+                          "answer within 2 min, so the bridge cannot follow it and its answer "
+                          "will not arrive as a reply. Check the desktop queue before resending; "
+                          "the bridge does not retry it.") from error
+    except OSError as error:
         raise BridgeError(f"codex queue could not run: {type(error).__name__}") from error
     if result.returncode != 0:
         raise BridgeError(f"codex queue exited {result.returncode}: {_codex_error(result)}")
@@ -1540,6 +1557,8 @@ def _text(args) -> str:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="Local Claude Code <-> Codex bridge")
     parser.add_argument("--version", action="version", version=VERSION)
+    parser.add_argument("--home", help="bridge home directory (default: AGENT_BRIDGE_HOME, "
+                                       "else ~/.agent-bridge)")
     parser.add_argument("--worker-marker", help=argparse.SUPPRESS)
     commands = parser.add_subparsers(dest="command", required=True)
 
@@ -1614,6 +1633,8 @@ def main(argv=None) -> int:
     watch.add_argument("--interval", type=float, default=3.0)
 
     args = parser.parse_args(argv)
+    if args.home:
+        os.environ["AGENT_BRIDGE_HOME"] = args.home
     try:
         return _dispatch(args)
     except BridgeError as error:
