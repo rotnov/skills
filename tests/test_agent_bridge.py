@@ -430,6 +430,26 @@ class Pairs(BridgeTestCase):
         retired = bridge.remove_pair("p2")  # an orphaned turn marker without a worker
         self.assertFalse((retired / "active_turn.json").exists())
 
+    def test_reclaiming_a_stale_lock_never_removes_a_new_owner(self):
+        path = Path(self.tmp.name) / "x.lock"
+        dead = subprocess.Popen([sys.executable, "-c", "pass"])
+        dead.wait()
+        path.write_text(f"{dead.pid} {time.time()}")
+        late = bridge.Lock(path, 60)
+        judge = late._stale
+
+        def judged_then_replaced(*args):
+            stale = judge(*args)
+            # Another process reclaims the stale lock and takes it before this one acts.
+            path.unlink()
+            path.write_text(f"{os.getpid()} {time.time()}")
+            return stale
+
+        late._stale = judged_then_replaced
+        with late as lock:
+            self.assertFalse(lock.held)
+        self.assertEqual(path.read_text().split()[0], str(os.getpid()))  # the new owner keeps it
+
     def test_dead_lock_holders_are_detected(self):
         dead = subprocess.Popen([sys.executable, "-c", "pass"])
         dead.wait()
@@ -497,6 +517,25 @@ class CodexToClaude(BridgeTestCase):
                          [(True, False), (False, True)])
         self.assertEqual(bridge.pending("p1", "claude"), [])
         self.assertEqual(len(self.inbox.texts(wait=2, count=2)), 2)
+
+    def test_a_send_to_claude_reserves_the_topic_before_queueing(self):
+        self.pair()
+        os.environ.pop("CLAUDE_CODE_SESSION_ID")  # the sender is Codex
+        write, outcome = bridge.write_json, []
+
+        def racing_write(path, value):
+            if path.parent.name == "inbox-claude" and not outcome:
+                outcome.append(None)  # race once
+                try:
+                    bridge.rename_pair("p1", "p2")
+                    outcome[0] = "renamed"
+                except bridge.BridgeError:
+                    outcome[0] = "refused"
+            write(path, value)
+
+        with mock.patch.object(bridge, "write_json", racing_write):
+            result = bridge.send("p1", "claude", "build finished", None, False)
+        self.assertEqual((outcome, result["status"]), (["refused"], "delivered"))
 
     def test_other_codex_session_is_refused(self):
         self.pair()

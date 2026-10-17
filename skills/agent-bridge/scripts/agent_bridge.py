@@ -703,18 +703,51 @@ class Lock:
                 self.held = True
                 return self
             except FileExistsError:
-                if not self._stale():
+                if not self.reclaim():
                     return self
-                self.path.unlink(missing_ok=True)
+            except FileNotFoundError:
+                return self  # the topic directory is gone
         return self
 
-    def _stale(self) -> bool:
+    def _stale(self, text: str) -> bool:
         try:
-            pid, started = self.path.read_text().split()
+            pid, started = text.split()
             pid, started = int(pid), float(started)
-        except (OSError, ValueError):
-            return True
+        except ValueError:
+            # Empty while its creator is still writing it; unreadable leftovers once old.
+            try:
+                return time.time() - self.path.stat().st_mtime > 10
+            except OSError:
+                return True
         return time.time() - started > self.stale_seconds or not _process_alive(pid)
+
+    def reclaim(self) -> bool:
+        """Remove the lock if its holder is gone; True when the path is free afterwards.
+
+        The stale lock is moved aside and removed only if it is the one judged, so a lock that
+        a new owner created in the meantime is put back instead of deleted.
+        """
+        try:
+            judged = self.path.read_text()
+        except FileNotFoundError:
+            return True
+        except OSError:
+            return False
+        if not self._stale(judged):
+            return False
+        claim = self.path.with_name(f".{self.path.name}.{uuid.uuid4().hex[:8]}")
+        try:
+            os.rename(self.path, claim)
+        except FileNotFoundError:
+            return True
+        try:
+            if claim.read_text() == judged:
+                return True
+            with contextlib.suppress(OSError):
+                os.link(claim, self.path)  # a new owner's lock: put it back
+            return False
+        finally:
+            claim.unlink(missing_ok=True)
 
     def __exit__(self, *exc):
         if self.held:
@@ -758,12 +791,7 @@ def _process_alive(pid: int) -> bool:
 
 def _live_lock(path: Path, stale_seconds: int) -> bool:
     """True while a live process holds this lock; the lock of a killed holder is removed."""
-    if not path.exists():
-        return False
-    if not Lock(path, stale_seconds)._stale():
-        return True
-    path.unlink(missing_ok=True)
-    return False
+    return not Lock(path, stale_seconds).reclaim()
 
 
 def _delivery_in_progress(directory: Path) -> bool:
@@ -1088,8 +1116,9 @@ def send(name: str, to: str, text: str, reply_to: str | None, wait: bool,
     if to == "claude":
         if priority not in PRIORITIES:
             raise BridgeError(f"priority must be one of {PRIORITIES}")
-        message = queue_message(name, to, text, reply_to=reply_to, priority=priority)
-        delivered = deliver_to_claude(name)
+        with _reserved(name):
+            message = queue_message(name, to, text, reply_to=reply_to, priority=priority)
+            delivered = deliver_to_claude(name)
         return {"id": message["id"], "status": "delivered" if message["id"] in delivered
                 else "queued"}
     with _reserved(name):
