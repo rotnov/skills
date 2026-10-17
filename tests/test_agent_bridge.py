@@ -1219,6 +1219,17 @@ class DeliveryRoutes(BridgeTestCase):
         self.assertTrue((bridge.pair_dir("p1") / "mail" / "sent" / f"{result['id']}.json").exists())
         self.assertIn("may have started", self.inbox.texts(wait=2)[0])
 
+    def test_a_turn_still_running_at_the_timeout_is_not_a_failure(self):
+        self.start_daemon(turn_seconds=4)
+        self.pair()
+        message = bridge.queue_message("p1", "codex", "long job")
+        bridge.deliver_to_codex("p1", timeout=1)  # the turn outlasts the wait
+        self.assertEqual(self.codex_calls(), [])  # Codex is still on it: no exec retry
+        self.assertTrue((bridge.pair_dir("p1") / "mail" / "sent" / f"{message['id']}.json").exists())
+        notice = self.inbox.texts(wait=2)[0]
+        self.assertIn("still working", notice)
+        self.assertNotIn("Delivery to Codex failed", notice)
+
     def test_an_unconfirmed_turn_start_is_reported_as_unknown(self):
         self.start_daemon(silent_methods={"turn/start"})
         self.pair()
@@ -1338,6 +1349,16 @@ class Steering(BridgeTestCase):
         self.assertIn("[agent-bridge protocol]", steers[0])
         self.assertNotIn("[agent-bridge protocol]", steers[1])  # recorded as delivered
         self.inbox.texts(wait=10, count=2)  # let both await-turn workers finish
+
+    def test_a_steered_turn_outlasting_its_waiter_is_not_a_failure(self):
+        self.start_daemon(loaded=True, user_turn_seconds=4)
+        self.pair()
+        steer_id = "20261017T000000.000000-00000000"
+        with mock.patch.object(bridge, "CODEX_TIMEOUT_SECONDS", 1):
+            bridge.await_turn_reply("p1", "user-turn", steer_id)
+        notice = self.inbox.texts(wait=2)[0]
+        self.assertIn(f"Status of message {steer_id}", notice)  # unknown, not failed
+        self.assertIn("do not resend the steer", notice)
 
     def test_steer_needs_an_active_turn(self):
         self.start_daemon(loaded=True)

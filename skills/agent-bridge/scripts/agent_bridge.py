@@ -1038,6 +1038,8 @@ def _route_daemon(name: str, pair: dict, message: dict, busy_wait: int, timeout:
         status, answer = codex_daemon.run_turn(
             pair["codex"]["session_id"], codex_prompt(pair, message), codex_sandbox(pair),
             timeout, busy_wait, started, cwd=pair["codex"].get("cwd"))
+    except codex_daemon.TurnStillRunning:
+        raise  # the wait ended with the turn still running: following it again would not help
     except codex_daemon.DaemonUncertain:
         if "id" not in turn:
             raise  # whether the turn started is unknown
@@ -1202,10 +1204,16 @@ def deliver_one(name: str, pair: dict, message: dict, busy_wait: int, timeout: i
             archive(name, message, "sent", delivered=now(), route=route, unconfirmed=str(error))
             log_event(name, "codex_unconfirmed", id=message["id"], route=route,
                       reason=str(error)[:200])
-            queue_message(name, "claude", "Codex may have started a turn for this message, but "
-                          f"the daemon connection failed before the bridge could confirm or "
-                          f"follow it ({error}). Check the Codex thread before resending; the "
-                          "bridge does not retry it.", reply_to=message["id"], kind="notice",
+            if isinstance(error, codex_daemon.TurnStillRunning):
+                text = (f"Codex is still working on this message ({error}); the bridge stopped "
+                        "waiting, so its answer will not arrive as a reply. Codex can send it "
+                        "with the protocol command; check the Codex thread before resending.")
+            else:
+                text = ("Codex may have started a turn for this message, but the daemon "
+                        f"connection failed before the bridge could confirm or follow it "
+                        f"({error}). Check the Codex thread before resending; the bridge does "
+                        "not retry it.")
+            queue_message(name, "claude", text, reply_to=message["id"], kind="notice",
                           verify_sender=False)
             return
         except (BridgeError, codex_daemon.DaemonError) as error:
@@ -1333,8 +1341,11 @@ def await_turn_reply(name: str, turn_id: str, message_id: str) -> None:
                           + ("" if answer else " without an answer"), reply_to=message_id,
                           kind="failure", verify_sender=False)
     except codex_daemon.DaemonError as error:
-        queue_message(name, "claude", f"steered turn not observed: {error}", reply_to=message_id,
-                      kind="failure", verify_sender=False)
+        # The steer was accepted: losing sight of its turn is no reason to send it again.
+        queue_message(name, "claude", f"The steered turn {turn_id} could not be followed to its "
+                      f"end ({error}), so its final answer will not arrive as a reply. Check the "
+                      "Codex thread; do not resend the steer.", reply_to=message_id,
+                      kind="notice", verify_sender=False)
     deliver_to_claude(name)
 
 

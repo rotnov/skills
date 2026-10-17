@@ -40,6 +40,10 @@ class DaemonUncertain(DaemonError):
     turn_id: str | None = None  # the turn a steer was aimed at, when known
 
 
+class TurnStillRunning(DaemonUncertain):
+    """The turn was still running when the wait for it ended; its answer may come later."""
+
+
 class ActiveWriter(DaemonError):
     """Another app-server (for example the desktop app) hosts the thread."""
 
@@ -326,7 +330,7 @@ def run_turn(thread_id: str, prompt: str, sandbox: str | None, timeout: float,
             daemon.pump(lambda: turn_id in daemon.finished, timeout=timeout)
             status, answer = daemon.turn_answer(thread_id, turn_id)
             if status is None:
-                raise DaemonError(f"turn {turn_id} did not finish within {timeout:.0f}s")
+                raise TurnStillRunning(f"turn {turn_id} still running after {timeout:g}s")
             return status, answer
         finally:
             try:
@@ -371,7 +375,7 @@ def await_turn(thread_id: str, turn_id: str, timeout: float,
                 if status is not None:
                     return status, answer
                 daemon.pump(lambda: turn_id in daemon.finished, timeout=10)
-            raise DaemonError(f"turn {turn_id} did not finish within {timeout:.0f}s")
+            raise TurnStillRunning(f"turn {turn_id} still running after {timeout:g}s")
         finally:
             try:
                 daemon.request("thread/unsubscribe", {"threadId": thread_id}, timeout=15)
