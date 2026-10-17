@@ -23,7 +23,8 @@ queueing. Change the sandbox for bridge-started turns with
 `workspace-write`, and is also pinned as the matching permission profile
 (`default_permissions` `:read-only` or `:workspace`), which Codex 0.138+ prefers
 over the sandbox mode. Extra `--codex-arg` values that bypass or set the
-sandbox or permissions, or select a config profile, are dropped.
+sandbox, approvals or permissions, add writable directories, or select a config
+profile are dropped.
 
 ## Steer
 

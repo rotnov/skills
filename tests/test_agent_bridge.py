@@ -435,20 +435,24 @@ class Pairs(BridgeTestCase):
         dead = subprocess.Popen([sys.executable, "-c", "pass"])
         dead.wait()
         path.write_text(f"{dead.pid} {time.time()}")
-        late = bridge.Lock(path, 60)
+        late, rival = bridge.Lock(path, 60), {}
         judge = late._stale
 
-        def judged_then_replaced(*args):
+        def judged_while_a_rival_tries(*args):
             stale = judge(*args)
-            # Another process reclaims the stale lock and takes it before this one acts.
-            path.unlink()
-            path.write_text(f"{os.getpid()} {time.time()}")
+            # Another process judges the same lock stale and tries to take it meanwhile.
+            thread = threading.Thread(target=lambda: rival.update(lock=bridge.Lock(path, 60).__enter__()))
+            thread.start()
+            thread.join(0.5)
+            rival["thread"], rival["waited"] = thread, thread.is_alive()
             return stale
 
-        late._stale = judged_then_replaced
+        late._stale = judged_while_a_rival_tries
         with late as lock:
-            self.assertFalse(lock.held)
-        self.assertEqual(path.read_text().split()[0], str(os.getpid()))  # the new owner keeps it
+            rival["thread"].join(5)
+            holders = sorted([lock.held, rival["lock"].held])
+        self.assertTrue(rival["waited"])  # reclaims are serialized
+        self.assertEqual(holders, [False, True])  # and exactly one process holds the lock
 
     def test_dead_lock_holders_are_detected(self):
         dead = subprocess.Popen([sys.executable, "-c", "pass"])
@@ -581,15 +585,17 @@ class ClaudeToCodex(BridgeTestCase):
         self.pair(args=["--dangerously-bypass-approvals-and-sandbox", "-c", 'model="x"',
                         "-c", 'sandbox_mode="danger-full-access"', '--config=profile="yolo"',
                         "--config", 'sandbox_workspace_write.writable_roots=["/"]',
-                        "-c", 'default_permissions=":danger-full-access"', "-c"])
+                        "-c", 'default_permissions=":danger-full-access"',
+                        "--sandbox", "danger-full-access", "-s", "danger-full-access",
+                        "--sandbox=danger-full-access", "-sdanger-full-access", "--full-auto",
+                        "--approve-for-me", "--add-dir", "/", "-p", "yolo", "-c"])
         bridge.send("p1", "codex", "hello", None, wait=True)
         call = self.codex_calls()[0]
-        self.assertNotIn("--dangerously-bypass-approvals-and-sandbox", call)
-        self.assertNotIn('--config=profile="yolo"', call)
-        settings = [call[index + 1] for index, arg in enumerate(call) if arg in ("-c", "--config")]
-        # The permission profile is pinned too: it wins over sandbox_mode in Codex 0.138+.
-        self.assertEqual(settings, ['model="x"', 'default_permissions=":read-only"',
-                                    'sandbox_mode="read-only"'])
+        extras = call[call.index("-o") + 2:-1]
+        # Only the harmless extra survives; the permission profile is pinned too, since it
+        # wins over sandbox_mode in Codex 0.138+.
+        self.assertEqual(extras, ["-c", 'model="x"', "-c", 'default_permissions=":read-only"',
+                                  "-c", 'sandbox_mode="read-only"'])
 
     def test_sandbox_is_only_ever_read_only_or_workspace_write(self):
         legacy = {"codex": {"args": ["-c", 'sandbox_mode="danger-full-access"']}}
@@ -663,6 +669,16 @@ class ClaudeToCodex(BridgeTestCase):
             bridge.send("p1", "codex", "async check", None, wait=False)
         self.assertEqual(outcome, ["refused"])
         self.assertIn("FAKE ANSWER: async check", self.inbox.texts(wait=15)[0])
+
+    def test_watch_survives_a_topic_that_moves_away(self):
+        self.pair()
+        message = bridge.queue_message("p1", "codex", "hello")
+        listed = bridge.all_pairs()
+        bridge.remove_pair("p1")  # moved after watch listed it and saw the pending message
+        with mock.patch.object(bridge, "all_pairs", lambda: listed), \
+                mock.patch.object(bridge, "pending", lambda name, to: [message] if to == "codex" else []), \
+                mock.patch.object(bridge, "spawn_worker", side_effect=AssertionError("spawned")):
+            bridge.watch_once()  # neither raises nor spawns a worker for the old name
 
     def test_finished_workers_are_reaped(self):
         self.pair()

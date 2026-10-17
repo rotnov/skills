@@ -62,7 +62,10 @@ LIFECYCLE_WAIT_SECONDS = 10
 MODES = ("auto", "daemon", "exec", "queue")
 SANDBOXES = ("read-only", "workspace-write")
 UNSAFE_CODEX_FLAGS = {"--dangerously-bypass-approvals-and-sandbox", "--yolo",
-                      "--dangerously-bypass-hook-trust"}
+                      "--dangerously-bypass-hook-trust", "--full-auto", "--approve-for-me"}
+# Options whose value selects the sandbox, approvals, extra writable roots or a config profile.
+UNSAFE_CODEX_OPTIONS = {"-s", "--sandbox", "-a", "--ask-for-approval", "--add-dir", "-p",
+                        "--profile"}
 # Config overrides that could loosen the pair's sandbox: the sandbox itself, a permission
 # profile, or a config profile that carries either.
 SANDBOX_SETTING = re.compile(r"^\s*[\"']?(sandbox|profile|permissions|default_permissions)",
@@ -675,6 +678,11 @@ def codex_extra_args(pair: dict) -> list[str]:
         index += 1
         if arg in UNSAFE_CODEX_FLAGS:
             continue
+        if arg.split("=", 1)[0] in UNSAFE_CODEX_OPTIONS:
+            index += "=" not in arg  # its value is the next argument
+            continue
+        if re.fullmatch(r"-[sap]\S+", arg):  # a short option with its value attached
+            continue
         if arg in ("-c", "--config"):
             setting = args[index] if index < len(args) else ""
             index += 1
@@ -724,34 +732,51 @@ class Lock:
     def reclaim(self) -> bool:
         """Remove the lock if its holder is gone; True when the path is free afterwards.
 
-        The stale lock is moved aside and removed only if it is the one judged, so a lock that
-        a new owner created in the meantime is put back instead of deleted.
+        Reclaimers hold a kernel lock while they judge and remove, and only a reclaimer removes
+        a lock it did not take, so the lock judged stale is the one removed, never a new owner's.
         """
-        try:
-            judged = self.path.read_text()
-        except FileNotFoundError:
-            return True
-        except OSError:
-            return False
-        if not self._stale(judged):
-            return False
-        claim = self.path.with_name(f".{self.path.name}.{uuid.uuid4().hex[:8]}")
-        try:
-            os.rename(self.path, claim)
-        except FileNotFoundError:
+        if not self.path.exists():
             return True
         try:
-            if claim.read_text() == judged:
+            # One reclaim lock per directory, so marker checks leave no extra files behind.
+            with _kernel_lock(self.path.parent / ".reclaim.lock"):
+                try:
+                    judged = self.path.read_text()
+                except FileNotFoundError:
+                    return True
+                if not self._stale(judged):
+                    return False
+                self.path.unlink(missing_ok=True)
                 return True
-            with contextlib.suppress(OSError):
-                os.link(claim, self.path)  # a new owner's lock: put it back
-            return False
-        finally:
-            claim.unlink(missing_ok=True)
+        except FileNotFoundError:
+            return True  # the topic directory is gone
+        except OSError:
+            return False  # cannot judge it safely now; treat the holder as alive
 
     def __exit__(self, *exc):
         if self.held:
             self.path.unlink(missing_ok=True)
+
+
+@contextlib.contextmanager
+def _kernel_lock(path: Path):
+    """Exclusive lock on `path` that the operating system releases if this process dies."""
+    handle = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        if IS_WINDOWS:
+            import msvcrt
+            msvcrt.locking(handle, msvcrt.LK_LOCK, 1)  # retries for about ten seconds
+            try:
+                yield
+            finally:
+                os.lseek(handle, 0, os.SEEK_SET)
+                msvcrt.locking(handle, msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(handle, fcntl.LOCK_EX)
+            yield
+    finally:
+        os.close(handle)
 
 
 def _process_alive(pid: int) -> bool:
@@ -1102,6 +1127,26 @@ def spawn_worker(name: str, command: list[str] | None = None) -> subprocess.Pope
     return worker
 
 
+def watch_once() -> None:
+    """One `watch` pass: deliver what waits for Claude, start a worker where Codex mail waits.
+
+    A topic renamed or removed meanwhile is skipped; one topic never stops the others.
+    """
+    _reap_workers()
+    for item in all_pairs():
+        name = item["name"]
+        try:
+            if pending(name, "claude"):
+                deliver_to_claude(name)
+            if pending(name, "codex"):
+                with _reserved(name):  # the topic stays in place until the worker holds it
+                    lock = pair_dir(name) / "codex.lock"
+                    if pending(name, "codex") and not _live_lock(lock, WORKER_STALE_SECONDS):
+                        spawn_worker(name)
+        except (BridgeError, OSError) as error:
+            print(f"agent-bridge: {name}: {error}", file=sys.stderr)
+
+
 def _reap_workers() -> None:
     """Forget finished workers; polling also reaps them, so none lingers as a zombie."""
     _WORKERS[:] = [worker for worker in _WORKERS if worker.poll() is None]
@@ -1278,16 +1323,7 @@ def _dispatch(args) -> int:
         return 0
     else:
         while True:
-            _reap_workers()
-            for item in all_pairs():
-                try:
-                    if pending(item["name"], "claude"):
-                        deliver_to_claude(item["name"])
-                    lock = pair_dir(item["name"]) / "codex.lock"
-                    if pending(item["name"], "codex") and not _live_lock(lock, WORKER_STALE_SECONDS):
-                        spawn_worker(item["name"])
-                except BridgeError as error:
-                    print(f"agent-bridge: {item['name']}: {error}", file=sys.stderr)
+            watch_once()
             time.sleep(args.interval)
     print(json.dumps(result, indent=2, ensure_ascii=False))
     return 0
