@@ -323,7 +323,9 @@ def create_pair(name: str, codex_session: str, codex_cwd: str | None, codex_args
         "created": now(),
         "claude": {"session_id": claude_session, "socket": claude_socket,
                    "cwd": os.getcwd()},
-        "codex": {"session_id": meta["id"], "cwd": codex_cwd or meta["cwd"],
+        # Stored absolute: workers resolve it later from other working directories.
+        "codex": {"session_id": meta["id"],
+                  "cwd": str(Path(codex_cwd).expanduser().resolve()) if codex_cwd else meta["cwd"],
                   "mode": mode, "sandbox": sandbox, "args": codex_args},
     }
     if IS_WINDOWS:

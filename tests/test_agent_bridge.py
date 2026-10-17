@@ -533,6 +533,15 @@ class Pairs(BridgeTestCase):
         with mock.patch.object(bridge, "read_json", vanishing):
             self.assertEqual([item["name"] for item in bridge.all_pairs()], ["p2"])
 
+    def test_a_relative_codex_cwd_is_stored_absolute(self):
+        (self.workdir / "checkout").mkdir()
+        pair = bridge.create_pair("p1", CODEX_ID, "checkout", [], False)  # relative to here
+        self.assertEqual(pair["codex"]["cwd"], str((self.workdir / "checkout").resolve()))
+        other = "01a1496a-0000-7000-8000-000000000009"
+        self._write_rollout(other, busy=False)
+        pair = bridge.create_pair("p2", other, "~", [], False)
+        self.assertEqual(pair["codex"]["cwd"], str(Path.home().resolve()))
+
     def test_invalid_pair_name(self):
         with self.assertRaises(bridge.BridgeError):
             bridge.create_pair("../x", CODEX_ID, None, [], False)
