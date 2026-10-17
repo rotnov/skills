@@ -784,6 +784,16 @@ class ClaudeToCodex(BridgeTestCase):
                 mock.patch.object(bridge, "spawn_worker", side_effect=AssertionError("spawned")):
             bridge.watch_once()  # neither raises nor spawns a worker for the old name
 
+    def test_a_killed_worker_is_reaped_at_once(self):
+        self.pair()
+        worker = bridge.spawn_worker("p1", ["watch", "--interval", "60"])  # runs until killed
+        worker.kill()  # killed, it cannot remove its own marker
+        deadline = time.time() + 5
+        while bridge._process_alive(worker.pid) and time.time() < deadline:
+            time.sleep(0.05)
+        self.assertFalse(bridge._process_alive(worker.pid))  # reaped, not left as a zombie
+        self.assertFalse(bridge._delivery_in_progress(bridge.pair_dir("p1")))  # marker reclaimed
+
     def test_finished_workers_are_reaped(self):
         self.pair()
         first = bridge.spawn_worker("p1")  # nothing is queued, so it exits at once

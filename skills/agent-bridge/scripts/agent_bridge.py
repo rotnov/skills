@@ -37,6 +37,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -1257,6 +1258,9 @@ def spawn_worker(name: str, command: list[str] | None = None) -> subprocess.Pope
         marker.unlink(missing_ok=True)
         raise
     _hold_marker(marker, worker.pid)  # the worker removes it when it exits
+    # Reap it as soon as it ends, even when it is killed in a long-lived parent (watch, MCP):
+    # a zombie would still pass the pid check and keep its topic reserved.
+    threading.Thread(target=worker.wait, daemon=True).start()
     _WORKERS.append(worker)
     return worker
 
