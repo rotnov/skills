@@ -81,6 +81,10 @@ class BridgeError(Exception):
     """A refusal or failure that is reported to the caller as is."""
 
 
+class Unconfirmed(BridgeError):
+    """Codex accepted the message but its outcome is unknown: report it, never retry it."""
+
+
 # ---------------------------------------------------------------- storage
 
 
@@ -157,7 +161,8 @@ def log_event(name: str, event: str, **fields) -> None:
 
 
 def codex_home() -> Path:
-    return Path(os.environ.get("CODEX_HOME", "~/.codex")).expanduser()
+    # Absolute, and passed on to workers and Codex, so every process reads the same Codex home.
+    return Path(os.environ.get("CODEX_HOME", "~/.codex")).expanduser().resolve()
 
 
 def codex_rollout(session_id: str) -> Path | None:
@@ -1009,7 +1014,14 @@ def _codex_env() -> dict[str, str]:
     Claude session on another of its topics."""
     env = {key: value for key, value in os.environ.items()
            if not key.startswith("CLAUDE_CODE_") and key != "CLAUDECODE"}
+    return _resolved_homes(env)
+
+
+def _resolved_homes(env: dict[str, str]) -> dict[str, str]:
+    """The bridge and Codex homes as absolute paths, for a child that may run elsewhere."""
     env["AGENT_BRIDGE_HOME"] = str(home())  # Codex's own sends find this bridge home
+    if "CODEX_HOME" in env:
+        env["CODEX_HOME"] = str(codex_home())
     return env
 
 
@@ -1170,7 +1182,10 @@ def watch_thread_answer(session: str, marker: str, timeout: float, poll: float =
                         raise BridgeError("the Codex turn ended without an answer")
                     return answers[-1]
         time.sleep(poll)
-    raise BridgeError(f"no answer within {timeout / 3600:.1f} h; the message may still be queued")
+    # `codex queue` succeeded, so the message can still run later: unknown, not failed.
+    raise Unconfirmed(f"The message is in the Codex desktop queue but was not answered within "
+                      f"{timeout / 3600:.1f} h, so its answer will not arrive as a reply. Check "
+                      "the desktop queue before resending; the bridge does not retry it.")
 
 
 ROUTES = {"daemon": _route_daemon, "exec": _route_exec, "queue": _route_queue}
@@ -1199,12 +1214,14 @@ def deliver_one(name: str, pair: dict, message: dict, busy_wait: int, timeout: i
                 plan = ["queue"]
                 continue
             break
-        except codex_daemon.DaemonUncertain as error:
+        except (codex_daemon.DaemonUncertain, Unconfirmed) as error:
             # Codex may be running it: no retry by another route, and no definite failure.
             archive(name, message, "sent", delivered=now(), route=route, unconfirmed=str(error))
             log_event(name, "codex_unconfirmed", id=message["id"], route=route,
                       reason=str(error)[:200])
-            if isinstance(error, codex_daemon.TurnStillRunning):
+            if isinstance(error, Unconfirmed):
+                text = str(error)
+            elif isinstance(error, codex_daemon.TurnStillRunning):
                 text = (f"Codex is still working on this message ({error}); the bridge stopped "
                         "waiting, so its answer will not arrive as a reply. Codex can send it "
                         "with the protocol command; check the Codex thread before resending.")
@@ -1403,7 +1420,7 @@ def spawn_worker(name: str, command: list[str] | None = None) -> subprocess.Pope
     try:
         with open(directory / "worker.log", "a", encoding="utf-8") as stream:
             options = {"stdin": subprocess.DEVNULL, "stdout": stream, "stderr": stream,
-                       "env": {**os.environ, "AGENT_BRIDGE_HOME": str(home())}}
+                       "env": _resolved_homes(dict(os.environ))}
             if IS_WINDOWS:
                 options["creationflags"] = 0x00000008 | 0x00000200  # DETACHED | NEW_GROUP
             else:

@@ -54,7 +54,8 @@ resends it, for example to tell Codex a new topic name right away.
 | --- | --- |
 | "Delivery to Codex failed ... stayed busy" | The thread kept working for 15 minutes; resend later. The message is in `failed/`. |
 | "... hosted by another app-server" with a pinned route | Use `auto` or `queue` for desktop threads. |
-| "no answer within ... h" | A queued message was not answered; check the desktop queue. |
+| "not answered within ... h" | The message is still in the desktop queue and may run later; check the queue instead of resending. |
+| "may have started" / "still working" | Codex may be running the message; check the Codex thread instead of resending. |
 | "Claude session socket unreachable" | The Claude session restarted or ended; run `pair refresh` in it, then `deliver TOPIC`. |
 | "steer not possible" | See the steer conditions above. |
 | "has a delivery in progress" | A live worker owns the topic; retry after its reply. Markers left by a killed worker are cleared automatically. |

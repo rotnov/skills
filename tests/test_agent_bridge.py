@@ -41,6 +41,9 @@ with open(os.environ["FAKE_CODEX_RECORD"] + ".env", "a") as record:
 args = raw[:-1] + [sys.stdin.read()] if raw[0] == "exec" and raw[-1] == "-" else raw
 with open(os.environ["FAKE_CODEX_RECORD"], "a") as record:
     record.write(json.dumps(args) + "\\n")
+if args[0] == "queue" and os.environ.get("FAKE_CODEX_QUEUE_IDLE"):
+    print("Queued message q-1.")  # accepted, but nobody sends it from the desktop queue
+    sys.exit(0)
 if args[0] == "queue":
     thread, prompt = args[args.index("--thread") + 1], args[args.index("--message") + 1]
     rollout = glob.glob(os.path.join(os.environ["CODEX_HOME"], "sessions", "**", f"rollout-*{{thread}}.jsonl"),
@@ -580,6 +583,16 @@ class Pairs(BridgeTestCase):
         self._write_rollout(other, busy=False)
         pair = bridge.create_pair("p2", other, "~", [], False)
         self.assertEqual(pair["codex"]["cwd"], str(Path.home().resolve()))
+
+    def test_a_relative_codex_home_means_one_directory(self):
+        os.environ["CODEX_HOME"] = "../codex"  # relative to the work directory
+        expected = self.codex_home.resolve()
+        self.assertEqual(bridge.codex_home(), expected)
+        self.pair("p1")
+        self.assertEqual(bridge._codex_env()["CODEX_HOME"], str(expected))
+        with mock.patch.object(bridge.subprocess, "Popen", wraps=subprocess.Popen) as popen:
+            bridge.spawn_worker("p1").wait()
+        self.assertEqual(popen.call_args.kwargs["env"]["CODEX_HOME"], str(expected))
 
     def test_a_relative_bridge_home_means_one_directory(self):
         os.environ["AGENT_BRIDGE_HOME"] = "rel-home"
@@ -1133,6 +1146,17 @@ class DeliveryRoutes(BridgeTestCase):
             self.assertGreater(bridge._queue_command_size(command, prompt), 40_000)
         with mock.patch.object(bridge, "IS_WINDOWS", False):
             self.assertEqual(bridge._queue_command_size(command, prompt), 20_000)
+
+    def test_a_queued_message_not_run_in_time_is_not_a_failure(self):
+        self.pair()
+        os.environ.update({"FAKE_CODEX_ACTIVE_WRITER": "1", "FAKE_CODEX_QUEUE_IDLE": "1",
+                           "AGENT_BRIDGE_QUEUE_TIMEOUT": "1"})
+        result = bridge.send("p1", "codex", "later please", None, wait=True)
+        self.assertTrue((bridge.pair_dir("p1") / "mail" / "sent" / f"{result['id']}.json").exists())
+        texts = self.inbox.texts(wait=5, count=2)
+        self.assertIn("Queued in the Codex thread", texts[0])
+        self.assertIn("not answered within", texts[1])  # still in the queue: unknown, not failed
+        self.assertNotIn("Delivery to Codex failed", texts[1])
 
     def test_exec_active_writer_falls_back_to_queue(self):
         self.pair()
