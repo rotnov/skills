@@ -7,6 +7,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import socket
 import struct
 import subprocess
@@ -462,6 +463,29 @@ class Pairs(BridgeTestCase):
         with mock.patch.object(bridge, "IS_WINDOWS", True):
             # Where the Windows API is missing (as here), the holder cannot be checked.
             self.assertIsNone(bridge._process_alive(dead.pid))
+
+    def test_boot_time_is_the_recorded_boot(self):
+        if sys.platform == "darwin":
+            out = subprocess.run(["sysctl", "-n", "kern.boottime"], capture_output=True, text=True).stdout
+            recorded = float(re.search(r"sec = (\d+)", out).group(1))
+        elif sys.platform.startswith("linux"):
+            with open("/proc/stat", encoding="ascii") as stream:
+                recorded = float(next(line.split()[1] for line in stream if line.startswith("btime")))
+        else:
+            self.skipTest("the recorded boot time is checked on macOS and Linux")
+        self.assertAlmostEqual(bridge._boot_time(), recorded, delta=2)
+
+    def test_a_reused_pid_does_not_keep_a_dead_holders_lock(self):
+        start = bridge._process_start(os.getpid())
+        self.assertIsNotNone(start)
+        self.assertEqual(bridge._process_start(os.getpid()), start)  # stable for one process
+        path = Path(self.tmp.name) / "x.lock"
+        with bridge.Lock(path, 60) as lock:
+            self.assertEqual(len(path.read_text().split()), 3)  # pid, time and process start
+            self.assertFalse(lock._stale(path.read_text()))
+        lock = bridge.Lock(path, 60)
+        # The pid is alive, but it now belongs to a process that started later: another holder.
+        self.assertTrue(lock._stale(f"{os.getpid()} {time.time()} {start - 100}"))
 
     def test_live_owners_keep_their_locks_until_the_machine_restarts(self):
         lock = bridge.Lock(Path(self.tmp.name) / "x.lock", stale_seconds=1)

@@ -725,7 +725,7 @@ class Lock:
         for _ in range(2):
             try:
                 handle = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-                os.write(handle, f"{os.getpid()} {time.time()}".encode())
+                os.write(handle, _lock_text(os.getpid()).encode())
                 os.close(handle)
                 self.held = True
                 return self
@@ -738,8 +738,8 @@ class Lock:
 
     def _stale(self, text: str) -> bool:
         try:
-            pid, started = text.split()
-            pid, started = int(pid), float(started)
+            pid, started, *start = text.split()
+            pid, started, start = int(pid), float(started), [float(item) for item in start[:1]]
         except ValueError:
             # Empty while its creator is still writing it; unreadable leftovers once old.
             try:
@@ -751,7 +751,11 @@ class Lock:
             return time.time() - started > self.stale_seconds
         # A live holder keeps its lock however long it works, unless the lock predates the
         # last boot: then that holder is gone and its pid may belong to another process.
-        return not alive or started < _boot_time() - 60
+        if not alive or started < _boot_time() - 60:
+            return True
+        # Alive, but a different process now has that pid when its start time does not match.
+        actual = _process_start(pid) if start else None
+        return actual is not None and abs(actual - start[0]) > 1
 
     def reclaim(self) -> bool:
         """Remove the lock if its holder is gone; True when the path is free afterwards.
@@ -840,20 +844,85 @@ def _process_alive(pid: int) -> bool | None:
 
 @functools.lru_cache(maxsize=1)
 def _boot_time() -> float:
-    """When this machine last booted (wall clock, counting time asleep); 0.0 if unknown."""
+    """When this machine last booted, as the system records it (wall clock); 0.0 if unknown."""
     try:
         if IS_WINDOWS:
             import ctypes
             kernel32 = ctypes.WinDLL("kernel32")
             kernel32.GetTickCount64.restype = ctypes.c_ulonglong
-            uptime = kernel32.GetTickCount64() / 1000
-        elif sys.platform == "darwin":
-            uptime = time.clock_gettime(time.CLOCK_MONOTONIC)  # includes sleep on macOS
-        else:
-            uptime = time.clock_gettime(time.CLOCK_BOOTTIME)
-    except (AttributeError, OSError, ValueError):
+            return time.time() - kernel32.GetTickCount64() / 1000  # counts time asleep
+        if sys.platform == "darwin":
+            import ctypes
+
+            class TimeVal(ctypes.Structure):
+                _fields_ = [("sec", ctypes.c_long), ("usec", ctypes.c_int32)]
+
+            value, size = TimeVal(), ctypes.c_size_t(ctypes.sizeof(TimeVal))
+            if ctypes.CDLL(None).sysctlbyname(b"kern.boottime", ctypes.byref(value),
+                                               ctypes.byref(size), None, ctypes.c_size_t(0)):
+                return 0.0
+            return value.sec + value.usec / 1e6
+        with open("/proc/stat", encoding="ascii") as stream:
+            return float(next(line.split()[1] for line in stream if line.startswith("btime")))
+    except (AttributeError, OSError, ValueError, StopIteration):
         return 0.0
-    return time.time() - uptime
+
+
+def _process_start(pid: int) -> float | None:
+    """A stamp of when the process with this pid started; None when it cannot be read.
+
+    It never changes for one process (creation time on macOS and Windows, clock ticks since boot
+    on Linux, unaffected by clock changes), so with the pid it identifies a lock holder and a pid
+    reused later does not pass for it.
+    """
+    try:
+        if IS_WINDOWS:
+            import ctypes
+            from ctypes import wintypes
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel32.OpenProcess.restype = wintypes.HANDLE
+            kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+            kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+            handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+            if not handle:
+                return None
+            try:
+                times = [wintypes.FILETIME() for _ in range(4)]
+                if not kernel32.GetProcessTimes(handle, *(ctypes.byref(item) for item in times)):
+                    return None
+                created = (times[0].dwHighDateTime << 32) | times[0].dwLowDateTime
+                return created / 1e7 - 11644473600  # 100 ns ticks since 1601 to Unix time
+            finally:
+                kernel32.CloseHandle(handle)
+        if sys.platform == "darwin":
+            import ctypes
+            word = ctypes.c_uint32
+
+            class BsdInfo(ctypes.Structure):  # struct proc_bsdinfo from <sys/proc_info.h>
+                _fields_ = [(field, word) for field in (
+                    "flags", "status", "xstatus", "pid", "ppid", "uid", "gid", "ruid", "rgid",
+                    "svuid", "svgid", "rfu")] + [
+                    ("comm", ctypes.c_char * 16), ("name", ctypes.c_char * 32)] + [
+                    (field, word) for field in ("nfiles", "pgid", "pjobc", "tdev", "tpgid")] + [
+                    ("nice", ctypes.c_int32), ("start_sec", ctypes.c_uint64),
+                    ("start_usec", ctypes.c_uint64)]
+
+            info = BsdInfo()
+            size = ctypes.CDLL(None).proc_pidinfo(pid, 3, ctypes.c_uint64(0), ctypes.byref(info),
+                                                  ctypes.sizeof(info))  # PROC_PIDTBSDINFO
+            if size != ctypes.sizeof(info) or info.pid != pid:
+                return None
+            return info.start_sec + info.start_usec / 1e6
+        with open(f"/proc/{pid}/stat", encoding="utf-8", errors="replace") as stream:
+            return float(stream.read().rsplit(")", 1)[1].split()[19])  # field 22: starttime
+    except (AttributeError, OSError, ValueError, IndexError):
+        return None
+
+
+def _lock_text(pid: int) -> str:
+    """Lock and marker content: pid, time written and, when readable, the process start."""
+    start = _process_start(pid)
+    return f"{pid} {time.time()}" + (f" {start}" if start is not None else "")
 
 
 def _live_lock(path: Path, stale_seconds: int) -> bool:
@@ -877,7 +946,7 @@ def _hold_marker(path: Path, pid: int) -> None:
     """Atomically (re)write a lock-format marker naming the process that owns it."""
     handle, temporary = tempfile.mkstemp(dir=path.parent, prefix=".tmp-")
     with os.fdopen(handle, "w", encoding="utf-8") as stream:
-        stream.write(f"{pid} {time.time()}")
+        stream.write(_lock_text(pid))
     os.replace(temporary, path)
 
 
