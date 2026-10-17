@@ -903,6 +903,33 @@ class ClaudeToCodex(BridgeTestCase):
             self.assertEqual(bridge.main(["deliver", "p1"]), 0)
         self.assertEqual(outcome, ["refused"])
 
+    def test_watch_reserves_the_topic_while_delivering_to_claude(self):
+        self.pair()
+        os.environ["CODEX_THREAD_ID"] = CODEX_ID  # from the paired thread's shell
+        bridge.queue_message("p1", "claude", "hello")  # waits for watch to deliver it
+        outcome, deliver = [], bridge.deliver_to_claude
+
+        def racing_deliver(name):
+            try:
+                bridge.rename_pair("p1", "p2")  # a rename while watch delivers to Claude
+                outcome.append("renamed")
+            except bridge.BridgeError:
+                outcome.append("refused")
+            return deliver(name)
+
+        with mock.patch.object(bridge, "deliver_to_claude", racing_deliver):
+            bridge.watch_once()
+        self.assertEqual(outcome, ["refused"])
+        self.assertIn("hello", self.inbox.texts(wait=2)[0])
+
+    def test_a_send_delivers_here_when_no_worker_can_start(self):
+        self.pair()
+        with mock.patch.object(bridge, "spawn_worker", side_effect=OSError("no processes left")):
+            result = bridge.send("p1", "codex", "check this", None, wait=False)
+        self.assertIn("delivered", result["status"])
+        self.assertEqual(bridge.pending("p1", "codex"), [])  # not left for a retry to duplicate
+        self.assertIn("FAKE ANSWER: check this", self.inbox.texts(wait=2)[0])
+
     def test_a_killed_worker_is_reaped_at_once(self):
         self.pair()
         worker = bridge.spawn_worker("p1", ["watch", "--interval", "60"])  # runs until killed

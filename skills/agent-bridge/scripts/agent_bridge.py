@@ -703,10 +703,9 @@ def send_handshake(name: str, wait: bool = False) -> dict:
                      "last_protocol_at": None, "return_path_verified": None}
         _modify_pair(name, lambda pair: pair.update(handshake=handshake) or {"id": message["id"]},
                      "handshake_queued")
-        if wait:
+        if wait or not _spawned(name):
             deliver_in_foreground(name, message["id"])
             return {"id": message["id"], "status": "processed"}
-        spawn_worker(name)
     return {"id": message["id"], "status": "handshake queued; Codex will confirm the return path"}
 
 
@@ -1360,7 +1359,8 @@ def watch_once() -> None:
         name = item["name"]
         try:
             if pending(name, "claude"):
-                deliver_to_claude(name)
+                with _reserved(name):  # the topic stays in place while it is delivered
+                    deliver_to_claude(name)
             if pending(name, "codex"):
                 with _reserved(name):  # the topic stays in place until the worker holds it
                     lock = pair_dir(name) / "codex.lock"
@@ -1368,6 +1368,16 @@ def watch_once() -> None:
                         spawn_worker(name)
         except (BridgeError, OSError) as error:
             print(f"agent-bridge: {name}: {error}", file=sys.stderr)
+
+
+def _spawned(name: str) -> bool:
+    """Start a delivery worker; False when none can start (the caller then delivers itself, so a
+    queued message is never left without anyone to deliver it)."""
+    try:
+        spawn_worker(name)
+    except OSError:
+        return False
+    return True
 
 
 def _reap_workers() -> None:
@@ -1398,7 +1408,10 @@ def send(name: str, to: str, text: str, reply_to: str | None, wait: bool,
         if wait:
             deliver_in_foreground(name, message["id"])
             return {"id": message["id"], "status": "processed"}
-        spawn_worker(name)
+        if not _spawned(name):
+            deliver_in_foreground(name, message["id"])
+            return {"id": message["id"], "status": "no worker could start, so it was delivered "
+                    "here; the answer arrived as a reply"}
     return {"id": message["id"], "status": "queued; Codex answer will arrive as a reply"}
 
 
