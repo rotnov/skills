@@ -1031,6 +1031,14 @@ class DeliveryRoutes(BridgeTestCase):
         self.assertIn(f"Delivery to Codex failed for message {result['id']}", notice)
         self.assertIn("too long for the Codex desktop queue", notice)
 
+    def test_the_windows_queue_limit_counts_the_escaped_command_line(self):
+        prompt = '"' * 20_000  # each quote is escaped on a Windows command line
+        command = ["codex", "queue", "--thread", CODEX_ID, "--message", prompt]
+        with mock.patch.object(bridge, "IS_WINDOWS", True):
+            self.assertGreater(bridge._queue_command_size(command, prompt), 40_000)
+        with mock.patch.object(bridge, "IS_WINDOWS", False):
+            self.assertEqual(bridge._queue_command_size(command, prompt), 20_000)
+
     def test_exec_active_writer_falls_back_to_queue(self):
         self.pair()
         os.environ["FAKE_CODEX_ACTIVE_WRITER"] = "1"

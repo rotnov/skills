@@ -62,8 +62,8 @@ QUEUE_TIMEOUT_SECONDS = 6 * 3600
 WORKER_STALE_SECONDS = max(CODEX_TIMEOUT_SECONDS, QUEUE_TIMEOUT_SECONDS) + CODEX_BUSY_WAIT_SECONDS + 60
 CLAUDE_POST_STALE_SECONDS = 300
 LIFECYCLE_WAIT_SECONDS = 10
-# `codex queue` takes the message only as an argument: Windows caps the whole command line at
-# 32,767 characters, Linux one argument at 128 KiB.
+# `codex queue` takes the message only as an argument: Windows caps the whole escaped command
+# line at 32,767 UTF-16 units, Linux one argument at 128 KiB.
 QUEUE_PROMPT_LIMIT = 32_000 if os.name == "nt" else 128_000
 MODES = ("auto", "daemon", "exec", "queue")
 SANDBOXES = ("read-only", "workspace-write")
@@ -1048,16 +1048,16 @@ def _route_exec(name: str, pair: dict, message: dict, busy_wait: int, timeout: i
 def _route_queue(name: str, pair: dict, message: dict, busy_wait: int, timeout: int) -> str:
     session = pair["codex"]["session_id"]
     prompt = codex_prompt(pair, message)
-    if len(prompt.encode("utf-8")) > QUEUE_PROMPT_LIMIT:
+    command = [codex_executable(), "queue", "--thread", session, "--message", prompt]
+    if _queue_command_size(command, prompt) > QUEUE_PROMPT_LIMIT:
         raise BridgeError(f"the message is too long for the Codex desktop queue, which takes it "
-                          f"on the command line (limit about {QUEUE_PROMPT_LIMIT:,} bytes here); "
+                          f"on the command line (limit about {QUEUE_PROMPT_LIMIT:,} here); "
                           "write it to a file and send its path instead")
     # The queued turn can only appear after this point, so the whole history is never reread.
     rollout = codex_rollout(session)
     start = rollout.stat().st_size if rollout else 0
     try:
-        result = subprocess.run([codex_executable(), "queue", "--thread", session, "--message",
-                                 prompt], stdin=subprocess.DEVNULL,
+        result = subprocess.run(command, stdin=subprocess.DEVNULL,
                                 capture_output=True, text=True, timeout=120)
     except (OSError, subprocess.TimeoutExpired) as error:
         raise BridgeError(f"codex queue could not run: {type(error).__name__}") from error
@@ -1075,6 +1075,14 @@ def _route_queue(name: str, pair: dict, message: dict, busy_wait: int, timeout: 
         pass
     queue_timeout = int(os.environ.get("AGENT_BRIDGE_QUEUE_TIMEOUT", QUEUE_TIMEOUT_SECONDS))
     return watch_thread_answer(session, message["id"], queue_timeout, start=start)
+
+
+def _queue_command_size(command: list[str], prompt: str) -> int:
+    """What the platform limit counts: the escaped command line in UTF-16 units on Windows,
+    the bytes of the one long argument elsewhere."""
+    if IS_WINDOWS:
+        return len(subprocess.list2cmdline(command).encode("utf-16-le")) // 2
+    return len(prompt.encode("utf-8"))
 
 
 def watch_thread_answer(session: str, marker: str, timeout: float, poll: float = 2.0,
