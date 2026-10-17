@@ -1251,29 +1251,38 @@ def steer_codex(name: str, text: str, reply_to: str | None, require_identity: bo
         message = queue_message(name, "codex", text, reply_to=reply_to, kind="steer", box="steering",
                                 require_identity=require_identity)
         pair = load_pair(name)
+        unconfirmed = False
         try:
             turn_id = codex_daemon.steer(pair["codex"]["session_id"], codex_prompt(pair, message))
+        except codex_daemon.DaemonUncertain as error:
+            if not error.turn_id:
+                raise BridgeError(f"steer not possible: {error}") from error
+            # The answer was lost, not refused: the steer may be in the turn, so follow that
+            # turn as usual instead of reporting a refusal that a retry would apply twice.
+            turn_id, unconfirmed = error.turn_id, True
         except codex_daemon.DaemonError as error:
             archive(name, message, "failed", "steering", failed=now(), reason=str(error))
             log_event(name, "steer_refused", id=message["id"], reason=str(error)[:200])
             raise BridgeError(f"steer not possible: {error}") from error
         archive(name, message, "sent", "steering", delivered=now(), route="daemon-steer",
-                turn=turn_id)
-        log_event(name, "steered", id=message["id"], turn=turn_id)
+                turn=turn_id, unconfirmed=unconfirmed)
+        log_event(name, "steered", id=message["id"], turn=turn_id, unconfirmed=unconfirmed)
+        note = (" (the daemon did not confirm the steer, so it may not have reached the turn; "
+                "do not resend it)") if unconfirmed else ""
         state = pair_dir(name) / "active_turn.json"
         own = read_json(state) if state.is_file() else None
         if own and own.get("turn_id") == turn_id:
             return {"id": message["id"], "status": f"steered into turn {turn_id}, which is "
-                    f"answering message {own['message_id']}; that reply carries the result"}
+                    f"answering message {own['message_id']}; that reply carries the result{note}"}
         try:
             spawn_worker(name, ["await-turn", name, turn_id, message["id"]])
         except OSError:
             # The steer is already in the turn: with no worker to watch it, wait for it here.
             await_turn_reply(name, turn_id, message["id"])
             return {"id": message["id"], "status": f"steered into turn {turn_id}; no worker "
-                    "could start, so its final answer was awaited here and delivered"}
+                    f"could start, so its final answer was awaited here and delivered{note}"}
         return {"id": message["id"], "status": f"steered into turn {turn_id}; its final answer "
-                "will arrive as a reply"}
+                f"will arrive as a reply{note}"}
 
 
 def await_turn_reply(name: str, turn_id: str, message_id: str) -> None:
@@ -1281,8 +1290,12 @@ def await_turn_reply(name: str, turn_id: str, message_id: str) -> None:
     try:
         status, answer = codex_daemon.await_turn(pair["codex"]["session_id"], turn_id,
                                                  CODEX_TIMEOUT_SECONDS)
-        text = answer or f"(turn {turn_id} ended '{status}' without an answer)"
-        _queue_reply(name, message_id, text, "daemon-steer")
+        if status == "completed" and answer:
+            _queue_reply(name, message_id, answer, "daemon-steer")
+        else:  # like the daemon route: only a completed turn's answer is a reply
+            queue_message(name, "claude", f"the steered turn {turn_id} ended '{status}'"
+                          + ("" if answer else " without an answer"), reply_to=message_id,
+                          kind="failure", verify_sender=False)
     except codex_daemon.DaemonError as error:
         queue_message(name, "claude", f"steered turn not observed: {error}", reply_to=message_id,
                       kind="failure", verify_sender=False)

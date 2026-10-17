@@ -147,10 +147,12 @@ class FakeDaemon:
     """Speaks the app-server JSON-RPC subset the bridge uses, over WebSocket on a Unix socket."""
 
     def __init__(self, path, thread, loaded=False, active_writer=False, turn_seconds=0.3,
-                 user_turn_seconds=None, fail_methods=(), silent_methods=()):
+                 user_turn_seconds=None, fail_methods=(), silent_methods=(),
+                 user_turn_status="completed"):
         self.thread, self.loaded, self.active_writer = thread, loaded, active_writer
         self.fail_methods = set(fail_methods)  # answered with a JSON-RPC error
         self.silent_methods = set(silent_methods)  # never answered
+        self.user_turn_status = user_turn_status
         self.turn_seconds, self.calls, self.turns, self.order = turn_seconds, [], {}, []
         self.active, self.clients, self.count = None, [], 0
         self.server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -216,12 +218,13 @@ class FakeDaemon:
     def _finish(self, turn_id):
         turn = self.turns[turn_id]
         turn["final"] = "STEERED" if turn.get("steered") else turn["text"]
-        turn["status"], self.active = "completed", None
+        status = self.user_turn_status if turn_id == "user-turn" else "completed"
+        turn["status"], self.active = status, None
         self.broadcast("item/completed", {"threadId": self.thread, "turnId": turn_id,
                                           "completedAtMs": 0,
                                           "item": {"type": "agentMessage", "text": turn["final"]}})
         self.broadcast("turn/completed", {"threadId": self.thread,
-                                          "turn": {"id": turn_id, "status": "completed", "items": []}})
+                                          "turn": {"id": turn_id, "status": status, "items": []}})
 
     def _handle(self, method, params):
         if method in self.fail_methods:
@@ -1273,6 +1276,23 @@ class Steering(BridgeTestCase):
         reply = self.inbox.texts(wait=2)[0]  # already posted when the send returned
         self.assertIn("STEERED", reply)
         self.assertIn(f"in reply to {result['id']}", reply)
+
+    def test_a_steered_turn_that_does_not_complete_is_a_failure(self):
+        self.start_daemon(loaded=True, user_turn_seconds=1.5, user_turn_status="interrupted")
+        self.pair()
+        result = bridge.send("p1", "codex", "also check X", None, False, steer=True)
+        notice = self.inbox.texts(wait=10)[0]
+        self.assertIn(f"Delivery to Codex failed for message {result['id']}", notice)
+        self.assertIn("interrupted", notice)  # not passed off as the turn's final answer
+
+    def test_an_unconfirmed_steer_is_still_followed(self):
+        self.start_daemon(loaded=True, user_turn_seconds=2, silent_methods={"turn/steer"})
+        self.pair()
+        with mock.patch.object(bridge.codex_daemon, "REQUEST_TIMEOUT", 0.5):
+            result = bridge.send("p1", "codex", "also check X", None, False, steer=True)
+        self.assertIn("did not confirm", result["status"])  # it may be in the turn: no retry
+        self.assertTrue((bridge.pair_dir("p1") / "mail" / "sent" / f"{result['id']}.json").exists())
+        self.assertIn(f"in reply to {result['id']}", self.inbox.texts(wait=10)[0])
 
     def test_steer_needs_an_active_turn(self):
         self.start_daemon(loaded=True)

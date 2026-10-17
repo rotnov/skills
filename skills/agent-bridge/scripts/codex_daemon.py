@@ -34,6 +34,12 @@ class DaemonUnavailable(DaemonError):
     """The daemon cannot be used before any turn was requested; another route is safe."""
 
 
+class DaemonUncertain(DaemonError):
+    """The connection failed after a turn or steer was requested, so it may have taken effect."""
+
+    turn_id: str | None = None  # the turn a steer was aimed at, when known
+
+
 class ActiveWriter(DaemonError):
     """Another app-server (for example the desktop app) hosts the thread."""
 
@@ -164,7 +170,7 @@ class Daemon:
         self.inbox.put(None)
 
     def _lost(self, what: str) -> DaemonError:
-        kind = DaemonError if self.turn_requested else DaemonUnavailable
+        kind = DaemonUncertain if self.turn_requested else DaemonUnavailable
         return kind(f"{what}: daemon connection lost")
 
     def send(self, message: dict) -> None:
@@ -220,9 +226,10 @@ class Daemon:
                         f"{method}: {text}")
                 return message.get("result") or {}
             self._handle(message)
-        # Unanswered before any turn was requested: another route is still safe.
-        raise (DaemonError if self.turn_requested else DaemonUnavailable)(
-            f"{method}: no answer within {timeout:.0f}s")
+        # Unanswered before any turn was requested: another route is still safe; afterwards the
+        # request may have taken effect.
+        raise (DaemonUncertain if self.turn_requested else DaemonUnavailable)(
+            f"{method}: no answer within {timeout:g}s")
 
     def pump(self, until, timeout: float) -> bool:
         deadline = time.time() + timeout
@@ -338,8 +345,12 @@ def steer(thread_id: str, text: str, path: str | None = None) -> str:
             turn_id = daemon.active_turn(thread_id)
             if not turn_id:
                 raise DaemonError("the thread has no active turn to steer")
-            daemon.request("turn/steer", {"threadId": thread_id, "expectedTurnId": turn_id,
-                                          "input": text_input(text)})
+            try:
+                daemon.request("turn/steer", {"threadId": thread_id, "expectedTurnId": turn_id,
+                                              "input": text_input(text)})
+            except DaemonUncertain as error:
+                error.turn_id = turn_id  # the steer may be in this turn
+                raise
             return turn_id
         finally:
             try:
