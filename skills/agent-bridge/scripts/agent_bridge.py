@@ -39,6 +39,9 @@ import time
 import uuid
 from pathlib import Path
 
+if sys.version_info < (3, 10):
+    sys.exit("agent-bridge needs Python 3.10 or newer")
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import codex_daemon  # noqa: E402
 
@@ -710,9 +713,11 @@ def _delivery_in_progress(directory: Path) -> bool:
     if not codex:
         # active_turn.json is written only under codex.lock: without a live worker it is orphaned.
         (directory / "active_turn.json").unlink(missing_ok=True)
-    steers = [path for path in directory.glob("steer-*.lock")
-              if _live_lock(path, STEER_STALE_SECONDS)]
-    return codex or bool(steers) or _live_lock(directory / "claude.lock", CLAUDE_POST_STALE_SECONDS)
+    # Reservations held by a steer in progress or by a spawned worker until it exits.
+    reserved = [path for pattern, stale in (("steer-*.lock", STEER_STALE_SECONDS),
+                                            ("worker-*.lock", WORKER_STALE_SECONDS))
+                for path in directory.glob(pattern) if _live_lock(path, stale)]
+    return codex or bool(reserved) or _live_lock(directory / "claude.lock", CLAUDE_POST_STALE_SECONDS)
 
 
 def _hold_marker(path: Path, pid: int) -> None:
@@ -918,10 +923,10 @@ def steer_codex(name: str, text: str, reply_to: str | None) -> dict:
     """Add a message to the active turn of a daemon-hosted Codex thread, now."""
     # Held outside inbox-codex until the outcome is known, so no worker also sends it as a turn.
     message = queue_message(name, "codex", text, reply_to=reply_to, kind="steer", box="steering")
-    # The topic stays busy (no rename or removal) until the steered turn's reply is posted.
+    # The topic stays busy (no rename or removal) during the steer; the await-turn worker's own
+    # marker then covers it until the steered turn's reply is posted.
     marker = pair_dir(name) / f"steer-{message['id']}.lock"
     _hold_marker(marker, os.getpid())
-    handed_over = False
     try:
         pair = load_pair(name)
         try:
@@ -938,32 +943,25 @@ def steer_codex(name: str, text: str, reply_to: str | None) -> dict:
         if own and own.get("turn_id") == turn_id:
             return {"id": message["id"], "status": f"steered into turn {turn_id}, which is "
                     f"answering message {own['message_id']}; that reply carries the result"}
-        worker = spawn_worker(name, ["await-turn", name, turn_id, message["id"]])
-        _hold_marker(marker, worker.pid)  # the worker removes it once the reply is posted
-        handed_over = True
+        spawn_worker(name, ["await-turn", name, turn_id, message["id"]])
         return {"id": message["id"], "status": f"steered into turn {turn_id}; its final answer "
                 "will arrive as a reply"}
     finally:
-        if not handed_over:
-            marker.unlink(missing_ok=True)
+        marker.unlink(missing_ok=True)
 
 
 def await_turn_reply(name: str, turn_id: str, message_id: str) -> None:
-    marker = pair_dir(name) / f"steer-{message_id}.lock"
+    pair = load_pair(name)
     try:
-        pair = load_pair(name)
-        try:
-            status, answer = codex_daemon.await_turn(pair["codex"]["session_id"], turn_id,
-                                                     CODEX_TIMEOUT_SECONDS)
-            text = answer or f"(turn {turn_id} ended '{status}' without an answer)"
-            queue_message(name, "claude", text, reply_to=message_id, kind="reply",
-                          verify_sender=False, route="daemon-steer")
-        except codex_daemon.DaemonError as error:
-            queue_message(name, "claude", f"steered turn not observed: {error}",
-                          reply_to=message_id, kind="failure", verify_sender=False)
-        deliver_to_claude(name)
-    finally:
-        marker.unlink(missing_ok=True)
+        status, answer = codex_daemon.await_turn(pair["codex"]["session_id"], turn_id,
+                                                 CODEX_TIMEOUT_SECONDS)
+        text = answer or f"(turn {turn_id} ended '{status}' without an answer)"
+        queue_message(name, "claude", text, reply_to=message_id, kind="reply",
+                      verify_sender=False, route="daemon-steer")
+    except codex_daemon.DaemonError as error:
+        queue_message(name, "claude", f"steered turn not observed: {error}", reply_to=message_id,
+                      kind="failure", verify_sender=False)
+    deliver_to_claude(name)
 
 
 def _codex_error(result) -> str:
@@ -989,17 +987,29 @@ def _fail(name: str, pair: dict, message: dict, reason: str) -> None:
 
 
 def spawn_worker(name: str, command: list[str] | None = None) -> subprocess.Popen:
-    """Run a bridge command for this pair in a detached process that survives the caller."""
-    log = pair_dir(name) / "worker.log"
-    with open(log, "a", encoding="utf-8") as stream:
-        options = {"stdin": subprocess.DEVNULL, "stdout": stream, "stderr": stream}
-        if IS_WINDOWS:
-            options["creationflags"] = 0x00000008 | 0x00000200  # DETACHED | NEW_GROUP
-        else:
-            options["start_new_session"] = True
-        worker = subprocess.Popen(
-            [sys.executable, "-I", str(Path(__file__).resolve()), *(command or ["deliver", name])],
-            **options)
+    """Run a bridge command for this pair in a detached process that survives the caller.
+
+    A worker-ID.lock marker reserves the topic from before the spawn until the worker exits,
+    so a rename or removal cannot slip in before the worker takes its own lock.
+    """
+    directory = pair_dir(name)
+    marker_id = uuid.uuid4().hex[:12]
+    marker = directory / f"worker-{marker_id}.lock"
+    _hold_marker(marker, os.getpid())  # until the worker's pid is known
+    try:
+        with open(directory / "worker.log", "a", encoding="utf-8") as stream:
+            options = {"stdin": subprocess.DEVNULL, "stdout": stream, "stderr": stream}
+            if IS_WINDOWS:
+                options["creationflags"] = 0x00000008 | 0x00000200  # DETACHED | NEW_GROUP
+            else:
+                options["start_new_session"] = True
+            worker = subprocess.Popen(
+                [sys.executable, "-I", str(Path(__file__).resolve()), "--worker-marker", marker_id,
+                 *(command or ["deliver", name])], **options)
+    except OSError:
+        marker.unlink(missing_ok=True)
+        raise
+    _hold_marker(marker, worker.pid)  # the worker removes it when it exits
     _WORKERS.append(worker)
     return worker
 
@@ -1039,6 +1049,7 @@ def _text(args) -> str:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="Local Claude Code <-> Codex bridge")
     parser.add_argument("--version", action="version", version=VERSION)
+    parser.add_argument("--worker-marker", help=argparse.SUPPRESS)
     commands = parser.add_subparsers(dest="command", required=True)
 
     pair = commands.add_parser("pair", help="create, list, show, refresh or remove pairs")
@@ -1116,6 +1127,11 @@ def main(argv=None) -> int:
     except BridgeError as error:
         print(f"agent-bridge: {error}", file=sys.stderr)
         return 1
+    finally:
+        # A spawned worker releases its topic reservation; only its own marker can be named.
+        if args.worker_marker and re.fullmatch(r"[0-9a-f]{12}", args.worker_marker) \
+                and getattr(args, "name", None):
+            (pair_dir(args.name) / f"worker-{args.worker_marker}.lock").unlink(missing_ok=True)
 
 
 def _dispatch(args) -> int:

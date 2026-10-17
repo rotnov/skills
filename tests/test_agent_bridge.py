@@ -553,6 +553,18 @@ class ClaudeToCodex(BridgeTestCase):
         self.assertEqual(len(processed), 2)
         self.assertEqual(bridge.pending("p1", "codex"), [])
 
+    def test_a_spawned_worker_reserves_the_topic_until_it_exits(self):
+        self.pair()
+        bridge.send("p1", "codex", "async check", None, wait=False)
+        with self.assertRaises(bridge.BridgeError):
+            bridge.rename_pair("p1", "p2")  # the worker may not hold codex.lock yet
+        deadline = time.time() + 30
+        while bridge._delivery_in_progress(bridge.pair_dir("p1")) and time.time() < deadline:
+            time.sleep(0.1)
+        self.assertIn("FAKE ANSWER: async check", self.inbox.texts(wait=5)[0])
+        self.assertEqual(list(bridge.pair_dir("p1").glob("worker-*.lock")), [])
+        self.assertEqual(bridge.rename_pair("p1", "p2")["name"], "p2")
+
     def test_detached_worker_delivers_the_reply(self):
         self.pair()
         result = bridge.send("p1", "codex", "async check", None, wait=False)
@@ -560,6 +572,14 @@ class ClaudeToCodex(BridgeTestCase):
         texts = self.inbox.texts(wait=15)
         self.assertTrue(texts, "no reply from the detached worker")
         self.assertIn("FAKE ANSWER: async check", texts[0])
+
+
+class Invocation(unittest.TestCase):
+    def test_runs_with_a_plain_python_interpreter(self):
+        # The documented fallback when uv is absent: any Python 3.10+, standard library only.
+        result = subprocess.run([sys.executable, "-I", str(HERE / "agent_bridge.py"), "--version"],
+                                capture_output=True, text=True, timeout=30)
+        self.assertEqual((result.returncode, result.stdout.strip()), (0, bridge.VERSION))
 
 
 class Limits(BridgeTestCase):
@@ -715,10 +735,14 @@ class Steering(BridgeTestCase):
         bridge.send("p1", "codex", "also check X", None, False, steer=True)
         with self.assertRaises(bridge.BridgeError):
             bridge.rename_pair("p1", "p2")  # the await-turn worker has not posted the reply yet
-        self.assertIn("STEERED", self.inbox.texts(wait=10)[0])
-        deadline = time.time() + 5
-        while list(bridge.pair_dir("p1").glob("steer-*.lock")) and time.time() < deadline:
+        # Wait for the worker itself (it removes its marker last), not for a fixed delay.
+        deadline = time.time() + 60
+        while bridge._delivery_in_progress(bridge.pair_dir("p1")) and time.time() < deadline:
             time.sleep(0.1)
+        log = bridge.pair_dir("p1") / "worker.log"
+        texts = self.inbox.texts(wait=5)
+        self.assertTrue(texts, log.read_text() if log.exists() else "no worker log")
+        self.assertIn("STEERED", texts[0])
         self.assertEqual(bridge.rename_pair("p1", "p2")["name"], "p2")
 
     def test_steer_needs_an_active_turn(self):

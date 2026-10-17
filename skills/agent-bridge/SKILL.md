@@ -28,12 +28,17 @@ each agent sends to its own model vendor.
 ## Invocation
 
 Resolve the absolute directory containing this `SKILL.md`, then `BRIDGE` as the
-absolute path of its `scripts/agent_bridge.py`. Run every command as a
-structured argument vector:
+absolute path of its `scripts/agent_bridge.py`. It needs Python 3.10 or newer
+and nothing else. Run every command as a structured argument vector, through
+`uv` when it is installed:
 
 ```text
 ["uv", "run", "--no-project", "--python", ">=3.10", BRIDGE, ...]
 ```
+
+`uv` may download a matching Python, which needs network access. Without `uv`,
+or offline, run `["python3", BRIDGE, ...]` with any Python 3.10+; an older
+interpreter is refused with a message.
 
 State lives in `~/.agent-bridge` (override with `AGENT_BRIDGE_HOME`). Topics
 are slugs: lowercase letters, digits and hyphens, named after the subject of

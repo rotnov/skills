@@ -15,7 +15,8 @@ args = ["run", "--no-project", "--python", ">=3.10",
 default_tools_approval_mode = "approve"
 ```
 
-Restart Codex afterwards. Tools: `bridge_pairs`, `bridge_send`,
+Without `uv`, use `command = "python3"` (3.10+) and drop the four `uv`
+arguments. Restart Codex afterwards. Tools: `bridge_pairs`, `bridge_send`,
 `bridge_inbox`, `bridge_read`. `--pair` restricts the server to listed topics.
 
 Trade-off: Codex runs MCP servers outside its command sandbox, so no shell
