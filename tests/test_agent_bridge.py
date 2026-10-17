@@ -140,8 +140,9 @@ class FakeDaemon:
     """Speaks the app-server JSON-RPC subset the bridge uses, over WebSocket on a Unix socket."""
 
     def __init__(self, path, thread, loaded=False, active_writer=False, turn_seconds=0.3,
-                 user_turn_seconds=None):
+                 user_turn_seconds=None, fail_methods=()):
         self.thread, self.loaded, self.active_writer = thread, loaded, active_writer
+        self.fail_methods = set(fail_methods)  # answered with a JSON-RPC error
         self.turn_seconds, self.calls, self.turns, self.order = turn_seconds, [], {}, []
         self.active, self.clients, self.count = None, [], 0
         self.server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -213,6 +214,8 @@ class FakeDaemon:
                                           "turn": {"id": turn_id, "status": "completed", "items": []}})
 
     def _handle(self, method, params):
+        if method in self.fail_methods:
+            raise ValueError(f"unsupported request {method}")
         if method == "initialize":
             return {"userAgent": "fake"}
         if method == "thread/loaded/list":
@@ -891,6 +894,15 @@ class Limits(BridgeTestCase):
         with self.assertRaises(bridge.BridgeError):
             bridge.queue_message("p1", "codex", "one too many")
 
+    def test_reply_to_must_be_a_message_id(self):
+        self.pair()
+        for bad in ("../x", "a\nb", "x" * 1000):
+            with self.assertRaises(bridge.BridgeError):
+                bridge.queue_message("p1", "codex", "hello", reply_to=bad)
+        first = bridge.queue_message("p1", "codex", "hello")
+        self.assertEqual(bridge.queue_message("p1", "codex", "again", reply_to=first["id"])["reply_to"],
+                         first["id"])
+
     def test_concurrent_sends_respect_the_rate_limit(self):
         self.pair()
         check, results = bridge.check_rate, []
@@ -975,6 +987,24 @@ class DeliveryRoutes(BridgeTestCase):
         threading.Thread(target=append, daemon=True).start()
         self.assertEqual(bridge.watch_thread_answer(CODEX_ID, "MARK-1", 10, poll=0.1), "the answer")
 
+    def test_queue_answer_is_read_from_after_the_enqueue_point(self):
+        rollout = bridge.codex_rollout(CODEX_ID)
+
+        def turn(answer):
+            rows = [{"type": "response_item", "payload": {"type": "message", "role": "user",
+                                                           "content": [{"type": "input_text", "text": "MARK-1"}]}},
+                    {"type": "response_item", "payload": {"type": "message", "role": "assistant",
+                                                           "content": [{"type": "output_text", "text": answer}]}},
+                    {"type": "event_msg", "payload": {"type": "task_complete"}}]
+            with open(rollout, "a", encoding="utf-8") as stream:
+                stream.write("".join(json.dumps(row) + "\n" for row in rows))
+
+        turn("an older turn")
+        start = rollout.stat().st_size  # where the log ended when the message was queued
+        turn("the queued turn")
+        self.assertEqual(bridge.watch_thread_answer(CODEX_ID, "MARK-1", 5, poll=0.1, start=start),
+                         "the queued turn")
+
     def test_exec_active_writer_falls_back_to_queue(self):
         self.pair()
         os.environ["FAKE_CODEX_ACTIVE_WRITER"] = "1"
@@ -1016,6 +1046,13 @@ class DeliveryRoutes(BridgeTestCase):
         self.assertEqual(len(self.codex_calls()), 1)  # the turn may have started: no exec retry
         self.assertIn(f"Delivery to Codex failed for message {second['id']}",
                       self.inbox.texts(wait=2, count=2)[1])
+
+    def test_a_daemon_that_rejects_a_request_before_the_turn_falls_back(self):
+        self.start_daemon(fail_methods={"thread/resume"})
+        self.pair()
+        bridge.send("p1", "codex", "hello", None, wait=True)
+        self.assertEqual(self.codex_calls()[0][:2], ["exec", "resume"])  # nothing had started
+        self.assertIn("(delivered by exec)", self.inbox.texts(wait=2)[0])
 
     def test_daemon_waits_for_a_running_turn(self):
         daemon = self.start_daemon(loaded=True, user_turn_seconds=1.5)

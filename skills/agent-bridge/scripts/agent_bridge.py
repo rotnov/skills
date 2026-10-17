@@ -469,6 +469,8 @@ def queue_message(name: str, to: str, text: str, reply_to: str | None = None,
                   require_identity: bool = True, **fields) -> dict:
     if to not in SIDES:
         raise BridgeError("--to must be claude or codex")
+    if reply_to is not None and not MESSAGE_ID.fullmatch(reply_to):
+        raise BridgeError(f"invalid reply id {reply_to[:80]!r}: use a message id from the bridge")
     pair = load_pair(name)
     sender = "codex" if to == "claude" else "claude"
     # One rate check and queue write at a time per topic, so parallel sends cannot exceed it.
@@ -1040,6 +1042,9 @@ def _route_exec(name: str, pair: dict, message: dict, busy_wait: int, timeout: i
 
 def _route_queue(name: str, pair: dict, message: dict, busy_wait: int, timeout: int) -> str:
     session = pair["codex"]["session_id"]
+    # The queued turn can only appear after this point, so the whole history is never reread.
+    rollout = codex_rollout(session)
+    start = rollout.stat().st_size if rollout else 0
     try:
         result = subprocess.run([codex_executable(), "queue", "--thread", session, "--message",
                                  codex_prompt(pair, message)], stdin=subprocess.DEVNULL,
@@ -1059,16 +1064,18 @@ def _route_queue(name: str, pair: dict, message: dict, busy_wait: int, timeout: 
     except BridgeError:
         pass
     queue_timeout = int(os.environ.get("AGENT_BRIDGE_QUEUE_TIMEOUT", QUEUE_TIMEOUT_SECONDS))
-    return watch_thread_answer(session, message["id"], queue_timeout)
+    return watch_thread_answer(session, message["id"], queue_timeout, start=start)
 
 
-def watch_thread_answer(session: str, marker: str, timeout: float, poll: float = 2.0) -> str:
+def watch_thread_answer(session: str, marker: str, timeout: float, poll: float = 2.0,
+                        start: int = 0) -> str:
     """Follow the thread log for the turn that carries `marker` and return its last answer.
 
-    Only newly appended bytes are read on each poll; a partial last line waits for the rest.
+    Reading begins at byte `start` (where the log ended before the message was queued), and
+    only newly appended bytes are read on each poll; a partial last line waits for the rest.
     """
     deadline = time.time() + timeout
-    rollout, offset, buffer, started, answers = None, 0, b"", False, []
+    rollout, offset, buffer, started, answers = None, start, b"", False, []
     while time.time() < deadline:
         rollout = rollout or codex_rollout(session)
         if rollout is not None:

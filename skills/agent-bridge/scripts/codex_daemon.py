@@ -207,7 +207,11 @@ class Daemon:
             if message.get("id") == identifier and "method" not in message:
                 if "error" in message:
                     text = str(message["error"].get("message", message["error"]))
-                    raise (ActiveWriter if is_active_writer(text) else DaemonError)(f"{method}: {text}")
+                    if is_active_writer(text):
+                        raise ActiveWriter(f"{method}: {text}")
+                    # Refused before any turn was requested: another route is still safe.
+                    raise (DaemonError if self.turn_requested else DaemonUnavailable)(
+                        f"{method}: {text}")
                 return message.get("result") or {}
             self._handle(message)
         raise DaemonError(f"{method}: no answer within {timeout:.0f}s")
