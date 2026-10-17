@@ -969,6 +969,25 @@ class Invocation(unittest.TestCase):
         self.assertEqual((result.returncode, result.stdout.strip()), (0, bridge.VERSION))
 
 
+class ShellCommands(unittest.TestCase):
+    def test_codex_on_windows_gets_a_powershell_command(self):
+        python = "C:\\Program Files\\It's\\python.exe"
+        with mock.patch.object(bridge, "IS_WINDOWS", True), \
+                mock.patch.object(bridge.sys, "executable", python):
+            for_codex = bridge.bridge_invocation(for_codex=True)
+            for_claude = bridge.bridge_invocation()
+        # PowerShell, Codex's shell on Windows, runs a quoted path only with the call operator.
+        self.assertTrue(for_codex.startswith("& 'C:\\Program Files\\It''s\\python.exe' -I '"),
+                        for_codex)
+        # Claude Code's Bash tool is a POSIX shell, also on Windows (Git Bash).
+        self.assertTrue(for_claude.startswith(
+            "'C:\\Program Files\\It'\"'\"'s\\python.exe' -I "), for_claude)
+
+    def test_posix_commands_are_shell_quoted(self):
+        with mock.patch.object(bridge, "IS_WINDOWS", False):
+            self.assertEqual(bridge.bridge_invocation(for_codex=True), bridge.bridge_invocation())
+
+
 class Limits(BridgeTestCase):
     def test_size_and_rate_limits(self):
         self.pair()

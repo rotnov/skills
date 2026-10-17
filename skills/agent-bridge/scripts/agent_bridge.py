@@ -614,13 +614,26 @@ def deliver_to_claude(name: str) -> list[str]:
 # ---------------------------------------------------------------- Codex delivery
 
 
-def bridge_invocation() -> str:
-    """Absolute interpreter and script: works inside agent sandboxes, no uv cache writes."""
-    return shlex.join([sys.executable, "-I", str(Path(__file__).resolve())])
+def bridge_invocation(for_codex: bool = False) -> str:
+    """Absolute interpreter and script: works inside agent sandboxes, no uv cache writes.
+
+    Quoted for the shell that runs it: Claude Code's Bash tool is a POSIX shell everywhere (Git
+    Bash on Windows); Codex on Windows runs PowerShell, which needs the call operator `&` to run
+    a quoted path and doubles a single quote inside one.
+    """
+    python, script = sys.executable, str(Path(__file__).resolve())
+    if for_codex and IS_WINDOWS:
+        return f"& {_powershell_quote(python)} -I {_powershell_quote(script)}"
+    return shlex.join([python, "-I", script])
+
+
+def _powershell_quote(text: str) -> str:
+    return "'" + text.replace("'", "''") + "'"
 
 
 def bridge_command(pair: dict) -> str:
-    return f"{bridge_invocation()} send {pair['name']} --to claude"
+    """The command Codex runs to write to Claude, in its own shell's syntax."""
+    return f"{bridge_invocation(for_codex=True)} send {pair['name']} --to claude"
 
 
 def bridge_protocol(pair: dict) -> str:
