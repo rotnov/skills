@@ -26,7 +26,9 @@ environment):  agent_bridge.py pair create NAME --codex-session ID
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime
+import functools
 import json
 import os
 import re
@@ -57,6 +59,7 @@ QUEUE_TIMEOUT_SECONDS = 6 * 3600
 WORKER_STALE_SECONDS = max(CODEX_TIMEOUT_SECONDS, QUEUE_TIMEOUT_SECONDS) + CODEX_BUSY_WAIT_SECONDS + 60
 CLAUDE_POST_STALE_SECONDS = 300
 STEER_STALE_SECONDS = CODEX_TIMEOUT_SECONDS + 300
+LIFECYCLE_WAIT_SECONDS = 10
 MODES = ("auto", "daemon", "exec", "queue")
 SANDBOXES = ("read-only", "workspace-write")
 UNSAFE_CODEX_FLAGS = {"--dangerously-bypass-approvals-and-sandbox", "--yolo",
@@ -221,6 +224,29 @@ def codex_busy(session_id: str) -> bool:
 # ---------------------------------------------------------------- pairs
 
 
+@contextlib.contextmanager
+def _lifecycle():
+    """One pair create, rename or removal at a time across the whole bridge home."""
+    deadline = time.time() + LIFECYCLE_WAIT_SECONDS
+    while True:
+        with Lock(home() / "lifecycle.lock", stale_seconds=300) as lock:
+            if lock.held:
+                yield
+                return
+        if time.time() >= deadline:
+            raise BridgeError("another pair change is in progress; retry in a moment")
+        time.sleep(0.1)
+
+
+def _serialized(function):
+    @functools.wraps(function)
+    def wrapper(*args, **kwargs):
+        with _lifecycle():
+            return function(*args, **kwargs)
+    return wrapper
+
+
+@_serialized
 def create_pair(name: str, codex_session: str, codex_cwd: str | None, codex_args: list[str],
                 force: bool, mode: str = "auto", sandbox: str = "read-only") -> dict:
     if mode not in MODES or sandbox not in SANDBOXES:
@@ -286,6 +312,7 @@ def refresh_claude(name: str | None = None) -> list[str]:
     return refreshed
 
 
+@_serialized
 def rename_pair(old: str, new: str) -> dict:
     """Rename a topic; its mailbox and log move with it."""
     source, target = pair_dir(old), pair_dir(new)
@@ -332,6 +359,7 @@ def _quarantine(name: str) -> Path:
     return target
 
 
+@_serialized
 def remove_pair(name: str) -> Path:
     if not (pair_dir(name) / "pair.json").exists():
         raise BridgeError(f"no pair named {name!r}")
@@ -815,15 +843,25 @@ def _route_queue(name: str, pair: dict, message: dict, busy_wait: int, timeout: 
 
 
 def watch_thread_answer(session: str, marker: str, timeout: float, poll: float = 2.0) -> str:
-    """Wait in the thread log for the turn that carries `marker` and return its last answer."""
+    """Follow the thread log for the turn that carries `marker` and return its last answer.
+
+    Only newly appended bytes are read on each poll; a partial last line waits for the rest.
+    """
     deadline = time.time() + timeout
+    rollout, offset, buffer, started, answers = None, 0, b"", False, []
     while time.time() < deadline:
-        rollout = codex_rollout(session)
-        lines = rollout.read_text(encoding="utf-8", errors="replace").splitlines() if rollout else []
-        start = next((index for index, line in enumerate(lines) if marker in line), None)
-        if start is not None:
-            answers, finished = [], None
-            for line in lines[start + 1:]:
+        rollout = rollout or codex_rollout(session)
+        if rollout is not None:
+            with open(rollout, "rb") as stream:
+                stream.seek(offset)
+                chunk = stream.read()
+            offset += len(chunk)
+            *lines, buffer = (buffer + chunk).split(b"\n")
+            for raw in lines:
+                line = raw.decode("utf-8", errors="replace")
+                if not started:
+                    started = marker in line
+                    continue
                 try:
                     record = json.loads(line)
                 except json.JSONDecodeError:
@@ -839,15 +877,12 @@ def watch_thread_answer(session: str, marker: str, timeout: float, poll: float =
                 elif record.get("type") == "event_msg" and kind == "agent_message":
                     if payload.get("message") and (not answers or answers[-1] != payload["message"]):
                         answers.append(payload["message"])
-                elif record.get("type") == "event_msg" and kind in ("task_complete", "turn_aborted"):
-                    finished = kind
-                    break
-            if finished == "turn_aborted":
-                raise BridgeError("the Codex turn carrying the message was aborted")
-            if finished:
-                if not answers:
-                    raise BridgeError("the Codex turn ended without an answer")
-                return answers[-1]
+                elif record.get("type") == "event_msg" and kind == "turn_aborted":
+                    raise BridgeError("the Codex turn carrying the message was aborted")
+                elif record.get("type") == "event_msg" and kind == "task_complete":
+                    if not answers:
+                        raise BridgeError("the Codex turn ended without an answer")
+                    return answers[-1]
         time.sleep(poll)
     raise BridgeError(f"no answer within {timeout / 3600:.1f} h; the message may still be queued")
 

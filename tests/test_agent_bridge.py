@@ -360,6 +360,25 @@ class Pairs(BridgeTestCase):
         self.assertEqual(bridge.pending("p1", "codex"), [])
         self.assertEqual(len(list((bridge.home() / "retired").iterdir())), 1)
 
+    def test_concurrent_creations_keep_one_topic_per_thread(self):
+        write, raced = bridge.write_json, []
+
+        def racing_write(path, value):
+            if path.name == "pair.json" and not raced:
+                raced.append(True)
+                # Another command pairs the same thread after this one scanned, before it wrote.
+                try:
+                    bridge.create_pair("p2", CODEX_ID, None, [], False)
+                except bridge.BridgeError as error:
+                    raced.append(error)
+            write(path, value)
+
+        with mock.patch.object(bridge, "LIFECYCLE_WAIT_SECONDS", 0.5), \
+                mock.patch.object(bridge, "write_json", racing_write):
+            self.pair("p1")
+        self.assertIsInstance(raced[-1], bridge.BridgeError)
+        self.assertEqual([item["name"] for item in bridge.all_pairs()], ["p1"])
+
     def test_rename_moves_the_topic_and_its_history(self):
         self.pair("p1")
         bridge.queue_message("p1", "codex", "kept in history")
@@ -632,6 +651,24 @@ class DeliveryRoutes(BridgeTestCase):
         bridge.send("p1", "codex", "hello", None, wait=True)
         self.assertEqual(self.codex_calls()[0][:2], ["exec", "resume"])
         self.assertIn("(delivered by exec)", self.inbox.texts(wait=2)[0])
+
+    def test_queue_answer_follows_the_log_as_it_grows(self):
+        rollout = bridge.codex_rollout(CODEX_ID)
+        rows = [{"type": "response_item", "payload": {"type": "message", "role": "user",
+                                                       "content": [{"type": "input_text", "text": "MARK-1"}]}},
+                {"type": "response_item", "payload": {"type": "message", "role": "assistant",
+                                                       "content": [{"type": "output_text", "text": "the answer"}]}},
+                {"type": "event_msg", "payload": {"type": "task_complete"}}]
+        text = "".join(json.dumps(row) + "\n" for row in rows)
+
+        def append():
+            for piece in (text[:40], text[40:-30], text[-30:]):  # records split mid-line
+                time.sleep(0.3)
+                with open(rollout, "a", encoding="utf-8") as stream:
+                    stream.write(piece)
+
+        threading.Thread(target=append, daemon=True).start()
+        self.assertEqual(bridge.watch_thread_answer(CODEX_ID, "MARK-1", 10, poll=0.1), "the answer")
 
     def test_exec_active_writer_falls_back_to_queue(self):
         self.pair()
