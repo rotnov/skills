@@ -574,6 +574,17 @@ class Pairs(BridgeTestCase):
         pair = bridge.create_pair("p2", other, "~", [], False)
         self.assertEqual(pair["codex"]["cwd"], str(Path.home().resolve()))
 
+    def test_a_relative_bridge_home_means_one_directory(self):
+        os.environ["AGENT_BRIDGE_HOME"] = "rel-home"
+        expected = (self.workdir / "rel-home").resolve()
+        self.assertEqual(bridge.home(), expected)
+        self.pair("p1")
+        # Workers and Codex processes get the absolute path, whatever their own directory.
+        self.assertEqual(bridge._codex_env()["AGENT_BRIDGE_HOME"], str(expected))
+        with mock.patch.object(bridge.subprocess, "Popen", wraps=subprocess.Popen) as popen:
+            bridge.spawn_worker("p1").wait()
+        self.assertEqual(popen.call_args.kwargs["env"]["AGENT_BRIDGE_HOME"], str(expected))
+
     def test_invalid_pair_name(self):
         with self.assertRaises(bridge.BridgeError):
             bridge.create_pair("../x", CODEX_ID, None, [], False)
@@ -803,6 +814,24 @@ class ClaudeToCodex(BridgeTestCase):
             processed = bridge.deliver_to_codex("p1")
         self.assertEqual(len(processed), 2)
         self.assertEqual(bridge.pending("p1", "codex"), [])
+
+    def test_wait_lasts_while_the_messages_ahead_keep_moving(self):
+        self.pair()
+        lock = bridge.pair_dir("p1") / "codex.lock"
+        lock.write_text(f"{os.getpid()} {time.time()}")  # another live worker owns the pair
+        ahead = [bridge.queue_message("p1", "codex", f"earlier {index}") for index in range(3)]
+
+        def worker():  # delivers the messages ahead one by one, each within one bound
+            for message in ahead:
+                time.sleep(0.8)
+                bridge.archive("p1", message, "sent")
+            time.sleep(0.8)
+            lock.unlink(missing_ok=True)
+
+        threading.Thread(target=worker, daemon=True).start()
+        with mock.patch.object(bridge, "WAIT_PER_MESSAGE_SECONDS", 1.5):
+            result = bridge.send("p1", "codex", "mine", None, wait=True)  # waits ~3.2 s in all
+        self.assertTrue((bridge.pair_dir("p1") / "mail" / "sent" / f"{result['id']}.json").exists())
 
     def test_wait_waits_for_a_worker_that_holds_the_lock(self):
         self.pair()

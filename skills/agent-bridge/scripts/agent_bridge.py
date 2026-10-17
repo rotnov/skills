@@ -62,6 +62,7 @@ QUEUE_TIMEOUT_SECONDS = 6 * 3600
 WORKER_STALE_SECONDS = max(CODEX_TIMEOUT_SECONDS, QUEUE_TIMEOUT_SECONDS) + CODEX_BUSY_WAIT_SECONDS + 60
 CLAUDE_POST_STALE_SECONDS = 300
 LIFECYCLE_WAIT_SECONDS = 10
+WAIT_PER_MESSAGE_SECONDS = WORKER_STALE_SECONDS  # --wait: longest one message may take
 # `codex queue` takes the message only as an argument: Windows caps the whole escaped command
 # line at 32,767 UTF-16 units, Linux one argument at 128 KiB.
 QUEUE_PROMPT_LIMIT = 32_000 if os.name == "nt" else 128_000
@@ -84,7 +85,8 @@ class BridgeError(Exception):
 
 
 def home() -> Path:
-    root = Path(os.environ.get("AGENT_BRIDGE_HOME", "~/.agent-bridge")).expanduser()
+    # Absolute, and passed on to workers and Codex, so every process means the same directory.
+    root = Path(os.environ.get("AGENT_BRIDGE_HOME", "~/.agent-bridge")).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
     _private(root, directory=True)
     return root
@@ -993,8 +995,10 @@ def _codex_env() -> dict[str, str]:
     """The environment for Codex processes: without the Claude session's identity, socket and
     token, which Codex would pass on to the commands it runs, so none of them can pass for that
     Claude session on another of its topics."""
-    return {key: value for key, value in os.environ.items()
-            if not key.startswith("CLAUDE_CODE_") and key != "CLAUDECODE"}
+    env = {key: value for key, value in os.environ.items()
+           if not key.startswith("CLAUDE_CODE_") and key != "CLAUDECODE"}
+    env["AGENT_BRIDGE_HOME"] = str(home())  # Codex's own sends find this bridge home
+    return env
 
 
 def codex_command(pair: dict, last_message: Path) -> list[str]:
@@ -1208,12 +1212,19 @@ def deliver_to_codex(name: str, busy_wait: int = CODEX_BUSY_WAIT_SECONDS,
 
 
 def deliver_in_foreground(name: str, message_id: str) -> None:
-    """Deliver now for --wait; while another worker owns the pair, wait until it sent this one."""
-    deadline = time.time() + WORKER_STALE_SECONDS
+    """Deliver now for --wait; while another worker owns the pair, wait until it sent this one.
+
+    The wait has no fixed end: it gives up only when nothing ahead of this message has moved for
+    as long as one message may take.
+    """
+    ahead, deadline = None, time.time() + WAIT_PER_MESSAGE_SECONDS
     while True:
         deliver_to_codex(name)
-        if all(item["id"] != message_id for item in pending(name, "codex")):
+        queue = [item["id"] for item in pending(name, "codex")]
+        if message_id not in queue:
             return
+        if ahead is None or queue.index(message_id) < ahead:  # a message ahead was delivered
+            ahead, deadline = queue.index(message_id), time.time() + WAIT_PER_MESSAGE_SECONDS
         if time.time() >= deadline:
             raise BridgeError("another worker kept the topic busy; the message stays queued")
         time.sleep(1)
@@ -1319,7 +1330,8 @@ def spawn_worker(name: str, command: list[str] | None = None) -> subprocess.Pope
     marker_id, marker = _reserve(name, os.getpid())  # until the worker's pid is known
     try:
         with open(directory / "worker.log", "a", encoding="utf-8") as stream:
-            options = {"stdin": subprocess.DEVNULL, "stdout": stream, "stderr": stream}
+            options = {"stdin": subprocess.DEVNULL, "stdout": stream, "stderr": stream,
+                       "env": {**os.environ, "AGENT_BRIDGE_HOME": str(home())}}
             if IS_WINDOWS:
                 options["creationflags"] = 0x00000008 | 0x00000200  # DETACHED | NEW_GROUP
             else:
