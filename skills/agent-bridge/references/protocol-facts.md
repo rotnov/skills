@@ -43,3 +43,12 @@ daemon 0.163.0 (2026-10-17). Undocumented items can change without notice.
   `turn_aborted`.
 - In a `read-only` sandbox, `uv` cannot write its cache; the protocol therefore
   gives Codex an absolute interpreter path instead of a `uv` command.
+
+## Sender checks
+
+The bridge compares the caller's environment (`CLAUDE_CODE_SESSION_ID`,
+`CODEX_THREAD_ID`) with the binding, and refuses a send as Claude from a Codex
+shell. This stops mistakes and stray processes, not a hostile agent running as
+the same user: such an agent can read the binding in the bridge home and set or
+unset those variables. The boundaries against it are Codex's sandbox and
+approvals, and the rule that bridge messages carry no user authority.
