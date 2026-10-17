@@ -516,6 +516,21 @@ class Pairs(BridgeTestCase):
                 bridge.find_message("p1", bad)  # never another file, e.g. a binding
         self.assertIsNone(bridge.codex_rollout("../*"))
 
+    def test_a_pair_that_vanishes_while_listing_is_skipped(self):
+        self.pair("p1")
+        other = "01a1496a-0000-7000-8000-000000000009"
+        self._write_rollout(other, busy=False)
+        bridge.create_pair("p2", other, None, [], False)
+        read = bridge.read_json
+
+        def vanishing(path):
+            if path.parent.name == "p1":
+                raise FileNotFoundError(path)  # renamed or removed after the directory listing
+            return read(path)
+
+        with mock.patch.object(bridge, "read_json", vanishing):
+            self.assertEqual([item["name"] for item in bridge.all_pairs()], ["p2"])
+
     def test_invalid_pair_name(self):
         with self.assertRaises(bridge.BridgeError):
             bridge.create_pair("../x", CODEX_ID, None, [], False)
@@ -637,13 +652,18 @@ class ClaudeToCodex(BridgeTestCase):
                         "--sandbox", "danger-full-access", "-s", "danger-full-access",
                         "--sandbox=danger-full-access", "-sdanger-full-access", "--full-auto",
                         "--approve-for-me", "--not-so-yolo", "--add-dir", "/", "-p", "yolo",
-                        "-C", "/", "--cd=/", "-C/", "-c"])
+                        "-C", "/", "--cd=/", "-C/", "--ignore-rules", "--ignore-user-config",
+                        "-c", 'notify=["touch", "/tmp/x"]', "-c", 'mcp_servers.x.command="y"',
+                        "--enable", "x", "-m", "gpt-x", "--config=model_reasoning_effort=\"high\"",
+                        "-c"])
         bridge.send("p1", "codex", "hello", None, wait=True)
         call = self.codex_calls()[0]
         extras = call[call.index("-o") + 2:-1]
-        # Only the harmless extra survives; the permission profile is pinned too, since it
-        # wins over sandbox_mode in Codex 0.138+.
-        self.assertEqual(extras, ["-c", 'model="x"', "-c", 'default_permissions=":read-only"',
+        # Only arguments that choose the model survive; the permission profile is pinned too,
+        # since it wins over sandbox_mode in Codex 0.138+.
+        self.assertEqual(extras, ["-c", 'model="x"', "-m", "gpt-x",
+                                  "-c", 'model_reasoning_effort="high"',
+                                  "-c", 'default_permissions=":read-only"',
                                   "-c", 'sandbox_mode="read-only"'])
 
     def test_sandbox_is_only_ever_read_only_or_workspace_write(self):
@@ -1077,6 +1097,23 @@ class McpServer(BridgeTestCase):
         self.assertIn("via mcp", self.inbox.texts(wait=2)[0])
         self.assertTrue(by_id[4]["result"]["isError"])
         self.assertEqual(by_id[5]["error"]["code"], -32601)
+
+    def test_malformed_requests_do_not_stop_the_server(self):
+        self.pair()
+        responses = self.rpc([
+            [],
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": []},
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+             "params": {"name": "bridge_send", "arguments": ["p1"]}},
+            {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+             "params": {"name": "bridge_send", "arguments": {"pair": "p1", "text": 5}}},
+            {"jsonrpc": "2.0", "id": 4, "method": "tools/list"},
+        ], "--side", "codex", "--pair", "p1")
+        self.assertEqual(responses[0]["error"]["code"], -32600)
+        by_id = {response["id"]: response for response in responses[1:]}
+        self.assertEqual([by_id[1]["error"]["code"], by_id[2]["error"]["code"]], [-32602, -32602])
+        self.assertTrue(by_id[3]["result"]["isError"])
+        self.assertEqual(len(by_id[4]["result"]["tools"]), 4)  # still serving
 
 
 if __name__ == "__main__":

@@ -22,9 +22,9 @@ queueing. Change the sandbox for bridge-started turns with
 `pair set TOPIC --codex-sandbox workspace-write`; it is always `read-only` or
 `workspace-write`, and is also pinned as the matching permission profile
 (`default_permissions` `:read-only` or `:workspace`), which Codex 0.138+ prefers
-over the sandbox mode. Extra `--codex-arg` values that bypass or set the
-sandbox, approvals or permissions, add writable directories, or select a config
-profile are dropped.
+over the sandbox mode. Extra `--codex-arg` values may only choose the model:
+`-m MODEL`, or `-c` with `model`, `model_reasoning_effort`,
+`model_reasoning_summary` or `model_verbosity`. Any other value is dropped.
 
 ## Steer
 

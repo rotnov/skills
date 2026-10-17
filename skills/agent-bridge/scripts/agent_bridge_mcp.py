@@ -102,11 +102,20 @@ class Server:
             return bridge.find_message(name, arguments["id"])
         raise bridge.BridgeError(f"unknown tool {tool!r}")
 
-    def handle(self, request: dict) -> dict | None:
+    def handle(self, request) -> dict | None:
+        if not isinstance(request, dict):
+            return {"jsonrpc": "2.0", "id": None,
+                    "error": {"code": -32600, "message": "a request must be a JSON object"}}
         method, identifier = request.get("method"), request.get("id")
         if identifier is None:
             return None  # notification, e.g. notifications/initialized
-        params = request.get("params") or {}
+        params = {} if request.get("params") is None else request["params"]
+        arguments = None
+        if isinstance(params, dict):
+            arguments = {} if params.get("arguments") is None else params["arguments"]
+        if not isinstance(params, dict) or not isinstance(arguments, dict):
+            return {"jsonrpc": "2.0", "id": identifier,
+                    "error": {"code": -32602, "message": "params and arguments must be objects"}}
         if method == "initialize":
             result = {"protocolVersion": params.get("protocolVersion", PROTOCOL_FALLBACK),
                       "capabilities": {"tools": {"listChanged": False}},
@@ -117,11 +126,11 @@ class Server:
             result = {"tools": tool_definitions(self.side)}
         elif method == "tools/call":
             try:
-                value = self.call(params.get("name") or "", params.get("arguments") or {})
+                value = self.call(str(params.get("name") or ""), arguments)
                 result = {"content": [{"type": "text",
                                        "text": json.dumps(value, indent=2, ensure_ascii=False)}],
                           "isError": False}
-            except (bridge.BridgeError, KeyError, OSError) as error:
+            except Exception as error:  # noqa: BLE001 - one bad call must not stop the server
                 result = {"content": [{"type": "text", "text": f"agent-bridge: {error}"}],
                           "isError": True}
         else:

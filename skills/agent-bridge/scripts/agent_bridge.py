@@ -63,17 +63,10 @@ CLAUDE_POST_STALE_SECONDS = 300
 LIFECYCLE_WAIT_SECONDS = 10
 MODES = ("auto", "daemon", "exec", "queue")
 SANDBOXES = ("read-only", "workspace-write")
-UNSAFE_CODEX_FLAGS = {"--dangerously-bypass-approvals-and-sandbox", "--yolo",
-                      "--dangerously-bypass-hook-trust", "--full-auto", "--approve-for-me",
-                      "--not-so-yolo"}
-# Options whose value selects the sandbox, approvals, the workspace root, extra writable roots
-# or a config profile.
-UNSAFE_CODEX_OPTIONS = {"-s", "--sandbox", "-a", "--ask-for-approval", "-C", "--cd", "--add-dir",
-                        "-p", "--profile"}
-# Config overrides that could loosen the pair's sandbox: the sandbox itself, a permission
-# profile, or a config profile that carries either.
-SANDBOX_SETTING = re.compile(r"^\s*[\"']?(sandbox|profile|permissions|default_permissions)",
-                             re.IGNORECASE)
+# Extra `codex exec` arguments may only choose the model. Anything else could widen what a bridge
+# turn may do: sandbox, approvals, rules, working root, or commands run outside the sandbox
+# (for example `-c notify=...` or `-c mcp_servers...`).
+MODEL_SETTINGS = {"model", "model_reasoning_effort", "model_reasoning_summary", "model_verbosity"}
 PRIORITIES = ("next", "later")
 IS_WINDOWS = os.name == "nt"
 _WORKERS: list = []  # detached worker handles, kept so they are not reported as leaked
@@ -136,7 +129,13 @@ def all_pairs() -> list[dict]:
     root = home() / "pairs"
     if not root.is_dir():
         return []
-    return [read_json(path) for path in sorted(root.glob("*/pair.json"))]
+    pairs = []
+    for path in sorted(root.glob("*/pair.json")):
+        try:
+            pairs.append(read_json(path))
+        except FileNotFoundError:
+            continue  # renamed, removed or replaced after the directory was listed
+    return pairs
 
 
 def log_event(name: str, event: str, **fields) -> None:
@@ -690,28 +689,26 @@ def codex_sandbox(pair: dict) -> str:
 
 
 def codex_extra_args(pair: dict) -> list[str]:
-    """The pair's extra `codex exec` arguments, minus any that bypass or change its sandbox."""
+    """The pair's extra `codex exec` arguments that only choose the model; the rest are dropped."""
     args, kept, index = list(pair["codex"].get("args", [])), [], 0
     while index < len(args):
         arg = args[index]
         index += 1
-        if arg in UNSAFE_CODEX_FLAGS:
-            continue
-        if arg.split("=", 1)[0] in UNSAFE_CODEX_OPTIONS:
-            index += "=" not in arg  # its value is the next argument
-            continue
-        if re.fullmatch(r"-[sapC]\S+", arg):  # a short option with its value attached
-            continue
-        if arg in ("-c", "--config"):
-            setting = args[index] if index < len(args) else ""
-            index += 1
-            if setting and not SANDBOX_SETTING.match(setting):
-                kept += [arg, setting]
-            continue
-        inline = re.match(r"^(?:--config=|-c)(.+)$", arg)
-        if inline and SANDBOX_SETTING.match(inline.group(1)):
-            continue
-        kept.append(arg)
+        if arg.startswith("--") and "=" in arg:
+            option, value = arg.split("=", 1)
+        elif arg.startswith("-") and not arg.startswith("--") and len(arg) > 2:
+            option, value = arg[:2], arg[2:]  # a short option with its value attached
+        else:
+            option, value = arg, None
+            if option in ("-m", "--model", "-c", "--config") and index < len(args):
+                value = args[index]
+                index += 1
+        if value is None or value.startswith("-"):
+            continue  # a flag, a stray value or a dangling option: none of them chooses the model
+        if option in ("-m", "--model"):
+            kept += ["-m", value]
+        elif option in ("-c", "--config") and value.split("=", 1)[0].strip(" \"'") in MODEL_SETTINGS:
+            kept += ["-c", value]
     return kept
 
 
@@ -1327,8 +1324,9 @@ def main(argv=None) -> int:
     create.add_argument("--codex-session", required=True, help="Codex session/thread UUID")
     create.add_argument("--codex-cwd", help="working directory for codex (default: its own)")
     create.add_argument("--codex-arg", action="append", default=[],
-                        help="extra argument for `codex exec resume`, e.g. -c model=\"...\" "
-                             "(repeatable; sandbox overrides are dropped, use --codex-sandbox)")
+                        help="extra `codex exec resume` argument that chooses the model: "
+                             "-m MODEL or -c model_reasoning_effort=... (repeatable; any other "
+                             "argument is dropped, use --codex-sandbox for the sandbox)")
     create.add_argument("--codex-mode", choices=MODES, default="auto",
                         help="delivery route to Codex (auto tries daemon, exec, then queue)")
     create.add_argument("--codex-sandbox", choices=SANDBOXES, default="read-only",
