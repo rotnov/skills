@@ -490,11 +490,23 @@ class ClaudeToCodex(BridgeTestCase):
         self.assertTrue((bridge.pair_dir("p1") / "mail" / "failed" / f"{message['id']}.json").exists())
 
     def test_dangerous_codex_arguments_are_dropped(self):
-        self.pair(args=["--dangerously-bypass-approvals-and-sandbox", "-c", 'model="x"'])
+        self.pair(args=["--dangerously-bypass-approvals-and-sandbox", "-c", 'model="x"',
+                        "-c", 'sandbox_mode="danger-full-access"', '--config=profile="yolo"',
+                        "--config", 'sandbox_workspace_write.writable_roots=["/"]', "-c"])
         bridge.send("p1", "codex", "hello", None, wait=True)
         call = self.codex_calls()[0]
         self.assertNotIn("--dangerously-bypass-approvals-and-sandbox", call)
-        self.assertIn('model="x"', call)
+        self.assertNotIn('--config=profile="yolo"', call)
+        settings = [call[index + 1] for index, arg in enumerate(call) if arg in ("-c", "--config")]
+        self.assertEqual(settings, ['model="x"', 'sandbox_mode="read-only"'])
+
+    def test_sandbox_is_only_ever_read_only_or_workspace_write(self):
+        legacy = {"codex": {"args": ["-c", 'sandbox_mode="danger-full-access"']}}
+        self.assertEqual(bridge.codex_sandbox(legacy), "read-only")
+        legacy = {"codex": {"args": ["-c", 'sandbox_mode="workspace-write"']}}
+        self.assertEqual(bridge.codex_sandbox(legacy), "workspace-write")
+        self.assertEqual(bridge.codex_sandbox({"codex": {"sandbox": "danger-full-access"}}),
+                         "read-only")
 
     def test_other_claude_session_is_refused(self):
         self.pair()
@@ -603,6 +615,7 @@ class Steering(BridgeTestCase):
         self.assertTrue(state.exists(), "the worker never started a daemon turn")
         result = bridge.send("p1", "codex", "change of plan", None, False, steer=True)
         self.assertIn(f"answering message {first['id']}", result["status"])
+        self.assertEqual(list(bridge.pair_dir("p1").glob("steer-*.lock")), [])  # no worker owes it
         steer = [params for method, params in daemon.calls if method == "turn/steer"][0]
         self.assertEqual(steer["expectedTurnId"], "turn-1")
         reply = self.inbox.texts(wait=10)[0]
@@ -634,6 +647,18 @@ class Steering(BridgeTestCase):
         self.assertTrue((bridge.pair_dir("p1") / "mail" / "sent" / f"{result['id']}.json").exists())
         self.assertIn("STEERED", self.inbox.texts(wait=10)[0])
 
+    def test_a_steered_reply_still_owed_keeps_the_topic_busy(self):
+        self.start_daemon(loaded=True, user_turn_seconds=2)
+        self.pair()
+        bridge.send("p1", "codex", "also check X", None, False, steer=True)
+        with self.assertRaises(bridge.BridgeError):
+            bridge.rename_pair("p1", "p2")  # the await-turn worker has not posted the reply yet
+        self.assertIn("STEERED", self.inbox.texts(wait=10)[0])
+        deadline = time.time() + 5
+        while list(bridge.pair_dir("p1").glob("steer-*.lock")) and time.time() < deadline:
+            time.sleep(0.1)
+        self.assertEqual(bridge.rename_pair("p1", "p2")["name"], "p2")
+
     def test_steer_needs_an_active_turn(self):
         self.start_daemon(loaded=True)
         self.pair()
@@ -641,6 +666,7 @@ class Steering(BridgeTestCase):
             bridge.send("p1", "codex", "steer nothing", None, False, steer=True)
         self.assertEqual(len(list((bridge.pair_dir("p1") / "mail" / "failed").glob("*.json"))), 1)
         self.assertEqual(bridge.pending("p1", "codex"), [])  # a refused steer is not sent later
+        self.assertEqual(list(bridge.pair_dir("p1").glob("steer-*.lock")), [])
 
     def test_steer_needs_the_daemon(self):
         self.pair()

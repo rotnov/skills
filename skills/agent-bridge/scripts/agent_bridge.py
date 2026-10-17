@@ -53,8 +53,13 @@ CODEX_BUSY_WAIT_SECONDS = 900
 QUEUE_TIMEOUT_SECONDS = 6 * 3600
 WORKER_STALE_SECONDS = max(CODEX_TIMEOUT_SECONDS, QUEUE_TIMEOUT_SECONDS) + CODEX_BUSY_WAIT_SECONDS + 60
 CLAUDE_POST_STALE_SECONDS = 300
+STEER_STALE_SECONDS = CODEX_TIMEOUT_SECONDS + 300
 MODES = ("auto", "daemon", "exec", "queue")
 SANDBOXES = ("read-only", "workspace-write")
+UNSAFE_CODEX_FLAGS = {"--dangerously-bypass-approvals-and-sandbox", "--yolo",
+                      "--dangerously-bypass-hook-trust"}
+# Config overrides that could loosen the pair's sandbox: the sandbox itself, or a profile with one.
+SANDBOX_SETTING = re.compile(r"^\s*[\"']?(sandbox|profile|permissions)", re.IGNORECASE)
 PRIORITIES = ("next", "later")
 IS_WINDOWS = os.name == "nt"
 _WORKERS: list = []  # detached worker handles, kept so they are not reported as leaked
@@ -583,14 +588,38 @@ def send_handshake(name: str, wait: bool = False) -> dict:
 
 
 def codex_sandbox(pair: dict) -> str:
-    """Explicit pair sandbox, else a legacy `-c sandbox_mode=...` argument, else read-only."""
-    if pair["codex"].get("sandbox"):
+    """Explicit pair sandbox, else a legacy `-c sandbox_mode=...` argument, else read-only.
+
+    Only a value from SANDBOXES is ever returned.
+    """
+    if pair["codex"].get("sandbox") in SANDBOXES:
         return pair["codex"]["sandbox"]
     for arg in pair["codex"].get("args", []):
         match = re.match(r'^sandbox_mode\s*=\s*"?([a-z-]+)"?$', arg)
-        if match:
+        if match and match.group(1) in SANDBOXES:
             return match.group(1)
     return "read-only"
+
+
+def codex_extra_args(pair: dict) -> list[str]:
+    """The pair's extra `codex exec` arguments, minus any that bypass or change its sandbox."""
+    args, kept, index = list(pair["codex"].get("args", [])), [], 0
+    while index < len(args):
+        arg = args[index]
+        index += 1
+        if arg in UNSAFE_CODEX_FLAGS:
+            continue
+        if arg in ("-c", "--config"):
+            setting = args[index] if index < len(args) else ""
+            index += 1
+            if setting and not SANDBOX_SETTING.match(setting):
+                kept += [arg, setting]
+            continue
+        inline = re.match(r"^(?:--config=|-c)(.+)$", arg)
+        if inline and SANDBOX_SETTING.match(inline.group(1)):
+            continue
+        kept.append(arg)
+    return kept
 
 
 class Lock:
@@ -651,7 +680,17 @@ def _delivery_in_progress(directory: Path) -> bool:
     if not codex:
         # active_turn.json is written only under codex.lock: without a live worker it is orphaned.
         (directory / "active_turn.json").unlink(missing_ok=True)
-    return codex or _live_lock(directory / "claude.lock", CLAUDE_POST_STALE_SECONDS)
+    steers = [path for path in directory.glob("steer-*.lock")
+              if _live_lock(path, STEER_STALE_SECONDS)]
+    return codex or bool(steers) or _live_lock(directory / "claude.lock", CLAUDE_POST_STALE_SECONDS)
+
+
+def _hold_marker(path: Path, pid: int) -> None:
+    """Atomically (re)write a lock-format marker naming the process that owns it."""
+    handle, temporary = tempfile.mkstemp(dir=path.parent, prefix=".tmp-")
+    with os.fdopen(handle, "w", encoding="utf-8") as stream:
+        stream.write(f"{pid} {time.time()}")
+    os.replace(temporary, path)
 
 
 class ActiveWriterError(BridgeError):
@@ -663,12 +702,10 @@ def codex_executable() -> str:
 
 
 def codex_command(pair: dict, prompt: str, last_message: Path) -> list[str]:
-    forbidden = {"--dangerously-bypass-approvals-and-sandbox", "--yolo"}
-    extra = [arg for arg in pair["codex"].get("args", []) if arg not in forbidden]
-    if not any(arg.startswith("sandbox_mode") for arg in extra):
-        extra += ["-c", f'sandbox_mode="{codex_sandbox(pair)}"']
+    # The pair's validated sandbox comes after every extra argument, so nothing overrides it.
     return [codex_executable(), "exec", "resume", pair["codex"]["session_id"], "--json",
-            "--skip-git-repo-check", "-o", str(last_message), *extra, prompt]
+            "--skip-git-repo-check", "-o", str(last_message), *codex_extra_args(pair),
+            "-c", f'sandbox_mode="{codex_sandbox(pair)}"', prompt]
 
 
 def _route_daemon(name: str, pair: dict, message: dict, busy_wait: int, timeout: int) -> str:
@@ -847,37 +884,52 @@ def steer_codex(name: str, text: str, reply_to: str | None) -> dict:
     """Add a message to the active turn of a daemon-hosted Codex thread, now."""
     # Held outside inbox-codex until the outcome is known, so no worker also sends it as a turn.
     message = queue_message(name, "codex", text, reply_to=reply_to, kind="steer", box="steering")
-    pair = load_pair(name)
+    # The topic stays busy (no rename or removal) until the steered turn's reply is posted.
+    marker = pair_dir(name) / f"steer-{message['id']}.lock"
+    _hold_marker(marker, os.getpid())
+    handed_over = False
     try:
-        turn_id = codex_daemon.steer(pair["codex"]["session_id"], codex_prompt(pair, message))
-    except codex_daemon.DaemonError as error:
-        archive(name, message, "failed", "steering", failed=now(), reason=str(error))
-        log_event(name, "steer_refused", id=message["id"], reason=str(error)[:200])
-        raise BridgeError(f"steer not possible: {error}") from error
-    archive(name, message, "sent", "steering", delivered=now(), route="daemon-steer", turn=turn_id)
-    log_event(name, "steered", id=message["id"], turn=turn_id)
-    state = pair_dir(name) / "active_turn.json"
-    own = read_json(state) if state.is_file() else None
-    if own and own.get("turn_id") == turn_id:
-        return {"id": message["id"], "status": f"steered into turn {turn_id}, which is answering "
-                f"message {own['message_id']}; that reply carries the result"}
-    spawn_worker(name, ["await-turn", name, turn_id, message["id"]])
-    return {"id": message["id"], "status": f"steered into turn {turn_id}; its final answer "
-            "will arrive as a reply"}
+        pair = load_pair(name)
+        try:
+            turn_id = codex_daemon.steer(pair["codex"]["session_id"], codex_prompt(pair, message))
+        except codex_daemon.DaemonError as error:
+            archive(name, message, "failed", "steering", failed=now(), reason=str(error))
+            log_event(name, "steer_refused", id=message["id"], reason=str(error)[:200])
+            raise BridgeError(f"steer not possible: {error}") from error
+        archive(name, message, "sent", "steering", delivered=now(), route="daemon-steer",
+                turn=turn_id)
+        log_event(name, "steered", id=message["id"], turn=turn_id)
+        state = pair_dir(name) / "active_turn.json"
+        own = read_json(state) if state.is_file() else None
+        if own and own.get("turn_id") == turn_id:
+            return {"id": message["id"], "status": f"steered into turn {turn_id}, which is "
+                    f"answering message {own['message_id']}; that reply carries the result"}
+        worker = spawn_worker(name, ["await-turn", name, turn_id, message["id"]])
+        _hold_marker(marker, worker.pid)  # the worker removes it once the reply is posted
+        handed_over = True
+        return {"id": message["id"], "status": f"steered into turn {turn_id}; its final answer "
+                "will arrive as a reply"}
+    finally:
+        if not handed_over:
+            marker.unlink(missing_ok=True)
 
 
 def await_turn_reply(name: str, turn_id: str, message_id: str) -> None:
-    pair = load_pair(name)
+    marker = pair_dir(name) / f"steer-{message_id}.lock"
     try:
-        status, answer = codex_daemon.await_turn(pair["codex"]["session_id"], turn_id,
-                                                 CODEX_TIMEOUT_SECONDS)
-        text = answer or f"(turn {turn_id} ended '{status}' without an answer)"
-        queue_message(name, "claude", text, reply_to=message_id, kind="reply",
-                      verify_sender=False, route="daemon-steer")
-    except codex_daemon.DaemonError as error:
-        queue_message(name, "claude", f"steered turn not observed: {error}", reply_to=message_id,
-                      kind="failure", verify_sender=False)
-    deliver_to_claude(name)
+        pair = load_pair(name)
+        try:
+            status, answer = codex_daemon.await_turn(pair["codex"]["session_id"], turn_id,
+                                                     CODEX_TIMEOUT_SECONDS)
+            text = answer or f"(turn {turn_id} ended '{status}' without an answer)"
+            queue_message(name, "claude", text, reply_to=message_id, kind="reply",
+                          verify_sender=False, route="daemon-steer")
+        except codex_daemon.DaemonError as error:
+            queue_message(name, "claude", f"steered turn not observed: {error}",
+                          reply_to=message_id, kind="failure", verify_sender=False)
+        deliver_to_claude(name)
+    finally:
+        marker.unlink(missing_ok=True)
 
 
 def _codex_error(result) -> str:
@@ -902,7 +954,7 @@ def _fail(name: str, pair: dict, message: dict, reason: str) -> None:
                   verify_sender=False)
 
 
-def spawn_worker(name: str, command: list[str] | None = None) -> None:
+def spawn_worker(name: str, command: list[str] | None = None) -> subprocess.Popen:
     """Run a bridge command for this pair in a detached process that survives the caller."""
     log = pair_dir(name) / "worker.log"
     with open(log, "a", encoding="utf-8") as stream:
@@ -911,9 +963,11 @@ def spawn_worker(name: str, command: list[str] | None = None) -> None:
             options["creationflags"] = 0x00000008 | 0x00000200  # DETACHED | NEW_GROUP
         else:
             options["start_new_session"] = True
-        _WORKERS.append(subprocess.Popen(
+        worker = subprocess.Popen(
             [sys.executable, "-I", str(Path(__file__).resolve()), *(command or ["deliver", name])],
-            **options))
+            **options)
+    _WORKERS.append(worker)
+    return worker
 
 
 def send(name: str, to: str, text: str, reply_to: str | None, wait: bool,
@@ -960,8 +1014,8 @@ def main(argv=None) -> int:
     create.add_argument("--codex-session", required=True, help="Codex session/thread UUID")
     create.add_argument("--codex-cwd", help="working directory for codex (default: its own)")
     create.add_argument("--codex-arg", action="append", default=[],
-                        help="extra argument for `codex exec resume`, e.g. "
-                             "-c sandbox_mode=\"read-only\" (repeatable)")
+                        help="extra argument for `codex exec resume`, e.g. -c model=\"...\" "
+                             "(repeatable; sandbox overrides are dropped, use --codex-sandbox)")
     create.add_argument("--codex-mode", choices=MODES, default="auto",
                         help="delivery route to Codex (auto tries daemon, exec, then queue)")
     create.add_argument("--codex-sandbox", choices=SANDBOXES, default="read-only",

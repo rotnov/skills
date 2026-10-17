@@ -19,7 +19,9 @@ later messages wait behind a queued one.
 Pin a route with `pair set TOPIC --codex-mode daemon|exec|queue`. A pinned
 `daemon` or `exec` reports a desktop-hosted thread as a failure instead of
 queueing. Change the sandbox for bridge-started turns with
-`pair set TOPIC --codex-sandbox workspace-write`.
+`pair set TOPIC --codex-sandbox workspace-write`; it is always `read-only` or
+`workspace-write`. Extra `--codex-arg` values that bypass or set the sandbox,
+or select a config profile, are dropped.
 
 ## Steer
 
