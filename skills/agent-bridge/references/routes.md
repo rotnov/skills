@@ -51,10 +51,13 @@ messages carry a one-line reminder. `pair handshake TOPIC` resends it.
 | "no answer within ... h" | A queued message was not answered; check the desktop queue. |
 | "Claude session socket unreachable" | The Claude session restarted or ended; run `pair refresh` in it, then `deliver TOPIC`. |
 | "steer not possible" | See the steer conditions above. |
+| "has a delivery in progress" | A live worker owns the topic; retry after its reply. Markers left by a killed worker are cleared automatically. |
 | "rate limit" | 20 messages per sender per 10 minutes per topic; batch them. |
 
 Inspect with `inbox TOPIC` and `read TOPIC ID`. Messages are JSON files under
 `$AGENT_BRIDGE_HOME/pairs/TOPIC/mail/`; `log.jsonl` records events without text.
+A steer waits in `steering/`, outside the delivery queue, until the daemon
+accepts or refuses it.
 `deliver TOPIC` retries pending deliveries; `watch` keeps delivering for all
 topics. `pair remove TOPIC`, and `pair create --force` on an existing topic, move
 the whole topic directory under `$AGENT_BRIDGE_HOME/retired/`, so a new binding

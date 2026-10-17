@@ -51,6 +51,8 @@ RATE_LIMIT = 20
 CODEX_TIMEOUT_SECONDS = 1800
 CODEX_BUSY_WAIT_SECONDS = 900
 QUEUE_TIMEOUT_SECONDS = 6 * 3600
+WORKER_STALE_SECONDS = max(CODEX_TIMEOUT_SECONDS, QUEUE_TIMEOUT_SECONDS) + CODEX_BUSY_WAIT_SECONDS + 60
+CLAUDE_POST_STALE_SECONDS = 300
 MODES = ("auto", "daemon", "exec", "queue")
 SANDBOXES = ("read-only", "workspace-write")
 PRIORITIES = ("next", "later")
@@ -281,7 +283,7 @@ def rename_pair(old: str, new: str) -> dict:
         raise BridgeError(f"no pair named {old!r}")
     if target.exists():
         raise BridgeError(f"topic {new!r} already exists")
-    if (source / "codex.lock").exists() or (source / "active_turn.json").exists():
+    if _delivery_in_progress(source):
         raise BridgeError(f"topic {old!r} has a delivery in progress; rename it afterwards")
     os.rename(source, target)
     pair = read_json(target / "pair.json")
@@ -310,7 +312,7 @@ def update_pair(name: str, mode: str | None, sandbox: str | None) -> dict:
 def _quarantine(name: str) -> Path:
     """Move a topic's whole directory (binding, mailbox, log) under retired/, kept as a record."""
     directory = pair_dir(name)
-    if (directory / "codex.lock").exists() or (directory / "active_turn.json").exists():
+    if _delivery_in_progress(directory):
         raise BridgeError(f"topic {name!r} has a delivery in progress; try again afterwards")
     retired = home() / "retired"
     retired.mkdir(exist_ok=True)
@@ -360,7 +362,8 @@ def check_rate(name: str, sender: str) -> None:
 
 
 def queue_message(name: str, to: str, text: str, reply_to: str | None = None,
-                  kind: str = "message", verify_sender: bool = True, **fields) -> dict:
+                  kind: str = "message", verify_sender: bool = True, box: str | None = None,
+                  **fields) -> dict:
     if to not in SIDES:
         raise BridgeError("--to must be claude or codex")
     pair = load_pair(name)
@@ -378,7 +381,7 @@ def queue_message(name: str, to: str, text: str, reply_to: str | None = None,
         "pair": name, "from": sender, "to": to, "kind": kind,
         "created": now(), "reply_to": reply_to, "text": text, **fields,
     }
-    write_json(pair_dir(name) / "mail" / f"inbox-{to}" / f"{message['id']}.json", message)
+    write_json(pair_dir(name) / "mail" / (box or f"inbox-{to}") / f"{message['id']}.json", message)
     log_event(name, "queued", id=message["id"], **{"from": sender}, to=to, kind=kind,
               chars=len(text), reply_to=reply_to)
     handshake = pair.get("handshake") or {}
@@ -391,9 +394,9 @@ def queue_message(name: str, to: str, text: str, reply_to: str | None = None,
     return message
 
 
-def archive(name: str, message: dict, box: str, **extra) -> None:
+def archive(name: str, message: dict, box: str, from_box: str | None = None, **extra) -> None:
     mail = pair_dir(name) / "mail"
-    source = mail / f"inbox-{message['to']}" / f"{message['id']}.json"
+    source = mail / (from_box or f"inbox-{message['to']}") / f"{message['id']}.json"
     message = {**message, **extra}
     write_json(mail / box / f"{message['id']}.json", message)
     if source.exists():
@@ -460,20 +463,28 @@ def post_to_claude(pair: dict, text: str, priority: str = "next") -> None:
 
 
 def deliver_to_claude(name: str) -> list[str]:
-    pair = load_pair(name)
+    """Post queued messages in order, one poster per pair, so no message is posted twice."""
     delivered = []
-    for message in pending(name, "claude"):
-        try:
-            post_to_claude(pair, claude_text(pair, message), message.get("priority", "next"))
-        except OSError as error:
-            log_event(name, "claude_delivery_deferred", id=message["id"],
-                      error=type(error).__name__)
-            raise BridgeError(f"Claude session socket unreachable ({type(error).__name__}); "
-                              "message kept in the mailbox. If the session restarted, run "
-                              "`pair refresh` inside it, then `deliver`.") from error
-        archive(name, message, "sent", delivered=now())
-        log_event(name, "delivered", id=message["id"], to="claude")
-        delivered.append(message["id"])
+    while pending(name, "claude"):
+        with Lock(pair_dir(name) / "claude.lock", stale_seconds=CLAUDE_POST_STALE_SECONDS) as lock:
+            if not lock.held:
+                break  # the holder looks at the mailbox again after releasing the lock
+            pair = load_pair(name)
+            queue = [item for item in pending(name, "claude") if item["id"] not in delivered]
+            if not queue:
+                break
+            for message in queue:
+                try:
+                    post_to_claude(pair, claude_text(pair, message), message.get("priority", "next"))
+                except OSError as error:
+                    log_event(name, "claude_delivery_deferred", id=message["id"],
+                              error=type(error).__name__)
+                    raise BridgeError(f"Claude session socket unreachable ({type(error).__name__}); "
+                                      "message kept in the mailbox. If the session restarted, run "
+                                      "`pair refresh` inside it, then `deliver`.") from error
+                archive(name, message, "sent", delivered=now())
+                log_event(name, "delivered", id=message["id"], to="claude")
+                delivered.append(message["id"])
     return delivered
 
 
@@ -622,6 +633,25 @@ class Lock:
     def __exit__(self, *exc):
         if self.held:
             self.path.unlink(missing_ok=True)
+
+
+def _live_lock(path: Path, stale_seconds: int) -> bool:
+    """True while a live process holds this lock; the lock of a killed holder is removed."""
+    if not path.exists():
+        return False
+    if not Lock(path, stale_seconds)._stale():
+        return True
+    path.unlink(missing_ok=True)
+    return False
+
+
+def _delivery_in_progress(directory: Path) -> bool:
+    """True while a live worker owns the topic; markers left by a killed worker are discarded."""
+    codex = _live_lock(directory / "codex.lock", WORKER_STALE_SECONDS)
+    if not codex:
+        # active_turn.json is written only under codex.lock: without a live worker it is orphaned.
+        (directory / "active_turn.json").unlink(missing_ok=True)
+    return codex or _live_lock(directory / "claude.lock", CLAUDE_POST_STALE_SECONDS)
 
 
 class ActiveWriterError(BridgeError):
@@ -815,15 +845,16 @@ def deliver_to_codex(name: str, busy_wait: int = CODEX_BUSY_WAIT_SECONDS,
 
 def steer_codex(name: str, text: str, reply_to: str | None) -> dict:
     """Add a message to the active turn of a daemon-hosted Codex thread, now."""
-    message = queue_message(name, "codex", text, reply_to=reply_to, kind="steer")
+    # Held outside inbox-codex until the outcome is known, so no worker also sends it as a turn.
+    message = queue_message(name, "codex", text, reply_to=reply_to, kind="steer", box="steering")
     pair = load_pair(name)
     try:
         turn_id = codex_daemon.steer(pair["codex"]["session_id"], codex_prompt(pair, message))
     except codex_daemon.DaemonError as error:
-        archive(name, message, "failed", failed=now(), reason=str(error))
+        archive(name, message, "failed", "steering", failed=now(), reason=str(error))
         log_event(name, "steer_refused", id=message["id"], reason=str(error)[:200])
         raise BridgeError(f"steer not possible: {error}") from error
-    archive(name, message, "sent", delivered=now(), route="daemon-steer", turn=turn_id)
+    archive(name, message, "sent", "steering", delivered=now(), route="daemon-steer", turn=turn_id)
     log_event(name, "steered", id=message["id"], turn=turn_id)
     state = pair_dir(name) / "active_turn.json"
     own = read_json(state) if state.is_file() else None
@@ -1053,7 +1084,7 @@ def _dispatch(args) -> int:
                     if pending(item["name"], "claude"):
                         deliver_to_claude(item["name"])
                     lock = pair_dir(item["name"]) / "codex.lock"
-                    if pending(item["name"], "codex") and not lock.exists():
+                    if pending(item["name"], "codex") and not _live_lock(lock, WORKER_STALE_SECONDS):
                         spawn_worker(item["name"])
                 except BridgeError as error:
                     print(f"agent-bridge: {item['name']}: {error}", file=sys.stderr)

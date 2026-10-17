@@ -16,6 +16,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 HERE = ROOT / "skills" / "agent-bridge" / "scripts"
@@ -366,11 +367,28 @@ class Pairs(BridgeTestCase):
         self.assertEqual(renamed["renamed_from"][0]["name"], "p1")
         self.assertFalse(bridge.pair_dir("p1").exists())
         self.assertEqual(len(bridge.pending("geometry-oracle", "codex")), 1)
-        (bridge.pair_dir("geometry-oracle") / "codex.lock").write_text("1 0")
+        (bridge.pair_dir("geometry-oracle") / "codex.lock").write_text(f"{os.getpid()} {time.time()}")
         with self.assertRaises(bridge.BridgeError):
             bridge.rename_pair("geometry-oracle", "again")
         with self.assertRaises(bridge.BridgeError):
             bridge.rename_pair("geometry-oracle", "Bad Name")
+
+    def test_a_killed_worker_does_not_block_the_topic(self):
+        self.pair("p1")
+        directory = bridge.pair_dir("p1")
+        (directory / "codex.lock").write_text(f"{os.getpid()} {time.time()}")
+        with self.assertRaises(bridge.BridgeError):
+            bridge.remove_pair("p1")  # a live worker still owns the topic
+        dead = subprocess.Popen([sys.executable, "-c", "pass"])
+        dead.wait()
+        (directory / "codex.lock").write_text(f"{dead.pid} {time.time()}")
+        bridge.write_json(directory / "active_turn.json", {"turn_id": "t", "message_id": "m"})
+        bridge.rename_pair("p1", "p2")
+        self.assertEqual(sorted(path.name for path in bridge.pair_dir("p2").glob("*.json")), ["pair.json"])
+        self.assertFalse((bridge.pair_dir("p2") / "codex.lock").exists())
+        bridge.write_json(bridge.pair_dir("p2") / "active_turn.json", {"turn_id": "t", "message_id": "m"})
+        retired = bridge.remove_pair("p2")  # an orphaned turn marker without a worker
+        self.assertFalse((retired / "active_turn.json").exists())
 
     def test_refresh_updates_every_topic_of_the_session(self):
         self.pair("p1")
@@ -408,6 +426,28 @@ class CodexToClaude(BridgeTestCase):
         self.inbox = FakeClaudeInbox(self.socket_path)
         self.assertEqual(len(bridge.deliver_to_claude("p1")), 1)
         self.assertIn("hello", self.inbox.texts(wait=2)[0])
+
+    def test_concurrent_deliveries_post_each_message_once(self):
+        self.pair()
+        os.environ.pop("CLAUDE_CODE_SESSION_ID")  # the sender is Codex
+        bridge.queue_message("p1", "claude", "first")
+        posted, post = [], bridge.post_to_claude
+
+        def racing_post(pair, text, priority="next"):
+            posted.append(text)
+            if len(posted) == 1:
+                # Another process (watch, a worker or a send) delivers while this one posts.
+                bridge.queue_message("p1", "claude", "second")
+                self.assertEqual(bridge.deliver_to_claude("p1"), [])
+            post(pair, text, priority)
+
+        with mock.patch.object(bridge, "post_to_claude", racing_post):
+            delivered = bridge.deliver_to_claude("p1")
+        self.assertEqual(len(delivered), 2)
+        self.assertEqual([("first" in text, "second" in text) for text in posted],
+                         [(True, False), (False, True)])
+        self.assertEqual(bridge.pending("p1", "claude"), [])
+        self.assertEqual(len(self.inbox.texts(wait=2, count=2)), 2)
 
     def test_other_codex_session_is_refused(self):
         self.pair()
@@ -578,12 +618,29 @@ class Steering(BridgeTestCase):
         self.assertIn("STEERED", reply)
         self.assertIn(f"in reply to {result['id']}", reply)
 
+    def test_a_steer_never_enters_the_delivery_queue(self):
+        self.start_daemon(loaded=True, user_turn_seconds=1.5)
+        self.pair()
+        seen, steer = [], bridge.codex_daemon.steer
+
+        def watched_steer(thread, text):
+            # A worker draining the queue now must not pick the steer up as a new turn.
+            seen.append(bridge.pending("p1", "codex"))
+            return steer(thread, text)
+
+        with mock.patch.object(bridge.codex_daemon, "steer", watched_steer):
+            result = bridge.send("p1", "codex", "also check X", None, False, steer=True)
+        self.assertEqual(seen, [[]])
+        self.assertTrue((bridge.pair_dir("p1") / "mail" / "sent" / f"{result['id']}.json").exists())
+        self.assertIn("STEERED", self.inbox.texts(wait=10)[0])
+
     def test_steer_needs_an_active_turn(self):
         self.start_daemon(loaded=True)
         self.pair()
         with self.assertRaises(bridge.BridgeError):
             bridge.send("p1", "codex", "steer nothing", None, False, steer=True)
         self.assertEqual(len(list((bridge.pair_dir("p1") / "mail" / "failed").glob("*.json"))), 1)
+        self.assertEqual(bridge.pending("p1", "codex"), [])  # a refused steer is not sent later
 
     def test_steer_needs_the_daemon(self):
         self.pair()
