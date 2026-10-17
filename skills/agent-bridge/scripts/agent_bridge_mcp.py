@@ -82,7 +82,8 @@ class Server:
             name = self._pair(arguments["pair"])
             return bridge.send(name, self.peer, arguments["text"], arguments.get("reply_to"),
                                wait=False, steer=bool(arguments.get("steer")),
-                               priority="later" if arguments.get("after_turn") else "next")
+                               priority="later" if arguments.get("after_turn") else "next",
+                               require_identity=False)  # no session identity reaches MCP
         if tool == "bridge_inbox":
             name = self._pair(arguments["pair"])
             mail = bridge.pair_dir(name) / "mail"

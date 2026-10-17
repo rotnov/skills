@@ -490,6 +490,7 @@ class CodexToClaude(BridgeTestCase):
     def test_message_reaches_the_paired_claude_socket(self):
         self.pair()
         os.environ.pop("CLAUDE_CODE_SESSION_ID")  # the sender is Codex
+        os.environ["CODEX_THREAD_ID"] = CODEX_ID  # from the paired thread's shell
         result = bridge.send("p1", "claude", "build finished, see report.md", None, False)
         self.assertEqual(result["status"], "delivered")
         text = self.inbox.texts(wait=2)[0]
@@ -500,6 +501,7 @@ class CodexToClaude(BridgeTestCase):
 
     def test_unreachable_socket_keeps_the_message(self):
         self.pair()
+        os.environ["CODEX_THREAD_ID"] = CODEX_ID  # the sender is the paired Codex thread
         self.inbox.close()
         os.unlink(self.socket_path)
         with self.assertRaises(bridge.BridgeError):
@@ -512,6 +514,7 @@ class CodexToClaude(BridgeTestCase):
     def test_concurrent_deliveries_post_each_message_once(self):
         self.pair()
         os.environ.pop("CLAUDE_CODE_SESSION_ID")  # the sender is Codex
+        os.environ["CODEX_THREAD_ID"] = CODEX_ID  # from the paired thread's shell
         bridge.queue_message("p1", "claude", "first")
         posted, post = [], bridge.post_to_claude
 
@@ -534,6 +537,7 @@ class CodexToClaude(BridgeTestCase):
     def test_a_send_to_claude_reserves_the_topic_before_queueing(self):
         self.pair()
         os.environ.pop("CLAUDE_CODE_SESSION_ID")  # the sender is Codex
+        os.environ["CODEX_THREAD_ID"] = CODEX_ID  # from the paired thread's shell
         write, outcome = bridge.write_json, []
 
         def racing_write(path, value):
@@ -597,7 +601,8 @@ class ClaudeToCodex(BridgeTestCase):
                         "-c", 'default_permissions=":danger-full-access"',
                         "--sandbox", "danger-full-access", "-s", "danger-full-access",
                         "--sandbox=danger-full-access", "-sdanger-full-access", "--full-auto",
-                        "--approve-for-me", "--add-dir", "/", "-p", "yolo", "-c"])
+                        "--approve-for-me", "--add-dir", "/", "-p", "yolo",
+                        "-C", "/", "--cd=/", "-C/", "-c"])
         bridge.send("p1", "codex", "hello", None, wait=True)
         call = self.codex_calls()[0]
         extras = call[call.index("-o") + 2:-1]
@@ -622,6 +627,16 @@ class ClaudeToCodex(BridgeTestCase):
             second = bridge.queue_message("p1", "codex", "second")
         self.assertEqual([item["id"] for item in bridge.pending("p1", "codex")],
                          [first["id"], second["id"]])
+
+    def test_a_sender_without_a_session_identity_is_refused(self):
+        self.pair()
+        del os.environ["CLAUDE_CODE_SESSION_ID"]  # a plain shell, not the paired Claude session
+        with self.assertRaises(bridge.BridgeError):
+            bridge.send("p1", "codex", "hello", None, wait=True)
+        with self.assertRaises(bridge.BridgeError):
+            bridge.send("p1", "claude", "hello", None, False)  # nor visibly the paired thread
+        self.assertEqual(self.codex_calls(), [])
+        self.assertEqual(self.inbox.texts(), [])
 
     def test_other_claude_session_is_refused(self):
         self.pair()
@@ -752,6 +767,7 @@ class DeliveryRoutes(BridgeTestCase):
         resume = dict(daemon.calls)["thread/resume"]
         self.assertEqual((resume["sandbox"], resume["approvalPolicy"]), ("read-only", "never"))
         self.assertEqual(resume["config"], {"default_permissions": ":read-only"})
+        self.assertEqual(resume["cwd"], bridge.load_pair("p1")["codex"]["cwd"])  # as for exec
         self.assertIn("thread/unsubscribe", daemon.methods())
         self.assertTrue((bridge.pair_dir("p1") / "mail" / "sent" / f"{result['id']}.json").exists())
 
@@ -763,6 +779,7 @@ class DeliveryRoutes(BridgeTestCase):
         self.assertNotIn("sandbox", resume)
         self.assertNotIn("approvalPolicy", resume)
         self.assertNotIn("config", resume)
+        self.assertNotIn("cwd", resume)
 
     def test_desktop_hosted_thread_falls_back_to_queue(self):
         self.start_daemon(active_writer=True)
@@ -935,6 +952,7 @@ class ClaudePriority(BridgeTestCase):
     def test_priority_is_carried_in_the_frame(self):
         self.pair()
         os.environ.pop("CLAUDE_CODE_SESSION_ID")
+        os.environ["CODEX_THREAD_ID"] = CODEX_ID  # from the paired thread's shell
         bridge.send("p1", "claude", "after your turn", None, False, priority="later")
         self.inbox.texts(wait=2)
         self.assertEqual(self.inbox.frames[-1]["priority"], "later")

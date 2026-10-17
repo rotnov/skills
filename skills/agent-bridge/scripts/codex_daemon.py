@@ -246,15 +246,18 @@ class Daemon:
             if not cursor:
                 return thread_id in seen
 
-    def subscribe(self, thread_id: str, sandbox: str | None) -> bool:
+    def subscribe(self, thread_id: str, sandbox: str | None, cwd: str | None = None) -> bool:
         """Subscribe to the thread; load it with bridge settings only if nobody hosts it yet."""
         if self.loaded(thread_id):
             self.request("thread/resume", {"threadId": thread_id, "excludeTurns": True})
             return False
         sandbox = sandbox if sandbox in PERMISSION_PROFILES else "read-only"
-        self.request("thread/resume", {"threadId": thread_id, "excludeTurns": True,
-                                       "approvalPolicy": "never", "sandbox": sandbox,
-                                       "config": {"default_permissions": PERMISSION_PROFILES[sandbox]}})
+        params = {"threadId": thread_id, "excludeTurns": True, "approvalPolicy": "never",
+                  "sandbox": sandbox,
+                  "config": {"default_permissions": PERMISSION_PROFILES[sandbox]}}
+        if cwd:
+            params["cwd"] = cwd  # the same working directory the exec route uses
+        self.request("thread/resume", params)
         return True
 
     def active_turn(self, thread_id: str) -> str | None:
@@ -285,10 +288,11 @@ def text_input(text: str) -> list[dict]:
 
 
 def run_turn(thread_id: str, prompt: str, sandbox: str | None, timeout: float,
-             busy_wait: float, on_started=None, path: str | None = None) -> tuple[str, str]:
+             busy_wait: float, on_started=None, path: str | None = None,
+             cwd: str | None = None) -> tuple[str, str]:
     """Start a turn (waiting while another turn runs) and return (status, final answer)."""
     with Daemon(path) as daemon:
-        daemon.subscribe(thread_id, sandbox)
+        daemon.subscribe(thread_id, sandbox, cwd)
         try:
             deadline = time.time() + busy_wait
             while daemon.active_turn(thread_id):

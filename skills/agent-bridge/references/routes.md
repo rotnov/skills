@@ -58,6 +58,7 @@ messages carry a one-line reminder. `pair handshake TOPIC` resends it.
 | "steer not possible" | See the steer conditions above. |
 | "has a delivery in progress" | A live worker owns the topic; retry after its reply. Markers left by a killed worker are cleared automatically. |
 | "another pair change is in progress" | A pair create, rename, removal or setting change is running; retry. |
+| "session identity is missing" | Run the command inside the paired session: Claude Code's Bash tool or the Codex thread's shell. |
 | "rate limit" | 20 messages per sender per 10 minutes per topic; batch them. |
 
 Inspect with `inbox TOPIC` and `read TOPIC ID`. Messages are JSON files under

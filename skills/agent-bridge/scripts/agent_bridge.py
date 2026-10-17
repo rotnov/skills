@@ -65,9 +65,10 @@ MODES = ("auto", "daemon", "exec", "queue")
 SANDBOXES = ("read-only", "workspace-write")
 UNSAFE_CODEX_FLAGS = {"--dangerously-bypass-approvals-and-sandbox", "--yolo",
                       "--dangerously-bypass-hook-trust", "--full-auto", "--approve-for-me"}
-# Options whose value selects the sandbox, approvals, extra writable roots or a config profile.
-UNSAFE_CODEX_OPTIONS = {"-s", "--sandbox", "-a", "--ask-for-approval", "--add-dir", "-p",
-                        "--profile"}
+# Options whose value selects the sandbox, approvals, the workspace root, extra writable roots
+# or a config profile.
+UNSAFE_CODEX_OPTIONS = {"-s", "--sandbox", "-a", "--ask-for-approval", "-C", "--cd", "--add-dir",
+                        "-p", "--profile"}
 # Config overrides that could loosen the pair's sandbox: the sandbox itself, a permission
 # profile, or a config profile that carries either.
 SANDBOX_SETTING = re.compile(r"^\s*[\"']?(sandbox|profile|permissions|default_permissions)",
@@ -407,18 +408,25 @@ def remove_pair(name: str) -> Path:
 # ---------------------------------------------------------------- messages
 
 
-def check_sender(pair: dict, sender: str) -> None:
-    """Refuse a sender that is visibly another session than the paired one."""
+def check_sender(pair: dict, sender: str, require_identity: bool = True) -> None:
+    """Refuse a sender that is not visibly the paired session.
+
+    The identity comes from the agent's environment. It keeps other sessions and plain shells
+    out; it is not a secret from other processes of the same user.
+    """
     if sender == "claude":
-        current = os.environ.get("CLAUDE_CODE_SESSION_ID")
-        if current and current != pair["claude"]["session_id"]:
-            raise BridgeError("this Claude session is not the one paired in "
-                              f"{pair['name']!r}; messages stay within their pair")
+        current, who = os.environ.get("CLAUDE_CODE_SESSION_ID"), "Claude"
     else:
         current = os.environ.get("CODEX_THREAD_ID") or os.environ.get("CODEX_SESSION_ID")
-        if current and current != pair["codex"]["session_id"]:
-            raise BridgeError("this Codex session is not the one paired in "
-                              f"{pair['name']!r}; messages stay within their pair")
+        who = "Codex"
+    if current is None:
+        if require_identity:
+            raise BridgeError(f"run this inside the paired {who} session of {pair['name']!r}; "
+                              "its session identity is missing from the environment")
+        return
+    if current != pair[sender]["session_id"]:
+        raise BridgeError(f"this {who} session is not the one paired in "
+                          f"{pair['name']!r}; messages stay within their pair")
 
 
 def check_rate(name: str, sender: str) -> None:
@@ -439,13 +447,13 @@ def check_rate(name: str, sender: str) -> None:
 
 def queue_message(name: str, to: str, text: str, reply_to: str | None = None,
                   kind: str = "message", verify_sender: bool = True, box: str | None = None,
-                  **fields) -> dict:
+                  require_identity: bool = True, **fields) -> dict:
     if to not in SIDES:
         raise BridgeError("--to must be claude or codex")
     pair = load_pair(name)
     sender = "codex" if to == "claude" else "claude"
     if verify_sender:
-        check_sender(pair, sender)
+        check_sender(pair, sender, require_identity)
         check_rate(name, sender)
     if not text.strip():
         raise BridgeError("empty message")
@@ -691,7 +699,7 @@ def codex_extra_args(pair: dict) -> list[str]:
         if arg.split("=", 1)[0] in UNSAFE_CODEX_OPTIONS:
             index += "=" not in arg  # its value is the next argument
             continue
-        if re.fullmatch(r"-[sap]\S+", arg):  # a short option with its value attached
+        if re.fullmatch(r"-[sapC]\S+", arg):  # a short option with its value attached
             continue
         if arg in ("-c", "--config"):
             setting = args[index] if index < len(args) else ""
@@ -877,7 +885,7 @@ def _route_daemon(name: str, pair: dict, message: dict, busy_wait: int, timeout:
     try:
         status, answer = codex_daemon.run_turn(
             pair["codex"]["session_id"], codex_prompt(pair, message), codex_sandbox(pair),
-            timeout, busy_wait, started)
+            timeout, busy_wait, started, cwd=pair["codex"].get("cwd"))
     finally:
         state.unlink(missing_ok=True)
     if status != "completed" or not answer:
@@ -1059,13 +1067,14 @@ def deliver_in_foreground(name: str, message_id: str) -> None:
         time.sleep(1)
 
 
-def steer_codex(name: str, text: str, reply_to: str | None) -> dict:
+def steer_codex(name: str, text: str, reply_to: str | None, require_identity: bool = True) -> dict:
     """Add a message to the active turn of a daemon-hosted Codex thread, now."""
     # Reserved from before the write; the await-turn worker's own marker then covers the topic
     # until the steered turn's reply is posted.
     with _reserved(name):
         # Held outside inbox-codex until the outcome is known, so no worker also sends it as a turn.
-        message = queue_message(name, "codex", text, reply_to=reply_to, kind="steer", box="steering")
+        message = queue_message(name, "codex", text, reply_to=reply_to, kind="steer", box="steering",
+                                require_identity=require_identity)
         pair = load_pair(name)
         try:
             turn_id = codex_daemon.steer(pair["codex"]["session_id"], codex_prompt(pair, message))
@@ -1175,21 +1184,25 @@ def _reap_workers() -> None:
 
 
 def send(name: str, to: str, text: str, reply_to: str | None, wait: bool,
-         steer: bool = False, priority: str = "next") -> dict:
+         steer: bool = False, priority: str = "next", require_identity: bool = True) -> dict:
+    """Queue and deliver a message. `require_identity=False` is only for the MCP server, which
+    cannot see the calling session; it then checks only the topic it is restricted to."""
     if steer:
         if to != "codex":
             raise BridgeError("--steer applies to messages for Codex only")
-        return steer_codex(name, text, reply_to)
+        return steer_codex(name, text, reply_to, require_identity)
     if to == "claude":
         if priority not in PRIORITIES:
             raise BridgeError(f"priority must be one of {PRIORITIES}")
         with _reserved(name):
-            message = queue_message(name, to, text, reply_to=reply_to, priority=priority)
+            message = queue_message(name, to, text, reply_to=reply_to, priority=priority,
+                                    require_identity=require_identity)
             delivered = deliver_to_claude(name)
         return {"id": message["id"], "status": "delivered" if message["id"] in delivered
                 else "queued"}
     with _reserved(name):
-        message = queue_message(name, to, text, reply_to=reply_to)
+        message = queue_message(name, to, text, reply_to=reply_to,
+                                require_identity=require_identity)
         if wait:
             deliver_in_foreground(name, message["id"])
             return {"id": message["id"], "status": "processed"}
