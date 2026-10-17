@@ -56,4 +56,6 @@ messages carry a one-line reminder. `pair handshake TOPIC` resends it.
 Inspect with `inbox TOPIC` and `read TOPIC ID`. Messages are JSON files under
 `$AGENT_BRIDGE_HOME/pairs/TOPIC/mail/`; `log.jsonl` records events without text.
 `deliver TOPIC` retries pending deliveries; `watch` keeps delivering for all
-topics.
+topics. `pair remove TOPIC`, and `pair create --force` on an existing topic, move
+the whole topic directory under `$AGENT_BRIDGE_HOME/retired/`, so a new binding
+with that name starts with an empty mailbox.

@@ -275,7 +275,9 @@ class BridgeTestCase(unittest.TestCase):
         })
         os.environ.pop("FAKE_CODEX_ACTIVE_WRITER", None)
         os.environ.pop("FAKE_CODEX_FAIL", None)
+        # A test run from a Codex shell inherits both identity variables.
         os.environ.pop("CODEX_THREAD_ID", None)
+        os.environ.pop("CODEX_SESSION_ID", None)
         self.workdir = root / "work"
         self.workdir.mkdir()
         os.chdir(self.workdir)
@@ -334,6 +336,28 @@ class Pairs(BridgeTestCase):
         self.assertEqual(bridge.create_pair("p3", other, None, [], False)["name"], "p3")
         sessions = {item["claude"]["session_id"] for item in bridge.all_pairs()}
         self.assertEqual(sessions, {CLAUDE_ID})  # one Claude session, two topics
+
+    def test_a_removed_topic_name_starts_with_an_empty_mailbox(self):
+        self.pair("p1")
+        bridge.queue_message("p1", "codex", "belongs to the old binding")
+        retired = bridge.remove_pair("p1")
+        self.assertTrue((retired / "pair.json").exists())
+        self.assertEqual(len(list((retired / "mail" / "inbox-codex").glob("*.json"))), 1)
+        self.assertFalse(bridge.pair_dir("p1").exists())
+        self.pair("p1")
+        self.assertEqual(bridge.pending("p1", "codex"), [])
+        events = [json.loads(line)["event"] for line in
+                  (bridge.pair_dir("p1") / "log.jsonl").read_text().splitlines()]
+        self.assertEqual(events, ["pair_created"])
+
+    def test_force_replaces_only_the_named_topic(self):
+        self.pair("p1")
+        bridge.queue_message("p1", "codex", "old binding")
+        with self.assertRaises(bridge.BridgeError):
+            bridge.create_pair("p2", CODEX_ID, None, [], True)  # thread already has topic p1
+        bridge.create_pair("p1", CODEX_ID, None, [], True)
+        self.assertEqual(bridge.pending("p1", "codex"), [])
+        self.assertEqual(len(list((bridge.home() / "retired").iterdir())), 1)
 
     def test_rename_moves_the_topic_and_its_history(self):
         self.pair("p1")

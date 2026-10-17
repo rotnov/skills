@@ -226,10 +226,12 @@ def create_pair(name: str, codex_session: str, codex_cwd: str | None, codex_args
     if (directory / "pair.json").exists() and not force:
         raise BridgeError(f"pair {name!r} exists; remove it or pass --force")
     for other in all_pairs():
-        if other["name"] == name:
-            continue
-        if other["codex"]["session_id"] == meta["id"] and not force:
+        # --force only replaces the named topic; a Codex thread never gets two topics.
+        if other["name"] != name and other["codex"]["session_id"] == meta["id"]:
             raise BridgeError(f"this Codex thread already has the topic {other['name']!r}")
+    if directory.exists():
+        # A replaced or previously removed topic must not leak its mailbox into the new one.
+        _quarantine(name)
     pair = {
         "name": name,
         "created": now(),
@@ -305,13 +307,23 @@ def update_pair(name: str, mode: str | None, sandbox: str | None) -> dict:
     return pair
 
 
-def remove_pair(name: str) -> None:
+def _quarantine(name: str) -> Path:
+    """Move a topic's whole directory (binding, mailbox, log) under retired/, kept as a record."""
     directory = pair_dir(name)
-    if not (directory / "pair.json").exists():
+    if (directory / "codex.lock").exists() or (directory / "active_turn.json").exists():
+        raise BridgeError(f"topic {name!r} has a delivery in progress; try again afterwards")
+    retired = home() / "retired"
+    retired.mkdir(exist_ok=True)
+    _private(retired, directory=True)
+    target = retired / f"{name}-{time.strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:6]}"
+    os.rename(directory, target)
+    return target
+
+
+def remove_pair(name: str) -> Path:
+    if not (pair_dir(name) / "pair.json").exists():
         raise BridgeError(f"no pair named {name!r}")
-    # Keep the mailbox as a record; only the binding is retired.
-    retired = directory / f"pair.retired-{int(time.time())}.json"
-    os.replace(directory / "pair.json", retired)
+    return _quarantine(name)
 
 
 # ---------------------------------------------------------------- messages
@@ -1013,8 +1025,7 @@ def _dispatch(args) -> int:
         elif args.pair_command == "refresh":
             result = {"refreshed": refresh_claude(args.name)}
         else:
-            remove_pair(args.name)
-            result = {"removed": args.name}
+            result = {"removed": args.name, "retired_to": str(remove_pair(args.name))}
     elif args.command == "codex-sessions":
         result = list_codex_sessions(args.limit, args.cwd)
     elif args.command == "send":
