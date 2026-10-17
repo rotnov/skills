@@ -204,17 +204,28 @@ def list_codex_sessions(limit: int, cwd_filter: str | None) -> list[dict]:
     return sessions
 
 
+def _lines_backwards(path: Path, chunk: int = 512_000):
+    """Yield a file's lines from the last to the first, reading it in chunks from the end."""
+    with open(path, "rb") as stream:
+        position, rest = stream.seek(0, os.SEEK_END), b""
+        while position > 0:
+            size = min(chunk, position)
+            position -= size
+            stream.seek(position)
+            lines = (stream.read(size) + rest).split(b"\n")
+            rest = lines.pop(0)  # may start mid-line; the next chunk completes it
+            for line in reversed(lines):
+                yield line.decode("utf-8", errors="replace")
+        if rest:
+            yield rest.decode("utf-8", errors="replace")
+
+
 def codex_busy(session_id: str) -> bool:
     """A Codex thread is busy when its last task start has no completion after it."""
     rollout = codex_rollout(session_id)
     if rollout is None:
         return False
-    with open(rollout, "rb") as stream:
-        stream.seek(0, os.SEEK_END)
-        size = stream.tell()
-        stream.seek(max(0, size - 512_000))
-        tail = stream.read().decode("utf-8", errors="replace").splitlines()
-    for line in reversed(tail):
+    for line in _lines_backwards(rollout):  # however much the current turn has written
         try:
             record = json.loads(line)
         except json.JSONDecodeError:

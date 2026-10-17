@@ -644,6 +644,20 @@ class ClaudeToCodex(BridgeTestCase):
         self.assertIn("stayed busy", self.inbox.texts(wait=2)[0])
         self.assertTrue((bridge.pair_dir("p1") / "mail" / "failed" / f"{message['id']}.json").exists())
 
+    def test_a_turn_that_wrote_a_long_log_is_still_busy(self):
+        self.pair()
+        self._write_rollout(CODEX_ID, busy=True)
+        filler = json.dumps({"type": "response_item", "payload": {
+            "type": "message", "role": "assistant",
+            "content": [{"type": "output_text", "text": "x" * 1000}]}})
+        with open(bridge.codex_rollout(CODEX_ID), "a", encoding="utf-8") as stream:
+            stream.write((filler + "\n") * 700)  # far more than one read window since the start
+        self.assertTrue(bridge.codex_busy(CODEX_ID))
+        bridge.queue_message("p1", "codex", "hello")
+        bridge.deliver_to_codex("p1", busy_wait=0)
+        self.assertEqual(self.codex_calls(), [])
+        self.assertIn("stayed busy", self.inbox.texts(wait=2)[0])
+
     def test_dangerous_codex_arguments_are_dropped(self):
         self.pair(args=["--dangerously-bypass-approvals-and-sandbox", "-c", 'model="x"',
                         "-c", 'sandbox_mode="danger-full-access"', '--config=profile="yolo"',
