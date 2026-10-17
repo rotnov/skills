@@ -265,12 +265,17 @@ def _serialized(function):
     return wrapper
 
 
-def _modify_pair(name: str, change) -> dict:
-    """Read, change and write a binding under the lifecycle lock; a moved topic is not recreated."""
+def _modify_pair(name: str, change, event: str | None = None) -> dict:
+    """Read, change and write a binding under the lifecycle lock; a moved topic is not recreated.
+
+    `change` may return log fields; `event` is then logged inside the same critical section.
+    """
     with _lifecycle():
         pair = load_pair(name)
-        change(pair)
+        fields = change(pair) or {}
         write_json(pair_dir(name) / "pair.json", pair)
+        if event:
+            log_event(name, event, **fields)
     return pair
 
 
@@ -357,8 +362,7 @@ def refresh_claude(name: str | None = None) -> list[str]:
             if IS_WINDOWS:
                 pair["claude"]["token"] = os.environ.get("CLAUDE_CODE_MESSAGING_TOKEN", "")
 
-        _modify_pair(topic, change)
-        log_event(topic, "claude_socket_refreshed")
+        _modify_pair(topic, change, "claude_socket_refreshed")
         refreshed.append(topic)
     return refreshed
 
@@ -395,10 +399,9 @@ def update_pair(name: str, mode: str | None, sandbox: str | None) -> dict:
             pair["codex"]["mode"] = mode
         if sandbox:
             pair["codex"]["sandbox"] = sandbox
+        return {"mode": pair["codex"].get("mode"), "sandbox": pair["codex"].get("sandbox")}
 
-    pair = _modify_pair(name, change)
-    log_event(name, "pair_updated", mode=pair["codex"].get("mode"), sandbox=pair["codex"].get("sandbox"))
-    return pair
+    return _modify_pair(name, change, "pair_updated")
 
 
 def _quarantine(name: str) -> Path:
@@ -492,9 +495,12 @@ def queue_message(name: str, to: str, text: str, reply_to: str | None = None,
     if verify_sender and sender == "codex" and reply_to and reply_to == handshake.get("message_id"):
         verified = {"return_path_verified": now(),
                     "verified_caller": bool(os.environ.get("CODEX_THREAD_ID"))}
-        _modify_pair(name, lambda current: current.update(
-            handshake={**(current.get("handshake") or {}), **verified}))
-        log_event(name, "handshake_return_path_verified", caller_checked=verified["verified_caller"])
+
+        def record(current):
+            current["handshake"] = {**(current.get("handshake") or {}), **verified}
+            return {"caller_checked": verified["verified_caller"]}
+
+        _modify_pair(name, record, "handshake_return_path_verified")
     return message
 
 
@@ -688,8 +694,8 @@ def send_handshake(name: str, wait: bool = False) -> dict:
         message = queue_message(name, "codex", text, kind="handshake")
         handshake = {"message_id": message["id"], "queued": now(),
                      "last_protocol_at": None, "return_path_verified": None}
-        _modify_pair(name, lambda pair: pair.update(handshake=handshake))
-        log_event(name, "handshake_queued", id=message["id"])
+        _modify_pair(name, lambda pair: pair.update(handshake=handshake) or {"id": message["id"]},
+                     "handshake_queued")
         if wait:
             deliver_in_foreground(name, message["id"])
             return {"id": message["id"], "status": "processed"}
@@ -1139,8 +1145,7 @@ def deliver_one(name: str, pair: dict, message: dict, busy_wait: int, timeout: i
                 pass  # it only decides whether the protocol is resent; the answer still returns
         log_event(name, "codex_answered", id=message["id"], route=route, chars=len(answer),
                   protocol=bool(message.get("protocol_included")))
-        queue_message(name, "claude", answer, reply_to=message["id"], kind="reply",
-                      verify_sender=False, route=route)
+        _queue_reply(name, message["id"], answer, route)
         return
     _fail(name, pair, message, "; ".join(notes) or "no delivery route")
 
@@ -1214,12 +1219,31 @@ def await_turn_reply(name: str, turn_id: str, message_id: str) -> None:
         status, answer = codex_daemon.await_turn(pair["codex"]["session_id"], turn_id,
                                                  CODEX_TIMEOUT_SECONDS)
         text = answer or f"(turn {turn_id} ended '{status}' without an answer)"
-        queue_message(name, "claude", text, reply_to=message_id, kind="reply",
-                      verify_sender=False, route="daemon-steer")
+        _queue_reply(name, message_id, text, "daemon-steer")
     except codex_daemon.DaemonError as error:
         queue_message(name, "claude", f"steered turn not observed: {error}", reply_to=message_id,
                       kind="failure", verify_sender=False)
     deliver_to_claude(name)
+
+
+def _queue_reply(name: str, message_id: str, answer: str, route: str) -> None:
+    """Queue Codex's answer for Claude. The request is already archived, so the answer must
+    reach Claude: an over-long one is saved in full and sent shortened with its path, and a
+    reply that still cannot be queued becomes a failure notice."""
+    if len(answer) > MAX_TEXT_CHARS:
+        saved = pair_dir(name) / "mail" / "long" / f"{message_id}.txt"
+        saved.parent.mkdir(parents=True, exist_ok=True)
+        saved.write_text(answer, encoding="utf-8")
+        _private(saved)
+        note = (f"\n\n[agent-bridge: the answer has {len(answer)} characters; this is its "
+                f"beginning. The full answer is in {saved}]")
+        answer = answer[:MAX_TEXT_CHARS - len(note)] + note
+    try:
+        queue_message(name, "claude", answer, reply_to=message_id, kind="reply",
+                      verify_sender=False, route=route)
+    except BridgeError as error:
+        queue_message(name, "claude", f"the answer could not be queued: {error}",
+                      reply_to=message_id, kind="failure", verify_sender=False)
 
 
 def _codex_error(result) -> str:

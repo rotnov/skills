@@ -65,7 +65,8 @@ resends it, for example to tell Codex a new topic name right away.
 Inspect with `inbox TOPIC` and `read TOPIC ID`. Messages are JSON files under
 `$AGENT_BRIDGE_HOME/pairs/TOPIC/mail/`; `log.jsonl` records events without text.
 A steer waits in `steering/`, outside the delivery queue, until the daemon
-accepts or refuses it.
+accepts or refuses it. A Codex answer longer than 200,000 characters is saved in
+full under `long/` and reaches Claude shortened, with that path.
 `deliver TOPIC` retries pending deliveries; `watch` keeps delivering for all
 topics. `pair remove TOPIC`, and `pair create --force` on an existing topic, move
 the whole topic directory under `$AGENT_BRIDGE_HOME/retired/`, so a new binding

@@ -403,6 +403,25 @@ class Pairs(BridgeTestCase):
         self.assertEqual(outcome, ["refused"])
         self.assertEqual([item["name"] for item in bridge.all_pairs()], ["p1"])
 
+    def test_a_pair_update_logs_under_the_lifecycle_lock(self):
+        self.pair("p1")
+        log, outcome = bridge.log_event, []
+
+        def racing_log(name, event, **fields):
+            if event == "pair_updated" and not outcome:
+                outcome.append(None)  # race once
+                try:
+                    bridge.rename_pair("p1", "p2")  # a rename between the update and its log
+                    outcome[0] = "renamed"
+                except bridge.BridgeError:
+                    outcome[0] = "refused"
+            log(name, event, **fields)
+
+        with mock.patch.object(bridge, "LIFECYCLE_WAIT_SECONDS", 0.5), \
+                mock.patch.object(bridge, "log_event", racing_log):
+            bridge.update_pair("p1", "exec", None)
+        self.assertEqual(outcome, ["refused"])
+
     def test_rename_moves_the_topic_and_its_history(self):
         self.pair("p1")
         bridge.queue_message("p1", "codex", "kept in history")
@@ -634,6 +653,17 @@ class ClaudeToCodex(BridgeTestCase):
         self.assertIn(f"Reply from Codex session 01a1496a via pair \"p1\"", reply)
         self.assertIn(f"in reply to {result['id']}", reply)
         self.assertIn("FAKE ANSWER: please review volume.rs line 416", reply)
+        self.assertEqual(bridge.pending("p1", "codex"), [])
+
+    def test_an_over_long_answer_still_reaches_claude(self):
+        self.pair()
+        answer = "y" * (bridge.MAX_TEXT_CHARS + 10)
+        with mock.patch.dict(bridge.ROUTES, {"exec": lambda *args: answer}):
+            result = bridge.send("p1", "codex", "write a lot", None, wait=True)
+        reply = self.inbox.texts(wait=2)[0]
+        saved = bridge.pair_dir("p1") / "mail" / "long" / f"{result['id']}.txt"
+        self.assertIn(str(saved), reply)  # the beginning, and where the full answer is
+        self.assertEqual(saved.read_text(encoding="utf-8"), answer)
         self.assertEqual(bridge.pending("p1", "codex"), [])
 
     def test_codex_failure_is_reported_to_claude(self):
