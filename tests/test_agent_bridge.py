@@ -1209,6 +1209,16 @@ class DeliveryRoutes(BridgeTestCase):
         self.assertIn("DAEMON ANSWER: long job", reply)  # followed on a new connection
         self.assertEqual(self.codex_calls(), [])  # and never sent a second time
 
+    def test_a_known_turn_that_cannot_be_followed_is_never_resent(self):
+        self.start_daemon(turn_seconds=1.5, drop_after_start=True)
+        self.pair()
+        unreachable = bridge.codex_daemon.DaemonUnavailable("daemon socket unreachable")
+        with mock.patch.object(bridge.codex_daemon, "await_turn", side_effect=unreachable):
+            result = bridge.send("p1", "codex", "long job", None, wait=True)
+        self.assertEqual(self.codex_calls(), [])  # the started turn may still run: no exec
+        self.assertTrue((bridge.pair_dir("p1") / "mail" / "sent" / f"{result['id']}.json").exists())
+        self.assertIn("may have started", self.inbox.texts(wait=2)[0])
+
     def test_an_unconfirmed_turn_start_is_reported_as_unknown(self):
         self.start_daemon(silent_methods={"turn/start"})
         self.pair()

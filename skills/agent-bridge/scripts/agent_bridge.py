@@ -1042,7 +1042,14 @@ def _route_daemon(name: str, pair: dict, message: dict, busy_wait: int, timeout:
         if "id" not in turn:
             raise  # whether the turn started is unknown
         # The connection dropped while the known turn ran: follow it on a new connection.
-        status, answer = codex_daemon.await_turn(pair["codex"]["session_id"], turn["id"], timeout)
+        try:
+            status, answer = codex_daemon.await_turn(pair["codex"]["session_id"], turn["id"],
+                                                     timeout)
+        except codex_daemon.DaemonError as error:
+            # The turn may still be running, so this must never look like a safe pre-turn
+            # failure that another route could retry.
+            raise codex_daemon.DaemonUncertain(
+                f"turn {turn['id']} started but could not be followed: {error}") from error
     finally:
         state.unlink(missing_ok=True)
     if status != "completed" or not answer:
