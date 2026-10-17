@@ -472,6 +472,15 @@ class Pairs(BridgeTestCase):
         self.assertEqual(sorted(bridge.refresh_claude()), ["p1", "p2"])
         self.assertEqual({item["claude"]["socket"] for item in bridge.all_pairs()}, {"/tmp/new-socket"})
 
+    def test_identifiers_cannot_leave_their_directories(self):
+        self.pair("p1")
+        message = bridge.queue_message("p1", "codex", "hello")
+        self.assertEqual(bridge.find_message("p1", message["id"])["text"], "hello")
+        for bad in ("../pair", "../../p1/pair", "*", "x/y"):
+            with self.assertRaises(bridge.BridgeError):
+                bridge.find_message("p1", bad)  # never another file, e.g. a binding
+        self.assertIsNone(bridge.codex_rollout("../*"))
+
     def test_invalid_pair_name(self):
         with self.assertRaises(bridge.BridgeError):
             bridge.create_pair("../x", CODEX_ID, None, [], False)
@@ -637,6 +646,17 @@ class ClaudeToCodex(BridgeTestCase):
             processed = bridge.deliver_to_codex("p1")
         self.assertEqual(len(processed), 2)
         self.assertEqual(bridge.pending("p1", "codex"), [])
+
+    def test_wait_waits_for_a_worker_that_holds_the_lock(self):
+        self.pair()
+        lock = bridge.pair_dir("p1") / "codex.lock"
+        lock.write_text(f"{os.getpid()} {time.time()}")  # another live worker owns the pair
+        threading.Timer(1.0, lambda: lock.unlink(missing_ok=True)).start()
+        started = time.time()
+        result = bridge.send("p1", "codex", "hello", None, wait=True)
+        self.assertGreater(time.time() - started, 0.9)
+        self.assertEqual(bridge.pending("p1", "codex"), [])
+        self.assertTrue((bridge.pair_dir("p1") / "mail" / "sent" / f"{result['id']}.json").exists())
 
     def test_a_spawned_worker_reserves_the_topic_until_it_exits(self):
         self.pair()

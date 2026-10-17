@@ -49,6 +49,8 @@ import codex_daemon  # noqa: E402
 
 VERSION = "1.0.0"
 NAME_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{0,40}$")
+MESSAGE_ID = re.compile(r"\d{8}T\d{6}(?:\.\d{6})?-[0-9a-f]{8}")
+THREAD_ID = re.compile(r"[0-9a-fA-F-]{8,64}")  # Codex thread ids are UUIDs
 SIDES = ("claude", "codex")
 MAX_TEXT_CHARS = 200_000
 RATE_WINDOW_SECONDS = 600
@@ -152,6 +154,8 @@ def codex_home() -> Path:
 
 
 def codex_rollout(session_id: str) -> Path | None:
+    if not THREAD_ID.fullmatch(session_id):
+        return None  # never a path or a glob pattern
     matches = sorted((codex_home() / "sessions").rglob(f"rollout-*{session_id}.jsonl"))
     return matches[-1] if matches else None
 
@@ -483,8 +487,14 @@ def pending(name: str, to: str) -> list[dict]:
 
 
 def find_message(name: str, message_id: str) -> dict:
-    for path in (pair_dir(name) / "mail").rglob(f"{message_id}.json"):
-        return read_json(path)
+    # Only a bridge-generated id, looked up box by box: never a path or a glob pattern.
+    if not MESSAGE_ID.fullmatch(message_id):
+        raise BridgeError(f"invalid message id {message_id!r}")
+    mail = pair_dir(name) / "mail"
+    for box in sorted(mail.iterdir()) if mail.is_dir() else []:
+        path = box / f"{message_id}.json"
+        if path.is_file():
+            return read_json(path)
     raise BridgeError(f"no message {message_id!r} in pair {name!r}")
 
 
@@ -650,7 +660,7 @@ def send_handshake(name: str, wait: bool = False) -> dict:
         _modify_pair(name, lambda pair: pair.update(handshake=handshake))
         log_event(name, "handshake_queued", id=message["id"])
         if wait:
-            deliver_to_codex(name)
+            deliver_in_foreground(name, message["id"])
             return {"id": message["id"], "status": "processed"}
         spawn_worker(name)
     return {"id": message["id"], "status": "handshake queued; Codex will confirm the return path"}
@@ -1037,6 +1047,18 @@ def deliver_to_codex(name: str, busy_wait: int = CODEX_BUSY_WAIT_SECONDS,
     return processed
 
 
+def deliver_in_foreground(name: str, message_id: str) -> None:
+    """Deliver now for --wait; while another worker owns the pair, wait until it sent this one."""
+    deadline = time.time() + WORKER_STALE_SECONDS
+    while True:
+        deliver_to_codex(name)
+        if all(item["id"] != message_id for item in pending(name, "codex")):
+            return
+        if time.time() >= deadline:
+            raise BridgeError("another worker kept the topic busy; the message stays queued")
+        time.sleep(1)
+
+
 def steer_codex(name: str, text: str, reply_to: str | None) -> dict:
     """Add a message to the active turn of a daemon-hosted Codex thread, now."""
     # Reserved from before the write; the await-turn worker's own marker then covers the topic
@@ -1169,7 +1191,7 @@ def send(name: str, to: str, text: str, reply_to: str | None, wait: bool,
     with _reserved(name):
         message = queue_message(name, to, text, reply_to=reply_to)
         if wait:
-            deliver_to_codex(name)
+            deliver_in_foreground(name, message["id"])
             return {"id": message["id"], "status": "processed"}
         spawn_worker(name)
     return {"id": message["id"], "status": "queued; Codex answer will arrive as a reply"}
