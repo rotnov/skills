@@ -460,8 +460,19 @@ class Pairs(BridgeTestCase):
         self.assertTrue(bridge._process_alive(os.getpid()))
         self.assertFalse(bridge._process_alive(dead.pid))
         with mock.patch.object(bridge, "IS_WINDOWS", True):
-            # Where the Windows API is missing (as here), a holder that cannot be checked is alive.
-            self.assertTrue(bridge._process_alive(dead.pid))
+            # Where the Windows API is missing (as here), the holder cannot be checked.
+            self.assertIsNone(bridge._process_alive(dead.pid))
+
+    def test_live_owners_keep_their_locks_until_the_machine_restarts(self):
+        lock = bridge.Lock(Path(self.tmp.name) / "x.lock", stale_seconds=1)
+        boot = bridge._boot_time()
+        self.assertGreater(boot, 0)
+        # Past its age limit, but the holder is alive and the lock is from this boot.
+        self.assertFalse(lock._stale(f"{os.getpid()} {(boot + time.time()) / 2}"))
+        # Written before the last boot: that holder is gone, even if its pid is in use again.
+        self.assertTrue(lock._stale(f"{os.getpid()} {boot - 3600}"))
+        with mock.patch.object(bridge, "_process_alive", return_value=None):
+            self.assertTrue(lock._stale(f"{os.getpid()} {time.time() - 5}"))  # unknown: by age
 
     def test_refresh_updates_every_topic_of_the_session(self):
         self.pair("p1")
@@ -601,7 +612,7 @@ class ClaudeToCodex(BridgeTestCase):
                         "-c", 'default_permissions=":danger-full-access"',
                         "--sandbox", "danger-full-access", "-s", "danger-full-access",
                         "--sandbox=danger-full-access", "-sdanger-full-access", "--full-auto",
-                        "--approve-for-me", "--add-dir", "/", "-p", "yolo",
+                        "--approve-for-me", "--not-so-yolo", "--add-dir", "/", "-p", "yolo",
                         "-C", "/", "--cd=/", "-C/", "-c"])
         bridge.send("p1", "codex", "hello", None, wait=True)
         call = self.codex_calls()[0]

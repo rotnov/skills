@@ -64,7 +64,8 @@ LIFECYCLE_WAIT_SECONDS = 10
 MODES = ("auto", "daemon", "exec", "queue")
 SANDBOXES = ("read-only", "workspace-write")
 UNSAFE_CODEX_FLAGS = {"--dangerously-bypass-approvals-and-sandbox", "--yolo",
-                      "--dangerously-bypass-hook-trust", "--full-auto", "--approve-for-me"}
+                      "--dangerously-bypass-hook-trust", "--full-auto", "--approve-for-me",
+                      "--not-so-yolo"}
 # Options whose value selects the sandbox, approvals, the workspace root, extra writable roots
 # or a config profile.
 UNSAFE_CODEX_OPTIONS = {"-s", "--sandbox", "-a", "--ask-for-approval", "-C", "--cd", "--add-dir",
@@ -745,7 +746,12 @@ class Lock:
                 return time.time() - self.path.stat().st_mtime > 10
             except OSError:
                 return True
-        return time.time() - started > self.stale_seconds or not _process_alive(pid)
+        alive = _process_alive(pid)
+        if alive is None:  # the holder cannot be checked: fall back to the lock's age
+            return time.time() - started > self.stale_seconds
+        # A live holder keeps its lock however long it works, unless the lock predates the
+        # last boot: then that holder is gone and its pid may belong to another process.
+        return not alive or started < _boot_time() - 60
 
     def reclaim(self) -> bool:
         """Remove the lock if its holder is gone; True when the path is free afterwards.
@@ -797,8 +803,8 @@ def _kernel_lock(path: Path):
         os.close(handle)
 
 
-def _process_alive(pid: int) -> bool:
-    """Whether the process still runs; a holder that cannot be checked counts as alive."""
+def _process_alive(pid: int) -> bool | None:
+    """Whether the process still runs; None when it cannot be checked."""
     if pid <= 0:
         return False
     if not IS_WINDOWS:
@@ -824,12 +830,30 @@ def _process_alive(pid: int) -> bool:
         try:
             code = wintypes.DWORD()
             if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
-                return True
+                return None
             return code.value == 259  # STILL_ACTIVE
         finally:
             kernel32.CloseHandle(handle)
     except (OSError, AttributeError, ValueError):
-        return True
+        return None
+
+
+@functools.lru_cache(maxsize=1)
+def _boot_time() -> float:
+    """When this machine last booted (wall clock, counting time asleep); 0.0 if unknown."""
+    try:
+        if IS_WINDOWS:
+            import ctypes
+            kernel32 = ctypes.WinDLL("kernel32")
+            kernel32.GetTickCount64.restype = ctypes.c_ulonglong
+            uptime = kernel32.GetTickCount64() / 1000
+        elif sys.platform == "darwin":
+            uptime = time.clock_gettime(time.CLOCK_MONOTONIC)  # includes sleep on macOS
+        else:
+            uptime = time.clock_gettime(time.CLOCK_BOOTTIME)
+    except (AttributeError, OSError, ValueError):
+        return 0.0
+    return time.time() - uptime
 
 
 def _live_lock(path: Path, stale_seconds: int) -> bool:
