@@ -1043,6 +1043,15 @@ class Protocol(BridgeTestCase):
         self.assertIn('(bridge: topic "p1"; your final message in this turn is returned', prompt)
         self.assertIn("send p1 --to claude", prompt)
 
+    def test_a_renamed_topic_resends_the_protocol(self):
+        self.pair("p1")
+        bridge.send("p1", "codex", "first", None, wait=True)
+        bridge.rename_pair("p1", "p2")
+        bridge.send("p2", "codex", "second", None, wait=True)
+        prompt = self.last_prompt()
+        self.assertIn("[agent-bridge protocol]", prompt)  # the thread learns the new name
+        self.assertIn("send p2 --to claude", prompt)
+
     def test_compaction_brings_the_protocol_back(self):
         self.pair()
         bridge.send("p1", "codex", "first", None, wait=True)

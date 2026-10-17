@@ -44,8 +44,9 @@ tool calls; `--priority later` waits until the session's current turn ends.
 ## Protocol refresh
 
 The first message to a thread, every handshake, and the first message after a
-context compaction in the Codex thread log carry the full protocol. Other
-messages carry a one-line reminder. `pair handshake TOPIC` resends it.
+context compaction in the Codex thread log or a `pair rename` carry the full
+protocol. Other messages carry a one-line reminder. `pair handshake TOPIC`
+resends it, for example to tell Codex a new topic name right away.
 
 ## Failure notices
 

@@ -374,6 +374,8 @@ def rename_pair(old: str, new: str) -> dict:
     pair = read_json(target / "pair.json")
     pair["name"] = new
     pair.setdefault("renamed_from", []).append({"name": old, "at": now()})
+    # The thread knows the protocol with the old name; the next message carries it again.
+    pair["handshake"] = {**(pair.get("handshake") or {}), "last_protocol_at": None}
     write_json(target / "pair.json", pair)
     log_event(new, "pair_renamed", previous=old)
     return pair
