@@ -1027,8 +1027,10 @@ def codex_command(pair: dict, last_message: Path) -> list[str]:
 
 def _route_daemon(name: str, pair: dict, message: dict, busy_wait: int, timeout: int) -> str:
     state = pair_dir(name) / "active_turn.json"
+    turn = {}
 
     def started(turn_id):
+        turn["id"] = turn_id
         write_json(state, {"turn_id": turn_id, "message_id": message["id"], "started": now()})
         log_event(name, "codex_turn_started", id=message["id"], route="daemon", turn=turn_id)
 
@@ -1036,6 +1038,11 @@ def _route_daemon(name: str, pair: dict, message: dict, busy_wait: int, timeout:
         status, answer = codex_daemon.run_turn(
             pair["codex"]["session_id"], codex_prompt(pair, message), codex_sandbox(pair),
             timeout, busy_wait, started, cwd=pair["codex"].get("cwd"))
+    except codex_daemon.DaemonUncertain:
+        if "id" not in turn:
+            raise  # whether the turn started is unknown
+        # The connection dropped while the known turn ran: follow it on a new connection.
+        status, answer = codex_daemon.await_turn(pair["codex"]["session_id"], turn["id"], timeout)
     finally:
         state.unlink(missing_ok=True)
     if status != "completed" or not answer:
@@ -1183,21 +1190,38 @@ def deliver_one(name: str, pair: dict, message: dict, busy_wait: int, timeout: i
                 plan = ["queue"]
                 continue
             break
+        except codex_daemon.DaemonUncertain as error:
+            # Codex may be running it: no retry by another route, and no definite failure.
+            archive(name, message, "sent", delivered=now(), route=route, unconfirmed=str(error))
+            log_event(name, "codex_unconfirmed", id=message["id"], route=route,
+                      reason=str(error)[:200])
+            queue_message(name, "claude", "Codex may have started a turn for this message, but "
+                          f"the daemon connection failed before the bridge could confirm or "
+                          f"follow it ({error}). Check the Codex thread before resending; the "
+                          "bridge does not retry it.", reply_to=message["id"], kind="notice",
+                          verify_sender=False)
+            return
         except (BridgeError, codex_daemon.DaemonError) as error:
             _fail(name, pair, message, f"{route}: {error}")
             return
         archive(name, message, "sent", delivered=now(), route=route)
         if message.get("protocol_included"):
-            try:
-                _modify_pair(name, lambda current: current.update(handshake={
-                    **(current.get("handshake") or {}), "last_protocol_at": protocol_started}))
-            except BridgeError:
-                pass  # it only decides whether the protocol is resent; the answer still returns
+            _record_protocol(name, protocol_started)
         log_event(name, "codex_answered", id=message["id"], route=route, chars=len(answer),
                   protocol=bool(message.get("protocol_included")))
         _queue_reply(name, message["id"], answer, route)
         return
     _fail(name, pair, message, "; ".join(notes) or "no delivery route")
+
+
+def _record_protocol(name: str, delivered_at: str) -> None:
+    """Note when Codex last received the full protocol (best effort: it only decides whether the
+    next message carries it again)."""
+    try:
+        _modify_pair(name, lambda current: current.update(handshake={
+            **(current.get("handshake") or {}), "last_protocol_at": delivered_at}))
+    except BridgeError:
+        pass
 
 
 def deliver_to_codex(name: str, busy_wait: int = CODEX_BUSY_WAIT_SECONDS,
@@ -1251,6 +1275,9 @@ def steer_codex(name: str, text: str, reply_to: str | None, require_identity: bo
         message = queue_message(name, "codex", text, reply_to=reply_to, kind="steer", box="steering",
                                 require_identity=require_identity)
         pair = load_pair(name)
+        protocol_started = None
+        if needs_protocol(pair, message):  # e.g. after a rename: the steer carries the protocol
+            message, protocol_started = {**message, "protocol_included": True}, now()
         unconfirmed = False
         try:
             turn_id = codex_daemon.steer(pair["codex"]["session_id"], codex_prompt(pair, message))
@@ -1267,6 +1294,8 @@ def steer_codex(name: str, text: str, reply_to: str | None, require_identity: bo
         archive(name, message, "sent", "steering", delivered=now(), route="daemon-steer",
                 turn=turn_id, unconfirmed=unconfirmed)
         log_event(name, "steered", id=message["id"], turn=turn_id, unconfirmed=unconfirmed)
+        if protocol_started and not unconfirmed:
+            _record_protocol(name, protocol_started)
         note = (" (the daemon did not confirm the steer, so it may not have reached the turn; "
                 "do not resend it)") if unconfirmed else ""
         state = pair_dir(name) / "active_turn.json"

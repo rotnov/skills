@@ -148,11 +148,12 @@ class FakeDaemon:
 
     def __init__(self, path, thread, loaded=False, active_writer=False, turn_seconds=0.3,
                  user_turn_seconds=None, fail_methods=(), silent_methods=(),
-                 user_turn_status="completed"):
+                 user_turn_status="completed", drop_after_start=False):
         self.thread, self.loaded, self.active_writer = thread, loaded, active_writer
         self.fail_methods = set(fail_methods)  # answered with a JSON-RPC error
         self.silent_methods = set(silent_methods)  # never answered
         self.user_turn_status = user_turn_status
+        self.drop_after_start = drop_after_start  # close the connection once turn/start is answered
         self.turn_seconds, self.calls, self.turns, self.order = turn_seconds, [], {}, []
         self.active, self.clients, self.count = None, [], 0
         self.server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -195,6 +196,9 @@ class FakeDaemon:
                     reply = {"jsonrpc": "2.0", "id": message["id"],
                              "error": {"code": -32600, "message": str(error)}}
                 ws_send(connection, json.dumps(reply))
+                if message["method"] == "turn/start" and self.drop_after_start:
+                    self.drop_after_start = False
+                    break  # the bridge loses this connection while the turn runs
         except (ConnectionError, OSError):
             pass
         finally:
@@ -1169,8 +1173,9 @@ class DeliveryRoutes(BridgeTestCase):
         with mock.patch.object(bridge.codex_daemon.UnixWebSocket, "send_text", failing("turn/start")):
             second = bridge.send("p1", "codex", "second", None, wait=True)
         self.assertEqual(len(self.codex_calls()), 1)  # the turn may have started: no exec retry
-        self.assertIn(f"Delivery to Codex failed for message {second['id']}",
-                      self.inbox.texts(wait=2, count=2)[1])
+        notice = self.inbox.texts(wait=2, count=2)[1]
+        self.assertIn(f"Status of message {second['id']}", notice)  # unknown, not failed
+        self.assertIn("may have started", notice)
 
     def test_a_daemon_that_rejects_a_request_before_the_turn_falls_back(self):
         self.start_daemon(fail_methods={"thread/resume"})
@@ -1195,6 +1200,25 @@ class DeliveryRoutes(BridgeTestCase):
         while daemon.clients and time.time() < deadline:
             time.sleep(0.05)
         self.assertEqual(daemon.clients, [])  # no reader thread keeps the socket open
+
+    def test_a_turn_whose_connection_drops_is_followed_to_its_answer(self):
+        self.start_daemon(turn_seconds=1.5, drop_after_start=True)
+        self.pair()
+        bridge.send("p1", "codex", "long job", None, wait=True)
+        reply = self.inbox.texts(wait=5)[0]
+        self.assertIn("DAEMON ANSWER: long job", reply)  # followed on a new connection
+        self.assertEqual(self.codex_calls(), [])  # and never sent a second time
+
+    def test_an_unconfirmed_turn_start_is_reported_as_unknown(self):
+        self.start_daemon(silent_methods={"turn/start"})
+        self.pair()
+        with mock.patch.object(bridge.codex_daemon, "REQUEST_TIMEOUT", 0.5):
+            result = bridge.send("p1", "codex", "maybe started", None, wait=True)
+        self.assertEqual(self.codex_calls(), [])  # no second attempt by exec
+        self.assertTrue((bridge.pair_dir("p1") / "mail" / "sent" / f"{result['id']}.json").exists())
+        notice = self.inbox.texts(wait=2)[0]
+        self.assertIn("may have started", notice)
+        self.assertNotIn("Delivery to Codex failed", notice)
 
     def test_daemon_waits_for_a_running_turn(self):
         daemon = self.start_daemon(loaded=True, user_turn_seconds=1.5)
@@ -1293,6 +1317,17 @@ class Steering(BridgeTestCase):
         self.assertIn("did not confirm", result["status"])  # it may be in the turn: no retry
         self.assertTrue((bridge.pair_dir("p1") / "mail" / "sent" / f"{result['id']}.json").exists())
         self.assertIn(f"in reply to {result['id']}", self.inbox.texts(wait=10)[0])
+
+    def test_a_steer_carries_the_protocol_when_it_is_due(self):
+        daemon = self.start_daemon(loaded=True, user_turn_seconds=3)
+        self.pair()  # no handshake yet: the next message has to carry the protocol
+        bridge.send("p1", "codex", "first steer", None, False, steer=True)
+        bridge.send("p1", "codex", "second steer", None, False, steer=True)
+        steers = [params["input"][0]["text"] for method, params in daemon.calls
+                  if method == "turn/steer"]
+        self.assertIn("[agent-bridge protocol]", steers[0])
+        self.assertNotIn("[agent-bridge protocol]", steers[1])  # recorded as delivered
+        self.inbox.texts(wait=10, count=2)  # let both await-turn workers finish
 
     def test_steer_needs_an_active_turn(self):
         self.start_daemon(loaded=True)
