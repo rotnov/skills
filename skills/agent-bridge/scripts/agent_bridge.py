@@ -62,6 +62,9 @@ QUEUE_TIMEOUT_SECONDS = 6 * 3600
 WORKER_STALE_SECONDS = max(CODEX_TIMEOUT_SECONDS, QUEUE_TIMEOUT_SECONDS) + CODEX_BUSY_WAIT_SECONDS + 60
 CLAUDE_POST_STALE_SECONDS = 300
 LIFECYCLE_WAIT_SECONDS = 10
+# `codex queue` takes the message only as an argument: Windows caps the whole command line at
+# 32,767 characters, Linux one argument at 128 KiB.
+QUEUE_PROMPT_LIMIT = 32_000 if os.name == "nt" else 128_000
 MODES = ("auto", "daemon", "exec", "queue")
 SANDBOXES = ("read-only", "workspace-write")
 # Extra `codex exec` arguments may only choose the model. Anything else could widen what a bridge
@@ -986,14 +989,16 @@ def codex_executable() -> str:
     return os.environ.get("AGENT_BRIDGE_CODEX", "codex")
 
 
-def codex_command(pair: dict, prompt: str, last_message: Path) -> list[str]:
+def codex_command(pair: dict, last_message: Path) -> list[str]:
+    """`codex exec resume` for this pair; the prompt goes to stdin (`-`), never on the command
+    line, whose length is limited on every platform."""
     # The pair's validated sandbox comes after every extra argument, so nothing overrides it, as
     # a permission profile (which Codex 0.138+ prefers) and as the legacy sandbox mode.
     sandbox = codex_sandbox(pair)
     return [codex_executable(), "exec", "resume", pair["codex"]["session_id"], "--json",
             "--skip-git-repo-check", "-o", str(last_message), *codex_extra_args(pair),
             "-c", f'default_permissions="{codex_daemon.PERMISSION_PROFILES[sandbox]}"',
-            "-c", f'sandbox_mode="{sandbox}"', prompt]
+            "-c", f'sandbox_mode="{sandbox}"', "-"]
 
 
 def _route_daemon(name: str, pair: dict, message: dict, busy_wait: int, timeout: int) -> str:
@@ -1025,9 +1030,9 @@ def _route_exec(name: str, pair: dict, message: dict, busy_wait: int, timeout: i
     last = work / f"{message['id']}.last.txt"
     log_event(name, "codex_turn_started", id=message["id"], route="exec")
     try:
-        result = subprocess.run(codex_command(pair, codex_prompt(pair, message), last),
-                                cwd=pair["codex"]["cwd"] or None, stdin=subprocess.DEVNULL,
-                                capture_output=True, text=True, timeout=timeout)
+        result = subprocess.run(codex_command(pair, last), input=codex_prompt(pair, message),
+                                cwd=pair["codex"]["cwd"] or None, capture_output=True,
+                                text=True, encoding="utf-8", timeout=timeout)
     except (OSError, subprocess.TimeoutExpired) as error:
         raise BridgeError(f"codex could not complete: {type(error).__name__}") from error
     answer = last.read_text(encoding="utf-8").strip() if last.is_file() else ""
@@ -1042,12 +1047,17 @@ def _route_exec(name: str, pair: dict, message: dict, busy_wait: int, timeout: i
 
 def _route_queue(name: str, pair: dict, message: dict, busy_wait: int, timeout: int) -> str:
     session = pair["codex"]["session_id"]
+    prompt = codex_prompt(pair, message)
+    if len(prompt.encode("utf-8")) > QUEUE_PROMPT_LIMIT:
+        raise BridgeError(f"the message is too long for the Codex desktop queue, which takes it "
+                          f"on the command line (limit about {QUEUE_PROMPT_LIMIT:,} bytes here); "
+                          "write it to a file and send its path instead")
     # The queued turn can only appear after this point, so the whole history is never reread.
     rollout = codex_rollout(session)
     start = rollout.stat().st_size if rollout else 0
     try:
         result = subprocess.run([codex_executable(), "queue", "--thread", session, "--message",
-                                 codex_prompt(pair, message)], stdin=subprocess.DEVNULL,
+                                 prompt], stdin=subprocess.DEVNULL,
                                 capture_output=True, text=True, timeout=120)
     except (OSError, subprocess.TimeoutExpired) as error:
         raise BridgeError(f"codex queue could not run: {type(error).__name__}") from error
@@ -1215,7 +1225,13 @@ def steer_codex(name: str, text: str, reply_to: str | None, require_identity: bo
         if own and own.get("turn_id") == turn_id:
             return {"id": message["id"], "status": f"steered into turn {turn_id}, which is "
                     f"answering message {own['message_id']}; that reply carries the result"}
-        spawn_worker(name, ["await-turn", name, turn_id, message["id"]])
+        try:
+            spawn_worker(name, ["await-turn", name, turn_id, message["id"]])
+        except OSError:
+            # The steer is already in the turn: with no worker to watch it, wait for it here.
+            await_turn_reply(name, turn_id, message["id"])
+            return {"id": message["id"], "status": f"steered into turn {turn_id}; no worker "
+                    "could start, so its final answer was awaited here and delivered"}
         return {"id": message["id"], "status": f"steered into turn {turn_id}; its final answer "
                 "will arrive as a reply"}
 

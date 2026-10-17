@@ -31,7 +31,11 @@ CLAUDE_ID = "2bf3d18a-0000-4000-8000-000000000002"
 
 FAKE_CODEX = """#!{python}
 import glob, json, os, sys
-args = sys.argv[1:]
+raw = sys.argv[1:]
+with open(os.environ["FAKE_CODEX_RECORD"] + ".raw", "a") as record:
+    record.write(json.dumps(raw) + "\\n")
+# `exec resume ... -` reads the prompt from stdin; record it in its place.
+args = raw[:-1] + [sys.stdin.read()] if raw[0] == "exec" and raw[-1] == "-" else raw
 with open(os.environ["FAKE_CODEX_RECORD"], "a") as record:
     record.write(json.dumps(args) + "\\n")
 if args[0] == "queue":
@@ -705,6 +709,15 @@ class ClaudeToCodex(BridgeTestCase):
         self.assertEqual(self.codex_calls(), [])
         self.assertIn("stayed busy", self.inbox.texts(wait=2)[0])
 
+    def test_a_long_message_reaches_codex_through_stdin(self):
+        self.pair()
+        text = "z" * 150_000  # over Linux's 128 KB per-argument and Windows' 32 K limits
+        bridge.send("p1", "codex", text, None, wait=True)
+        raw = json.loads(Path(str(self.record) + ".raw").read_text().splitlines()[0])
+        self.assertEqual(raw[-1], "-")  # the prompt stays off the command line
+        self.assertIn(text, self.codex_calls()[0][-1])
+        self.assertIn("FAKE ANSWER: " + text, self.inbox.texts(wait=5)[0])
+
     def test_dangerous_codex_arguments_are_dropped(self):
         self.pair(args=["--dangerously-bypass-approvals-and-sandbox", "-c", 'model="x"',
                         "-c", 'sandbox_mode="danger-full-access"', '--config=profile="yolo"',
@@ -1008,6 +1021,16 @@ class DeliveryRoutes(BridgeTestCase):
         self.assertEqual(bridge.watch_thread_answer(CODEX_ID, "MARK-1", 5, poll=0.1, start=start),
                          "the queued turn")
 
+    def test_a_message_too_long_for_the_desktop_queue_is_refused_clearly(self):
+        self.pair()
+        os.environ["FAKE_CODEX_ACTIVE_WRITER"] = "1"  # exec sees the desktop app: queue route
+        with mock.patch.object(bridge, "QUEUE_PROMPT_LIMIT", 2000):
+            result = bridge.send("p1", "codex", "w" * 3000, None, wait=True)
+        self.assertEqual([call[0] for call in self.codex_calls()], ["exec"])  # no codex queue
+        notice = self.inbox.texts(wait=2)[0]
+        self.assertIn(f"Delivery to Codex failed for message {result['id']}", notice)
+        self.assertIn("too long for the Codex desktop queue", notice)
+
     def test_exec_active_writer_falls_back_to_queue(self):
         self.pair()
         os.environ["FAKE_CODEX_ACTIVE_WRITER"] = "1"
@@ -1144,6 +1167,16 @@ class Steering(BridgeTestCase):
         self.assertTrue(texts, log.read_text() if log.exists() else "no worker log")
         self.assertIn("STEERED", texts[0])
         self.assertEqual(bridge.rename_pair("p1", "p2")["name"], "p2")
+
+    def test_a_steer_waits_here_when_no_worker_can_start(self):
+        self.start_daemon(loaded=True, user_turn_seconds=1.5)
+        self.pair()
+        with mock.patch.object(bridge, "spawn_worker", side_effect=OSError("no processes left")):
+            result = bridge.send("p1", "codex", "also check X", None, False, steer=True)
+        self.assertIn("delivered", result["status"])
+        reply = self.inbox.texts(wait=2)[0]  # already posted when the send returned
+        self.assertIn("STEERED", reply)
+        self.assertIn(f"in reply to {result['id']}", reply)
 
     def test_steer_needs_an_active_turn(self):
         self.start_daemon(loaded=True)
