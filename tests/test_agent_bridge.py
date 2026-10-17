@@ -34,6 +34,9 @@ import glob, json, os, sys
 raw = sys.argv[1:]
 with open(os.environ["FAKE_CODEX_RECORD"] + ".raw", "a") as record:
     record.write(json.dumps(raw) + "\\n")
+with open(os.environ["FAKE_CODEX_RECORD"] + ".env", "a") as record:
+    record.write(json.dumps(sorted(key for key in os.environ
+                                   if key.startswith("CLAUDE_CODE_") or key == "CLAUDECODE")) + "\\n")
 # `exec resume ... -` reads the prompt from stdin; record it in its place.
 args = raw[:-1] + [sys.stdin.read()] if raw[0] == "exec" and raw[-1] == "-" else raw
 with open(os.environ["FAKE_CODEX_RECORD"], "a") as record:
@@ -708,6 +711,16 @@ class ClaudeToCodex(BridgeTestCase):
         bridge.deliver_to_codex("p1", busy_wait=0)
         self.assertEqual(self.codex_calls(), [])
         self.assertIn("stayed busy", self.inbox.texts(wait=2)[0])
+
+    def test_codex_processes_do_not_inherit_the_claude_identity(self):
+        self.pair()
+        os.environ["CLAUDE_CODE_MESSAGING_TOKEN"] = "not-for-codex"
+        bridge.send("p1", "codex", "hello", None, wait=True)  # exec
+        os.environ["FAKE_CODEX_ACTIVE_WRITER"] = "1"
+        bridge.send("p1", "codex", "again", None, wait=True)  # exec refused, then codex queue
+        seen = [json.loads(line) for line in Path(str(self.record) + ".env").read_text().splitlines()]
+        # Commands Codex runs could otherwise pass for this Claude session on another topic.
+        self.assertEqual(seen, [[], [], []])
 
     def test_a_long_message_reaches_codex_through_stdin(self):
         self.pair()

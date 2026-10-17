@@ -989,6 +989,14 @@ def codex_executable() -> str:
     return os.environ.get("AGENT_BRIDGE_CODEX", "codex")
 
 
+def _codex_env() -> dict[str, str]:
+    """The environment for Codex processes: without the Claude session's identity, socket and
+    token, which Codex would pass on to the commands it runs, so none of them can pass for that
+    Claude session on another of its topics."""
+    return {key: value for key, value in os.environ.items()
+            if not key.startswith("CLAUDE_CODE_") and key != "CLAUDECODE"}
+
+
 def codex_command(pair: dict, last_message: Path) -> list[str]:
     """`codex exec resume` for this pair; the prompt goes to stdin (`-`), never on the command
     line, whose length is limited on every platform."""
@@ -1031,8 +1039,9 @@ def _route_exec(name: str, pair: dict, message: dict, busy_wait: int, timeout: i
     log_event(name, "codex_turn_started", id=message["id"], route="exec")
     try:
         result = subprocess.run(codex_command(pair, last), input=codex_prompt(pair, message),
-                                cwd=pair["codex"]["cwd"] or None, capture_output=True,
-                                text=True, encoding="utf-8", timeout=timeout)
+                                cwd=pair["codex"]["cwd"] or None, env=_codex_env(),
+                                capture_output=True, text=True, encoding="utf-8",
+                                timeout=timeout)
     except (OSError, subprocess.TimeoutExpired) as error:
         raise BridgeError(f"codex could not complete: {type(error).__name__}") from error
     answer = last.read_text(encoding="utf-8").strip() if last.is_file() else ""
@@ -1057,7 +1066,7 @@ def _route_queue(name: str, pair: dict, message: dict, busy_wait: int, timeout: 
     rollout = codex_rollout(session)
     start = rollout.stat().st_size if rollout else 0
     try:
-        result = subprocess.run(command, stdin=subprocess.DEVNULL,
+        result = subprocess.run(command, stdin=subprocess.DEVNULL, env=_codex_env(),
                                 capture_output=True, text=True, timeout=120)
     except (OSError, subprocess.TimeoutExpired) as error:
         raise BridgeError(f"codex queue could not run: {type(error).__name__}") from error
