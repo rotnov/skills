@@ -4,7 +4,9 @@ Run: python -m unittest tests.test_agent_bridge   (standard library only; Unix s
 """
 
 import base64
+import contextlib
 import hashlib
+import io
 import json
 import os
 import re
@@ -784,6 +786,23 @@ class ClaudeToCodex(BridgeTestCase):
                 mock.patch.object(bridge, "spawn_worker", side_effect=AssertionError("spawned")):
             bridge.watch_once()  # neither raises nor spawns a worker for the old name
 
+    def test_a_manual_deliver_reserves_the_topic(self):
+        self.pair()
+        outcome, deliver = [], bridge.deliver_to_codex
+
+        def racing_deliver(name, *args, **kwargs):
+            try:
+                bridge.rename_pair("p1", "p2")  # a rename while `deliver p1` runs
+                outcome.append("renamed")
+            except bridge.BridgeError:
+                outcome.append("refused")
+            return deliver(name, *args, **kwargs)
+
+        with mock.patch.object(bridge, "deliver_to_codex", racing_deliver), \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(bridge.main(["deliver", "p1"]), 0)
+        self.assertEqual(outcome, ["refused"])
+
     def test_a_killed_worker_is_reaped_at_once(self):
         self.pair()
         worker = bridge.spawn_worker("p1", ["watch", "--interval", "60"])  # runs until killed
@@ -832,6 +851,29 @@ class Limits(BridgeTestCase):
             bridge.queue_message("p1", "codex", "ping")
         with self.assertRaises(bridge.BridgeError):
             bridge.queue_message("p1", "codex", "one too many")
+
+    def test_concurrent_sends_respect_the_rate_limit(self):
+        self.pair()
+        check, results = bridge.check_rate, []
+
+        def slow_check(name, sender):
+            check(name, sender)
+            time.sleep(0.05)  # widen the gap between the check and the queued event
+
+        def send():
+            try:
+                bridge.queue_message("p1", "codex", "ping")
+                results.append(True)
+            except bridge.BridgeError:
+                results.append(False)
+
+        with mock.patch.object(bridge, "check_rate", slow_check):
+            threads = [threading.Thread(target=send) for _ in range(bridge.RATE_LIMIT + 5)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+        self.assertEqual(results.count(True), bridge.RATE_LIMIT)
 
 
 class DeliveryRoutes(BridgeTestCase):
@@ -1061,6 +1103,22 @@ class Protocol(BridgeTestCase):
         prompt = self.last_prompt()
         self.assertIn("[agent-bridge protocol]", prompt)  # the thread learns the new name
         self.assertIn("send p2 --to claude", prompt)
+
+    def test_compaction_check_reads_only_since_the_cutoff(self):
+        old = {"timestamp": "2026-10-17T09:00:00.000Z", "type": "compacted", "payload": {}}
+        new = {"timestamp": "2026-10-17T11:00:00.000Z", "type": "event_msg", "payload": {}}
+        with open(bridge.codex_rollout(CODEX_ID), "a", encoding="utf-8") as stream:
+            stream.write((json.dumps(old) + "\n") * 5000 + json.dumps(new) + "\n")
+        seen, lines = [], bridge._lines_backwards
+
+        def counting(path, *args):
+            for line in lines(path, *args):
+                seen.append(line)
+                yield line
+
+        with mock.patch.object(bridge, "_lines_backwards", counting):
+            self.assertFalse(bridge.compacted_since(CODEX_ID, "2026-10-17T10:00:00+00:00"))
+        self.assertTrue(0 < len(seen) < 10, len(seen))  # stopped at the first older record
 
     def test_compaction_brings_the_protocol_back(self):
         self.pair()

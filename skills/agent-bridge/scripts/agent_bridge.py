@@ -466,24 +466,26 @@ def queue_message(name: str, to: str, text: str, reply_to: str | None = None,
         raise BridgeError("--to must be claude or codex")
     pair = load_pair(name)
     sender = "codex" if to == "claude" else "claude"
-    if verify_sender:
-        check_sender(pair, sender, require_identity)
-        check_rate(name, sender)
-    if not text.strip():
-        raise BridgeError("empty message")
-    if len(text) > MAX_TEXT_CHARS:
-        raise BridgeError(f"message is {len(text)} characters (limit {MAX_TEXT_CHARS}); "
-                          "write it to a file and send its path instead")
-    message = {
-        # Filenames sort in enqueue order: UTC to the microsecond, then a random tie-breaker.
-        "id": datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%S.%f")
-              + "-" + uuid.uuid4().hex[:8],
-        "pair": name, "from": sender, "to": to, "kind": kind,
-        "created": now(), "reply_to": reply_to, "text": text, **fields,
-    }
-    write_json(pair_dir(name) / "mail" / (box or f"inbox-{to}") / f"{message['id']}.json", message)
-    log_event(name, "queued", id=message["id"], **{"from": sender}, to=to, kind=kind,
-              chars=len(text), reply_to=reply_to)
+    # One rate check and queue write at a time per topic, so parallel sends cannot exceed it.
+    with _kernel_lock(pair_dir(name) / ".queue.lock"):
+        if verify_sender:
+            check_sender(pair, sender, require_identity)
+            check_rate(name, sender)
+        if not text.strip():
+            raise BridgeError("empty message")
+        if len(text) > MAX_TEXT_CHARS:
+            raise BridgeError(f"message is {len(text)} characters (limit {MAX_TEXT_CHARS}); "
+                              "write it to a file and send its path instead")
+        message = {
+            # Filenames sort in enqueue order: UTC to the microsecond, then a random tie-breaker.
+            "id": datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%S.%f")
+                  + "-" + uuid.uuid4().hex[:8],
+            "pair": name, "from": sender, "to": to, "kind": kind,
+            "created": now(), "reply_to": reply_to, "text": text, **fields,
+        }
+        write_json(pair_dir(name) / "mail" / (box or f"inbox-{to}") / f"{message['id']}.json", message)
+        log_event(name, "queued", id=message["id"], **{"from": sender}, to=to, kind=kind,
+                  chars=len(text), reply_to=reply_to)
     handshake = pair.get("handshake") or {}
     if verify_sender and sender == "codex" and reply_to and reply_to == handshake.get("message_id"):
         verified = {"return_path_verified": now(),
@@ -646,21 +648,26 @@ def codex_prompt(pair: dict, message: dict) -> str:
 
 
 def compacted_since(session: str, since: str | None) -> bool:
-    """True when the thread log shows a context compaction after `since` (UTC ISO time)."""
+    """True when the thread log shows a context compaction after `since` (UTC ISO time).
+
+    It reads the log from its end and stops at the first record older than `since`.
+    """
     rollout = codex_rollout(session)
     if rollout is None or since is None:
         return False
     cutoff = datetime.datetime.fromisoformat(since)
-    with open(rollout, encoding="utf-8", errors="replace") as stream:
-        for line in stream:
-            if '"type":"compacted"' not in line.replace(" ", ""):
-                continue
-            try:
-                stamp = json.loads(line).get("timestamp")
-            except json.JSONDecodeError:
-                continue
-            if stamp and datetime.datetime.fromisoformat(stamp.replace("Z", "+00:00")) > cutoff:
-                return True
+    for line in _lines_backwards(rollout):
+        if '"timestamp"' not in line:
+            continue
+        try:
+            record = json.loads(line)
+            stamp = datetime.datetime.fromisoformat(record["timestamp"].replace("Z", "+00:00"))
+        except (json.JSONDecodeError, AttributeError, KeyError, TypeError, ValueError):
+            continue
+        if stamp <= cutoff:
+            return False
+        if record.get("type") == "compacted":
+            return True
     return False
 
 
@@ -1453,7 +1460,9 @@ def _dispatch(args) -> int:
         await_turn_reply(args.name, args.turn, args.message)
         return 0
     elif args.command == "deliver":
-        result = {"codex": deliver_to_codex(args.name), "claude": deliver_to_claude(args.name)}
+        # A manual run reserves the topic while it delivers; a spawned worker already has one.
+        with contextlib.nullcontext() if args.worker_marker else _reserved(args.name):
+            result = {"codex": deliver_to_codex(args.name), "claude": deliver_to_claude(args.name)}
     elif args.command == "inbox":
         mail = pair_dir(args.name) / "mail"
         result = [{"id": item["id"], "box": path.parent.name, "from": item["from"],
