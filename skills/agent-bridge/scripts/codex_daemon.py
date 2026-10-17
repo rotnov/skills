@@ -23,6 +23,7 @@ from pathlib import Path
 CLIENT = {"name": "agent-bridge", "version": "0.2.0"}
 # Codex 0.138+ permission profiles; a selected profile wins over the legacy sandbox mode.
 PERMISSION_PROFILES = {"read-only": ":read-only", "workspace-write": ":workspace"}
+REQUEST_TIMEOUT = 60  # seconds to wait for one JSON-RPC answer
 
 
 class DaemonError(Exception):
@@ -147,8 +148,12 @@ class Daemon:
         self.finished: dict[str, str] = {}
         self.started: set[str] = set()
         threading.Thread(target=self._read, daemon=True).start()
-        self.request("initialize", {"clientInfo": CLIENT})
-        self.notify("initialized")
+        try:
+            self.request("initialize", {"clientInfo": CLIENT})
+            self.notify("initialized")
+        except DaemonError:
+            self.close()  # the reader thread ends with the socket instead of leaking it
+            raise
 
     def _read(self) -> None:
         try:
@@ -190,7 +195,8 @@ class Daemon:
             turn = params.get("turn") or {}
             self.finished[turn.get("id") or ""] = turn.get("status", "completed")
 
-    def request(self, method: str, params: dict, timeout: float = 60) -> dict:
+    def request(self, method: str, params: dict, timeout: float | None = None) -> dict:
+        timeout = REQUEST_TIMEOUT if timeout is None else timeout
         self.next_id += 1
         identifier = self.next_id
         if method in ("turn/start", "turn/steer"):
@@ -214,7 +220,9 @@ class Daemon:
                         f"{method}: {text}")
                 return message.get("result") or {}
             self._handle(message)
-        raise DaemonError(f"{method}: no answer within {timeout:.0f}s")
+        # Unanswered before any turn was requested: another route is still safe.
+        raise (DaemonError if self.turn_requested else DaemonUnavailable)(
+            f"{method}: no answer within {timeout:.0f}s")
 
     def pump(self, until, timeout: float) -> bool:
         deadline = time.time() + timeout

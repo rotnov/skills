@@ -140,9 +140,10 @@ class FakeDaemon:
     """Speaks the app-server JSON-RPC subset the bridge uses, over WebSocket on a Unix socket."""
 
     def __init__(self, path, thread, loaded=False, active_writer=False, turn_seconds=0.3,
-                 user_turn_seconds=None, fail_methods=()):
+                 user_turn_seconds=None, fail_methods=(), silent_methods=()):
         self.thread, self.loaded, self.active_writer = thread, loaded, active_writer
         self.fail_methods = set(fail_methods)  # answered with a JSON-RPC error
+        self.silent_methods = set(silent_methods)  # never answered
         self.turn_seconds, self.calls, self.turns, self.order = turn_seconds, [], {}, []
         self.active, self.clients, self.count = None, [], 0
         self.server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -176,6 +177,8 @@ class FakeDaemon:
                 if "id" not in message:
                     continue
                 self.calls.append((message["method"], message.get("params") or {}))
+                if message["method"] in self.silent_methods:
+                    continue
                 try:
                     result = self._handle(message["method"], message.get("params") or {})
                     reply = {"jsonrpc": "2.0", "id": message["id"], "result": result}
@@ -1053,6 +1056,23 @@ class DeliveryRoutes(BridgeTestCase):
         bridge.send("p1", "codex", "hello", None, wait=True)
         self.assertEqual(self.codex_calls()[0][:2], ["exec", "resume"])  # nothing had started
         self.assertIn("(delivered by exec)", self.inbox.texts(wait=2)[0])
+
+    def test_a_daemon_that_stops_answering_before_the_turn_falls_back(self):
+        self.start_daemon(silent_methods={"thread/resume"})
+        self.pair()
+        with mock.patch.object(bridge.codex_daemon, "REQUEST_TIMEOUT", 1):
+            bridge.send("p1", "codex", "hello", None, wait=True)
+        self.assertEqual(self.codex_calls()[0][:2], ["exec", "resume"])  # nothing had started
+        self.assertIn("(delivered by exec)", self.inbox.texts(wait=2)[0])
+
+    def test_a_daemon_that_refuses_initialize_is_disconnected(self):
+        daemon = self.start_daemon(fail_methods={"initialize"})
+        with self.assertRaises(bridge.codex_daemon.DaemonError):
+            bridge.codex_daemon.Daemon(self.daemon_path)
+        deadline = time.time() + 2
+        while daemon.clients and time.time() < deadline:
+            time.sleep(0.05)
+        self.assertEqual(daemon.clients, [])  # no reader thread keeps the socket open
 
     def test_daemon_waits_for_a_running_turn(self):
         daemon = self.start_daemon(loaded=True, user_turn_seconds=1.5)
