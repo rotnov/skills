@@ -61,6 +61,7 @@ resends it, for example to tell Codex a new topic name right away.
 | "has a delivery in progress" | A live worker owns the topic; retry after its reply. Markers left by a killed worker are cleared automatically. |
 | "another pair change is in progress" | A pair create, rename, removal or setting change is running; retry. |
 | "session identity is missing" | Run the command inside the paired session: Claude Code's Bash tool or the Codex thread's shell. |
+| "runs inside a Codex thread" | A Codex shell cannot send as the Claude session; Codex writes with `--to claude`. |
 | "too long for the Codex desktop queue" | `codex queue` takes the message on its command line (about 32,000 characters on Windows, 128 KB elsewhere); write the content to a file and send its path. |
 | "rate limit" | 20 messages per sender per 10 minutes per topic; batch them. |
 

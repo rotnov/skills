@@ -823,6 +823,25 @@ class ClaudeToCodex(BridgeTestCase):
         self.assertEqual(self.codex_calls(), [])
         self.assertEqual(self.inbox.texts(), [])
 
+    def test_a_codex_shell_cannot_send_as_the_claude_session(self):
+        self.pair()
+        # A Codex shell (for example under a daemon started from Claude) that inherited the
+        # Claude identity: it must not reach this or another topic's Codex thread as Claude.
+        os.environ["CODEX_THREAD_ID"] = "01a1496a-0000-7000-8000-00000000000b"
+        with self.assertRaises(bridge.BridgeError):
+            bridge.send("p1", "codex", "hello", None, wait=True)
+        self.assertEqual(self.codex_calls(), [])
+
+    def test_an_exec_turn_that_times_out_is_not_a_failure(self):
+        self.pair()
+        expired = subprocess.TimeoutExpired("codex", 1)
+        with mock.patch.object(bridge.subprocess, "run", side_effect=expired):
+            result = bridge.send("p1", "codex", "long job", None, wait=True)
+        self.assertTrue((bridge.pair_dir("p1") / "mail" / "sent" / f"{result['id']}.json").exists())
+        notice = self.inbox.texts(wait=2)[0]
+        self.assertIn("may already have made changes", notice)  # unknown, not a failure to retry
+        self.assertNotIn("Delivery to Codex failed", notice)
+
     def test_other_claude_session_is_refused(self):
         self.pair()
         os.environ["CLAUDE_CODE_SESSION_ID"] = "not-the-paired-session"

@@ -455,6 +455,11 @@ def check_sender(pair: dict, sender: str, require_identity: bool = True) -> None
     out; it is not a secret from other processes of the same user.
     """
     if sender == "claude":
+        if os.environ.get("CODEX_THREAD_ID") or os.environ.get("CODEX_SESSION_ID"):
+            # A Codex shell can inherit the Claude identity (for example from a daemon started
+            # in Claude's Bash tool); it must never write to a Codex thread as the Claude session.
+            raise BridgeError("this command runs inside a Codex thread, which cannot send as the "
+                              "Claude session; Codex answers with `--to claude`")
         current, who = os.environ.get("CLAUDE_CODE_SESSION_ID"), "Claude"
     else:
         current = os.environ.get("CODEX_THREAD_ID") or os.environ.get("CODEX_SESSION_ID")
@@ -1097,7 +1102,12 @@ def _route_exec(name: str, pair: dict, message: dict, busy_wait: int, timeout: i
                                 cwd=pair["codex"]["cwd"] or None, env=_codex_env(),
                                 capture_output=True, text=True, encoding="utf-8",
                                 timeout=timeout)
-    except (OSError, subprocess.TimeoutExpired) as error:
+    except subprocess.TimeoutExpired as error:
+        # Stopping the CLI cannot undo what the turn already did: unknown, not a failure to retry.
+        raise Unconfirmed(f"Codex worked on this message for {timeout / 60:g} min and was stopped "
+                          "before it answered, so it may already have made changes. Check the "
+                          "Codex thread before resending; the bridge does not retry it.") from error
+    except OSError as error:
         raise BridgeError(f"codex could not complete: {type(error).__name__}") from error
     answer = last.read_text(encoding="utf-8").strip() if last.is_file() else ""
     last.unlink(missing_ok=True)
