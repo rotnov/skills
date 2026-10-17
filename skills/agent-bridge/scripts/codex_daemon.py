@@ -21,6 +21,8 @@ import time
 from pathlib import Path
 
 CLIENT = {"name": "agent-bridge", "version": "0.2.0"}
+# Codex 0.138+ permission profiles; a selected profile wins over the legacy sandbox mode.
+PERMISSION_PROFILES = {"read-only": ":read-only", "workspace-write": ":workspace"}
 
 
 class DaemonError(Exception):
@@ -28,7 +30,7 @@ class DaemonError(Exception):
 
 
 class DaemonUnavailable(DaemonError):
-    """No daemon socket to connect to."""
+    """The daemon cannot be used before any turn was requested; another route is safe."""
 
 
 class ActiveWriter(DaemonError):
@@ -140,6 +142,7 @@ class Daemon:
             raise DaemonUnavailable(f"daemon socket unreachable: {error}") from error
         self.inbox: queue.Queue = queue.Queue()
         self.next_id = 0
+        self.turn_requested = False  # once set, a lost connection may have started a turn
         self.agent_text: dict[str, list[str]] = {}
         self.finished: dict[str, str] = {}
         self.started: set[str] = set()
@@ -155,8 +158,15 @@ class Daemon:
             pass
         self.inbox.put(None)
 
+    def _lost(self, what: str) -> DaemonError:
+        kind = DaemonError if self.turn_requested else DaemonUnavailable
+        return kind(f"{what}: daemon connection lost")
+
     def send(self, message: dict) -> None:
-        self.connection.send_text(json.dumps({"jsonrpc": "2.0", **message}))
+        try:
+            self.connection.send_text(json.dumps({"jsonrpc": "2.0", **message}))
+        except OSError as error:
+            raise self._lost(message.get("method") or "reply") from error
 
     def notify(self, method: str, params: dict | None = None) -> None:
         self.send({"method": method, **({"params": params} if params is not None else {})})
@@ -183,6 +193,8 @@ class Daemon:
     def request(self, method: str, params: dict, timeout: float = 60) -> dict:
         self.next_id += 1
         identifier = self.next_id
+        if method in ("turn/start", "turn/steer"):
+            self.turn_requested = True
         self.send({"id": identifier, "method": method, "params": params})
         deadline = time.time() + timeout
         while time.time() < deadline:
@@ -191,7 +203,7 @@ class Daemon:
             except queue.Empty:
                 continue
             if message is None:
-                raise DaemonError(f"{method}: daemon closed the connection")
+                raise self._lost(method)
             if message.get("id") == identifier and "method" not in message:
                 if "error" in message:
                     text = str(message["error"].get("message", message["error"]))
@@ -210,7 +222,7 @@ class Daemon:
             except queue.Empty:
                 continue
             if message is None:
-                raise DaemonError("daemon closed the connection")
+                raise self._lost("waiting")
             self._handle(message)
         return until()
 
@@ -239,8 +251,10 @@ class Daemon:
         if self.loaded(thread_id):
             self.request("thread/resume", {"threadId": thread_id, "excludeTurns": True})
             return False
+        sandbox = sandbox if sandbox in PERMISSION_PROFILES else "read-only"
         self.request("thread/resume", {"threadId": thread_id, "excludeTurns": True,
-                                       "approvalPolicy": "never", "sandbox": sandbox or "read-only"})
+                                       "approvalPolicy": "never", "sandbox": sandbox,
+                                       "config": {"default_permissions": PERMISSION_PROFILES[sandbox]}})
         return True
 
     def active_turn(self, thread_id: str) -> str | None:

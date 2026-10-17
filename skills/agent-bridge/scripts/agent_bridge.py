@@ -58,8 +58,10 @@ MODES = ("auto", "daemon", "exec", "queue")
 SANDBOXES = ("read-only", "workspace-write")
 UNSAFE_CODEX_FLAGS = {"--dangerously-bypass-approvals-and-sandbox", "--yolo",
                       "--dangerously-bypass-hook-trust"}
-# Config overrides that could loosen the pair's sandbox: the sandbox itself, or a profile with one.
-SANDBOX_SETTING = re.compile(r"^\s*[\"']?(sandbox|profile|permissions)", re.IGNORECASE)
+# Config overrides that could loosen the pair's sandbox: the sandbox itself, a permission
+# profile, or a config profile that carries either.
+SANDBOX_SETTING = re.compile(r"^\s*[\"']?(sandbox|profile|permissions|default_permissions)",
+                             re.IGNORECASE)
 PRIORITIES = ("next", "later")
 IS_WINDOWS = os.name == "nt"
 _WORKERS: list = []  # detached worker handles, kept so they are not reported as leaked
@@ -382,7 +384,9 @@ def queue_message(name: str, to: str, text: str, reply_to: str | None = None,
         raise BridgeError(f"message is {len(text)} characters (limit {MAX_TEXT_CHARS}); "
                           "write it to a file and send its path instead")
     message = {
-        "id": time.strftime("%Y%m%dT%H%M%S") + "-" + uuid.uuid4().hex[:8],
+        # Filenames sort in enqueue order: UTC to the microsecond, then a random tie-breaker.
+        "id": datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%S.%f")
+              + "-" + uuid.uuid4().hex[:8],
         "pair": name, "from": sender, "to": to, "kind": kind,
         "created": now(), "reply_to": reply_to, "text": text, **fields,
     }
@@ -645,23 +649,49 @@ class Lock:
     def _stale(self) -> bool:
         try:
             pid, started = self.path.read_text().split()
+            pid, started = int(pid), float(started)
         except (OSError, ValueError):
             return True
-        if time.time() - float(started) > self.stale_seconds:
-            return True
-        if IS_WINDOWS:
-            return False
-        try:
-            os.kill(int(pid), 0)
-        except ProcessLookupError:
-            return True
-        except PermissionError:
-            return False
-        return False
+        return time.time() - started > self.stale_seconds or not _process_alive(pid)
 
     def __exit__(self, *exc):
         if self.held:
             self.path.unlink(missing_ok=True)
+
+
+def _process_alive(pid: int) -> bool:
+    """Whether the process still runs; a holder that cannot be checked counts as alive."""
+    if pid <= 0:
+        return False
+    if not IS_WINDOWS:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except OSError:
+            return True  # it exists but belongs to another user
+        return True
+    # os.kill would terminate the process on Windows; ask the kernel for its exit code instead.
+    try:
+        import ctypes
+        from ctypes import wintypes
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+        kernel32.GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+        kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+        handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return ctypes.get_last_error() != 87  # ERROR_INVALID_PARAMETER: no such process
+        try:
+            code = wintypes.DWORD()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return True
+            return code.value == 259  # STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(handle)
+    except (OSError, AttributeError, ValueError):
+        return True
 
 
 def _live_lock(path: Path, stale_seconds: int) -> bool:
@@ -702,10 +732,13 @@ def codex_executable() -> str:
 
 
 def codex_command(pair: dict, prompt: str, last_message: Path) -> list[str]:
-    # The pair's validated sandbox comes after every extra argument, so nothing overrides it.
+    # The pair's validated sandbox comes after every extra argument, so nothing overrides it, as
+    # a permission profile (which Codex 0.138+ prefers) and as the legacy sandbox mode.
+    sandbox = codex_sandbox(pair)
     return [codex_executable(), "exec", "resume", pair["codex"]["session_id"], "--json",
             "--skip-git-repo-check", "-o", str(last_message), *codex_extra_args(pair),
-            "-c", f'sandbox_mode="{codex_sandbox(pair)}"', prompt]
+            "-c", f'default_permissions="{codex_daemon.PERMISSION_PROFILES[sandbox]}"',
+            "-c", f'sandbox_mode="{sandbox}"', prompt]
 
 
 def _route_daemon(name: str, pair: dict, message: dict, busy_wait: int, timeout: int) -> str:

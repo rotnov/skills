@@ -390,6 +390,15 @@ class Pairs(BridgeTestCase):
         retired = bridge.remove_pair("p2")  # an orphaned turn marker without a worker
         self.assertFalse((retired / "active_turn.json").exists())
 
+    def test_dead_lock_holders_are_detected(self):
+        dead = subprocess.Popen([sys.executable, "-c", "pass"])
+        dead.wait()
+        self.assertTrue(bridge._process_alive(os.getpid()))
+        self.assertFalse(bridge._process_alive(dead.pid))
+        with mock.patch.object(bridge, "IS_WINDOWS", True):
+            # Where the Windows API is missing (as here), a holder that cannot be checked is alive.
+            self.assertTrue(bridge._process_alive(dead.pid))
+
     def test_refresh_updates_every_topic_of_the_session(self):
         self.pair("p1")
         other = "01a1496a-0000-7000-8000-000000000009"
@@ -492,13 +501,16 @@ class ClaudeToCodex(BridgeTestCase):
     def test_dangerous_codex_arguments_are_dropped(self):
         self.pair(args=["--dangerously-bypass-approvals-and-sandbox", "-c", 'model="x"',
                         "-c", 'sandbox_mode="danger-full-access"', '--config=profile="yolo"',
-                        "--config", 'sandbox_workspace_write.writable_roots=["/"]', "-c"])
+                        "--config", 'sandbox_workspace_write.writable_roots=["/"]',
+                        "-c", 'default_permissions=":danger-full-access"', "-c"])
         bridge.send("p1", "codex", "hello", None, wait=True)
         call = self.codex_calls()[0]
         self.assertNotIn("--dangerously-bypass-approvals-and-sandbox", call)
         self.assertNotIn('--config=profile="yolo"', call)
         settings = [call[index + 1] for index, arg in enumerate(call) if arg in ("-c", "--config")]
-        self.assertEqual(settings, ['model="x"', 'sandbox_mode="read-only"'])
+        # The permission profile is pinned too: it wins over sandbox_mode in Codex 0.138+.
+        self.assertEqual(settings, ['model="x"', 'default_permissions=":read-only"',
+                                    'sandbox_mode="read-only"'])
 
     def test_sandbox_is_only_ever_read_only_or_workspace_write(self):
         legacy = {"codex": {"args": ["-c", 'sandbox_mode="danger-full-access"']}}
@@ -507,6 +519,15 @@ class ClaudeToCodex(BridgeTestCase):
         self.assertEqual(bridge.codex_sandbox(legacy), "workspace-write")
         self.assertEqual(bridge.codex_sandbox({"codex": {"sandbox": "danger-full-access"}}),
                          "read-only")
+
+    def test_messages_keep_their_enqueue_order(self):
+        self.pair()
+        suffixes = [mock.Mock(hex="f" * 32), mock.Mock(hex="0" * 32)]  # a reversed tie-breaker
+        with mock.patch.object(bridge.uuid, "uuid4", side_effect=suffixes):
+            first = bridge.queue_message("p1", "codex", "first")
+            second = bridge.queue_message("p1", "codex", "second")
+        self.assertEqual([item["id"] for item in bridge.pending("p1", "codex")],
+                         [first["id"], second["id"]])
 
     def test_other_claude_session_is_refused(self):
         self.pair()
@@ -545,6 +566,7 @@ class DeliveryRoutes(BridgeTestCase):
         self.assertEqual(self.codex_calls(), [])
         resume = dict(daemon.calls)["thread/resume"]
         self.assertEqual((resume["sandbox"], resume["approvalPolicy"]), ("read-only", "never"))
+        self.assertEqual(resume["config"], {"default_permissions": ":read-only"})
         self.assertIn("thread/unsubscribe", daemon.methods())
         self.assertTrue((bridge.pair_dir("p1") / "mail" / "sent" / f"{result['id']}.json").exists())
 
@@ -555,6 +577,7 @@ class DeliveryRoutes(BridgeTestCase):
         resume = dict(daemon.calls)["thread/resume"]
         self.assertNotIn("sandbox", resume)
         self.assertNotIn("approvalPolicy", resume)
+        self.assertNotIn("config", resume)
 
     def test_desktop_hosted_thread_falls_back_to_queue(self):
         self.start_daemon(active_writer=True)
@@ -592,6 +615,27 @@ class DeliveryRoutes(BridgeTestCase):
         bridge.send("p1", "codex", "hello", None, wait=True)
         self.assertEqual(self.codex_calls(), [])
         self.assertIn("hosted by another app-server", self.inbox.texts(wait=2)[0])
+
+    def test_a_lost_daemon_connection_falls_back_only_before_the_turn(self):
+        self.start_daemon()
+        self.pair()
+        send_text = bridge.codex_daemon.UnixWebSocket.send_text
+
+        def failing(method):
+            def send(connection, text):
+                if f'"method": "{method}"' in text:
+                    raise BrokenPipeError
+                send_text(connection, text)
+            return send
+
+        with mock.patch.object(bridge.codex_daemon.UnixWebSocket, "send_text", failing("thread/resume")):
+            bridge.send("p1", "codex", "first", None, wait=True)
+        self.assertIn("(delivered by exec)", self.inbox.texts(wait=2)[0])  # nothing had started
+        with mock.patch.object(bridge.codex_daemon.UnixWebSocket, "send_text", failing("turn/start")):
+            second = bridge.send("p1", "codex", "second", None, wait=True)
+        self.assertEqual(len(self.codex_calls()), 1)  # the turn may have started: no exec retry
+        self.assertIn(f"Delivery to Codex failed for message {second['id']}",
+                      self.inbox.texts(wait=2, count=2)[1])
 
     def test_daemon_waits_for_a_running_turn(self):
         daemon = self.start_daemon(loaded=True, user_turn_seconds=1.5)
