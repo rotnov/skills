@@ -896,20 +896,21 @@ def deliver_to_codex(name: str, busy_wait: int = CODEX_BUSY_WAIT_SECONDS,
     directory = pair_dir(name)
     processed = []
     stale = max(timeout, QUEUE_TIMEOUT_SECONDS) + busy_wait + 60
-    with Lock(directory / "codex.lock", stale_seconds=stale) as lock:
-        if not lock.held:
-            return processed  # another worker owns this pair and will drain the queue
-        while True:
-            queue = pending(name, "codex")
-            if not queue:
-                break
-            message = queue[0]
-            processed.append(message["id"])
-            deliver_one(name, load_pair(name), message, busy_wait, timeout)
-            try:
-                deliver_to_claude(name)
-            except BridgeError:
-                pass  # kept in the mailbox; the next delivery attempt retries
+    while pending(name, "codex"):
+        with Lock(directory / "codex.lock", stale_seconds=stale) as lock:
+            if not lock.held:
+                break  # the holder looks at the queue again after releasing the lock
+            while True:
+                queue = pending(name, "codex")
+                if not queue:
+                    break
+                message = queue[0]
+                processed.append(message["id"])
+                deliver_one(name, load_pair(name), message, busy_wait, timeout)
+                try:
+                    deliver_to_claude(name)
+                except BridgeError:
+                    pass  # kept in the mailbox; the next delivery attempt retries
     return processed
 
 

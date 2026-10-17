@@ -535,6 +535,24 @@ class ClaudeToCodex(BridgeTestCase):
         with self.assertRaises(bridge.BridgeError):
             bridge.send("p1", "codex", "hello", None, wait=True)
 
+    def test_a_message_queued_during_the_lock_handoff_is_delivered(self):
+        self.pair()
+        bridge.queue_message("p1", "codex", "first")
+        release, raced = bridge.Lock.__exit__, []
+
+        def racing_release(lock, *exc):
+            if lock.path.name == "codex.lock" and not raced:
+                raced.append(True)
+                # A send queues now; its worker still finds the lock taken and leaves.
+                bridge.queue_message("p1", "codex", "second")
+                self.assertEqual(bridge.deliver_to_codex("p1"), [])
+            return release(lock, *exc)
+
+        with mock.patch.object(bridge.Lock, "__exit__", racing_release):
+            processed = bridge.deliver_to_codex("p1")
+        self.assertEqual(len(processed), 2)
+        self.assertEqual(bridge.pending("p1", "codex"), [])
+
     def test_detached_worker_delivers_the_reply(self):
         self.pair()
         result = bridge.send("p1", "codex", "async check", None, wait=False)
