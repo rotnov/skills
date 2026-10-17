@@ -1070,6 +1070,9 @@ class McpServer(BridgeTestCase):
         self.assertEqual(by_id[1]["result"]["serverInfo"]["name"], "agent-bridge")
         names = [tool["name"] for tool in by_id[2]["result"]["tools"]]
         self.assertEqual(names, ["bridge_pairs", "bridge_send", "bridge_inbox", "bridge_read"])
+        send = by_id[2]["result"]["tools"][1]["inputSchema"]  # schema keywords at the top level
+        self.assertEqual((sorted(send["properties"]), send["required"], send["additionalProperties"]),
+                         (["after_turn", "pair", "reply_to", "text"], ["pair", "text"], False))
         self.assertFalse(by_id[3]["result"]["isError"], by_id[3])
         self.assertIn("via mcp", self.inbox.texts(wait=2)[0])
         self.assertTrue(by_id[4]["result"]["isError"])

@@ -24,6 +24,20 @@ PROTOCOL_FALLBACK = "2025-06-18"
 def tool_definitions(side: str) -> list[dict]:
     peer = "Claude Code" if side == "codex" else "Codex"
     pair_property = {"type": "string", "description": "Pair name from bridge_pairs"}
+    send_properties = {
+        "pair": pair_property,
+        "text": {"type": "string", "description": "Message text"},
+        "reply_to": {"type": "string", "description": "Message id being answered"},
+    }
+    if side == "claude":
+        send_properties["steer"] = {"type": "boolean", "description":
+                                    "Add the message to Codex's active turn now (daemon-hosted "
+                                    "threads only). Use only when the user asked to redirect "
+                                    "running work."}
+    else:
+        send_properties["after_turn"] = {"type": "boolean", "description":
+                                         "Deliver after Claude's current turn instead of between "
+                                         "its tool calls."}
     return [
         {"name": "bridge_pairs",
          "description": "List bridge pairs. Each pair links exactly one Claude Code session "
@@ -33,17 +47,8 @@ def tool_definitions(side: str) -> list[dict]:
          "description": f"Send a message to the {peer} session paired with you in this pair. "
                         "Keep it short and point to files by path instead of pasting large "
                         "content. The peer treats it as a message from another agent.",
-         "inputSchema": {"type": "object", "properties": {
-             "pair": pair_property,
-             "text": {"type": "string", "description": "Message text"},
-             "reply_to": {"type": "string", "description": "Message id being answered"},
-             **({"steer": {"type": "boolean", "description":
-                 "Add the message to Codex's active turn now (daemon-hosted threads only). "
-                 "Use only when the user asked to redirect running work."}}
-                if side == "claude" else
-                {"after_turn": {"type": "boolean", "description":
-                 "Deliver after Claude's current turn instead of between its tool calls."}})},
-             "required": ["pair", "text"], "additionalProperties": False}},
+         "inputSchema": {"type": "object", "properties": send_properties,
+                         "required": ["pair", "text"], "additionalProperties": False}},
         {"name": "bridge_inbox",
          "description": "List the messages of a pair (ids, direction, status; no text).",
          "inputSchema": {"type": "object", "properties": {"pair": pair_property},
