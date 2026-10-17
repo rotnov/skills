@@ -605,6 +605,18 @@ class Pairs(BridgeTestCase):
             bridge.spawn_worker("p1").wait()
         self.assertEqual(popen.call_args.kwargs["env"]["AGENT_BRIDGE_HOME"], str(expected))
 
+    def test_windows_pairs_need_the_inbox_token(self):
+        with mock.patch.object(bridge, "IS_WINDOWS", True):
+            os.environ.pop("CLAUDE_CODE_MESSAGING_TOKEN", None)
+            with self.assertRaises(bridge.BridgeError):
+                self.pair("p1")  # the Windows inbox pipe would refuse every reply
+            os.environ["CLAUDE_CODE_MESSAGING_TOKEN"] = "tok"
+            self.assertEqual(self.pair("p1")["claude"]["token"], "tok")
+            del os.environ["CLAUDE_CODE_MESSAGING_TOKEN"]
+            with self.assertRaises(bridge.BridgeError):
+                bridge.refresh_claude("p1")
+        self.assertEqual(bridge.load_pair("p1")["claude"]["token"], "tok")  # kept, not blanked
+
     def test_invalid_pair_name(self):
         with self.assertRaises(bridge.BridgeError):
             bridge.create_pair("../x", CODEX_ID, None, [], False)

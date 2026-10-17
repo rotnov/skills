@@ -319,6 +319,7 @@ def create_pair(name: str, codex_session: str, codex_cwd: str | None, codex_args
     if not claude_session or not claude_socket:
         raise BridgeError("run `pair create` from a Bash command inside the Claude Code session "
                           "to pair (CLAUDE_CODE_SESSION_ID / CLAUDE_CODE_MESSAGING_SOCKET missing)")
+    token = _windows_token() if IS_WINDOWS else None  # checked before anything changes
     rollout = codex_rollout(codex_session)
     if rollout is None:
         raise BridgeError(f"no Codex session {codex_session!r} under {codex_home() / 'sessions'}")
@@ -343,10 +344,10 @@ def create_pair(name: str, codex_session: str, codex_cwd: str | None, codex_args
                   "cwd": str(Path(codex_cwd).expanduser().resolve()) if codex_cwd else meta["cwd"],
                   "mode": mode, "sandbox": sandbox, "args": codex_args},
     }
-    if IS_WINDOWS:
+    if token is not None:
         # Native Windows requires the auth line; macOS/Linux do not, so the token
         # is stored only where it is needed.
-        pair["claude"]["token"] = os.environ.get("CLAUDE_CODE_MESSAGING_TOKEN", "")
+        pair["claude"]["token"] = token
     for box in ("inbox-claude", "inbox-codex", "sent", "failed"):
         (directory / "mail" / box).mkdir(parents=True, exist_ok=True)
     _private(directory, directory=True)
@@ -355,12 +356,22 @@ def create_pair(name: str, codex_session: str, codex_cwd: str | None, codex_args
     return pair
 
 
+def _windows_token() -> str:
+    """The Claude inbox token, which the Windows named pipe requires on every connection."""
+    token = os.environ.get("CLAUDE_CODE_MESSAGING_TOKEN", "")
+    if not token:
+        raise BridgeError("CLAUDE_CODE_MESSAGING_TOKEN is missing; on Windows the Claude inbox "
+                          "requires it, so run this from a Bash command inside the Claude session")
+    return token
+
+
 def refresh_claude(name: str | None = None) -> list[str]:
     """Re-read the socket path after the paired Claude session restarted (all its topics)."""
     current = os.environ.get("CLAUDE_CODE_SESSION_ID")
     socket_path = os.environ.get("CLAUDE_CODE_MESSAGING_SOCKET")
     if not current or not socket_path:
         raise BridgeError("refresh from a Bash command inside the paired Claude session")
+    token = _windows_token() if IS_WINDOWS else None  # never overwrite a valid one with empty
     names = [name] if name else [item["name"] for item in all_pairs()
                                  if item["claude"]["session_id"] == current]
     refreshed = []
@@ -369,8 +380,8 @@ def refresh_claude(name: str | None = None) -> list[str]:
             if pair["claude"]["session_id"] != current:
                 raise BridgeError(f"topic {topic!r} belongs to another Claude session")
             pair["claude"]["socket"] = socket_path
-            if IS_WINDOWS:
-                pair["claude"]["token"] = os.environ.get("CLAUDE_CODE_MESSAGING_TOKEN", "")
+            if token is not None:
+                pair["claude"]["token"] = token
 
         _modify_pair(topic, change, "claude_socket_refreshed")
         refreshed.append(topic)
