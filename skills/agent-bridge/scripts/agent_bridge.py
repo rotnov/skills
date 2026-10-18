@@ -50,7 +50,8 @@ import codex_daemon  # noqa: E402
 
 VERSION = "1.0.0"
 NAME_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{0,40}$")
-MESSAGE_ID = re.compile(r"\d{8}T\d{6}(?:\.\d{6})?-[0-9a-f]{8}")
+# Current ids, those from before sub-second precision, and the local prototype's (no dot).
+MESSAGE_ID = re.compile(r"\d{8}T\d{6}(?:\.?\d{6})?-[0-9a-f]{8}")
 THREAD_ID = re.compile(r"[0-9a-fA-F-]{8,64}")  # Codex thread ids are UUIDs
 SIDES = ("claude", "codex")
 MAX_TEXT_CHARS = 200_000
@@ -1130,7 +1131,7 @@ def _route_exec(name: str, pair: dict, message: dict, busy_wait: int, timeout: i
     return answer
 
 
-def _route_queue(name: str, pair: dict, message: dict, busy_wait: int, timeout: int) -> str:
+def _route_queue(name: str, pair: dict, message: dict, busy_wait: int, timeout: int) -> Queued:
     session = pair["codex"]["session_id"]
     prompt = codex_prompt(pair, message)
     command = [codex_executable(), "queue", "--thread", session, "--message", prompt]
@@ -1164,8 +1165,62 @@ def _route_queue(name: str, pair: dict, message: dict, busy_wait: int, timeout: 
         deliver_to_claude(name)
     except BridgeError:
         pass
-    queue_timeout = int(os.environ.get("AGENT_BRIDGE_QUEUE_TIMEOUT", QUEUE_TIMEOUT_SECONDS))
-    return watch_thread_answer(session, message["id"], queue_timeout, start=start)
+    return Queued(start)
+
+
+class Queued:
+    """Route result: the message is in the Codex desktop queue, whose own order it keeps, so the
+    topic moves on at once and a watcher returns the answer (waiting here would hold the topic
+    for hours and leave every later message in the bridge mailbox)."""
+
+    def __init__(self, log_start: int):
+        self.log_start = log_start  # the thread log's size before the message was queued
+
+
+def _queue_marker(message_id: str) -> str:
+    """The header text that only the message's own prompt carries (see codex_prompt)."""
+    return f"{message_id} from Claude Code session"
+
+
+def _watch_queued(name: str, message_id: str) -> None:
+    try:
+        spawn_worker(name, ["await-queued", name, message_id])
+    except OSError:
+        # With no watcher the answer could never arrive: wait for it here instead.
+        await_queued_reply(name, message_id)
+
+
+def await_queued_reply(name: str, message_id: str) -> None:
+    """Watcher for one message in the Codex desktop queue: follow the thread log to the end of
+    that message's turn, then queue its answer, or say why none will come, for Claude."""
+    if not MESSAGE_ID.fullmatch(message_id):
+        raise BridgeError(f"invalid message id {message_id!r}")
+    path = pair_dir(name) / "mail" / "sent" / f"{message_id}.json"
+    if not path.is_file():
+        raise BridgeError(f"no queued message {message_id!r} in pair {name!r}")
+    message = read_json(path)
+    pair = load_pair(name)
+    timeout = int(os.environ.get("AGENT_BRIDGE_QUEUE_TIMEOUT", QUEUE_TIMEOUT_SECONDS))
+    try:
+        answer = watch_thread_answer(pair["codex"]["session_id"], _queue_marker(message_id),
+                                     timeout, start=message.get("log_start", 0))
+    except Unconfirmed as error:
+        write_json(path, {**message, "awaiting_answer": False, "unconfirmed": str(error)})
+        log_event(name, "codex_unconfirmed", id=message_id, route="queue",
+                  reason=str(error)[:200])
+        queue_message(name, "claude", str(error), reply_to=message_id, kind="notice",
+                      verify_sender=False)
+    except BridgeError as error:
+        _fail(name, pair, {**message, "awaiting_answer": False}, f"queue: {error}", "sent")
+    else:
+        write_json(path, {**message, "awaiting_answer": False, "answered": now()})
+        log_event(name, "codex_answered", id=message_id, route="queue", chars=len(answer),
+                  protocol=bool(message.get("protocol_included")))
+        _queue_reply(name, message_id, answer, "queue")
+    try:
+        deliver_to_claude(name)
+    except BridgeError:
+        pass  # kept in the mailbox; the next delivery attempt retries
 
 
 def _queue_command_size(command: list[str], prompt: str) -> int:
@@ -1178,7 +1233,8 @@ def _queue_command_size(command: list[str], prompt: str) -> int:
 
 def watch_thread_answer(session: str, marker: str, timeout: float, poll: float = 2.0,
                         start: int = 0) -> str:
-    """Follow the thread log for the turn that carries `marker` and return its last answer.
+    """Follow the thread log for the turn whose user message carries `marker` and return its
+    last answer. A mention anywhere else, such as another turn's tool output, does not count.
 
     Reading begins at byte `start` (where the log ended before the message was queued), and
     only newly appended bytes are read on each poll; a partial last line waits for the rest.
@@ -1195,8 +1251,7 @@ def watch_thread_answer(session: str, marker: str, timeout: float, poll: float =
             *lines, buffer = (buffer + chunk).split(b"\n")
             for raw in lines:
                 line = raw.decode("utf-8", errors="replace")
-                if not started:
-                    started = marker in line
+                if not started and marker not in line:
                     continue
                 try:
                     record = json.loads(line)
@@ -1204,6 +1259,9 @@ def watch_thread_answer(session: str, marker: str, timeout: float, poll: float =
                     continue
                 payload = record.get("payload") or {}
                 kind = payload.get("type") if isinstance(payload, dict) else None
+                if not started:
+                    started = _user_message_with(record, marker)
+                    continue
                 if record.get("type") == "response_item" and kind == "message" \
                         and payload.get("role") == "assistant":
                     text = "".join(part.get("text", "") for part in payload.get("content", [])
@@ -1224,6 +1282,18 @@ def watch_thread_answer(session: str, marker: str, timeout: float, poll: float =
     raise Unconfirmed(f"The message is in the Codex desktop queue but was not answered within "
                       f"{timeout / 3600:.1f} h, so its answer will not arrive as a reply. Check "
                       "the desktop queue before resending; the bridge does not retry it.")
+
+
+def _user_message_with(record: dict, marker: str) -> bool:
+    payload = record.get("payload")
+    if not isinstance(payload, dict):
+        return False
+    if record.get("type") == "response_item" and payload.get("type") == "message" \
+            and payload.get("role") == "user":
+        return any(marker in str(part.get("text", "")) for part in payload.get("content", [])
+                   if isinstance(part, dict))
+    return (record.get("type") == "event_msg" and payload.get("type") == "user_message"
+            and marker in str(payload.get("message", "")))
 
 
 ROUTES = {"daemon": _route_daemon, "exec": _route_exec, "queue": _route_queue}
@@ -1273,6 +1343,13 @@ def deliver_one(name: str, pair: dict, message: dict, busy_wait: int, timeout: i
             return
         except (BridgeError, codex_daemon.DaemonError) as error:
             _fail(name, pair, message, f"{route}: {error}")
+            return
+        if isinstance(answer, Queued):
+            archive(name, message, "sent", delivered=now(), route=route, awaiting_answer=True,
+                    log_start=answer.log_start)
+            if message.get("protocol_included"):
+                _record_protocol(name, protocol_started)
+            _watch_queued(name, message["id"])
             return
         archive(name, message, "sent", delivered=now(), route=route)
         if message.get("protocol_included"):
@@ -1439,8 +1516,8 @@ def _codex_error(result) -> str:
     return (lines[-1] if lines else "no output")[:300]
 
 
-def _fail(name: str, pair: dict, message: dict, reason: str) -> None:
-    archive(name, message, "failed", failed=now(), reason=reason)
+def _fail(name: str, pair: dict, message: dict, reason: str, from_box: str | None = None) -> None:
+    archive(name, message, "failed", from_box, failed=now(), reason=reason)
     log_event(name, "codex_failed", id=message["id"], reason=reason[:200])
     queue_message(name, "claude", reason, reply_to=message["id"], kind="failure",
                   verify_sender=False)
@@ -1535,12 +1612,34 @@ def send(name: str, to: str, text: str, reply_to: str | None, wait: bool,
                                 require_identity=require_identity)
         if wait:
             deliver_in_foreground(name, message["id"])
-            return {"id": message["id"], "status": "processed"}
+            return {"id": message["id"], "status": _processed_status(name, message["id"])}
+        status = _queued_status(name, message["id"])  # before this send's own worker starts
         if not _spawned(name):
             deliver_in_foreground(name, message["id"])
             return {"id": message["id"], "status": "no worker could start, so it was delivered "
                     "here; the answer arrived as a reply"}
-    return {"id": message["id"], "status": "queued; Codex answer will arrive as a reply"}
+    return {"id": message["id"], "status": status}
+
+
+def _queued_status(name: str, message_id: str) -> str:
+    """Where a message for Codex really is: next in line, or behind earlier work."""
+    queue = [item["id"] for item in pending(name, "codex")]
+    ahead = queue.index(message_id) if message_id in queue else 0
+    busy = _live_lock(pair_dir(name) / "codex.lock", WORKER_STALE_SECONDS)
+    if not ahead and not busy:
+        return "queued; Codex answer will arrive as a reply"
+    waits = [f"{ahead} earlier message(s) to Codex"] if ahead else []
+    if busy:
+        waits.append("a delivery in progress on this topic")
+    return ("queued behind " + " and ".join(waits)
+            + "; it is sent after them, and Codex answer will arrive as a reply")
+
+
+def _processed_status(name: str, message_id: str) -> str:
+    sent = pair_dir(name) / "mail" / "sent" / f"{message_id}.json"
+    if sent.is_file() and read_json(sent).get("route") == "queue":
+        return "sent to the Codex desktop queue; Codex answer arrives as a reply when it has run"
+    return "processed"
 
 
 # ---------------------------------------------------------------- CLI
@@ -1622,6 +1721,9 @@ def main(argv=None) -> int:
     awaiting.add_argument("name")
     awaiting.add_argument("turn")
     awaiting.add_argument("message")
+    queued = commands.add_parser("await-queued", help=argparse.SUPPRESS)
+    queued.add_argument("name")
+    queued.add_argument("message")
 
     inbox = commands.add_parser("inbox", help="list a pair's messages")
     inbox.add_argument("name")
@@ -1681,6 +1783,9 @@ def _dispatch(args) -> int:
                       steer=args.steer, priority=args.priority)
     elif args.command == "await-turn":
         await_turn_reply(args.name, args.turn, args.message)
+        return 0
+    elif args.command == "await-queued":
+        await_queued_reply(args.name, args.message)
         return 0
     elif args.command == "deliver":
         # A manual run reserves the topic while it delivers; a spawned worker already has one.

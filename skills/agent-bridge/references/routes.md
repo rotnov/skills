@@ -13,8 +13,14 @@ The worker that `send --to codex` starts tries routes in this order
 
 A queued message runs after Codex's current turn. In an idle desktop thread it
 waits until the user sends it from the queue; the Claude session receives a
-"queued" notice immediately. One message is processed at a time per topic, so
-later messages wait behind a queued one.
+"queued" notice immediately. The topic then moves on to its next message, which
+Codex's own queue keeps in order. A detached watcher per queued message
+follows the thread log to the end of that message's turn and sends its answer
+as a reply, or a notice when the turn is aborted or does not run in time. The
+message waits in `sent/` with `awaiting_answer` until then.
+
+A send that waits behind earlier messages or a delivery in progress says so in
+its status.
 
 Pin a route with `pair set TOPIC --codex-mode daemon|exec|queue`. A pinned
 `daemon` or `exec` reports a desktop-hosted thread as a failure instead of
@@ -54,11 +60,11 @@ resends it, for example to tell Codex a new topic name right away.
 | --- | --- |
 | "Delivery to Codex failed ... stayed busy" | The thread kept working for 15 minutes; resend later. The message is in `failed/`. |
 | "... hosted by another app-server" with a pinned route | Use `auto` or `queue` for desktop threads. |
-| "not answered within ... h" | The message is still in the desktop queue and may run later; check the queue instead of resending. |
+| "not answered within ... h" | The message is still in the desktop queue and may run later; check the queue instead of resending. A watcher that was killed sends no reply either: its message keeps `awaiting_answer` in `sent/`. |
 | "may have started" / "still working" | Codex may be running the message; check the Codex thread instead of resending. |
 | "Claude session socket unreachable" | The Claude session restarted or ended; run `pair refresh` in it, then `deliver TOPIC`. |
 | "steer not possible" | See the steer conditions above. |
-| "has a delivery in progress" | A live worker owns the topic; retry after its reply. Markers left by a killed worker are cleared automatically. |
+| "has a delivery in progress" | A live worker owns the topic, or a watcher still waits for a queued message's answer; retry after its reply. Markers left by a killed worker are cleared automatically. |
 | "another pair change is in progress" | A pair create, rename, removal or setting change is running; retry. |
 | "session identity is missing" | Run the command inside the paired session: Claude Code's Bash tool or the Codex thread's shell. |
 | "runs inside a Codex thread" | A Codex shell cannot send as the Claude session; Codex writes with `--to claude`. |
