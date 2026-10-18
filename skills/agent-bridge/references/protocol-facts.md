@@ -52,3 +52,9 @@ shell. This stops mistakes and stray processes, not a hostile agent running as
 the same user: such an agent can read the binding in the bridge home and set or
 unset those variables. The boundaries against it are Codex's sandbox and
 approvals, and the rule that bridge messages carry no user authority.
+
+A Codex daemon started from a Claude Code session's shell passes that session's
+`CLAUDE_CODE_*` variables to the commands its turns run, which can then pass the
+sender check as that session; SKILL.md forbids starting it there. The Codex
+processes the bridge starts itself (`exec`, `queue`) get an environment without
+them.

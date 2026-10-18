@@ -24,6 +24,11 @@ each agent sends to its own model vendor.
   redirect running work.
 - Changing persistent client configuration (Codex `config.toml`, MCP
   registration) is the user's decision; offer the snippet, do not apply it.
+- Never start the Codex app-server daemon from a Claude Code session's shell
+  (its Bash tool). Processes started there inherit the session's
+  `CLAUDE_CODE_*` variables, so commands run by the daemon's Codex turns would
+  carry that Claude session's identity. The bridge never starts the daemon;
+  start it from an ordinary terminal.
 
 ## Invocation
 
