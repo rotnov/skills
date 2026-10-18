@@ -549,7 +549,13 @@ def archive(name: str, message: dict, box: str, from_box: str | None = None, **e
 
 def pending(name: str, to: str) -> list[dict]:
     box = pair_dir(name) / "mail" / f"inbox-{to}"
-    return [read_json(path) for path in sorted(box.glob("*.json"))]
+    messages = []
+    for path in sorted(box.glob("*.json")):
+        try:
+            messages.append(read_json(path))
+        except FileNotFoundError:
+            continue  # delivered and archived by another process since it was listed
+    return messages
 
 
 def find_message(name: str, message_id: str) -> dict:

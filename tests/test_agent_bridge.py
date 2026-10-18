@@ -343,6 +343,22 @@ class BridgeTestCase(unittest.TestCase):
             return []
         return [json.loads(line) for line in self.record.read_text().splitlines()]
 
+    def posts(self, count, wait=30.0):
+        """The Claude inbox once `count` posts arrived; on a timeout, fail with what the
+        detached workers did. The wait outlasts the test queue timeout (20 s), so a watcher
+        that never finds its turn still reports, instead of looking merely slow."""
+        texts = self.inbox.texts(wait=wait, count=count)
+        if len(texts) < count:
+            directory = bridge.pair_dir("p1")
+            log, events = directory / "worker.log", directory / "log.jsonl"
+            mail = sorted(str(path.relative_to(directory / "mail"))
+                          for path in (directory / "mail").rglob("*.json"))
+            self.fail(f"{len(texts)} of {count} posts {texts}\nworker.log: "
+                      f"{log.read_text() if log.exists() else '(none)'}\nevents: "
+                      f"{events.read_text().splitlines()[-15:] if events.exists() else '(none)'}"
+                      f"\nmail: {mail}")
+        return texts
+
 
 class Pairs(BridgeTestCase):
     def test_create_requires_claude_session_environment(self):
@@ -866,6 +882,22 @@ class ClaudeToCodex(BridgeTestCase):
         self.assertEqual(len(processed), 2)
         self.assertEqual(bridge.pending("p1", "codex"), [])
 
+    def test_a_message_archived_while_listed_is_skipped(self):
+        self.pair()
+        os.environ["CODEX_THREAD_ID"] = CODEX_ID  # from the paired thread's shell
+        first = bridge.queue_message("p1", "claude", "first")
+        second = bridge.queue_message("p1", "claude", "second")
+        read = bridge.read_json
+
+        def racing_read(path):
+            if path.stem == first["id"]:
+                bridge.archive("p1", read(path), "sent")  # another poster delivered it meanwhile
+            return read(path)
+
+        with mock.patch.object(bridge, "read_json", racing_read):
+            self.assertEqual([item["id"] for item in bridge.pending("p1", "claude")],
+                             [second["id"]])
+
     def test_wait_lasts_while_the_messages_ahead_keep_moving(self):
         self.pair()
         lock = bridge.pair_dir("p1") / "codex.lock"
@@ -1132,7 +1164,7 @@ class DeliveryRoutes(BridgeTestCase):
         self.pair()
         result = bridge.send("p1", "codex", "path question", None, wait=True)
         self.assertIn("Codex desktop queue", result["status"])
-        texts = self.inbox.texts(wait=15, count=2)
+        texts = self.posts(2)
         self.assertIn("Queued in the Codex thread", texts[0])
         self.assertIn("QUEUE ANSWER: path question", texts[1])
         self.assertIn("(delivered by queue)", texts[1])
@@ -1168,9 +1200,7 @@ class DeliveryRoutes(BridgeTestCase):
         for message, answer in ((first, "answer one"), (second, "answer two")):
             self.append_turn(f"[agent-bridge] Message {message['id']} from Claude Code session x",
                              *self.answer_rows(answer))
-        deadline = time.time() + 15
-        while len(self.inbox.texts()) < 4 and time.time() < deadline:
-            time.sleep(0.1)
+        self.posts(4)
         time.sleep(0.5)  # a duplicate post would arrive now
         replies = [text for text in self.inbox.texts() if "Reply from Codex" in text]
         self.assertEqual(len(replies), 2, self.inbox.texts())
@@ -1187,7 +1217,7 @@ class DeliveryRoutes(BridgeTestCase):
         result = bridge.send("p1", "codex", "stop me", None, wait=True)
         self.append_turn(f"[agent-bridge] Message {result['id']} from Claude Code session x",
                          {"type": "event_msg", "payload": {"type": "turn_aborted"}})
-        texts = self.inbox.texts(wait=15, count=2)
+        texts = self.posts(2)
         self.assertIn(f"Delivery to Codex failed for message {result['id']}", texts[-1])
         self.assertIn("aborted", texts[-1])
         self.assertTrue((bridge.pair_dir("p1") / "mail" / "failed" / f"{result['id']}.json").exists())
@@ -1285,7 +1315,7 @@ class DeliveryRoutes(BridgeTestCase):
         result = bridge.send("p1", "codex", "later please", None, wait=True)
         sent = bridge.pair_dir("p1") / "mail" / "sent" / f"{result['id']}.json"
         self.assertTrue(sent.exists())
-        texts = self.inbox.texts(wait=15, count=2)
+        texts = self.posts(2)
         self.assertIn("Queued in the Codex thread", texts[0])
         self.assertIn("not answered within", texts[1])  # still in the queue: unknown, not failed
         self.assertNotIn("Delivery to Codex failed", texts[1])
@@ -1313,7 +1343,7 @@ class DeliveryRoutes(BridgeTestCase):
         os.environ["FAKE_CODEX_ACTIVE_WRITER"] = "1"
         bridge.send("p1", "codex", "hello", None, wait=True)
         self.assertEqual([call[0] for call in self.codex_calls()], ["exec", "queue"])
-        self.assertIn("QUEUE ANSWER: hello", self.inbox.texts(wait=15, count=2)[-1])
+        self.assertIn("QUEUE ANSWER: hello", self.posts(2)[-1])
 
     def test_pinned_exec_mode_skips_the_daemon(self):
         daemon = self.start_daemon()
