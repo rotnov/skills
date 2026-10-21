@@ -42,12 +42,14 @@ def read_invitation(path):
     return data
 
 
-LIVE_COMMANDS = {'connect', 'pilot-init', 'pilot-worker', 'ping', 'thread', 'mcp', 'invite-file', 'listen'}
+LIVE_COMMANDS = {'connect', 'pilot-init', 'pilot-worker', 'ping', 'thread', 'mcp', 'invite-file', 'listen', 'session'}
 
 
 def add_commands(commands):
     from quorum_listener import add_commands as add_listener_commands
     add_listener_commands(commands)
+    from quorum_session import add_commands as add_session_commands
+    add_session_commands(commands)
     invite = commands.add_parser('invite-file', help='Create an owner-only invitation file without printing its token')
     invite.add_argument('quorum')
     target = invite.add_mutually_exclusive_group(required=True)
@@ -97,6 +99,9 @@ def dispatch(args, ledger, register_agent):
     import time
     import uuid
     from quorum_auth import login_pkce
+    if args.command == 'session':
+        from quorum_session import dispatch as session_dispatch
+        return session_dispatch(args, ledger, register_agent)
     if args.command == 'listen':
         from quorum_listener import dispatch as listener_dispatch
         return listener_dispatch(args, ledger)

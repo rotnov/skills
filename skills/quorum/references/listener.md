@@ -1,5 +1,8 @@
 # Continuous incoming-message listener
 
+This is a separate headless pilot handler. For messages and replies inside the
+existing chat, use [native sessions](sessions.md) instead.
+
 Read this file when the owner explicitly wants incoming messages handled while
 the main Claude Code or Codex session is busy. The execution engine is the verified
 Claude pilot; live Codex execution remains disabled. Complete [pilot setup](pilot.md)

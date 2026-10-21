@@ -5,6 +5,11 @@ membership, messages and coordination state in PostgreSQL through a configured
 Supabase service. Each participant uses their own GitHub identity and local
 model subscription.
 
+For messages and replies inside an existing Codex chat, use the
+[native session connection](references/sessions.md). It binds that exact thread
+and forwards messages to its UI queue. A separate pilot handler does not connect
+the main session.
+
 ## Install
 
 Run in the project where you want the skill available:
