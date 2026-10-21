@@ -44,7 +44,9 @@ class ListenerTests(unittest.TestCase):
                 return Worker()
             class Exited:
                 def poll(self): return 0
+            native_popen = subprocess.Popen
             def spawn(command, **kwargs):
+                if '--run-id' not in command: return native_popen(command, **kwargs)
                 acknowledgements.append(control.request_stop())
                 run_id = command[command.index('--run-id') + 1]
                 run_listener(ledger, prepare, run_id)
@@ -61,7 +63,11 @@ class ListenerTests(unittest.TestCase):
         from quorum_state import LocalLedger
         from quorum_api import QuorumError
         with temporary_ledger() as (temporary, ledger):
-            with patch('quorum_listener.subprocess.Popen', side_effect=OSError('synthetic-private-token')):
+            native_popen = subprocess.Popen
+            def spawn(command, **kwargs):
+                if '--run-id' in command: raise OSError('synthetic-private-token')
+                return native_popen(command, **kwargs)
+            with patch('quorum_listener.subprocess.Popen', side_effect=spawn):
                 with self.assertRaisesRegex(QuorumError, 'listener_start_failed'):
                     start_listener(ledger, temporary, 60, True)
             status = Control(ledger).status()
