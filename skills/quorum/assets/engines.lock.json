@@ -1,0 +1,8 @@
+{
+  "schema": 1,
+  "acceptance": "pending-real-agent-authorization",
+  "live_execution": false,
+  "acpx": null,
+  "adapters": {"claude": null, "codex": null},
+  "reason": "No released engine combination has been executed or accepted. Exact pins must come from an authorized compatibility run, never invented versions."
+}

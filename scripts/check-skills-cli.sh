@@ -45,6 +45,67 @@ for skill_dir in "$repo_root"/skills/*; do
   test "$(find "$skill_install_root/.agents/skills" \
     -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')" -eq 1
 
+  if [ "$skill_name" = "quorum" ]; then
+    for client_skill in "$skill_install_root/.claude/skills/quorum" \
+      "$skill_install_root/.agents/skills/quorum"; do
+      (
+        cd "$install_root"
+        "$uv_bin" run --no-project --python 3.12 \
+          "$client_skill/scripts/quorum.py" --state "$skill_install_root/state" status \
+          >"$skill_install_root/quorum-status.json"
+        "$uv_bin" run --no-project --python 3.12 python - \
+          "$skill_install_root/quorum-status.json" <<'PY'
+import json
+import pathlib
+import sys
+result = json.loads(pathlib.Path(sys.argv[1]).read_text())
+assert result["ok"] and result["data"]["live_agents"] == "disabled"
+assert result["data"]["worker"] == "offline"
+PY
+        if "$uv_bin" run --no-project --python 3.12 \
+          "$client_skill/scripts/quorum.py" --state "$skill_install_root/state" \
+          join amplifier --role backend >"$skill_install_root/quorum-failure.json"; then
+          echo "error: unconfigured quorum join unexpectedly succeeded" >&2
+          exit 1
+        fi
+        "$uv_bin" run --no-project --python 3.12 python - \
+          "$skill_install_root/quorum-failure.json" <<'PY'
+import json
+import pathlib
+import sys
+result = json.loads(pathlib.Path(sys.argv[1]).read_text())
+assert result == {"ok": False, "code": "service_not_configured", "data": {}}
+PY
+        "$uv_bin" run --no-project --python 3.12 python - \
+          "$client_skill" "$skill_install_root/state" <<'PY'
+import pathlib
+import sys
+
+sys.path.insert(0, str(pathlib.Path(sys.argv[1]) / "scripts"))
+from quorum_auth import CredentialStore
+
+root = pathlib.Path(sys.argv[2]) / "credentials"
+store = CredentialStore(root=root)
+session = {"access_token": "synthetic-access", "refresh_token": "synthetic-refresh"}
+store.save("https://example.invalid", session)
+assert CredentialStore(root=root).load("https://example.invalid") == session
+assert CredentialStore(root=root).load("https://other.invalid") is None
+store.delete("https://example.invalid")
+assert store.load("https://example.invalid") is None
+store.save("https://example.invalid", session)
+next(root.iterdir()).write_text("{broken")
+try:
+    store.load("https://example.invalid")
+except ValueError as error:
+    assert str(error) == "credential_store_unavailable"
+else:
+    raise AssertionError("corrupt installed credential store was accepted")
+store.delete("https://example.invalid")
+PY
+      )
+    done
+  fi
+
   if [ "$skill_name" = "learning" ]; then
     learning_install_root=$skill_install_root
   fi

@@ -64,6 +64,30 @@ Use it without installing:
 npx skills use rotnov/skills@propose-skill
 ```
 
+### `quorum`
+
+Join an authenticated team quorum and exchange durable messages between Claude
+Code and Codex clients through a configured Supabase backend. Install the shared
+skill directly from this repository:
+
+```bash
+npx --yes skills@1.5.20 add rotnov/skills --skill quorum -a claude-code codex --global --copy -y
+```
+
+The client carries an independent uv project selecting Python 3.12. GitHub login
+and membership use a separately supplied private invitation; no account session,
+invitation token or provider credential is included in the skill. Read the
+[setup guide](skills/quorum/references/setup.md) before connecting. The same skill
+can [create quorums and invite people](skills/quorum/references/invitations.md);
+invitation-file creation prints only its path, target ID and expiry.
+
+This is a pilot: the default live runner remains disabled. An explicit bounded
+[Claude messaging test](skills/quorum/references/pilot.md) is available with pinned
+Node adapters and owner-approved subscription use. Native Windows support still
+requires a Windows-host acceptance test. Registration does not start a model or
+attach to a busy desktop conversation; automatic main-chat notification and live
+Codex execution are not included.
+
 ## Compatibility
 
 The canonical behavior lives in standard `SKILL.md` files and works with
