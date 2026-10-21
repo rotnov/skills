@@ -127,7 +127,7 @@ def main(argv=None):
     except QuorumError as error:
         codes = {'auth_required': 3, 'service_not_configured': 4, 'live_agents_disabled': 4,
                  'engine_acceptance_pending': 4, 'service_unavailable': 5, 'service_error': 5,
-                 'response_too_large': 5, 'invalid_response': 5, 'listener_start_failed': 5}
+                 'response_too_large': 5, 'invalid_response': 5, 'listener_start_failed': 5, 'listener_stop_failed': 5}
         code = str(error) if str(error) in codes else 'operation_failed'
         print(json.dumps({'ok': False, 'code': code, 'data': {}}))
         return codes.get(code, 3)

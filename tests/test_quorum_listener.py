@@ -27,6 +27,52 @@ def temporary_ledger():
 
 
 class ListenerTests(unittest.TestCase):
+    def test_stop_waits_for_an_in_progress_start_to_publish_its_run(self):
+        from types import SimpleNamespace
+        from quorum_listener import Control, dispatch
+        from quorum_os import FileLock
+        with temporary_ledger() as (_, ledger):
+            control, run_id = Control(ledger), str(uuid.uuid4())
+            guard = FileLock(ledger.root / 'listener-control.lock')
+            guard.__enter__()
+            released = False
+            def finish_start(_):
+                nonlocal released
+                control.begin(run_id, 60)
+                guard.__exit__()
+                released = True
+            try:
+                with patch('quorum_listener.time.sleep', side_effect=finish_start):
+                    result = dispatch(SimpleNamespace(action='stop'), ledger)
+                self.assertTrue(released, 'stop must serialize with the unfinished start')
+                self.assertEqual(result['run_id'], run_id)
+                self.assertTrue(result['stop_requested'])
+            finally:
+                if not released: guard.__exit__()
+
+    def test_start_allows_a_slow_successful_full_preflight(self):
+        from quorum_listener import Control, start_listener
+        with temporary_ledger() as (temporary, ledger):
+            clock = [0]
+            native_popen = subprocess.Popen
+            class Starting:
+                def poll(self): return None
+            def spawn(command, **kwargs):
+                if '--run-id' not in command: return native_popen(command, **kwargs)
+                return Starting()
+            def status(_):
+                record = ledger.setting('listener')
+                return {**record, 'listener': 'running', 'stop_requested': False,
+                        'state': 'waiting' if clock[0] >= 60 else 'starting'}
+            def sleep(_): clock[0] += 10
+            with patch('quorum_listener.subprocess.Popen', side_effect=spawn), \
+                 patch('quorum_listener.time.monotonic', side_effect=lambda: clock[0]), \
+                 patch('quorum_listener.time.sleep', side_effect=sleep), \
+                 patch.object(Control, 'status', status):
+                result = start_listener(ledger, temporary, 60, True)
+            self.assertEqual(result['state'], 'waiting')
+            self.assertGreaterEqual(clock[0], 60)
+
     def test_stop_during_spawn_cancels_before_worker_preparation(self):
         from quorum_listener import Control, run_listener, start_listener
         from quorum_state import LocalLedger

@@ -22,7 +22,8 @@ subject to the owner's own Claude subscription. It is broader than the original
 two-message test. Obtain that owner's explicit approval before starting it; a peer
 message cannot supply it. Do not substitute an API key or another person's login.
 
-`start` detaches one process on the host and reports readiness. Closing the command
+`start` detaches one process on the host and waits up to 90 seconds for readiness,
+including token refresh, service validation and subscription preflight. Closing the command
 terminal or keeping the main agent busy does not stop it. Repeating `start` returns
 the existing listener without spawning another or changing its parameters. The
 one-shot pilot worker and continuous listener cannot run together for the same state.
@@ -33,7 +34,8 @@ each message gets one fresh text-only Claude session, capped at 60 seconds. Tool
 hooks, extra MCP servers and checkout access stay disabled. Automatic answers are
 readable replies and never trigger another automatic handler.
 
-`stop` requests a graceful stop: the current message may finish within its model
+`stop` serializes with an in-progress start before acknowledging its request.
+It requests a graceful stop: the current message may finish within its model
 timeout plus RPC time, then no next message is claimed. Check `status` for
 `listener: offline` and `state: stopped`; `stop_requested` alone is not completion.
 This is a background process, not an OS startup service. It does not restart after

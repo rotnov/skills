@@ -134,7 +134,7 @@ def start_listener(ledger, toolchain, timeout, approved):
             raise QuorumError('listener_start_failed') from None
         finally:
             if fd is not None: os.close(fd)
-        deadline = time.monotonic() + 45
+        deadline = time.monotonic() + 90
         while time.monotonic() < deadline:
             status = control.status()
             if status.get('run_id') == run_id:
@@ -146,6 +146,24 @@ def start_listener(ledger, toolchain, timeout, approved):
             time.sleep(.1)
         control.request_stop(run_id)
         raise QuorumError('listener_start_failed')
+
+
+def stop_listener(ledger):
+    from quorum_api import QuorumError
+    deadline = time.monotonic() + 120
+    while True:
+        guard = FileLock(ledger.root / 'listener-control.lock')
+        try:
+            guard.__enter__()
+        except ValueError as error:
+            if str(error) != 'worker_already_running': raise
+            if time.monotonic() >= deadline: raise QuorumError('listener_stop_failed') from None
+            time.sleep(.1)
+            continue
+        try:
+            return Control(ledger).request_stop()
+        finally:
+            guard.__exit__()
 
 
 def add_commands(commands):
@@ -163,7 +181,7 @@ def add_commands(commands):
 
 def dispatch(args, ledger):
     if args.action == 'status': return Control(ledger).status()
-    if args.action == 'stop': return Control(ledger).request_stop()
+    if args.action == 'stop': return stop_listener(ledger)
     if args.action == 'start': return start_listener(ledger, args.toolchain, args.timeout, args.approve_subscription)
     if args.action == 'run':
         import signal
