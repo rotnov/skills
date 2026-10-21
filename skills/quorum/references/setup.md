@@ -36,8 +36,9 @@ For the future Linux-container worker, mount a separate writable named volume at
 Mount the installed skill read-only. Keep mutable sessions out of `/run/secrets`:
 Docker secret mounts are read-only and cannot persist rotated OAuth tokens.
 The current milestone has no runnable Docker worker or container browser-login
-handoff; mounting a volume does not enable either. The native Windows host path is a candidate pending its own runtime acceptance;
-WSL and Docker are not prerequisites for host login or messaging.
+handoff; mounting a volume does not enable either. See [pilot](pilot.md) for the
+verified native Windows scope. WSL and Docker are not prerequisites for host login
+or messaging.
 
 Encryption at rest and migration to a managed secret store (for example AWS
 Secrets Manager) are open security debt, not prerequisites for this local pilot.
@@ -58,4 +59,5 @@ For the explicit Claude messaging test, [pilot](pilot.md) describes recipient
 connection and its additional pinned dependencies.
 
 This release does not provision Supabase, create GitHub applications, send an
-invitation to a person, install a background service, or validate live adapters.
+invitation to a person or install a background service. Live execution is limited
+to the explicit Claude pilot and its documented acceptance scope.

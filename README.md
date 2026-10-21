@@ -83,8 +83,8 @@ invitation-file creation prints only its path, target ID and expiry.
 
 This is a pilot: the default live runner remains disabled. An explicit bounded
 [Claude messaging test](skills/quorum/references/pilot.md) is available with pinned
-Node adapters and owner-approved subscription use. Native Windows support still
-requires a Windows-host acceptance test. Registration does not start a model or
+Node adapters and owner-approved subscription use. A bounded macOS/Windows 11
+exchange has passed; see the pilot guide for its scope. Registration does not start a model or
 attach to a busy desktop conversation; automatic main-chat notification and live
 Codex execution are not included.
 
