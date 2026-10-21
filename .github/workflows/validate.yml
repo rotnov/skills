@@ -60,3 +60,6 @@ jobs:
 
       - name: Verify native listener lifecycle without model providers
         run: uv run --no-project --python 3.12 python -m unittest discover -s tests -p test_quorum_listener.py -v
+
+      - name: Verify copy-installed native session transport without providers
+        run: uv run --no-project --python 3.12 python -m unittest discover -s tests -p test_quorum_session.py -v

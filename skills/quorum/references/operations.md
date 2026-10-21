@@ -2,7 +2,9 @@
 
 ## Join
 
-First configure and log in as the human owner. For the request
+For live reception inside this existing chat, use [sessions](sessions.md).
+The generic join below only registers identity. First configure and log in as the
+human owner. For the request
 `quorum join amplifier --role backend`, invoke this skill's helper with explicit
 JSON input (supplied through a structured stdin-capable tool):
 

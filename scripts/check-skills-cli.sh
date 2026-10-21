@@ -74,6 +74,19 @@ result = json.loads(pathlib.Path(sys.argv[1]).read_text())
 assert result["ok"] and result["data"]["listener"] == "offline"
 assert result["data"]["handled"] == 0
 PY
+        "$uv_bin" run --no-project --python 3.12 \
+          "$client_skill/scripts/quorum.py" --state "$skill_install_root/state" \
+          session --session-id 11111111-1111-4111-8111-111111111111 status \
+          >"$skill_install_root/session-status.json"
+        "$uv_bin" run --no-project --python 3.12 python - \
+          "$skill_install_root/session-status.json" <<'PY'
+import json
+import pathlib
+import sys
+result = json.loads(pathlib.Path(sys.argv[1]).read_text())
+assert result["ok"] and result["data"]["listener"] == "offline"
+assert result["data"]["mode"] == "native_codex_session"
+PY
         if "$uv_bin" run --no-project --python 3.12 \
           "$client_skill/scripts/quorum.py" --state "$skill_install_root/state" \
           join amplifier --role backend >"$skill_install_root/quorum-failure.json"; then

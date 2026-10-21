@@ -33,7 +33,7 @@ class Control:
         result.setdefault('state', 'stopped')
         result.setdefault('handled', 0)
         result.update(listener='running' if locked(self.ledger.root / 'listener.lock') else 'offline',
-                      poll_seconds=10, mode='continuous_claude')
+                      poll_seconds=10, mode=self.ledger.setting('listener-mode') or 'continuous_claude')
         result['stop_requested'] = bool(record.get('run_id') and self.stopping(record['run_id']))
         return result
 
@@ -59,7 +59,8 @@ def error_code(error):
     allowed = {'auth_required', 'service_unavailable', 'service_error', 'invalid_response',
                'subscription_required', 'engine_missing', 'engine_version_mismatch',
                'dedicated_pilot_profile_required', 'scratch_directory_required',
-               'pilot_agent_required', 'worker_already_running'}
+               'pilot_agent_required', 'worker_already_running', 'session_delivery_unknown',
+               'session_binding_denied', 'session_not_connected'}
     return str(error) if str(error) in allowed else 'listener_failed'
 
 
@@ -87,7 +88,7 @@ def run_listener(ledger, make_worker, run_id, *, sleep=time.sleep, stop_event=No
                     if outcome == 'unknown':
                         control.update(run_id, 'unknown', handled, timeout=timeout, code='uncertain_attempt')
                         break
-                    if outcome == 'answered':
+                    if outcome in ('answered', 'delivered'):
                         handled += 1
                         control.update(run_id, 'waiting', handled, timeout=timeout)
                         continue
