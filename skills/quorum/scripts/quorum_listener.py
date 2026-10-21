@@ -60,7 +60,7 @@ def error_code(error):
                'subscription_required', 'engine_missing', 'engine_version_mismatch',
                'dedicated_pilot_profile_required', 'scratch_directory_required',
                'pilot_agent_required', 'worker_already_running', 'session_delivery_unknown',
-               'session_binding_denied', 'session_not_connected'}
+               'session_binding_denied', 'session_not_connected', 'claude_pipe_unavailable'}
     return str(error) if str(error) in allowed else 'listener_failed'
 
 

@@ -63,3 +63,6 @@ jobs:
 
       - name: Verify copy-installed native session transport without providers
         run: uv run --no-project --python 3.12 python -m unittest discover -s tests -p test_quorum_session.py -v
+
+      - name: Verify native Claude named-pipe transport without a model
+        run: uv run --no-project --python 3.12 python -m unittest discover -s tests -p test_quorum_claude_pipe.py -v

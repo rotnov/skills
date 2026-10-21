@@ -16,7 +16,7 @@ begin
  if auth.uid() is null or not exists(select 1 from auth.identities where user_id=auth.uid() and provider='github') then
   raise insufficient_privilege using message='github_identity_required'; end if;
  q:=quorum_private.owned_agent(p_agent_id,auth.uid());
- if not exists(select 1 from quorum_private.agents where id=p_agent_id and engine='codex' and session_ref=p_session_ref) then
+ if not exists(select 1 from quorum_private.agents where id=p_agent_id and engine in ('codex','claude') and session_ref=p_session_ref) then
   raise insufficient_privilege using message='session_binding_denied'; end if;
  return q;
 end $$;
