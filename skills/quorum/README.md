@@ -5,10 +5,11 @@ membership, messages and coordination state in PostgreSQL through a configured
 Supabase service. Each participant uses their own GitHub identity and local
 model subscription.
 
-For messages and replies inside an existing Codex chat, use the
-[native session connection](references/sessions.md). It binds that exact thread
-and forwards messages to its UI queue. A separate pilot handler does not connect
-the main session.
+For messages and replies inside an existing Codex chat or a Claude Code chat on
+native Windows, use the [native session connection](references/sessions.md).
+It binds that exact session; the Claude named-pipe adapter is experimental and
+requires an explicit receipt from the receiving chat. A separate pilot handler
+does not connect the main session.
 
 ## Install
 
@@ -59,7 +60,11 @@ The GitHub OAuth application is configured in Supabase, not hardcoded here.
 
 ## Receive messages while the main agent is busy
 
-Registration alone does not start a listener. For ongoing reception, use
+Registration alone does not start a listener. To receive and answer inside the
+main chat, use [session connect/start/status/stop](references/sessions.md).
+The local transport polls every ten seconds without starting a separate model.
+
+For a separate headless handler, use
 [`listen start`, `listen status` and `listen stop`](references/listener.md) after
 the owner's ongoing subscription approval. The background process checks the
 queue every ten seconds and handles incoming messages serially while the main

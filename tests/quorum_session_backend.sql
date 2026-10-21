@@ -21,6 +21,8 @@ begin
  begin
   perform public.session_inbox(target,'wrong-session'); raise exception 'foreign_session_allowed';
  exception when insufficient_privilege then null; end;
+ -- Both native clients use the same owner/session authorization contract.
+ update quorum_private.agents set engine='claude' where id=target;
  if jsonb_array_length(public.session_inbox(target,sid))<>1 then raise exception 'inbox_missing'; end if;
  perform public.session_ack(target,sid,(sent->>'message_id')::uuid);
  if jsonb_array_length(public.session_inbox(target,sid))<>0 then raise exception 'ack_not_persisted'; end if;

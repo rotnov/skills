@@ -17,6 +17,94 @@ MID = '22222222-2222-4222-8222-222222222222'
 
 
 class SessionTests(unittest.TestCase):
+    def test_claude_uses_actual_session_identity_instead_of_a_codex_binding(self):
+        from quorum_session import current_session
+        with patch.dict(os.environ, {'CLAUDE_CODE_SESSION_ID':SID}, clear=True):
+            try:
+                actual = current_session()
+            except ValueError as error:
+                actual = str(error)
+        self.assertEqual(actual, SID)
+
+    def test_pipe_submission_waits_for_chat_receipt_without_replaying(self):
+        from quorum_session import Relay
+        from quorum_state import LocalLedger
+        with tempfile.TemporaryDirectory() as root:
+            ledger = LocalLedger(Path(root))
+            try:
+                message = {'id':MID, 'recipient_id':'a'}
+                calls, queued = [], []
+                class Api:
+                    def call(self, operation, payload):
+                        calls.append(operation)
+                        if operation == 'session_inbox': return [message]
+                        return {'queued':True}
+                def submit(message):
+                    queued.append(message)
+                    return 'submitted'
+                relay = Relay(Api(), ledger, {'agent_id':'a','session_ref':SID}, submit)
+                relay.run_once()
+                relay.run_once()
+                self.assertEqual(queued, [message])
+                self.assertNotIn('session_ack', calls)
+                self.assertEqual(ledger.setting('delivery:'+MID), {'state':'submitted'})
+            finally: ledger.db.close()
+
+    def test_chat_receipt_during_pipe_write_survives_failed_ack_upload(self):
+        from quorum_session import Relay
+        from quorum_state import LocalLedger
+        with tempfile.TemporaryDirectory() as root:
+            ledger=LocalLedger(Path(root))
+            try:
+                message={'id':MID,'recipient_id':'a'}
+                calls=[]
+                class Api:
+                    fail=True
+                    def call(self,operation,payload):
+                        if operation=='session_inbox': return [message]
+                        if self.fail:
+                            self.fail=False
+                            raise ValueError('service_unavailable')
+                        return {'queued':True}
+                def submit(message):
+                    calls.append(message)
+                    # The receiving chat persisted actual receipt but lost its
+                    # remote ack response before the I/O helper returned.
+                    ledger.setting('delivery:'+MID,{'state':'queued'})
+                    return 'submitted'
+                relay=Relay(Api(),ledger,{'agent_id':'a','session_ref':SID},submit)
+                with self.assertRaisesRegex(ValueError,'service_unavailable'): relay.run_once()
+                self.assertEqual(ledger.setting('delivery:'+MID),{'state':'queued'})
+                self.assertEqual(relay.run_once(),'delivered')
+                self.assertEqual(len(calls),1)
+            finally: ledger.db.close()
+
+    def test_concurrent_chat_receipt_cannot_be_overwritten_by_submission(self):
+        from quorum_session import Relay
+        from quorum_state import LocalLedger
+        with tempfile.TemporaryDirectory() as root:
+            ledger, receiver=LocalLedger(Path(root)),LocalLedger(Path(root))
+            connection=ledger.db
+            class InterleavedConnection:
+                """Inject a real second-process commit just before submission writes."""
+                def __enter__(self): connection.__enter__(); return self
+                def __exit__(self,*args): return connection.__exit__(*args)
+                def execute(self,sql,parameters=()):
+                    if '{"state": "submitted"}' in parameters:
+                        receiver.setting('delivery:'+MID,{'state':'queued'})
+                    return connection.execute(sql,parameters)
+                def __getattr__(self,name): return getattr(connection,name)
+            ledger.db=InterleavedConnection()
+            try:
+                class Api:
+                    def call(self,op,data):
+                        if op=='session_inbox': return [{'id':MID,'recipient_id':'a'}]
+                        return {'queued':True}
+                result=Relay(Api(),ledger,{'agent_id':'a','session_ref':SID},lambda _:'submitted').run_once()
+                self.assertEqual(result,'delivered')
+                self.assertEqual(receiver.setting('delivery:'+MID),{'state':'acked'})
+            finally: connection.close(); receiver.db.close()
+
     def test_offline_status_is_available_without_service_or_model(self):
         with tempfile.TemporaryDirectory() as root:
             r = subprocess.run([sys.executable, str(SCRIPTS/'quorum.py'), '--state', root,
