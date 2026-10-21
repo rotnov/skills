@@ -45,3 +45,15 @@ jobs:
 
       - name: Require the complete pre-commit gate
         run: uv run --frozen pre-commit run --all-files
+
+  windows-acl:
+    runs-on: windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install pinned uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+
+      - name: Verify private ACLs without the SACL privilege
+        run: uv run --no-project --python 3.12 python -m unittest discover -s tests -p test_quorum_windows_acl.py -v
