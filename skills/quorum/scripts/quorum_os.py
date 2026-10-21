@@ -12,7 +12,7 @@ def reject_link(path):
 
 
 def protect(path, directory=False):
-    """Set private permissions. On Windows replace the DACL atomically."""
+    """Set private permissions. On Windows persist only the owner and DACL."""
     path = Path(path)
     reject_link(path)
     if os.name != 'nt':
@@ -35,7 +35,8 @@ if ($env:QUORUM_ACL_DIRECTORY -eq '1') {
 $acl.SetOwner($sid)
 $acl.SetAccessRuleProtection($true, $false)
 $acl.AddAccessRule($rule)
-Set-Acl -LiteralPath $p -AclObject $acl
+# Persist changed sections only; writing the SACL would require SeSecurityPrivilege.
+(Get-Item -LiteralPath $p -Force).SetAccessControl($acl)
 '''
     env = dict(os.environ, QUORUM_ACL_PATH=str(path.resolve()), QUORUM_ACL_DIRECTORY='1' if directory else '0')
     system = Path(os.environ['SystemRoot']) / 'System32/WindowsPowerShell/v1.0/powershell.exe'

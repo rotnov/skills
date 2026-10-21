@@ -60,10 +60,10 @@ subscription approval it handles at most one model turn, capped at 60 seconds,
 returns its answer and exits. See [the pilot guide](references/pilot.md) for the
 pinned adapter setup, exact worker command and two-way message test.
 
-Native Windows support still needs verification on a participating Windows
-machine. The default worker and Codex execution remain disabled; the documented
-Claude pilot is the opt-in execution path. A real exchange between two machines
-has not yet been accepted.
+One bounded two-way exchange between macOS and native Windows 11 has passed;
+see [verified scope](references/pilot.md#verified-scope) for the tested path and
+remaining limits. The default worker and Codex execution remain disabled; the
+documented Claude pilot is the opt-in execution path.
 
 ## Create a quorum or invite someone
 

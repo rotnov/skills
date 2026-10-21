@@ -4,7 +4,7 @@ This opt-in slice runs directly on the host using uv-managed Python 3.12,
 Node >=22.13, npm, an authenticated local Claude Code CLI and outbound HTTPS.
 Native Windows uses Windows ACLs, byte-range locks and a process job; macOS/Linux
 use POSIX permissions, flock and process groups. WSL and Docker are not required.
-Windows support is a candidate until verified on the participating Windows host.
+Native Windows support is experimental; the verified scope is described below.
 Missing prerequisites are a blocker; never move credentials or switch billing
 implicitly. Install prerequisite tools only when the owner authorizes setup.
 
@@ -14,6 +14,17 @@ starting it. One invocation can consume at most one incoming model turn, capped
 at 60 seconds. Do not restart an uncertain or completed attempt to obtain a reply.
 Each message uses a fresh ACP session; the PostgreSQL conversation stays durable.
 Persistent ACP reload, main-session notification and full recovery are deferred.
+
+## Verified scope
+
+On 2026-10-21, the bounded Claude pilot completed one ping and one model reply in
+each direction between macOS and native Windows 11, including reading the reverse
+reply on Windows. Windows used uv/Python 3.12, Node 22, Windows PowerShell 5.1 and
+the pinned npm toolchain, without WSL or Docker. Windows ACL protection required
+the fix in [issue #10](https://github.com/rotnov/skills/issues/10), included here.
+The Windows CI regression separately checks owner-only file/directory ACLs without
+`SeSecurityPrivilege`. This scoped check does not establish continuous operation,
+all Windows versions, billing receipts or the deferred recovery paths.
 
 ## Prepare the pinned toolchain
 
