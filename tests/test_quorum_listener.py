@@ -1,5 +1,6 @@
 """Continuous listener checks use synthetic peers and disposable state only."""
 import json
+from contextlib import contextmanager
 from pathlib import Path
 import shutil
 import subprocess
@@ -14,13 +15,23 @@ SCRIPTS = Path(__file__).resolve().parents[1] / 'skills/quorum/scripts'
 sys.path.insert(0, str(SCRIPTS))
 
 
+@contextmanager
+def temporary_ledger():
+    from quorum_state import LocalLedger
+    with tempfile.TemporaryDirectory() as temporary:
+        ledger = LocalLedger(Path(temporary))
+        try:
+            yield temporary, ledger
+        finally:
+            ledger.db.close()
+
+
 class ListenerTests(unittest.TestCase):
     def test_stop_during_spawn_cancels_before_worker_preparation(self):
         from quorum_listener import Control, run_listener, start_listener
         from quorum_state import LocalLedger
         from quorum_api import QuorumError
-        with tempfile.TemporaryDirectory() as temporary:
-            ledger = LocalLedger(Path(temporary))
+        with temporary_ledger() as (temporary, ledger):
             control, calls, acknowledgements = Control(ledger), [], []
             class Worker:
                 def reconcile(self): return []
@@ -49,8 +60,7 @@ class ListenerTests(unittest.TestCase):
         from quorum_listener import Control, start_listener
         from quorum_state import LocalLedger
         from quorum_api import QuorumError
-        with tempfile.TemporaryDirectory() as temporary:
-            ledger = LocalLedger(Path(temporary))
+        with temporary_ledger() as (temporary, ledger):
             with patch('quorum_listener.subprocess.Popen', side_effect=OSError('synthetic-private-token')):
                 with self.assertRaisesRegex(QuorumError, 'listener_start_failed'):
                     start_listener(ledger, temporary, 60, True)
@@ -83,8 +93,7 @@ class ListenerTests(unittest.TestCase):
         from quorum_state import LocalLedger, SessionBinding
         from quorum_worker import Worker
         from quorum_acp import ExecutionPolicy
-        with tempfile.TemporaryDirectory() as temporary:
-            ledger = LocalLedger(Path(temporary))
+        with temporary_ledger() as (temporary, ledger):
             control, run_id = Control(ledger), str(uuid.uuid4())
             ledger.bind_session(SessionBinding('q', 'p', 'd', 'a', 'c', 'claude', temporary, 'main'))
 
@@ -119,8 +128,7 @@ class ListenerTests(unittest.TestCase):
     def test_empty_queue_waits_ten_seconds_without_a_model(self):
         from quorum_listener import Control, run_listener
         from quorum_state import LocalLedger
-        with tempfile.TemporaryDirectory() as temporary:
-            ledger = LocalLedger(Path(temporary))
+        with temporary_ledger() as (temporary, ledger):
             control, sleeps = Control(ledger), []
 
             class Idle:
@@ -140,8 +148,7 @@ class ListenerTests(unittest.TestCase):
     def test_uncertain_attempt_stops_and_cannot_be_replayed_by_restart(self):
         from quorum_listener import run_listener
         from quorum_state import LocalLedger
-        with tempfile.TemporaryDirectory() as temporary:
-            ledger = LocalLedger(Path(temporary))
+        with temporary_ledger() as (temporary, ledger):
 
             class Uncertain:
                 calls = 0
@@ -159,8 +166,7 @@ class ListenerTests(unittest.TestCase):
     def test_errors_are_redacted_and_release_the_listener_lock(self):
         from quorum_listener import Control, run_listener
         from quorum_state import LocalLedger
-        with tempfile.TemporaryDirectory() as temporary:
-            ledger = LocalLedger(Path(temporary))
+        with temporary_ledger() as (temporary, ledger):
             def failed(): raise ValueError('synthetic-private-token')
             result = run_listener(ledger, failed, str(uuid.uuid4()))
             self.assertEqual(result['state'], 'error')
@@ -171,8 +177,7 @@ class ListenerTests(unittest.TestCase):
         from quorum_listener import run_listener
         from quorum_live import LocalSupervisorLock
         from quorum_state import LocalLedger
-        with tempfile.TemporaryDirectory() as temporary:
-            ledger = LocalLedger(Path(temporary))
+        with temporary_ledger() as (temporary, ledger):
             with LocalSupervisorLock(ledger.root):
                 with self.assertRaisesRegex(ValueError, 'worker_already_running'):
                     run_listener(ledger, lambda: self.fail('second worker started'), str(uuid.uuid4()))
