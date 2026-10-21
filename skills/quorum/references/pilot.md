@@ -14,6 +14,9 @@ starting it. One invocation can consume at most one incoming model turn, capped
 at 60 seconds. Do not restart an uncertain or completed attempt to obtain a reply.
 Each message uses a fresh ACP session; the PostgreSQL conversation stays durable.
 Persistent ACP reload, main-session notification and full recovery are deferred.
+For ongoing owner-authorized reception after the bounded test, read
+[continuous listener](listener.md); its approval covers all incoming messages
+until stopped rather than the one-message pilot budget.
 
 ## Verified scope
 

@@ -62,6 +62,18 @@ result = json.loads(pathlib.Path(sys.argv[1]).read_text())
 assert result["ok"] and result["data"]["live_agents"] == "disabled"
 assert result["data"]["worker"] == "offline"
 PY
+        "$uv_bin" run --no-project --python 3.12 \
+          "$client_skill/scripts/quorum.py" --state "$skill_install_root/state" listen status \
+          >"$skill_install_root/listener-status.json"
+        "$uv_bin" run --no-project --python 3.12 python - \
+          "$skill_install_root/listener-status.json" <<'PY'
+import json
+import pathlib
+import sys
+result = json.loads(pathlib.Path(sys.argv[1]).read_text())
+assert result["ok"] and result["data"]["listener"] == "offline"
+assert result["data"]["handled"] == 0
+PY
         if "$uv_bin" run --no-project --python 3.12 \
           "$client_skill/scripts/quorum.py" --state "$skill_install_root/state" \
           join amplifier --role backend >"$skill_install_root/quorum-failure.json"; then
