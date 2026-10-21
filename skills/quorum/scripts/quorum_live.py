@@ -42,10 +42,12 @@ def read_invitation(path):
     return data
 
 
-LIVE_COMMANDS = {'connect', 'pilot-init', 'pilot-worker', 'ping', 'thread', 'mcp', 'invite-file'}
+LIVE_COMMANDS = {'connect', 'pilot-init', 'pilot-worker', 'ping', 'thread', 'mcp', 'invite-file', 'listen'}
 
 
 def add_commands(commands):
+    from quorum_listener import add_commands as add_listener_commands
+    add_listener_commands(commands)
     invite = commands.add_parser('invite-file', help='Create an owner-only invitation file without printing its token')
     invite.add_argument('quorum')
     target = invite.add_mutually_exclusive_group(required=True)
@@ -92,10 +94,12 @@ def dispatch(args, ledger, register_agent):
     import json
     import os
     import re
-    import shutil
     import time
     import uuid
     from quorum_auth import login_pkce
+    if args.command == 'listen':
+        from quorum_listener import dispatch as listener_dispatch
+        return listener_dispatch(args, ledger)
     if args.command == 'connect':
         invite = read_invitation(args.invite_file)
         config_path = ledger.root / 'config.json'
@@ -164,17 +168,7 @@ def dispatch(args, ledger, register_agent):
         return api.call('conversation_read', {'quorum_id': quorum_id, 'agent_id': agent_id,
                         'conversation_id': args.conversation_id, 'after_sequence': 0})
     if args.command == 'pilot-worker':
-        from quorum_acp import ClaudePilotRunner, ExecutionPolicy
-        from quorum_worker import Worker
-        policy = ExecutionPolicy(1, args.timeout, 'subscription', True, args.approve_subscription)
-        policy.validate()
-        validate_pilot_profile(ledger, record)
-        cwd = Path(record['registration']['cwd'])
-        scope = {key: record[key] for key in ('quorum_id', 'device_id', 'agent_id')}
-        scope.update(project_ref=record['registration']['project_ref'], cwd=str(cwd))
-        runner = ClaudePilotRunner(args.toolchain, shutil.which('node'), shutil.which('claude'), binding_scope=scope)
-        runner.preflight(str(cwd))
-        worker = Worker(api, ledger, runner, record['device_id'], policy, bind_delivery)
+        worker = prepare_worker(ledger, api, args.toolchain, args.timeout, args.approve_subscription)
         # Hold the device lock across idle polling as well as model execution.
         # Worker.run_once acquires this same lock, so use a distinct supervisor lock.
         supervisor = LocalSupervisorLock(ledger.root)
@@ -187,6 +181,24 @@ def dispatch(args, ledger, register_agent):
                 time.sleep(min(10, max(0, deadline - time.monotonic())))
         return {'worker': 'idle_timeout', 'model_turns': 0}
     raise ValueError('unknown_operation')
+
+
+def prepare_worker(ledger, api, toolchain, timeout, approved):
+    import shutil
+    from quorum_acp import ClaudePilotRunner, ExecutionPolicy
+    from quorum_worker import Worker
+    record = ledger.setting('pilot-agent')
+    if record is None: raise ValueError('pilot_agent_required')
+    policy = ExecutionPolicy(1, timeout, 'subscription', True, approved)
+    policy.validate()
+    validate_pilot_profile(ledger, record)
+    api.call('agent_status', {'agent_id': record['agent_id']})
+    cwd = Path(record['registration']['cwd'])
+    scope = {key: record[key] for key in ('quorum_id', 'device_id', 'agent_id')}
+    scope.update(project_ref=record['registration']['project_ref'], cwd=str(cwd))
+    runner = ClaudePilotRunner(toolchain, shutil.which('node'), shutil.which('claude'), binding_scope=scope)
+    runner.preflight(str(cwd))
+    return Worker(api, ledger, runner, record['device_id'], policy, bind_delivery)
 
 
 class LocalSupervisorLock(FileLock):

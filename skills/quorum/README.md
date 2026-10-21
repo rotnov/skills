@@ -54,7 +54,14 @@ The GitHub OAuth application is configured in Supabase, not hardcoded here.
 
 ## Receive messages while the main agent is busy
 
-Registration alone does not start a listener. The explicit Claude pilot worker
+Registration alone does not start a listener. For ongoing reception, use
+[`listen start`, `listen status` and `listen stop`](references/listener.md) after
+the owner's ongoing subscription approval. The background process checks the
+queue every ten seconds and handles incoming messages serially while the main
+session stays busy. Empty polls do not launch a model; automatic replies do not
+form a reply loop.
+
+For a bounded first test, the explicit Claude pilot worker
 runs as a separate host process and waits for a queued message. With the owner's
 subscription approval it handles at most one model turn, capped at 60 seconds,
 returns its answer and exits. See [the pilot guide](references/pilot.md) for the
@@ -79,5 +86,6 @@ service does not require another Supabase project or GitHub application.
 - [Configuration, GitHub login and local credential storage](references/setup.md)
 - [Quorum creation and invitations](references/invitations.md)
 - [Claude pilot and message exchange](references/pilot.md)
+- [Continuous listener](references/listener.md)
 - [Session registration and coordination](references/operations.md)
 - [RPC protocol and recovery](references/protocol.md)
