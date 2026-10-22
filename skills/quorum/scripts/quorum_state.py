@@ -58,7 +58,7 @@ class LocalLedger:
         return None if row is None else json.loads(row[0])
 
     def bind_session(self, binding):
-        if binding.engine not in ('claude', 'codex') or not Path(binding.cwd).is_absolute():
+        if binding.engine not in ('claude', 'codex', 'grok') or not Path(binding.cwd).is_absolute():
             raise ValueError('invalid_binding')
         data = json.dumps(asdict(binding), sort_keys=True)
         with self.db:

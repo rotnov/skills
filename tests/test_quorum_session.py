@@ -18,7 +18,7 @@ sys.path.insert(0, str(SCRIPTS))
 SID = '11111111-1111-4111-8111-111111111111'
 MID = '22222222-2222-4222-8222-222222222222'
 # The suite may run inside a Codex or Claude Code chat; never inherit that caller's session.
-CLIENT_SESSION_VARIABLES = ('CODEX_THREAD_ID', 'CLAUDE_CODE_SESSION_ID',
+CLIENT_SESSION_VARIABLES = ('CODEX_THREAD_ID', 'GROK_SESSION_ID', 'GROK_LEADER_SOCKET', 'CLAUDE_CODE_SESSION_ID',
                             'CLAUDE_CODE_MESSAGING_SOCKET', 'CLAUDE_CODE_MESSAGING_TOKEN')
 
 
@@ -27,6 +27,11 @@ def without_client_session():
 
 
 class SessionTests(unittest.TestCase):
+    def setUp(self):
+        isolated = patch.dict(os.environ, without_client_session(), clear=True)
+        isolated.start()
+        self.addCleanup(isolated.stop)
+
     def test_claude_uses_actual_session_identity_instead_of_a_codex_binding(self):
         from quorum_session import current_session
         with patch.dict(os.environ, {'CLAUDE_CODE_SESSION_ID':SID}, clear=True):

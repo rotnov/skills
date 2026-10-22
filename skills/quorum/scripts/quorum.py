@@ -18,7 +18,7 @@ from quorum_os import open_private
 
 def register_agent(api, ledger, slug, role, data, *, device_key="device"):
     required = {'engine', 'project_ref', 'session_ref', 'cwd'}
-    if set(data) != required or data['engine'] not in ('claude', 'codex') or not Path(data['cwd']).is_absolute():
+    if set(data) != required or data['engine'] not in ('claude', 'codex', 'grok') or not Path(data['cwd']).is_absolute():
         raise ValueError('invalid_registration')
     quorum = api.call('quorum_lookup', {'slug': slug})['quorum_id']
     binding_key = [quorum, role, data] + ([] if device_key == 'device' else [device_key])

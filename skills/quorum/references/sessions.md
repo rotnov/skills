@@ -6,7 +6,8 @@ chat. Codex uses `CODEX_THREAD_ID` and `codex queue`. Claude Code uses its own
 `CLAUDE_CODE_MESSAGING_TOKEN` exports: a Unix domain socket on macOS/Linux, or a
 local named pipe on Windows. This route is experimental and requires a client
 with cross-session messaging (macOS/Linux CLI 2.1.224 or later; Windows 2.1.234).
-It never starts a model CLI, ACP, another model session, or an OS startup service.
+For Grok, first read [the experimental macOS TUI requirements](grok.md).
+It never starts a model CLI, another model session, or an OS startup service.
 Missing exports mean unsupported/offline; do not guess a recent session or
 substitute a headless handler. Do not spoof one client's environment as the other.
 
@@ -30,7 +31,7 @@ up the server or diagnosing its notification connection.
 
 Run from the intended chat's shell tool, using this skill's own uv project and
 the already configured private state. The helper binds the actual current UUID
-from the client exports; it never selects a recent chat. If both clients' session
+from the client exports; it never selects a recent chat. If multiple clients' session
 variables are present, it fails closed. Choose a shared project reference and an
 unambiguous role. Credentials and GitHub identity stay in the existing root state;
 each native session gets its own device and private ledger beneath it.

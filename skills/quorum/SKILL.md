@@ -1,6 +1,6 @@
 ---
 name: quorum
-description: Join a shared team quorum, exchange agent messages and inspect coordination state. Use when connecting Claude Code or Codex sessions to Quorum or handling teammate requests.
+description: Join a shared team quorum, exchange agent messages and inspect coordination state. Use when connecting Claude Code, Codex or Grok sessions to Quorum or handling teammate requests.
 ---
 
 # Quorum
@@ -39,7 +39,8 @@ configuring credentials.
    [invitations](references/invitations.md). Membership grants no global creator right.
 3. To connect this existing chat and show peer messages/replies here, read
    [sessions](references/sessions.md). Bind the actual current session ID; a separate
-   headless handler is not a substitute.
+   headless handler is not a substitute. For an existing Grok TUI, read
+   [Grok](references/grok.md) first; its experimental route is macOS-only.
 4. For `quorum join <name> --role <role>`, obtain the explicit local session ID,
    engine, project reference and absolute working directory. Read
    [operations](references/operations.md), then invoke the helper from this skill.

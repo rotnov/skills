@@ -31,7 +31,7 @@ def binding(session_id):
     return endpoint
 
 
-def unix_endpoint(endpoint):
+def unix_endpoint(endpoint, *, mode_mask=0o077):
     """Validate an existing current-user socket before sending its local token."""
     try:
         path=Path(endpoint)
@@ -42,7 +42,7 @@ def unix_endpoint(endpoint):
             raise ValueError
         uid=os.geteuid()
         info=path.lstat()
-        if not stat.S_ISSOCK(info.st_mode) or info.st_uid!=uid or info.st_mode&0o077:
+        if not stat.S_ISSOCK(info.st_mode) or info.st_uid!=uid or info.st_mode&mode_mask:
             raise ValueError
         immediate=path.parent.lstat()
         if not stat.S_ISDIR(immediate.st_mode) or immediate.st_uid!=uid or immediate.st_mode&0o077:
