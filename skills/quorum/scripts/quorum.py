@@ -2,7 +2,6 @@
 """Portable Quorum entry point with explicit opt-in Claude execution."""
 import argparse
 import json
-import os
 from pathlib import Path
 import sys
 import uuid
@@ -11,9 +10,8 @@ import subprocess
 
 sys.dont_write_bytecode = True
 from quorum_api import QuorumApi, ServiceConfig, QuorumError
-from quorum_auth import CredentialStore, login_pkce, token_provider
+from quorum_auth import token_provider
 from quorum_state import LocalLedger
-from quorum_os import open_private
 
 
 def register_agent(api, ledger, slug, role, data, *, device_key="device"):
@@ -71,11 +69,8 @@ def main(argv=None):
             print(json.dumps({'ok': True, 'code': 'ok', 'data': value}))
             return 0
         if args.command == 'configure':
-            config = ServiceConfig(args.origin, args.publishable_key)
-            if config_path.is_symlink(): raise ValueError('unsafe_config_file')
-            fd = open_private(config_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC)
-            with os.fdopen(fd, 'w') as handle:
-                json.dump({'origin': config.origin, 'publishable_key': config.publishable_key}, handle)
+            from quorum_profiles import resolve_profile
+            resolve_profile(ledger.root, ServiceConfig(args.origin, args.publishable_key))
             value = {'configured': True}
         elif args.command == 'status':
             from quorum_live import supervisor_running
@@ -94,13 +89,11 @@ def main(argv=None):
                 raise QuorumError('engine_acceptance_pending') from None
             raise QuorumError('live_agents_disabled')
         else:
-            if not config_path.is_file() or config_path.is_symlink():
-                raise QuorumError('service_not_configured')
-            config = ServiceConfig(**json.loads(config_path.read_text()))
-            store = CredentialStore(root=ledger.root / 'credentials')
-            if args.command == 'login': value = login_pkce(config, store)
+            from quorum_profiles import resolve_profile, ensure_login, auth_lock
+            config, store = resolve_profile(ledger.root)
+            if args.command == 'login': value = ensure_login(config, store, explicit=True)
             elif args.command == 'logout':
-                store.delete(config.origin)
+                with auth_lock(store): store.delete(config.origin)
                 ledger.db.execute('delete from capabilities')
                 ledger.db.commit()
                 value = {'logged_out': True}
@@ -127,14 +120,18 @@ def main(argv=None):
         return 0
     except QuorumError as error:
         codes = {'auth_required': 3, 'service_not_configured': 4, 'live_agents_disabled': 4,
-                 'engine_acceptance_pending': 4, 'service_unavailable': 5, 'service_error': 5,
+                 'engine_acceptance_pending': 4, 'service_profile_ambiguous': 4, 'machine_profile_unavailable': 4,
+                 'auth_profile_conflict': 3, 'service_config_conflict': 4, 'service_unavailable': 5, 'service_error': 5,
                  'response_too_large': 5, 'invalid_response': 5, 'listener_start_failed': 5, 'listener_stop_failed': 5}
         code = str(error) if str(error) in codes else 'operation_failed'
         print(json.dumps({'ok': False, 'code': code, 'data': {}}))
         return codes.get(code, 3)
-    except (ValueError, OSError, KeyError, TypeError, subprocess.SubprocessError):
+    except (ValueError, OSError, KeyError, TypeError, subprocess.SubprocessError) as error:
         # Never serialize exception text: it may contain remote bodies or secrets.
-        print(json.dumps({'ok': False, 'code': 'operation_failed', 'data': {}}))
+        safe = {'machine_profile_unavailable', 'service_profile_ambiguous', 'auth_profile_conflict',
+                'service_config_conflict', 'github_identity_required', 'auth_lock_timeout'}
+        code = str(error) if str(error) in safe else 'operation_failed'
+        print(json.dumps({'ok': False, 'code': code, 'data': {}}))
         return 3
     finally:
         # main owns this connection; dispatchers finish before its lifetime ends.

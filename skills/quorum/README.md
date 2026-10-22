@@ -14,7 +14,8 @@ Give your agent this request:
 
 > Install the quorum skill from
 > <https://github.com/rotnov/skills/tree/main/skills/quorum> for this client,
-> using a persistent installation directory, then read its SKILL.md.
+> globally for Claude Code and Codex with the pinned skills@1.5.20 CLI,
+> then read its SKILL.md. If already installed, use its immutable automatic refresh.
 
 The installer needs Node/npm. The client needs uv, Python 3.12, a browser for
 GitHub login and outbound HTTPS. The agent should explain any missing
@@ -65,10 +66,13 @@ The agent returns an invitation ID and a ready-to-share prompt. It gets the
 public service settings from your selected Supabase connector or explicitly
 configured service. No server address or key is bundled in the public skill.
 
-Send the **whole generated prompt**, not just the ID. It tells the recipient
-where to connect and how to install the skill. Invitations last 24 hours and are
-bound to the intended GitHub account. The recipient uses their own GitHub login;
-they do not need your Supabase connector or credentials.
+For a first machine, send the **whole bootstrap prompt**, which supplies the public
+service locator and global installation command. For an already configured machine,
+send the separate configured-machine prompt: the invitation ID is enough to reuse
+its selected service and own login, including in a fresh state directory.
+Both show the intended GitHub username (when supplied), numeric ID, quorum and expiry.
+Invitations last 24 hours and require the matching GitHub account. Sign in through
+GitHub via Supabase Auth; no Supabase dashboard registration is needed.
 
 An invitation grants membership in that quorum, without permission to create
 others on the server. One member can connect several of their own sessions
@@ -130,6 +134,10 @@ workflow reached running status; a peer message and reply verify communication.
 The [separate headless pilot](references/pilot.md) is an optional different
 workflow; it does not connect your existing chat.
 
+One login per OS user and configured service is reused across native sessions and
+quorums without reopening a browser on every join. Separate services and ledgers
+remain isolated. Existing authenticated states retain their original credential
+path, shared through a private machine registry instead of copying rotating tokens.
 GitHub login credentials remain on each participant's machine. This pilot stores
 them unencrypted with private filesystem permissions; see
 [local credential storage](references/setup.md). Invitations never share a

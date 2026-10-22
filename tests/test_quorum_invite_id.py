@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from quorum_test_support import isolated_profiles
 from unittest.mock import patch
 
 SCRIPTS = Path(__file__).resolve().parents[1] / 'skills/quorum/scripts'
@@ -15,7 +16,9 @@ sys.path.insert(0, str(SCRIPTS))
 INVITE = '11111111-1111-4111-8111-111111111111'
 
 
+
 class IdInvitationTests(unittest.TestCase):
+    @isolated_profiles
     def test_owner_gets_public_id_and_ready_session_prompt_without_file(self):
         import quorum_invitations as invitations
         from quorum_api import ServiceConfig
@@ -47,11 +50,49 @@ class IdInvitationTests(unittest.TestCase):
             self.assertEqual(list(Path(root).iterdir()), [])
         self.assertEqual(calls[-1], ('invite_create_id', {'quorum_id': 'q', 'target_github_id': '123'}, 'r'))
 
+    @isolated_profiles
+    def test_prompts_select_first_or_configured_machine_and_name_target_account(self):
+        from quorum_invitations import create_id_invitation
+        from quorum_api import ServiceConfig
+        class Api:
+            def call(self, operation, payload, request_id=None):
+                if operation == 'quorum_lookup': return {'quorum_id': 'q'}
+                if operation == 'quorum_check_owner': return True
+                return {'invite_id': INVITE, 'expires_at': '2026-10-23T12:00:00Z'}
+        initial = create_id_invitation(Api(), ServiceConfig('https://example.com', 'sb_publishable_synthetic'),
+                                       'team', '123', 'r')
+        self.assertIn('configured_machine_prompt', initial, 'configured-machine invitation is missing')
+        result = create_id_invitation(Api(), ServiceConfig('https://example.com', 'sb_publishable_synthetic'),
+                                      'team', '123', 'r', github_user='Octocat')
+        for key in ('session_prompt', 'configured_machine_prompt'):
+            prompt = result[key]
+            for required in ('@Octocat', 'GitHub ID 123', '2026-10-23T12:00:00Z',
+                             'via Supabase Auth', 'no Supabase dashboard registration',
+                             'session connect', 'session start', 'session status', 'Hello'):
+                self.assertIn(required, prompt)
+            self.assertIn('GitHub is required', prompt)
+            for required in ('https://github.com/rotnov/skills/issues', 'Check existing issues',
+                             'one report per distinct failure', 'safe error code', 'actual listener state',
+                             'no tokens', 'no GitHub write access'):
+                self.assertIn(required, prompt)
+        full, short = result['session_prompt'], result['configured_machine_prompt']
+        self.assertIn('--copy -g -y', full)
+        self.assertIn('--origin', full)
+        self.assertIn('sb_publishable_synthetic', full)
+        self.assertIn(INVITE, short)
+        self.assertNotIn('--origin', short)
+        self.assertNotIn('--publishable-key', short)
+        self.assertNotIn('https://example.com', short)
+        self.assertNotIn('skills@', short)
+        self.assertEqual(result['target_github_user'], 'Octocat')
+
+    @isolated_profiles
     def test_accept_bootstraps_own_login_and_only_accepts_membership(self):
         import quorum
         from quorum_state import LocalLedger
         calls = []
         class Store:
+            backend = None
             def load(self, _): return None
         class Api:
             def call(self, op, payload, request_id=None):
@@ -72,6 +113,7 @@ class IdInvitationTests(unittest.TestCase):
             self.assertIsNone(ledger.setting('pilot-agent'))
             ledger.db.close()
 
+    @isolated_profiles
     def test_invalid_id_and_service_conflict_stop_before_login(self):
         import quorum
         with tempfile.TemporaryDirectory() as root:
@@ -82,6 +124,7 @@ class IdInvitationTests(unittest.TestCase):
                 path.write_text(json.dumps({'origin':'https://different.invalid','publishable_key':'sb_publishable_synthetic'}))
                 self.assertEqual(quorum.main(['--state', root, 'accept-id', INVITE, '--origin','https://example.com','--publishable-key','sb_publishable_synthetic']), 3)
 
+    @isolated_profiles
     def test_no_bundled_service_or_implicit_backend(self):
         import quorum
         with tempfile.TemporaryDirectory() as root:
@@ -93,6 +136,7 @@ class IdInvitationTests(unittest.TestCase):
             self.assertEqual(json.loads(output.getvalue())['code'],'service_not_configured')
         self.assertFalse((SCRIPTS.parent/'assets/service-profiles.json').exists())
 
+    @isolated_profiles
     def test_invitation_never_publishes_secret_or_session_key(self):
         from quorum_invitations import create_id_invitation
         from quorum_api import ServiceConfig
@@ -103,6 +147,7 @@ class IdInvitationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'public_service_key_required'):
                 create_id_invitation(None,ServiceConfig('https://example.com',key),'team','123','r')
 
+    @isolated_profiles
     def test_api_allows_explicit_id_operations(self):
         from quorum_api import QuorumApi, ServiceConfig
         calls=[]
@@ -111,6 +156,7 @@ class IdInvitationTests(unittest.TestCase):
         api.call('invite_accept_id', {'invite_id':INVITE}, 'r')
         self.assertEqual(calls[0][1], {'p_invite_id':INVITE,'p_request_id':'r'})
 
+    @isolated_profiles
     def test_clean_copy_cli_bootstraps_without_credentials_or_providers(self):
         # Runs unchanged on native Windows CI and on both CLI-installed clients.
         with tempfile.TemporaryDirectory() as root:
@@ -131,6 +177,7 @@ class IdInvitationTests(unittest.TestCase):
 
 
 class CliLedgerLifetimeTests(unittest.TestCase):
+    @isolated_profiles
     def test_main_closes_its_ledger_on_success_and_handled_errors(self):
         import quorum
         import sqlite3
@@ -153,6 +200,7 @@ class CliLedgerLifetimeTests(unittest.TestCase):
                 finally:
                     ledger.db.close()
 
+    @isolated_profiles
     def test_live_dispatch_keeps_ledger_open_until_return_or_interruption(self):
         import quorum
         import sqlite3

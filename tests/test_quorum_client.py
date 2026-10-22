@@ -8,9 +8,11 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from quorum_test_support import isolated_profiles
 
 SCRIPTS = Path(__file__).resolve().parents[1] / 'skills/quorum/scripts'
 sys.path.insert(0, str(SCRIPTS))
+
 
 
 class ClientTests(unittest.TestCase):
@@ -18,12 +20,14 @@ class ClientTests(unittest.TestCase):
         self.api = importlib.import_module('quorum_api')
         self.state = importlib.import_module('quorum_state')
 
+    @isolated_profiles
     def test_https_origin_only(self):
         for url in ('http://example.com', 'https://user:pass@example.com',
                     'https://example.com/path', 'https://example.com?x=1'):
             with self.subTest(url=url), self.assertRaises(ValueError):
                 self.api.ServiceConfig(url, 'public')
 
+    @isolated_profiles
     def test_rpc_auth_and_error_do_not_leak_credentials(self):
         seen = []
         def request(url, headers, body):
@@ -38,6 +42,7 @@ class ClientTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             api.call('../arbitrary', {})
 
+    @isolated_profiles
     def test_refresh_failure_stops_before_request(self):
         def token():
             raise self.api.QuorumError('auth_required')
@@ -46,6 +51,7 @@ class ClientTests(unittest.TestCase):
         with self.assertRaisesRegex(self.api.QuorumError, 'auth_required'):
             api.call('context_read', {})
 
+    @isolated_profiles
     def test_local_capability_scope_expiry_and_revocation(self):
         with tempfile.TemporaryDirectory() as root:
             ledger = self.state.LocalLedger(Path(root), clock=lambda: 100)
@@ -60,12 +66,14 @@ class ClientTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 ledger.authorize(token)
 
+    @isolated_profiles
     def test_ledger_rejects_secret_event_fields(self):
         with tempfile.TemporaryDirectory() as root:
             ledger = self.state.LocalLedger(Path(root))
             with self.assertRaises(ValueError):
                 ledger.record_event('attempt', 'started', {'refresh_token': 'secret'})
 
+    @isolated_profiles
     def test_device_lock_excludes_second_worker_and_releases(self):
         with tempfile.TemporaryDirectory() as root:
             one = self.state.LocalLedger(Path(root))
@@ -77,6 +85,7 @@ class ClientTests(unittest.TestCase):
             with two.worker_lock():
                 pass
 
+    @isolated_profiles
     def test_session_binding_is_explicit_and_conflicts_fail(self):
         with tempfile.TemporaryDirectory() as root:
             ledger = self.state.LocalLedger(Path(root))
@@ -88,6 +97,7 @@ class ClientTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'binding_conflict'):
                 ledger.bind_session(changed)
 
+    @isolated_profiles
     def test_relocated_individual_copy_cli(self):
         with tempfile.TemporaryDirectory() as root:
             copy = Path(root) / 'quorum'
@@ -103,6 +113,7 @@ class ClientTests(unittest.TestCase):
             self.assertNotEqual(failed.returncode, 0)
             self.assertNotIn('Traceback', failed.stderr + failed.stdout)
 
+    @isolated_profiles
     def test_mcp_rejects_invite_and_sender_impersonation(self):
         module = importlib.import_module('quorum_mcp')
         calls = []
@@ -116,6 +127,7 @@ class ClientTests(unittest.TestCase):
                                         'conversation_id': 'c', 'quorum_id': 'q', 'request_id': 'r'})
         self.assertEqual(calls[0][1]['sender_agent_id'], 'agent')
 
+    @isolated_profiles
     def test_mcp_capability_cannot_read_another_quorum_or_project(self):
         module = importlib.import_module('quorum_mcp')
         tools = module.McpTools(lambda token: 'agent', lambda *_: self.fail('cross-scope request forwarded'),
@@ -125,6 +137,7 @@ class ClientTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'scope_denied'):
             tools.call('cap', 'quorum_context', {'quorum_id': 'q', 'project_ref': 'secret/repo', 'after_version': 0})
 
+    @isolated_profiles
     def test_join_registers_once_without_starting_worker(self):
         module = importlib.import_module('quorum')
         calls = []
@@ -143,6 +156,7 @@ class ClientTests(unittest.TestCase):
             self.assertEqual(calls.count('device_register'), 1)
             self.assertEqual(calls.count('agent_join'), 1)
 
+    @isolated_profiles
     def test_cached_join_rechecks_live_agent_authorization(self):
         module = importlib.import_module('quorum')
         class Api:

@@ -20,6 +20,9 @@ On success, `data.skill_dir` is the persistent fresh copy to use for this reques
 Read its `SKILL.md` and the relevant creation/join reference, then continue using
 its frozen uv project and scripts. Keep the same private state path, own login,
 invitation, request IDs and actual session binding. The new instructions do not
+change the shared machine profile's canonical credential path; a retained legacy
+credential directory remains in place for old listeners. See [setup](setup.md)
+when adopting an existing local login or resolving profile conflicts. They do not
 trigger a second refresh within the same owner request. Even `status: current`
 returns a validated persistent path.
 

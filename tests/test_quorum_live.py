@@ -6,11 +6,14 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from quorum_test_support import isolated_profiles
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'skills/quorum/scripts'))
 import quorum_acp
 
 
+
 class LiveBoundaryTests(unittest.TestCase):
+    @isolated_profiles
     def test_raw_acp_output_requires_matching_successful_prompt_result(self):
         parser = quorum_acp.PromptOutput()
         parser.feed({'id': 'p', 'method': 'session/prompt', 'params': {'sessionId': 's'}})
@@ -22,6 +25,7 @@ class LiveBoundaryTests(unittest.TestCase):
         self.assertEqual(parser.result(0), 'pong')
         with self.assertRaises(ValueError): parser.result(1)
 
+    @isolated_profiles
     def test_tool_use_or_failed_stop_never_publishes_answer(self):
         for update in ({'sessionUpdate': 'tool_call', 'toolCallId': 'x'},
                        {'sessionUpdate': 'agent_message_chunk', 'content': {'type': 'text', 'text': 'x' * 16385}}):
@@ -29,6 +33,7 @@ class LiveBoundaryTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 parser.feed({'method': 'session/update', 'params': {'update': update}})
 
+    @isolated_profiles
     def test_policy_wrapper_removes_native_tools_hooks_and_other_mcp(self):
         wrapper = Path(__file__).resolve().parents[1] / 'skills/quorum/scripts/claude_pilot_proxy.mjs'
         self.assertTrue(wrapper.is_file(), 'missing enforced adapter boundary')
@@ -50,6 +55,7 @@ class LiveBoundaryTests(unittest.TestCase):
             self.assertEqual(opts['settings']['apiKeyHelper'], '')
             self.assertEqual(out['mcpServers'], [])
 
+    @isolated_profiles
     def test_subscription_probe_rejects_api_key_even_with_paid_plan(self):
         good = {'loggedIn': True, 'authMethod': 'claude.ai', 'apiProvider': 'firstParty',
                 'subscriptionType': 'max'}
@@ -58,6 +64,7 @@ class LiveBoundaryTests(unittest.TestCase):
                        {'loggedIn': False}, {'authMethod': 'api_key'}):
             self.assertFalse(quorum_acp.subscription_status({**good, **change}))
 
+    @isolated_profiles
     def test_worker_resolves_new_conversation_from_registered_recipient(self):
         from quorum_state import LocalLedger
         from quorum_live import bind_delivery
@@ -75,6 +82,7 @@ class LiveBoundaryTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 bind_delivery(ledger, {'conversation_id': 'c', 'recipient_agent_id': 'other'})
 
+    @isolated_profiles
     def test_private_invitation_rejects_public_files_and_never_returns_token_to_cli(self):
         from quorum_live import read_invitation
         import os
@@ -87,6 +95,7 @@ class LiveBoundaryTests(unittest.TestCase):
             path.chmod(0o600)
             self.assertEqual(read_invitation(path)['quorum'], 'amplifier')
 
+    @isolated_profiles
     def test_revocation_during_heartbeat_stops_process_and_keeps_uncertainty(self):
         from quorum_worker import Worker
         from quorum_state import LocalLedger, SessionBinding
@@ -114,6 +123,7 @@ class LiveBoundaryTests(unittest.TestCase):
             self.assertTrue(runner.cancelled)
             self.assertEqual(ledger.attempt('x')['state'], 'unknown')
 
+    @isolated_profiles
     def test_ping_routes_in_project_and_retries_identical_conversation(self):
         from quorum_live import dispatch
         from quorum_state import LocalLedger
@@ -141,6 +151,7 @@ class LiveBoundaryTests(unittest.TestCase):
             self.assertEqual(first, second)
             self.assertEqual(sent[0][1]['p_project_ref'], 'quorum-pilot/messaging')
             self.assertEqual(sent[1][1], sent[3][1])
+    @isolated_profiles
     def test_saved_reply_upload_retries_without_claim_or_second_model_run(self):
         from quorum_worker import Worker
         from quorum_state import LocalLedger
@@ -160,6 +171,7 @@ class LiveBoundaryTests(unittest.TestCase):
 
 
 class PortableHostTests(unittest.TestCase):
+    @isolated_profiles
     def test_portable_lock_rejects_overlap_and_releases(self):
         from quorum_os import FileLock
         with tempfile.TemporaryDirectory() as root:
@@ -169,6 +181,7 @@ class PortableHostTests(unittest.TestCase):
                     with FileLock(path): self.fail('overlap entered')
             with FileLock(path): pass
 
+    @isolated_profiles
     def test_safe_open_denies_symlink_and_preserves_target(self):
         from quorum_os import open_private
         import os
@@ -181,6 +194,7 @@ class PortableHostTests(unittest.TestCase):
                 open_private(link, os.O_WRONLY | os.O_TRUNC)
             self.assertEqual(target.read_text(), 'unchanged')
 
+    @isolated_profiles
     def test_chunk_reader_timeout_cancels_process(self):
         from quorum_acp import ClaudePilotRunner
         proc = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(20)'],
@@ -191,6 +205,7 @@ class PortableHostTests(unittest.TestCase):
             list(runner.events(proc))
         self.assertIsNotNone(proc.poll())
 
+    @isolated_profiles
     def test_individual_copy_runs_through_its_own_uv_project(self):
         import shutil
         source = Path(__file__).resolve().parents[1] / 'skills/quorum'
@@ -208,6 +223,7 @@ class PortableHostTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(json.loads(result.stdout)['data']['worker'], 'offline')
 
+    @isolated_profiles
     def test_output_pipe_does_not_need_select_support(self):
         from types import SimpleNamespace
         messages = [
@@ -222,6 +238,7 @@ class PortableHostTests(unittest.TestCase):
         events = list(runner.events(handle))
         self.assertEqual(events[-1], {'type': 'completed', 'success': True, 'text': 'pong'})
 
+    @isolated_profiles
     def test_status_reports_an_active_supervisor_without_starting_a_model(self):
         from quorum_live import LocalSupervisorLock
         from quorum_state import LocalLedger
@@ -237,6 +254,7 @@ class PortableHostTests(unittest.TestCase):
 if __name__ == '__main__': unittest.main()
 
 class PublicationReviewTests(unittest.TestCase):
+    @isolated_profiles
     def test_pilot_and_regular_registration_use_distinct_devices(self):
         from quorum import register_agent
         from quorum_state import LocalLedger
@@ -258,6 +276,7 @@ class PublicationReviewTests(unittest.TestCase):
             self.assertNotEqual(ordinary['device_id'], pilot['device_id'])
             self.assertNotEqual(ordinary['agent_id'], pilot['agent_id'])
 
+    @isolated_profiles
     def test_foreign_checkout_rejected_before_probe_or_configuration_write(self):
         from quorum_state import SessionBinding
         runner = quorum_acp.ClaudePilotRunner.__new__(quorum_acp.ClaudePilotRunner)
@@ -275,6 +294,7 @@ class PublicationReviewTests(unittest.TestCase):
             self.assertEqual(config.read_text(), 'keep me')
 
     @unittest.skipIf(sys.platform == 'win32', 'POSIX process-group boundary')
+    @isolated_profiles
     def test_cancel_kills_descendant_when_leader_exits_on_sigterm(self):
         import os,signal,time
         with tempfile.TemporaryDirectory() as root:

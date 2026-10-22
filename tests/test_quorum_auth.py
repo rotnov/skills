@@ -4,15 +4,18 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from quorum_test_support import isolated_profiles
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'skills/quorum/scripts'))
+
 
 
 class AuthTests(unittest.TestCase):
     def setUp(self):
         self.module = importlib.import_module('quorum_auth')
 
+    @isolated_profiles
     def test_pkce_unique_verifier_and_state(self):
         one, two = self.module.PkceFlow(), self.module.PkceFlow()
         self.assertNotEqual(one.verifier, two.verifier)
@@ -20,6 +23,7 @@ class AuthTests(unittest.TestCase):
         self.assertNotIn('=', one.challenge)
         self.assertIn('code_challenge=', one.authorization_url('https://test.supabase.co'))
 
+    @isolated_profiles
     def test_pkce_rejects_bad_state_and_callback_path(self):
         flow = self.module.PkceFlow()
         for path in ('/callback?code=x&quorum_state=wrong',
@@ -29,6 +33,7 @@ class AuthTests(unittest.TestCase):
                 flow.callback_code(path)
         self.assertEqual(flow.callback_code('/callback?code=good&quorum_state=' + flow.state), 'good')
 
+    @isolated_profiles
     def test_store_failure_does_not_succeed_or_leak_secrets(self):
         class Broken:
             def write(self, *_):
@@ -37,6 +42,7 @@ class AuthTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'credential_store_unavailable'):
             store.save('profile', {'access_token': 'secret', 'refresh_token': 'secret2'})
 
+    @isolated_profiles
     def test_tokens_not_in_login_summary(self):
         class Memory:
             def write(self, name, data): self.data = data
@@ -49,6 +55,7 @@ class AuthTests(unittest.TestCase):
         store.delete('x')
         self.assertIsNone(store.load('x'))
 
+    @isolated_profiles
     def test_file_store_survives_restart_and_keeps_profiles_separate(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / 'credentials'
@@ -66,6 +73,7 @@ class AuthTests(unittest.TestCase):
             self.assertIsNone(store.load('https://one.example'))
             self.assertIsNotNone(store.load('../../two'))
 
+    @isolated_profiles
     def test_file_store_permissions_and_explicit_plaintext_pilot_format(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / 'credentials'
@@ -77,6 +85,7 @@ class AuthTests(unittest.TestCase):
             self.assertEqual(files[0].stat().st_mode & 0o777, 0o600)
             self.assertEqual(json.loads(files[0].read_text())['refresh_token'], 'refresh')
 
+    @isolated_profiles
     def test_file_store_rejects_symlink_directory_and_session(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -100,6 +109,7 @@ class AuthTests(unittest.TestCase):
                     operation()
             self.assertEqual(outside.read_text(), 'private unrelated content')
 
+    @isolated_profiles
     def test_file_store_fails_closed_on_corruption_or_open_permissions(self):
         with tempfile.TemporaryDirectory() as directory:
             store = self.module.CredentialStore(root=Path(directory))
@@ -115,6 +125,7 @@ class AuthTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'credential_store_unavailable'):
                 store.load('profile')
 
+    @isolated_profiles
     def test_failed_atomic_replace_preserves_previous_session_and_removes_tempfile(self):
         with tempfile.TemporaryDirectory() as directory:
             store = self.module.CredentialStore(root=Path(directory))
@@ -126,6 +137,7 @@ class AuthTests(unittest.TestCase):
             self.assertEqual(store.load('profile'), old)
             self.assertEqual(len(list(Path(directory).iterdir())), 1)
 
+    @isolated_profiles
     def test_refresh_persists_rotated_tokens_before_use(self):
         from quorum_api import ServiceConfig
         with tempfile.TemporaryDirectory() as directory:
@@ -142,6 +154,7 @@ class AuthTests(unittest.TestCase):
             with patch('quorum_api.request_json', side_effect=AssertionError('unexpected refresh')):
                 self.assertEqual(self.module.token_provider(config, store, clock=lambda: 200)(), 'fresh')
 
+    @isolated_profiles
     def test_configured_cli_uses_selected_state_and_logout_does_not_recreate_login(self):
         import contextlib
         import io
@@ -152,8 +165,10 @@ class AuthTests(unittest.TestCase):
             with contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(quorum.main(args + ['configure', '--origin', 'https://test.example',
                                                     '--publishable-key', 'public']), 0)
-            store = self.module.CredentialStore(root=root / 'credentials')
-            store.save('https://test.example', {'access_token': 'secret-access', 'refresh_token': 'secret-refresh'})
+            from quorum_profiles import resolve_profile
+            _, store = resolve_profile(root)
+            store.save('https://test.example', {'access_token': 'secret-access', 'refresh_token': 'secret-refresh',
+                       'user': {'identities': [{'provider': 'github', 'id': '123'}]}})
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
                 self.assertEqual(quorum.main(args + ['logout']), 0)
