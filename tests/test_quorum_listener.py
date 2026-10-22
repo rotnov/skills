@@ -31,7 +31,7 @@ def temporary_ledger():
 class RequirementsApi:
     def call(self, operation, payload):
         assert operation == 'session_requirements'
-        return {'protocol_version':1, 'skill_version':'0.2.0'}
+        return {'protocol_version':2, 'skill_version':'0.3.0'}
 
 
 class ListenerTests(unittest.TestCase):
@@ -185,7 +185,7 @@ class ListenerTests(unittest.TestCase):
             class Api:
                 def __init__(self): self.claims, self.replies = 0, []
                 def call(self, operation, data, request_id=None):
-                    if operation == 'session_requirements': return {'protocol_version':1, 'skill_version':'0.2.0'}
+                    if operation == 'session_requirements': return {'protocol_version':2, 'skill_version':'0.3.0'}
                     if operation == 'inbox_claim':
                         self.claims += 1
                         return {'attempt_id': str(self.claims), 'generation': 1,
@@ -285,14 +285,14 @@ l=LocalLedger(a.state)
 class Api:
     def call(self, operation, payload):
         assert operation=='session_requirements'
-        return {'protocol_version':1,'skill_version':'0.2.0'}
+        return {'protocol_version':2,'skill_version':'0.3.0'}
 import quorum_live
 quorum_live.api_for=lambda ledger:(Api(),None,None)
 class Idle:
     def reconcile(self): return []
     def run_once(self): return 'idle'
 try:
-    if a.action=='run': l.setting('listener-release',{'protocol_version':1,'skill_version':'0.2.0','run_id':a.run_id})
+    if a.action=='run': l.setting('listener-release',{'protocol_version':2,'skill_version':'0.3.0','run_id':a.run_id})
     result = run_listener(l, lambda: Idle(), a.run_id) if a.action=='run' else dispatch(a,l)
     print(json.dumps(result))
 except Exception:

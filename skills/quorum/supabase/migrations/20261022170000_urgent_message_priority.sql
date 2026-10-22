@@ -2,6 +2,11 @@
 -- Installation, login, session connect and reception never apply this file.
 -- Run in one transaction. No new grant, policy, table privilege or role.
 --
+-- MANDATORY for skill 0.3.0 / protocol 2. This file advances the server's
+-- required release from 0.2.0/1 in the same transaction as the schema and RPC
+-- changes, so a 0.3.0 client refuses a server without them and every 0.2.0
+-- native session is told to update before it can send or reply.
+--
 -- Priority is message metadata only: it changes durable inbox ordering and the
 -- client's delivery route, never membership, device, owner authority or any
 -- permission check. Senders cannot reorder another recipient's inbox.
@@ -14,15 +19,17 @@ do $migration$
 begin
  if to_regprocedure('quorum_private.call(text,jsonb,text)') is null
    or to_regclass('quorum_private.id_invitations') is null
+   -- session_inbox below keeps the coordination migration's notification marker.
+   or to_regclass('quorum_private.session_notices') is null
    or position('call_legacy_core' in
      pg_get_functiondef('quorum_private.call(text,jsonb,text)'::regprocedure)) = 0 then
   raise exception 'reviewed_dispatcher_changed'; end if;
  if to_regprocedure('quorum_private.call_priority_core(text,jsonb,text)') is not null then
   raise exception 'priority_core_present'; end if;
- -- session_inbox below keeps the native-session coordination notification
- -- field, so that reviewed extension must already be applied.
- if to_regclass('quorum_private.session_notices') is null then
-  raise exception 'session_coordination_required'; end if;
+ -- Upgrade only the release this file was reviewed against.
+ if position($release$jsonb_build_object('protocol_version',1,'skill_version','0.2.0')$release$ in
+   pg_get_functiondef('public.session_requirements()'::regprocedure)) = 0 then
+  raise exception 'reviewed_release_changed'; end if;
  alter function quorum_private.call(text,jsonb,text) rename to call_priority_core;
 end $migration$;
 revoke all on function quorum_private.call_priority_core(text,jsonb,text) from public,anon,authenticated,service_role;
@@ -80,18 +87,17 @@ grant execute on function public.message_send(uuid,uuid,uuid,uuid,uuid,text,text
 
 -- An unreceipted normal head must not hide a later urgent message behind it.
 -- Ordering stays deterministic within a priority: delivery time, then the
--- conversation's own sequence, so normal queue order is unchanged. This is the
--- reviewed coordination definition (notification included) plus only the
--- priority column and the urgent-first ordering term.
+-- conversation's own sequence, so normal queue order is unchanged. The
+-- notification marker keeps server Hello notices from being answered.
 create or replace function public.session_inbox(p_agent_id uuid,p_session_ref text)
 returns jsonb language plpgsql security definer set search_path=pg_catalog as $$
 declare q uuid; result jsonb;
 begin
  q:=quorum_private.native_session(p_agent_id,p_session_ref);
  select coalesce(jsonb_agg(to_jsonb(x)),'[]'::jsonb) into result from (
-  select m.id,m.conversation_id,m.sequence,m.sender_id,m.recipient_id,m.reply_to,m.body,a.role as sender_role,
-   exists(select 1 from quorum_private.session_notices n where n.message_id=m.id) as notification,
-   m.priority
+  select m.id,m.conversation_id,m.sequence,m.sender_id,m.recipient_id,m.reply_to,m.body,
+   m.priority,a.role as sender_role,
+   exists(select 1 from quorum_private.session_notices n where n.message_id=m.id) as notification
   from quorum_private.messages m join quorum_private.deliveries d on d.message_id=m.id
   join quorum_private.agents a on a.id=m.sender_id
   where m.quorum_id=q and m.recipient_id=p_agent_id
@@ -134,3 +140,15 @@ begin
 end $$;
 revoke all on function public.session_reply(uuid,text,uuid,text,text) from public,anon;
 grant execute on function public.session_reply(uuid,text,uuid,text,text) to authenticated;
+
+-- The exact release gate. Heartbeats and peers read this same function, so an
+-- older listener is told skill_update_required instead of being counted online.
+create or replace function public.session_requirements()
+returns jsonb language plpgsql security definer set search_path=pg_catalog as $function$
+begin
+ if auth.uid() is null or not exists(select 1 from auth.identities where user_id=auth.uid() and provider='github') then
+  raise insufficient_privilege using message='github_identity_required'; end if;
+ return jsonb_build_object('protocol_version',2,'skill_version','0.3.0');
+end $function$;
+revoke all on function public.session_requirements() from public,anon;
+grant execute on function public.session_requirements() to authenticated;

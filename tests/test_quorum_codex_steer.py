@@ -56,15 +56,16 @@ for line in sys.stdin:
         cwd = os.path.join(CWD, 'elsewhere') if SCENARIO == 'cwd_mismatch' else CWD
         emit({'id': ref, 'result': {'thread': {'id': THREAD, 'cwd': cwd, 'status': status}}})
     elif method == 'thread/turns/list':
-        current = OTHER_TURN if (steered and SCENARIO == 'cas_mismatch') else TURN
-        emit({'id': ref, 'result': {'data': [{'id': current, 'status': 'inProgress', 'items': []}]}})
+        current = OTHER_TURN if (steered and SCENARIO == 'opaque_replaced') else TURN
+        status = 'completed' if (steered and SCENARIO == 'opaque_completed') else 'inProgress'
+        emit({'id': ref, 'result': {'data': [{'id': current, 'status': status, 'items': []}]}})
     elif method == 'turn/steer':
         steered = True
         if SCENARIO == 'ambiguous': raise SystemExit(0)
         if SCENARIO == 'not_steerable':
             emit({'id': ref, 'error': {'code': -32602, 'message': 'refused',
                                        'data': {'activeTurnNotSteerable': {'turnKind': 'review'}}}})
-        elif SCENARIO in ('cas_mismatch', 'opaque_error'):
+        elif SCENARIO in ('opaque_replaced', 'opaque_completed', 'opaque_error'):
             emit({'id': ref, 'error': {'code': -32602, 'message': 'refused'}})
         else:
             emit({'id': ref, 'result': {'turnId': params['expectedTurnId']}})
@@ -163,12 +164,28 @@ class CodexSteerTests(unittest.TestCase):
         self.assertEqual(self.submit(fixture), 'rejected')
         self.assertEqual(len(fixture.steer_params()), 1)
 
-    def test_a_lost_precondition_race_is_a_rejection_proved_by_the_running_turn(self):
-        fixture = self.fixture('cas_mismatch')
-        self.assertEqual(self.submit(fixture), 'rejected')
-        self.assertEqual(fixture.methods().count('turn/steer'), 1)
-        # The rejection is proved by re-reading the running turn, not by a code.
-        self.assertEqual(fixture.methods()[-1], 'thread/turns/list')
+    def test_an_opaque_error_stays_unknown_after_the_turn_changes(self):
+        # A later replacement or completion does not prove the earlier append
+        # never happened; only the documented no-append refusal permits fallback.
+        for scenario in ('opaque_replaced', 'opaque_completed'):
+            with self.subTest(scenario=scenario):
+                fixture = self.fixture(scenario)
+                with self.assertRaisesRegex(ValueError, 'session_delivery_unknown'): self.submit(fixture)
+                self.assertEqual(fixture.methods().count('turn/steer'), 1)
+                self.assertEqual(fixture.methods()[-1], 'turn/steer')
+
+    def test_an_opaque_error_after_the_turn_changes_never_queues_a_copy(self):
+        from quorum_session import enqueue
+        for scenario in ('opaque_replaced', 'opaque_completed'):
+            with self.subTest(scenario=scenario):
+                fixture = self.fixture(scenario)
+                message = {'id': MID, 'body': 'peer text', 'sender_role': 'peer', 'reply_to': None,
+                           'priority': 'urgent'}
+                with patch('quorum_session.shutil.which', return_value=sys.executable), \
+                     patch('quorum_session.subprocess.run', side_effect=AssertionError('duplicate fallback')):
+                    with self.assertRaisesRegex(ValueError, 'session_delivery_unknown'):
+                        enqueue(fixture.record, message, Path(fixture.cwd))
+                self.assertEqual(fixture.methods().count('turn/steer'), 1)
 
     def test_an_opaque_error_while_that_turn_still_runs_stays_unknown(self):
         fixture = self.fixture('opaque_error')

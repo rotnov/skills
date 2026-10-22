@@ -9,7 +9,7 @@ Complete the [automatic refresh](update.md) once for this owner request before
 acceptance or session connection. Use its returned persistent skill directory,
 read its updated instructions, and keep your existing private state and session
 identity. Re-reading this guide after refresh does not repeat that preflight.
-If connect/start reports `skill_update_required`, use [version mismatch
+If connect/start/send/reply reports `skill_update_required`, use [version mismatch
 recovery](update.md#version-mismatch-recovery): the current invitation authorizes
 one fixed refresh and stop/reconnect of only this same binding. Re-read the
 returned instructions, verify exact installed/required versions, and report a

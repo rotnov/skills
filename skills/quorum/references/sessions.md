@@ -146,16 +146,12 @@ notification-only by default: display it without automatically answering again.
 `--priority urgent` marks one message; `normal` is the default and keeps today's
 queue order. Urgency changes only ordering and the delivery route. It grants no
 permission, carries no owner authority, and never overrides the receiving
-owner's scope, membership, device or message checks. Urgent messages need the
-reviewed
-[priority extension](../supabase/migrations/20261022170000_urgent_message_priority.sql),
-applied after the native-session coordination extension. The release versions
-are unchanged, so the release check cannot tell whether a server has it.
-Without it, normal messages work exactly as before because the client names
-`priority` only on urgent sends, and the server refuses an urgent send or
-reply. With it, durable inbox selection prefers an urgent message over an
-unreceipted normal head instead of waiting behind it, and normal messages keep
-their delivery and sequence order.
+owner's scope, membership, device or message checks. The reviewed
+[priority extension](../supabase/migrations/20261022170000_urgent_message_priority.sql)
+is mandatory for this release; a server without it fails the
+[release check](#release-compatibility) before any send or reply. Durable inbox
+selection prefers an urgent message over an unreceipted normal head instead of
+waiting behind it, and normal messages keep their delivery and sequence order.
 
 Only Codex has a mid-turn route. For an urgent message to a connected Codex
 chat, the relay attaches to the **already running** local app-server daemon with
@@ -175,10 +171,12 @@ that thread.
 
 If the chat is idle, the daemon is unreachable, the thread is not loaded, the
 daemon's working directory for it disagrees with the registration, or the
-`expectedTurnId` compare-and-set is refused, nothing was submitted and the
-message is queued exactly once through the ordinary `codex queue` route. Any
-ambiguous steering write stops with `session_delivery_unknown` and waits for
-`session reconcile`; it is never replayed and never queued as a duplicate.
+server answers `turn/steer` with the documented `activeTurnNotSteerable`
+refusal, nothing was submitted and the message is queued exactly once through
+the ordinary `codex queue` route. Every other steering error or lost response is
+ambiguous, even if that turn later completes or is replaced: it stops with
+`session_delivery_unknown` and waits for `session reconcile`; it is never
+replayed and never queued as a duplicate.
 Evidence that steering works requires the owner's actual busy chat consuming the
 message inside the turn that was already running; a fixture does not show that.
 
@@ -212,10 +210,11 @@ instruction. The private grant/status stores this choice; default and legacy
 grants execute inline, and revocation removes the mode. Follow
 [delegation](delegation.md#dispatch-matching-tasks) for matching-only native
 workers, the two-worker limit, parent replies and unavailable-capability fallback.
-Workers do not bypass queued input. Immediate active-turn ingestion still needs
-[#35](https://github.com/rotnov/skills/issues/35)'s verified owning-server steer
-capability; this policy does not implement it or eliminate all blocking/tool-call
-latency. Verify actual native UI acceptance separately from source tests.
+Workers do not bypass queued input. Active-turn ingestion is the separate
+[urgent message](#urgent-messages) route, available only for Codex and not yet
+verified on a real busy turn; this policy does not steer or eliminate all
+blocking/tool-call latency. Verify actual native UI acceptance separately from
+source tests.
 
 The listener requires the administrator-reviewed
 [native coordination extension](../supabase/migrations/20261022152603_native_session_coordination.sql)
@@ -239,15 +238,19 @@ task authority. A transport Hello does not prove the actual chat has read anythi
 Existing old listeners must be upgraded before their heartbeat is available.
 
 Codex queue acceptance counts as a delivery receipt even while the model is busy;
-Claude/Grok require the actual chat's `received` or `reply`. Consequently a busy
-Claude chat can appear unavailable until it processes its queued receipt command.
+Claude/Grok, and a steered urgent Codex message, require the actual chat's
+`received` or `reply`. A `reply` from the bound chat confirms only a message this
+binding submitted and has not yet acknowledged. Consequently a busy chat can appear unavailable
+(`receipt_timeout`) until it processes that receipt command.
 This does not mean its process is dead or that its task was refused.
 
 ## Release compatibility
 
-This release requires protocol integer `1` and skill `0.2.0` exactly. Connect
-checks requirements before any device/agent registration. Start/run, each
-heartbeat and reconnect, and the active inbox drain check compatibility too.
+This release requires protocol integer `2` and skill `0.3.0` exactly, which the
+server reports only after the mandatory priority extension. Connect checks
+requirements before any device/agent registration. Start/run, every send and
+reply, each heartbeat and reconnect, and the active inbox drain check
+compatibility too.
 The heartbeat sends the client versions; the server rejects a mismatch before
 writing health or sending Hello. New clients stop with `skill_update_required`
 and safe installed/required diagnostics. A fresh helper refuses to reuse a

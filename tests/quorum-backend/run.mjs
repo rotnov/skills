@@ -19,8 +19,9 @@ try {
     select public.quorum_create('before-gate','before-gate');
   `);
   const migrations = root + '/skills/quorum/supabase/migrations/';
+  const mandatory = '_urgent_message_priority.sql';
   for (const name of readdirSync(migrations).sort()) {
-    if (name.endsWith('_invite_id_and_creator_gate.sql') || name.endsWith('_native_realtime_wakeups.sql') || name.endsWith('_native_grok_session.sql') || name.endsWith('_native_session_coordination.sql') || name.endsWith('_urgent_message_priority.sql')) {
+    if (name.endsWith('_invite_id_and_creator_gate.sql') || name.endsWith('_native_realtime_wakeups.sql') || name.endsWith('_native_grok_session.sql') || name.endsWith('_native_session_coordination.sql')) {
       await db.exec(readFileSync(migrations + name, 'utf8'));
     }
   }
@@ -32,10 +33,17 @@ try {
   await db.exec(readFileSync(root + '/tests/quorum_invite_id_backend.sql', 'utf8'));
   await db.exec(readFileSync(root + '/tests/quorum_session_backend.sql', 'utf8'));
   await db.exec(readFileSync(root + '/tests/quorum_realtime_backend.sql', 'utf8'));
-  await db.exec(readFileSync(root + '/tests/quorum_coordination_backend.sql', 'utf8'));
+  // The historical 0.2.0/1 server must refuse a 0.3.0/2 client before any write.
+  await db.exec(readFileSync(root + '/tests/quorum_coordination_only_backend.sql', 'utf8'));
+  // Then the mandatory 0.3.0/2 migration; session and Realtime rerun on the upgraded schema.
+  await db.exec(readFileSync(readdirSync(migrations).filter((name) => name.endsWith(mandatory)).map((name) => migrations + name)[0], 'utf8'));
+  await db.exec(readFileSync(root + '/tests/quorum_session_backend.sql', 'utf8'));
+  await db.exec(readFileSync(root + '/tests/quorum_realtime_backend.sql', 'utf8'));
+  // Priority first: the coordination test ends by revoking a fixture membership.
   await db.exec(readFileSync(root + '/tests/quorum_priority_backend.sql', 'utf8'));
+  await db.exec(readFileSync(root + '/tests/quorum_coordination_backend.sql', 'utf8'));
   await db.exec('rollback');
-  console.log('Invitation, session, Realtime, coordination and priority regression: PASS (disposable PostgreSQL)');
+  console.log('Invitation, session, Realtime, coordination-only refusal, mandatory release and priority regression: PASS (disposable PostgreSQL)');
 } catch (error) {
   console.error(error.message, error.where || '');
   process.exitCode = 1;

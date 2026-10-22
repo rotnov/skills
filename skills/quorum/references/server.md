@@ -37,7 +37,13 @@ Review and apply the following in one administrator-controlled transaction:
 4. Apply [native coordination](../supabase/migrations/20261022152603_native_session_coordination.sql)
    for private listener heartbeats, same-project availability and idempotent Hello
    notices. It adds no client table access and never revokes users on timeout.
-5. Explicitly grant creation to the intended instance owner's verified immutable
+5. After native coordination, apply the mandatory
+   [urgent message priority](../supabase/migrations/20261022170000_urgent_message_priority.sql).
+   It refuses to run before coordination so the inbox keeps Hello notice markers.
+   In the same transaction it advances the required release from skill `0.2.0` /
+   protocol `1` to skill `0.3.0` / protocol `2`. Without it, every `0.3.0`
+   client stops with `skill_update_required` before any send or reply.
+6. Explicitly grant creation to the intended instance owner's verified immutable
    numeric GitHub ID. Look up `https://api.github.com/users/<login>`, check the
    returned `login` matches, and use the positive integer `id`.
    Never use an editable profile field.

@@ -333,7 +333,7 @@ class RealtimeTests(unittest.TestCase):
                 config = api().config
                 token = staticmethod(lambda: 'synthetic-owner-jwt')
                 def call(self, operation, payload):
-                    if operation == 'session_requirements': return {'protocol_version':1, 'skill_version':'0.2.0'}
+                    if operation == 'session_requirements': return {'protocol_version':2, 'skill_version':'0.3.0'}
                     if operation == 'session_inbox':
                         return [message] if clock.now >= 30 and not delivered else []
                     if operation == 'session_ack':

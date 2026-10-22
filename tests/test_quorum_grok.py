@@ -181,7 +181,7 @@ class GrokTests(unittest.TestCase):
             requests = []
             class Api:
                 def call(self, method, payload, request_id=None):
-                    if method == 'session_requirements': return {'protocol_version':1, 'skill_version':'0.2.0'}
+                    if method == 'session_requirements': return {'protocol_version':2, 'skill_version':'0.3.0'}
                     requests.append((method, payload))
                     return {'quorum_id': 'q', 'device_id': 'd', 'agent_id': 'a'}
             output = io.StringIO()
@@ -206,7 +206,7 @@ class GrokTests(unittest.TestCase):
         with own_session() as (root, _, peer):
             class Api:
                 def call(self, *args, **kwargs):
-                    if args[0] == 'session_requirements': return {'protocol_version':1, 'skill_version':'0.2.0'}
+                    if args[0] == 'session_requirements': return {'protocol_version':2, 'skill_version':'0.3.0'}
                     raise AssertionError('missing transport must not register an agent')
             output = io.StringIO()
             with patch.dict(os.environ):
@@ -332,7 +332,7 @@ class GrokTests(unittest.TestCase):
             message = {'id':MID, 'recipient_id':'a'}
             class Api:
                 def call(self, method, data):
-                    if method == 'session_requirements': return {'protocol_version':1, 'skill_version':'0.2.0'}
+                    if method == 'session_requirements': return {'protocol_version':2, 'skill_version':'0.3.0'}
                     if method == 'session_inbox': return [message]
                     raise AssertionError('unconfirmed message acknowledged')
             ledger = LocalLedger(root/'state')

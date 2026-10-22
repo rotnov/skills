@@ -55,7 +55,7 @@ class SessionTests(unittest.TestCase):
                 calls, queued = [], []
                 class Api:
                     def call(self, operation, payload):
-                        if operation == 'session_requirements': return {'protocol_version':1, 'skill_version':'0.2.0'}
+                        if operation == 'session_requirements': return {'protocol_version':2, 'skill_version':'0.3.0'}
                         calls.append(operation)
                         if operation == 'session_inbox': return [message]
                         return {'queued':True}
@@ -82,7 +82,7 @@ class SessionTests(unittest.TestCase):
                 class Api:
                     fail=True
                     def call(self,operation,payload):
-                        if operation == 'session_requirements': return {'protocol_version':1, 'skill_version':'0.2.0'}
+                        if operation == 'session_requirements': return {'protocol_version':2, 'skill_version':'0.3.0'}
                         if operation=='session_inbox': return [message]
                         if self.fail:
                             self.fail=False
@@ -121,7 +121,7 @@ class SessionTests(unittest.TestCase):
             try:
                 class Api:
                     def call(self,op,data):
-                        if op == 'session_requirements': return {'protocol_version':1, 'skill_version':'0.2.0'}
+                        if op == 'session_requirements': return {'protocol_version':2, 'skill_version':'0.3.0'}
                         if op=='session_inbox': return [{'id':MID,'recipient_id':'a'}]
                         return {'queued':True}
                 result=Relay(Api(),ledger,{'agent_id':'a','session_ref':SID},lambda _:'submitted').run_once()
@@ -144,7 +144,7 @@ class SessionTests(unittest.TestCase):
                     class Api:
                         acked=False
                         def call(self,op,data,request_id=None):
-                            if op == 'session_requirements': return {'protocol_version':1, 'skill_version':'0.2.0'}
+                            if op == 'session_requirements': return {'protocol_version':2, 'skill_version':'0.3.0'}
                             if op=='session_inbox': return [] if self.acked else [message]
                             if op=='session_ack': self.acked=True
                             return {'queued':True}
@@ -183,7 +183,7 @@ class SessionTests(unittest.TestCase):
                 class Api:
                     acked=False
                     def call(self,op,data,request_id=None):
-                        if op == 'session_requirements': return {'protocol_version':1, 'skill_version':'0.2.0'}
+                        if op == 'session_requirements': return {'protocol_version':2, 'skill_version':'0.3.0'}
                         if op=='session_inbox': return [] if self.acked else [message]
                         if op=='session_ack': self.acked=True
                         return {'queued':True}
@@ -218,7 +218,7 @@ class SessionTests(unittest.TestCase):
                 class Api:
                     acked=False
                     def call(self,op,data,request_id=None):
-                        if op == 'session_requirements': return {'protocol_version':1, 'skill_version':'0.2.0'}
+                        if op == 'session_requirements': return {'protocol_version':2, 'skill_version':'0.3.0'}
                         if op=='session_inbox': return [] if self.acked else [message]
                         if op=='session_ack': self.acked=True
                         return {'queued':True}
@@ -240,7 +240,7 @@ class SessionTests(unittest.TestCase):
                 class Api:
                     polls=0
                     def call(self,op,data):
-                        if op == 'session_requirements': return {'protocol_version':1, 'skill_version':'0.2.0'}
+                        if op == 'session_requirements': return {'protocol_version':2, 'skill_version':'0.3.0'}
                         if op!='session_inbox': return {'queued':True}
                         self.polls+=1
                         # The chat confirms after the service already returned the message.
@@ -262,7 +262,7 @@ class SessionTests(unittest.TestCase):
                 class Api:
                     inbox,during_poll=[first,second],None
                     def call(self,op,data):
-                        if op == 'session_requirements': return {'protocol_version':1, 'skill_version':'0.2.0'}
+                        if op == 'session_requirements': return {'protocol_version':2, 'skill_version':'0.3.0'}
                         if op=='session_ack':
                             self.inbox=[m for m in self.inbox if m['id']!=data['message_id']]
                             return {'queued':True}
@@ -318,7 +318,7 @@ class SessionTests(unittest.TestCase):
                 class Api:
                     fail = True
                     def call(self, op, data, request_id=None):
-                        if op == 'session_requirements': return {'protocol_version':1, 'skill_version':'0.2.0'}
+                        if op == 'session_requirements': return {'protocol_version':2, 'skill_version':'0.3.0'}
                         calls.append(op)
                         if op == 'session_inbox': return [message]
                         if self.fail:
@@ -343,7 +343,7 @@ class SessionTests(unittest.TestCase):
                 message={'id':MID, 'recipient_id':'a'}
                 class Api:
                     def call(self, op, data, request_id=None):
-                        if op == 'session_requirements': return {'protocol_version':1, 'skill_version':'0.2.0'}
+                        if op == 'session_requirements': return {'protocol_version':2, 'skill_version':'0.3.0'}
                         return [message]
                 calls=[]
                 def queue(message):
@@ -364,7 +364,7 @@ class SessionTests(unittest.TestCase):
             try:
                 class Api:
                     def call(self, op, data):
-                        if op == 'session_requirements': return {'protocol_version':1, 'skill_version':'0.2.0'}
+                        if op == 'session_requirements': return {'protocol_version':2, 'skill_version':'0.3.0'}
                         return [{'id':MID,'recipient_id':'other'}]
                 relay=Relay(Api(),ledger,{'agent_id':'a','session_ref':SID},lambda _: self.fail('foreign message'))
                 with self.assertRaisesRegex(ValueError, 'session_binding_denied'): relay.run_once()
@@ -417,14 +417,14 @@ l.setting('session-agent',{'session_ref':a.session_id})
 class Api:
  def call(self,operation,payload):
   assert operation=='session_requirements'
-  return {'protocol_version':1,'skill_version':'0.2.0'}
+  return {'protocol_version':2,'skill_version':'0.3.0'}
 class Idle:
  def reconcile(self): return []
  def run_once(self): return 'idle'
 try:
  if a.action=='start': result=start(a.state,l,a.session_id,api=Api())
  elif a.action=='run':
-  l.setting('listener-release',{'protocol_version':1,'skill_version':'0.2.0','run_id':a.run_id})
+  l.setting('listener-release',{'protocol_version':2,'skill_version':'0.3.0','run_id':a.run_id})
   result=run_listener(l,lambda:Idle(),a.run_id,timeout=0)
  elif a.action=='stop': result=stop_listener(l)
  else: result=Control(l).status()
@@ -462,7 +462,7 @@ finally: l.db.close()
             try:
                 class Api:
                     def call(self, op, data):
-                        if op == 'session_requirements': return {'protocol_version':1, 'skill_version':'0.2.0'}
+                        if op == 'session_requirements': return {'protocol_version':2, 'skill_version':'0.3.0'}
                         if op=='session_inbox': raise ValueError('session_binding_denied')
                         return {'registered':True}
                 relay=Relay(Api(),ledger,{'agent_id':'a','session_ref':SID},lambda _:None)

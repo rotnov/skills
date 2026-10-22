@@ -6,20 +6,28 @@ declare
  target uuid:=gen_random_uuid(); sid text:=gen_random_uuid()::text;
  c uuid:=gen_random_uuid(); older jsonb; newer jsonb; urgent jsonb; replayed jsonb;
  head jsonb; reply jsonb; direct jsonb; refused boolean;
+ greeter uuid:=gen_random_uuid(); listener uuid:=gen_random_uuid();
+ gsid text:=gen_random_uuid()::text; lsid text:=gen_random_uuid()::text;
 begin
  select x.* into a from quorum_private.agents x where not x.revoked and exists
   (select 1 from quorum_private.agents y where y.quorum_id=x.quorum_id and y.owner_id<>x.owner_id and not y.revoked) limit 1;
  if not found then raise exception 'two_pilot_members_required'; end if;
  select * into b from quorum_private.agents where quorum_id=a.quorum_id and owner_id<>a.owner_id and not revoked limit 1;
- -- Earlier regression files share this rolled-back transaction and one of
- -- them ends by revoking a membership. Establish this file's own precondition:
- -- two live members on live devices.
- update quorum_private.memberships set revoked=false
-  where quorum_id=a.quorum_id and user_id in (a.owner_id,b.owner_id);
- if exists(select 1 from quorum_private.devices where id in (a.device_id,b.device_id) and revoked) then
-  raise exception 'two_live_devices_required'; end if;
  insert into quorum_private.agents(id,quorum_id,device_id,owner_id,project_ref,role,engine,session_ref)
  values(target,a.quorum_id,a.device_id,a.owner_id,b.project_ref,'priority-test','codex',sid);
+ perform set_config('request.jwt.claim.sub',b.owner_id::text,true);
+
+ -- The mandatory migration advanced the exact release gate with its RPCs and
+ -- left no old normal signature beside the priority entry points.
+ if public.session_requirements()<>jsonb_build_object('protocol_version',2,'skill_version','0.3.0') then
+  raise exception 'release_not_advanced'; end if;
+ if to_regprocedure('public.message_send(uuid,uuid,uuid,uuid,uuid,text,text)') is not null
+   or to_regprocedure('public.session_reply(uuid,text,uuid,text)') is not null then
+  raise exception 'duplicate_normal_signature'; end if;
+ perform set_config('request.jwt.claim.sub',a.owner_id::text,true);
+ refused:=public.session_heartbeat(target,sid,gen_random_uuid(),1,'0.2.0')->>'code'='skill_update_required';
+ if not refused or exists(select 1 from quorum_private.session_health where agent_id=target) then
+  raise exception 'old_client_not_refused'; end if;
  perform set_config('request.jwt.claim.sub',b.owner_id::text,true);
 
  -- A message without an explicit priority stays exactly as it is today.
@@ -62,9 +70,6 @@ begin
  head:=public.session_inbox(target,sid)->0;
  if head->>'id'<>urgent->>'message_id' then raise exception 'urgent_hidden_behind_normal_head'; end if;
  if head->>'priority'<>'urgent' then raise exception 'priority_not_reported'; end if;
- -- The native-session coordination field survives this redefinition.
- if not (head ? 'notification') or jsonb_typeof(head->'notification')<>'boolean' then
-  raise exception 'coordination_notification_dropped'; end if;
 
  -- Urgency does not skip the receipt, and normal order is untouched by it.
  if jsonb_array_length(public.session_inbox(target,sid))<>1 then raise exception 'selection_not_bounded'; end if;
@@ -118,6 +123,32 @@ begin
  -- the wrapper untouched.
  if jsonb_array_length(public.conversation_read(a.quorum_id,b.id,c,0))=0 then
   raise exception 'non_message_operation_changed'; end if;
+
+ -- A server-generated Hello goes through this priority dispatcher without a
+ -- priority key: it stays normal, keeps its notification marker, and an
+ -- urgent message to the same recipient is still selected ahead of it.
+ perform set_config('request.jwt.claim.sub',a.owner_id::text,true);
+ insert into quorum_private.agents(id,quorum_id,device_id,owner_id,project_ref,role,engine,session_ref)
+ values(greeter,a.quorum_id,a.device_id,a.owner_id,'priority-hello','hello-sender','claude',gsid),
+       (listener,a.quorum_id,a.device_id,a.owner_id,'priority-hello','hello-listener','codex',lsid);
+ perform public.session_heartbeat(greeter,gsid,gen_random_uuid(),2,'0.3.0');
+ head:=public.session_inbox(listener,lsid)->0;
+ if head is null or head->>'sender_id'<>greeter::text then raise exception 'hello_missing'; end if;
+ if head->>'priority'<>'normal' or not coalesce((head->>'notification')::boolean,false) then
+  raise exception 'hello_metadata_lost'; end if;
+ if (select priority from quorum_private.messages where id=(head->>'id')::uuid)<>'normal' then
+  raise exception 'hello_not_normal'; end if;
+ if exists(select 1 from quorum_private.deliveries where message_id=(head->>'id')::uuid and requires_handler) then
+  raise exception 'hello_reply_loop_enabled'; end if;
+ perform set_config('request.jwt.claim.sub',b.owner_id::text,true);
+ urgent:=public.message_send(a.quorum_id,b.id,gen_random_uuid(),listener,null,'urgent after hello',
+  'prio:'||c||':after-hello',p_priority=>'urgent');
+ perform set_config('request.jwt.claim.sub',a.owner_id::text,true);
+ direct:=public.session_inbox(listener,lsid)->0;
+ if direct->>'id'<>urgent->>'message_id' or direct->>'priority'<>'urgent'
+   or coalesce((direct->>'notification')::boolean,true) then raise exception 'urgent_hidden_behind_hello'; end if;
+ perform public.session_ack(listener,lsid,(urgent->>'message_id')::uuid);
+ if public.session_inbox(listener,lsid)->0->>'id'<>head->>'id' then raise exception 'hello_lost_after_urgent'; end if;
 
  -- Priority changes no authorization: the owner/session contract is unchanged.
  perform set_config('request.jwt.claim.sub',b.owner_id::text,true);

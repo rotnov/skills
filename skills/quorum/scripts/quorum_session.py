@@ -42,7 +42,7 @@ PRIORITIES = ('normal', 'urgent')
 def message_priority(message):
     """Senders choose normal or urgent; an unknown value is never delivered."""
     value = message.get('priority') if isinstance(message, dict) else None
-    if value is None: value = 'normal'  # Servers without the priority column.
+    if value is None: value = 'normal'  # An omitted field is an ordinary message.
     if value not in PRIORITIES: raise ValueError('invalid_priority')
     return value
 
@@ -334,7 +334,9 @@ def dispatch(args, auth_ledger, register_agent):
                 raise ValueError('session_binding_denied')
         if args.action=='start': return {**start(auth_ledger.root,ledger,sid,api=api),'session_id':sid}
         scope={'agent_id':record['agent_id'],'session_ref':sid}
-        if args.action in ('received','reconcile','reply'):
+        # Every mutating send/reply requires the exact current server release
+        # first; an older server lacks the priority RPCs this client calls.
+        if args.action in ('received','reconcile','reply','send'):
             ReleaseGuard(api, ledger).check()
         if args.action in ('reconcile','received'):
             if args.action == 'received' and not ledger.setting('delivery:'+args.message_id):
@@ -346,15 +348,18 @@ def dispatch(args, auth_ledger, register_agent):
         if args.action in ('send','reply'):
             text=sys.stdin.buffer.read(16385).decode('utf-8')
             if not text or len(text.encode())>16384: raise ValueError('invalid_message')
-            # A caller that predates this option sends an ordinary message.
+            # A direct caller without this option sends an ordinary message.
             priority=getattr(args,'priority','normal') or 'normal'
             if priority not in PRIORITIES: raise ValueError('invalid_priority')
-            # Only urgent sends name the field, so a normal message keeps the exact
-            # payload a server without the priority extension accepts.
-            urgency={} if priority=='normal' else {'priority':priority}
             if args.action=='reply':
-                result=api.call('session_reply',{**scope,'message_id':args.message_id,'body':text,**urgency})
-                if engine in ('claude', 'grok'):
+                result=api.call('session_reply',{**scope,'message_id':args.message_id,'body':text,
+                                                 'priority':priority})
+                # Answering a message this binding delivered also confirms it,
+                # including a Codex message steered into the running turn. A
+                # message this ledger never submitted, or one already
+                # acknowledged, gets no receipt claim here.
+                delivery=ledger.setting('delivery:'+args.message_id)
+                if delivery and delivery['state']!='acked':
                     ReleaseGuard(api, ledger).check()
                     ledger.setting('delivery:'+args.message_id,{'state':'queued'})
                     api.call('session_ack',{**scope,'message_id':args.message_id})
@@ -364,7 +369,7 @@ def dispatch(args, auth_ledger, register_agent):
             conv=str(uuid.uuid5(uuid.NAMESPACE_URL,record['agent_id']+':'+args.request_id))
             result=api.call('message_send',{'quorum_id':record['quorum_id'],'sender_agent_id':record['agent_id'],
                  'recipient_agent_id':peer['agent_id'],'conversation_id':conv,'body':text,'reply_to':None,
-                 **urgency},args.request_id)
+                 'priority':priority},args.request_id)
             return {**result,'conversation_id':conv}
         if args.action=='run':
             import signal,threading

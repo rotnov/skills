@@ -21,8 +21,9 @@ The installer needs Node/npm. The client needs uv, Python 3.12, a browser for
 GitHub login and outbound HTTPS. The agent should explain any missing
 prerequisites. Installation alone does not connect a chat or start reception.
 
-This release uses skill version **0.2.0** and protocol **1**. The server requires
-an exact match; a guarded listener stops with `skill_update_required` when they
+This release uses skill version **0.3.0** and protocol **2**. The server requires
+an exact match, which it reports only after the mandatory urgent-priority
+migration; a guarded listener stops with `skill_update_required` when they
 differ. Your agent can follow the [update and reconnect guide](references/update.md#version-mismatch-recovery)
 to refresh once and restart the same authorized chat binding, keeping its state,
 login and messages. A current invitation authorizes that lifecycle; older joins
@@ -172,10 +173,10 @@ inline, and revocation removes the mode. The parent chat acknowledges intake,
 uses at most two actual supported native workers, returns to the owner's work
 and forwards results itself; unavailable capability or slots leave tasks pending.
 See [dispatch policy](references/delegation.md#dispatch-matching-tasks).
-Subagents do not bypass queued input: immediate active-turn ingestion still
-depends on [#35](https://github.com/rotnov/skills/issues/35)'s verified owning-server
-steer capability. This opt-in/instruction change neither implements that feature
-nor eliminates all blocking or tool-call latency; native UI acceptance is separate.
+Subagents do not bypass queued input: active-turn ingestion is only the separate
+Codex [urgent message](references/sessions.md#urgent-messages) route, not yet
+verified on a real busy turn. This opt-in/instruction change neither steers nor
+eliminates all blocking or tool-call latency; native UI acceptance is separate.
 
 The server also needs the reviewed native coordination migration listed in
 [server setup](references/server.md). Updated listeners send a quiet heartbeat

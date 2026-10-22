@@ -174,23 +174,19 @@ def steer(client, record, session_ref, turn_id, message_id, text):
     answer = frame.get('result')
     if isinstance(answer, dict) and answer.get('turnId') == turn_id: return 'submitted'
     error = frame.get('error')
-    if isinstance(error, dict):
-        if not_steerable(error.get('data')): return 'rejected'
-        # The numeric rejection code is not part of the published interface, so
-        # prove the compare-and-set precondition independently: when that turn
-        # is no longer the running turn the server cannot have appended to it.
-        try: current = head_turn(client, session_ref)
-        except SteerUnavailable: raise ValueError('session_delivery_unknown') from None
-        if current != turn_id: return 'rejected'
+    if isinstance(error, dict) and not_steerable(error.get('data')): return 'rejected'
+    # Any other error is opaque. A later completion or replacement of that turn
+    # does not prove the append never happened, so it is never a rejection.
     raise ValueError('session_delivery_unknown')
 
 
 def submit(record, message_id, build, timeout=25):
     """Steer one message into the running turn of this exact existing chat.
 
-    Returns 'submitted' or 'rejected'. A rejection and SteerUnavailable both
-    prove that nothing reached the chat, so the caller queues the message once.
-    Anything ambiguous raises session_delivery_unknown for reconciliation.
+    Returns 'submitted' or 'rejected'. Only the documented not-steerable
+    refusal is a rejection. A rejection and SteerUnavailable both prove that
+    nothing reached the chat, so the caller queues the message once. Every
+    other post-write outcome raises session_delivery_unknown for reconciliation.
     """
     session_ref = str(uuid.UUID(record['session_ref']))
     message_id = str(uuid.UUID(message_id))

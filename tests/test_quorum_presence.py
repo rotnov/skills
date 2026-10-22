@@ -18,7 +18,7 @@ class PresenceTests(unittest.TestCase):
                 calls, now = [], [0]
                 class Api:
                     def call(self, operation, payload):
-                        if operation == 'session_requirements': return {'protocol_version':1, 'skill_version':'0.2.0'}
+                        if operation == 'session_requirements': return {'protocol_version':2, 'skill_version':'0.3.0'}
                         calls.append((operation, payload.copy()))
                         return {'online':True, 'last_seen':'now'}
                 health = Presence(Api(), {'agent_id':'a','session_ref':'s'}, ledger, clock=lambda:now[0])
@@ -43,7 +43,7 @@ class PresenceTests(unittest.TestCase):
                 calls,now=[],[0]
                 class Api:
                     def call(self, operation, payload):
-                        if operation == 'session_requirements': return {'protocol_version':1, 'skill_version':'0.2.0'}
+                        if operation == 'session_requirements': return {'protocol_version':2, 'skill_version':'0.3.0'}
                         calls.append(payload.copy())
                         if len(calls)==1: raise QuorumError('service_unavailable')
                         return {'online':True}
@@ -68,7 +68,7 @@ class PresenceTests(unittest.TestCase):
             try:
                 clock,calls,sockets=Clock(),[],[]
                 backend=api()
-                backend.call=lambda operation,payload: ({'protocol_version':1, 'skill_version':'0.2.0'}
+                backend.call=lambda operation,payload: ({'protocol_version':2, 'skill_version':'0.3.0'}
                     if operation=='session_requirements' else calls.append((operation,payload.copy())) or {'online':True})
                 def connect(*args,**kwargs):
                     socket=Socket(clock);sockets.append(socket);return socket
@@ -103,7 +103,7 @@ class PresenceTests(unittest.TestCase):
             try:
                 clock,calls=Clock(),[]
                 backend=api()
-                backend.call=lambda op,payload: ({'protocol_version':1, 'skill_version':'0.2.0'}
+                backend.call=lambda op,payload: ({'protocol_version':2, 'skill_version':'0.3.0'}
                     if op=='session_requirements' else calls.append(clock()) or {'online':True})
                 presence=Presence(backend,{'agent_id':AGENT,'session_ref':'s'},ledger,clock=clock)
                 wait=RealtimeWait(backend,{'agent_id':AGENT},ledger,clock=clock,sleep=clock.sleep,keepalive=presence)

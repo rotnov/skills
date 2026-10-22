@@ -68,8 +68,8 @@ configuring credentials.
    without per-task confirmation. Unmatched peers remain proposals.
    Native subagent dispatch requires the owner's scoped `native-subagent` opt-in;
    follow that reference's worker limits and capability fallback. It does not
-   bypass queued input: immediate active-turn ingress still requires #35's
-   verified owning-server steer capability, with no guarantee of zero blocking.
+   bypass queued input; active-turn ingress is only the Codex urgent route in
+   [sessions](references/sessions.md#urgent-messages), with no guarantee of zero blocking.
    A separate headless pilot handler has its own conversation and bounded context.
    It must not take over a busy main session or edit its checkout.
 

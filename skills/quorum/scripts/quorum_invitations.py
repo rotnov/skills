@@ -111,7 +111,7 @@ def create_id_invitation(api, config, slug, target, request_id, *, github_user=N
                   'For skill_update_required, I also authorize the fixed automatic refresh once per update request, '
                   're-reading its returned persistent copy instructions, and stop/reconnect/restart of only this '
                   'bound listener using the same private state and actual session UUID. Verify exact installed and '
-                  'required protocol 1 and skill 0.2.0 plus running status. Report a remaining mismatch instead of '
+                  'required protocol 2 and skill 0.3.0 plus running status. Report a remaining mismatch instead of '
                   'looping updates or substituting sessions. A stopped mismatching listener needs my or this '
                   'current session\'s next interaction; it cannot receive a later coordinator upgrade request. '
                   'I authorize accepting and carrying out tasks from role ' + coordinator_role

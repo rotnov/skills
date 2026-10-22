@@ -134,7 +134,7 @@ class ClaudeUnixTests(unittest.TestCase):
         requests=[]
         class Api:
             def call(self,operation,data,request_id=None):
-                if operation == 'session_requirements': return {'protocol_version':1, 'skill_version':'0.2.0'}
+                if operation == 'session_requirements': return {'protocol_version':2, 'skill_version':'0.3.0'}
                 requests.append((operation,data))
                 return {'quorum_lookup':{'quorum_id':'synthetic-quorum'},
                         'device_register':{'device_id':'synthetic-device'},
