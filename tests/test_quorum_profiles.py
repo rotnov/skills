@@ -22,10 +22,21 @@ ORIGIN = 'https://one.example'
 CONFIG = ServiceConfig(ORIGIN, 'sb_publishable_synthetic')
 
 
-def session(access='access', refresh='refresh', expires=10000, identity='123'):
+def session(access='access', refresh='refresh', expires=10000, identity='123', user_id='user-123'):
     return {'access_token': access, 'refresh_token': refresh, 'expires_at': expires,
-            'user': {'identities': [{'provider': 'github', 'id': identity,
-                                    'identity_data': {'provider_id': identity}}]}}
+            'user': {'id': user_id, 'identities': [{'provider': 'github', 'id': identity,
+                                                    'identity_data': {'provider_id': identity}}]}}
+
+
+def auth_server(users):
+    """Stand-in Auth /user endpoint: only listed access tokens verify."""
+    calls = []
+    def get_json(url, headers):
+        token = headers['Authorization'].removeprefix('Bearer ')
+        calls.append((url, token))
+        if token not in users: raise QuorumError('auth_required')
+        return users[token]
+    return get_json, calls
 
 
 class MachineProfileTests(unittest.TestCase):
@@ -74,6 +85,163 @@ class MachineProfileTests(unittest.TestCase):
             self.resolve('state-two')
         self.assertEqual(legacy.load(ORIGIN)['access_token'], 'other')
         self.assertEqual(first.load(ORIGIN)['access_token'], 'access')
+
+    def legacy_state(self, name='state-two', **values):
+        state = self.root / name
+        state.mkdir(mode=0o700)
+        (state / 'ledger.sqlite3').write_bytes(b'per-session ledger, device and grants')
+        legacy = CredentialStore(root=state / 'credentials')
+        legacy.save(ORIGIN, session(**{'access': 'legacy-access', 'refresh': 'legacy-refresh', **values}))
+        return state, legacy, self.snapshot(state)
+
+    @staticmethod
+    def snapshot(state):
+        return {path: path.read_bytes() for path in state.rglob('*') if path.is_file()}
+
+    def assertUnchanged(self, before):
+        # New binding/config/ledger files may appear; existing bytes may not change.
+        self.assertEqual({path: path.read_bytes() if path.exists() else None for path in before}, before)
+
+    def test_same_principal_legacy_state_reuses_verified_machine_login_without_browser(self):
+        config, canonical = self.resolve()
+        canonical.save(ORIGIN, session(expires=time.time() + 3600))
+        state, legacy, before = self.legacy_state(expires=time.time() + 3600)
+        user = session()['user']
+        get_json, calls = auth_server({'access': user, 'legacy-access': user})
+        with patch('quorum_api.get_json', side_effect=get_json), \
+                patch('quorum_auth.login_pkce', side_effect=AssertionError('duplicate browser')), \
+                patch('quorum_api.request_json', side_effect=AssertionError('unexpected refresh')):
+            _, bound = self.resolve('state-two', None)
+            self.assertEqual(token_provider(config, bound, clock=lambda: 100)(), 'access')
+        self.assertEqual(bound.backend.root, canonical.backend.root)
+        self.assertEqual(sorted(token for _, token in calls), ['access', 'legacy-access'])
+        self.assertTrue(all(url == ORIGIN + '/auth/v1/user' for url, _ in calls))
+        # Legacy token family, ledger, device and grants stay exactly in place.
+        self.assertUnchanged(before)
+        self.assertEqual(legacy.load(ORIGIN)['refresh_token'], 'legacy-refresh')
+        binding = state / 'auth-binding.json'
+        self.assertNotIn('legacy', binding.read_text())
+        if os.name != 'nt': self.assertEqual(binding.stat().st_mode & 0o777, 0o600)
+        # The verified binding is durable: later helpers need no network proof.
+        with patch('quorum_api.get_json', side_effect=AssertionError('reverified')):
+            _, again = self.resolve('state-two', None)
+        self.assertEqual(again.backend.root, canonical.backend.root)
+
+    def test_verified_different_principal_stays_a_conflict_with_redacted_diagnostic(self):
+        import quorum
+        _, canonical = self.resolve()
+        canonical.save(ORIGIN, session(expires=time.time() + 3600))
+        # The stored claim matches, but the Auth server is authoritative.
+        cases = {'other account': session(identity='456', user_id='user-456')['user'],
+                 'same GitHub ID, other principal': session(user_id='user-999')['user']}
+        for index, (name, legacy_user) in enumerate(cases.items()):
+            with self.subTest(name):
+                state, legacy, before = self.legacy_state('legacy-' + str(index), expires=time.time() + 3600)
+                get_json, _ = auth_server({'access': session()['user'], 'legacy-access': legacy_user})
+                with patch('quorum_api.get_json', side_effect=get_json), \
+                        patch('quorum_auth.login_pkce', side_effect=AssertionError('browser')), \
+                        contextlib.redirect_stdout(io.StringIO()) as output:
+                    self.assertEqual(quorum.main(['--state', str(state), 'login']), 3)
+                result = json.loads(output.getvalue())
+                self.assertEqual(result['code'], 'auth_profile_conflict')
+                self.assertEqual(result['data']['reason'], 'different_principal')
+                self.assertEqual(result['data']['state_credentials'], str(state / 'credentials'))
+                self.assertEqual(result['data']['machine_credentials'], str(canonical.backend.root))
+                self.assertTrue(result['data']['action'])
+                for secret in ('legacy-access', 'legacy-refresh', '"access"', '"refresh"'):
+                    self.assertNotIn(secret, output.getvalue())
+                self.assertUnchanged(before)
+                self.assertFalse((state / 'auth-binding.json').exists())
+        self.assertEqual(canonical.load(ORIGIN)['access_token'], 'access')
+
+    def test_unverified_legacy_claim_can_only_block_and_never_links(self):
+        from quorum_profiles import AuthProfileConflict
+        _, canonical = self.resolve()
+        canonical.save(ORIGIN, session(expires=time.time() + 3600))
+        state, _, before = self.legacy_state(identity='456', expires=time.time() + 3600)
+        with patch('quorum_api.get_json', side_effect=AssertionError('network for a denied claim')):
+            with self.assertRaises(AuthProfileConflict) as error:
+                self.resolve('state-two', None)
+        self.assertEqual(error.exception.diagnostic()['reason'], 'different_principal')
+        self.assertUnchanged(before)
+
+    def test_expired_legacy_login_is_never_refreshed_implicitly_but_explicit_login_reconciles(self):
+        from quorum_profiles import AuthProfileConflict, resolve_profile
+        config, canonical = self.resolve()
+        canonical.save(ORIGIN, session(expires=time.time() + 3600))
+        state, legacy, before = self.legacy_state(expires=1)
+        user = session()['user']
+        get_json, _ = auth_server({'access': user, 'fresh-legacy': user})
+        with patch('quorum_api.get_json', side_effect=get_json), \
+                patch('quorum_api.request_json', side_effect=AssertionError('implicit legacy refresh')):
+            with self.assertRaises(AuthProfileConflict) as error:
+                self.resolve('state-two', None)
+        diagnostic = error.exception.diagnostic()
+        self.assertEqual(diagnostic['reason'], 'legacy_login_unverified')
+        self.assertIn('login', diagnostic['action'])
+        self.assertUnchanged(before)
+        refreshes = []
+        def refresh(url, headers, body):
+            refreshes.append(json.loads(body))
+            return {**session('fresh-legacy', 'rotated-legacy'), 'expires_in': 3600}
+        with patch('quorum_api.get_json', side_effect=get_json), patch('quorum_api.request_json', side_effect=refresh), \
+                patch('quorum_auth.login_pkce', side_effect=AssertionError('duplicate browser')):
+            _, bound = resolve_profile(state, refresh_legacy=True)
+        self.assertEqual(refreshes, [{'refresh_token': 'legacy-refresh'}])
+        # The rotation is persisted to its own family, never copied elsewhere.
+        self.assertEqual(legacy.load(ORIGIN)['refresh_token'], 'rotated-legacy')
+        self.assertEqual(canonical.load(ORIGIN)['refresh_token'], 'refresh')
+        self.assertEqual(bound.backend.root, canonical.backend.root)
+        self.assertEqual(len(list((self.root / 'machine').rglob('*.json'))), 2)
+
+    def test_reconciliation_and_concurrent_helper_refresh_the_machine_login_once(self):
+        config, canonical = self.resolve()
+        canonical.save(ORIGIN, session(expires=1))
+        self.legacy_state(expires=time.time() + 3600)
+        user = session()['user']
+        get_json, _ = auth_server({'fresh': user, 'legacy-access': user})
+        requests = []
+        def refresh(url, headers, body):
+            requests.append(json.loads(body))
+            time.sleep(.1)
+            return {**session('fresh', 'rotated'), 'expires_in': 3600}
+        def reconcile(_):
+            return self.resolve('state-two', None)[1].backend.root
+        def helper(_):
+            return token_provider(config, canonical)()
+        with patch('quorum_api.get_json', side_effect=get_json), patch('quorum_api.request_json', side_effect=refresh), \
+                concurrent.futures.ThreadPoolExecutor(2) as pool:
+            bound, token = pool.submit(reconcile, None), pool.submit(helper, None)
+            self.assertEqual(bound.result(), canonical.backend.root)
+            self.assertEqual(token.result(), 'fresh')
+        self.assertEqual(requests, [{'refresh_token': 'refresh'}])
+        self.assertEqual(canonical.load(ORIGIN)['refresh_token'], 'rotated')
+
+    def test_tampered_binding_or_missing_machine_login_fails_closed(self):
+        from quorum_profiles import AuthProfileConflict
+        _, canonical = self.resolve()
+        canonical.save(ORIGIN, session(expires=time.time() + 3600))
+        state, _, _ = self.legacy_state(expires=time.time() + 3600)
+        user = session()['user']
+        get_json, _ = auth_server({'access': user, 'legacy-access': user})
+        with patch('quorum_api.get_json', side_effect=get_json):
+            self.resolve('state-two', None)
+        binding = state / 'auth-binding.json'
+        record = json.loads(binding.read_text())
+        binding.unlink()
+        fd = os.open(binding, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, 'w') as output: json.dump({**record, 'credential_root': str(state / 'credentials')}, output)
+        with self.assertRaises(AuthProfileConflict) as error:
+            self.resolve('state-two', None)
+        self.assertEqual(error.exception.diagnostic()['reason'], 'binding_mismatch')
+        other, _, _ = self.legacy_state('state-three', expires=time.time() + 3600)
+        canonical.delete(ORIGIN)
+        with patch('quorum_api.get_json', side_effect=get_json), \
+                patch('quorum_auth.login_pkce', side_effect=AssertionError('browser')):
+            with self.assertRaises(AuthProfileConflict) as error:
+                self.resolve('state-three', None)
+        self.assertEqual(error.exception.diagnostic()['reason'], 'machine_login_missing')
+        self.assertFalse((other / 'auth-binding.json').exists())
 
     def test_legacy_origin_spelling_retains_the_original_hashed_credential_key(self):
         (self.root / 'state-one').mkdir(mode=0o700)

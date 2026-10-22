@@ -98,7 +98,8 @@ def main(argv=None):
             raise QuorumError('live_agents_disabled')
         else:
             from quorum_profiles import resolve_profile, ensure_login, auth_lock
-            config, store = resolve_profile(ledger.root)
+            # Only explicit login may refresh an older state's own token family.
+            config, store = resolve_profile(ledger.root, refresh_legacy=args.command == 'login')
             if args.command == 'login': value = ensure_login(config, store, explicit=True)
             elif args.command == 'logout':
                 with auth_lock(store): store.delete(config.origin)
@@ -147,7 +148,8 @@ def main(argv=None):
             safe.update({'grok_transport_unavailable', 'session_binding_denied', 'coordinator_changed',
                          'private_acl_unavailable', 'unsafe_link', 'browser_unavailable', 'login_timeout'})
         code = str(error) if str(error) in safe else 'operation_failed'
-        print(json.dumps({'ok': False, 'code': code, 'data': {}}))
+        data = error.diagnostic() if code == 'auth_profile_conflict' and hasattr(error, 'diagnostic') else {}
+        print(json.dumps({'ok': False, 'code': code, 'data': data}))
         return 3
     finally:
         # main owns this connection; dispatchers finish before its lifetime ends.

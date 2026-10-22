@@ -174,6 +174,16 @@ def token_provider(config, store, clock=time.time, *, locked=False):
     return token
 
 
+def verified_user(config, access_token):
+    """Ask the selected Auth server for the token's user; local JWT/user claims are never trusted."""
+    from quorum_api import get_json, QuorumError
+    user = get_json(config.origin.rstrip('/') + '/auth/v1/user',
+                    {'apikey': config.publishable_key, 'Authorization': 'Bearer ' + access_token})
+    if not isinstance(user, dict) or not isinstance(user.get('id'), str) or not user['id']:
+        raise QuorumError('invalid_response')
+    return user
+
+
 def login_pkce(config, store):
     from http.server import BaseHTTPRequestHandler, HTTPServer
     import webbrowser

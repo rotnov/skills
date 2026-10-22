@@ -141,14 +141,112 @@ class SharedCredentials(CredentialStore):
             return self.profiles.read()[self.config.origin]['github_id'] is not None
 
 
-def read_config(path):
+ACTIONS = {
+    'different_principal': "This state's login belongs to another account or project and was left untouched. "
+                           'Use a state bound to the machine login, or a separate QUORUM_PROFILE_ROOT for that account.',
+    'legacy_login_unverified': "The Auth server could not verify this state's older login without refreshing it. "
+                               "Stop this state's old listener, then run login once with this --state.",
+    'machine_login_missing': 'The machine login is signed out. Run login from a state already using it, then retry.',
+    'binding_mismatch': "This state's auth-binding.json no longer matches the machine profile. "
+                        'Inspect it; neither login is replaced automatically.',
+}
+
+
+class AuthProfileConflict(ValueError):
+    """auth_profile_conflict with a token-free, actionable diagnostic."""
+    def __init__(self, reason, state_credentials, machine_credentials):
+        super().__init__('auth_profile_conflict')
+        self.details = {'reason': reason, 'action': ACTIONS[reason],
+                        'state_credentials': str(state_credentials), 'machine_credentials': str(machine_credentials)}
+
+    def diagnostic(self):
+        return dict(self.details)
+
+
+class UnverifiedLegacyLogin(AuthProfileConflict):
+    """Raised under the registry lock; resolve_profile verifies after releasing it."""
+    def __init__(self, profiles, config, record, state):
+        super().__init__('legacy_login_unverified', state / 'credentials', record['credential_root'])
+        self.profiles, self.config, self.record, self.state = profiles, config, record, state
+
+
+def read_private_json(path, limit=16384):
     if os.name == 'nt' and path.exists(): protect(path)
     fd = open_private(path, os.O_RDONLY | getattr(os, 'O_NONBLOCK', 0))
     with os.fdopen(fd, 'rb') as source:
         FileCredentials._check(os.fstat(source.fileno()))
-        raw = source.read(16385)
-    if len(raw) > 16384: raise ValueError('unsafe_config_file')
-    return ServiceConfig(**json.loads(raw))
+        raw = source.read(limit + 1)
+    if len(raw) > limit: raise ValueError('unsafe_config_file')
+    return json.loads(raw)
+
+
+def read_config(path):
+    return ServiceConfig(**read_private_json(path))
+
+
+def binding_for(config, record):
+    return {'origin': config.origin, 'credential_root': record['credential_root'], 'github_id': record['github_id']}
+
+
+def check_legacy_binding(profiles, config, record, state, legacy_session):
+    """Let a legacy state use the machine login only after a recorded server-verified match."""
+    conflict = lambda reason: AuthProfileConflict(reason, state / 'credentials', record['credential_root'])
+    if record['github_id'] is None: raise conflict('machine_login_missing')
+    try:
+        claimed = github_identity(legacy_session)
+    except ValueError:
+        claimed = None
+    # Stored claims are unverified: they may block a link, never establish one.
+    if claimed not in (None, record['github_id']): raise conflict('different_principal')
+    path = state / 'auth-binding.json'
+    reject_link(path)
+    if not path.exists(): raise UnverifiedLegacyLogin(profiles, config, record, state)
+    if read_private_json(path) != binding_for(config, record): raise conflict('binding_mismatch')
+
+
+def verify_legacy_principal(pending, refresh_legacy):
+    """Prove both token families belong to one server-verified principal, then record that."""
+    from quorum_auth import token_provider, verified_user
+    profiles, config, record, state = pending.profiles, pending.config, pending.record, pending.state
+    conflict = lambda reason: AuthProfileConflict(reason, state / 'credentials', record['credential_root'])
+    machine = SharedCredentials(profiles, config, record['credential_root'])
+    if machine.load(config.origin) is None: raise conflict('machine_login_missing')
+    # Refresh only through the canonical lock, which every new helper shares.
+    machine_user = verified_user(config, token_provider(config, machine)())
+    legacy = CredentialStore(root=private_directory(state / 'credentials'))
+    session = legacy.load(config.origin)
+    if session is None: return
+    if session.get('expires_at', 0) > time.time() + 30:
+        token = session['access_token']
+    elif refresh_legacy:
+        # Explicit login only: an old unlocked listener may still rotate this family.
+        token = token_provider(config, legacy)()
+    else:
+        raise conflict('legacy_login_unverified')
+    try:
+        legacy_user = verified_user(config, token)
+    except QuorumError as error:
+        if str(error) == 'auth_required': raise conflict('legacy_login_unverified') from None
+        raise
+    try:
+        same = (legacy_user['id'] == machine_user['id']
+                and github_identity({'user': legacy_user}) == github_identity({'user': machine_user}) == record['github_id'])
+    except ValueError:
+        same = False
+    if not same: raise conflict('different_principal')
+    with credential_lock(profiles.root):
+        if profiles.read().get(config.origin) != record: raise conflict('binding_mismatch')
+        path = state / 'auth-binding.json'
+        reject_link(path)
+        try:
+            fd = open_private(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
+        except FileExistsError:
+            return  # A concurrent helper recorded it; the next pass validates it.
+        with os.fdopen(fd, 'w') as output:
+            json.dump(binding_for(config, record), output)
+            output.flush()
+            os.fsync(output.fileno())
+        if os.name == 'nt': protect(path)
 
 
 def origin_identity(origin):
@@ -158,8 +256,17 @@ def origin_identity(origin):
     return parsed.scheme, parsed.hostname, 443 if port is None else port
 
 
-def resolve_profile(state, explicit=None):
+def resolve_profile(state, explicit=None, *, refresh_legacy=False):
     """Bind only the supplied state/legacy directory; never scan other installs."""
+    try:
+        return _resolve_profile(state, explicit)
+    except UnverifiedLegacyLogin as pending:
+        # Network proof runs outside the registry lock (refresh nests it).
+        verify_legacy_principal(pending, refresh_legacy)
+        return _resolve_profile(state, explicit)
+
+
+def _resolve_profile(state, explicit):
     state = private_directory(state, create=True)
     path = state / 'config.json'
     reject_link(path)
@@ -201,8 +308,9 @@ def resolve_profile(state, explicit=None):
         else:
             credential_root = private_directory(record['credential_root'])
             if legacy_session and credential_root != legacy_root:
-                # Even the same human can have a distinct refresh-token family.
-                raise ValueError('auth_profile_conflict')
+                # Even the same human can have a distinct refresh-token family:
+                # never merge, copy or delete it; only bind a verified principal.
+                check_legacy_binding(profiles, config, record, state, legacy_session)
         if saved is None:
             fd = open_private(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
             with os.fdopen(fd, 'w') as output:

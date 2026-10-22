@@ -118,9 +118,23 @@ On first use of an existing authenticated state, the registry adopts that state'
 `<state>/credentials/` **in place**. This retained legacy directory remains the
 credential location for old listeners and new helpers; do not move/delete it or
 copy its rotating tokens into the registry. No other state or owner's files are
-scanned. A distinct legacy credential path is a conflict even for the same GitHub
-user; select the established state rather than replacing either token family.
-New installations store credentials inside their machine profile directory.
+scanned. New installations store credentials inside their machine profile directory.
+
+An older state whose own `<state>/credentials/` differs from the established
+machine login keeps that token family untouched. New helpers then use the machine
+login without a browser only after the service's Auth server verifies both access
+tokens as one user with the pinned GitHub ID. Local token or profile claims can
+block this, never prove it. The helper refreshes the machine login under its
+normal lock. It never refreshes the older login implicitly, because that state's
+old listener may still rotate it. The proof is recorded in a private
+`<state>/auth-binding.json`, so later helpers need no network check; ledgers,
+sessions and grants stay in place. If the older access token has expired, stop
+that state's old listener and run `login` once with that `--state`; only this
+explicit command refreshes the older family for verification. Other outcomes
+remain `auth_profile_conflict`, and the token-free `data` gives a `reason`
+(`different_principal`, `legacy_login_unverified`, `machine_login_missing` or
+`binding_mismatch`), an `action` and both credential paths. Neither login is
+copied, replaced or deleted.
 
 Missing/deleted credential directories, ambiguous services, identity/key conflicts
 and expired/revoked authentication are explicit blockers. A selected dead profile

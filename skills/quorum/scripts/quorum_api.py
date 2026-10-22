@@ -37,7 +37,14 @@ class NoRedirect(HTTPRedirectHandler):
 
 
 def request_json(url, headers, body):
-    request = Request(url, data=body, headers=headers, method='POST')
+    return _open(Request(url, data=body, headers=headers, method='POST'))
+
+
+def get_json(url, headers):
+    return _open(Request(url, headers=headers, method='GET'))
+
+
+def _open(request):
     try:
         with build_opener(NoRedirect).open(request, timeout=20) as response:
             raw = response.read(262145)
