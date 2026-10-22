@@ -5,7 +5,7 @@ declare
  a quorum_private.agents%rowtype; b quorum_private.agents%rowtype;
  target uuid:=gen_random_uuid(); sid text:=gen_random_uuid()::text;
  c uuid:=gen_random_uuid(); older jsonb; newer jsonb; urgent jsonb; replayed jsonb;
- head jsonb; reply jsonb; refused boolean;
+ head jsonb; reply jsonb; direct jsonb; refused boolean;
 begin
  select x.* into a from quorum_private.agents x where not x.revoked and exists
   (select 1 from quorum_private.agents y where y.quorum_id=x.quorum_id and y.owner_id<>x.owner_id and not y.revoked) limit 1;
@@ -84,6 +84,30 @@ begin
   refused:=true;
  end;
  if not refused then raise exception 'invalid_reply_priority_accepted'; end if;
+
+ -- Internal callers reach the wrapper directly with a payload that has no
+ -- priority key at all (as other server functions call message_send). They
+ -- must keep working unchanged and land as normal; an explicit key still binds.
+ perform set_config('request.jwt.claim.sub',b.owner_id::text,true);
+ direct:=quorum_private.call('message_send',jsonb_build_object('quorum_id',a.quorum_id,
+  'sender_agent_id',b.id,'recipient_agent_id',target,'conversation_id',c,'reply_to',null,
+  'body','internal caller without a priority key'),'prio:'||c||':internal');
+ if direct->>'message_id' is null then raise exception 'keyless_internal_send_failed'; end if;
+ if (select priority from quorum_private.messages where id=(direct->>'message_id')::uuid)<>'normal' then
+  raise exception 'keyless_internal_send_not_normal'; end if;
+ if quorum_private.call('message_send',jsonb_build_object('quorum_id',a.quorum_id,
+   'sender_agent_id',b.id,'recipient_agent_id',target,'conversation_id',c,'reply_to',null,
+   'body','internal caller without a priority key'),'prio:'||c||':internal')->>'message_id'
+   <>direct->>'message_id' then raise exception 'keyless_internal_replay_created_message'; end if;
+ direct:=quorum_private.call('message_send',jsonb_build_object('quorum_id',a.quorum_id,
+  'sender_agent_id',b.id,'recipient_agent_id',target,'conversation_id',c,'reply_to',null,
+  'body','internal urgent caller','priority','urgent'),'prio:'||c||':internal-urgent');
+ if (select priority from quorum_private.messages where id=(direct->>'message_id')::uuid)<>'urgent' then
+  raise exception 'internal_urgent_not_bound'; end if;
+ -- Other dispatcher operations, including request-free reads, pass through
+ -- the wrapper untouched.
+ if jsonb_array_length(public.conversation_read(a.quorum_id,b.id,c,0))=0 then
+  raise exception 'non_message_operation_changed'; end if;
 
  -- Priority changes no authorization: the owner/session contract is unchanged.
  perform set_config('request.jwt.claim.sub',b.owner_id::text,true);

@@ -263,6 +263,36 @@ class PriorityTests(unittest.TestCase):
         self.assertEqual(replied['priority'], 'normal')
 
     @isolated_profiles
+    def test_a_caller_without_the_priority_option_still_sends_and_replies(self):
+        """The listener and the receiving chat call dispatch directly."""
+        from quorum_state import LocalLedger
+        import quorum_live
+        from quorum_session import dispatch
+        calls = []
+        class Api:
+            def call(self, operation, payload, request_id=None):
+                calls.append((operation, payload))
+                if operation == 'resolve_role': return {'agent_id': 'peer'}
+                return {'message_id': MID}
+        with tempfile.TemporaryDirectory() as root:
+            auth = LocalLedger(Path(root))
+            session = LocalLedger(Path(root) / 'sessions' / SID)
+            session.setting('session-agent', {'engine': 'codex', 'session_ref': SID, 'agent_id': 'a',
+                                              'quorum_id': 'q', 'project_ref': 'owner/repo',
+                                              'quorum': 'team'})
+            session.db.close()
+            try:
+                with patch.object(quorum_live, 'api_for', lambda ledger: (Api(), None, None)), \
+                     patch.dict(os.environ, {'CODEX_THREAD_ID': SID}):
+                    reply = SimpleNamespace(session_id=SID, action='reply', message_id=MID,
+                                            text_stdin=True)
+                    with patch('sys.stdin', SimpleNamespace(buffer=io.BytesIO(b'answer'))):
+                        dispatch(reply, auth, None)
+            finally: auth.db.close()
+        self.assertEqual([payload for operation, payload in calls
+                          if operation == 'session_reply'][0]['priority'], 'normal')
+
+    @isolated_profiles
     def test_the_command_line_accepts_only_the_two_defined_priorities(self):
         from quorum_session import add_commands
         parser = argparse.ArgumentParser()

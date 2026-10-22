@@ -288,10 +288,12 @@ def dispatch(args, auth_ledger, register_agent):
         if args.action in ('send','reply'):
             text=sys.stdin.buffer.read(16385).decode('utf-8')
             if not text or len(text.encode())>16384: raise ValueError('invalid_message')
-            if args.priority not in PRIORITIES: raise ValueError('invalid_priority')
+            # A caller that predates this option sends an ordinary message.
+            priority=getattr(args,'priority','normal') or 'normal'
+            if priority not in PRIORITIES: raise ValueError('invalid_priority')
             if args.action=='reply':
                 result=api.call('session_reply',{**scope,'message_id':args.message_id,'body':text,
-                                                 'priority':args.priority})
+                                                 'priority':priority})
                 if engine in ('claude', 'grok'):
                     ledger.setting('delivery:'+args.message_id,{'state':'queued'})
                     api.call('session_ack',{**scope,'message_id':args.message_id})
@@ -301,7 +303,7 @@ def dispatch(args, auth_ledger, register_agent):
             conv=str(uuid.uuid5(uuid.NAMESPACE_URL,record['agent_id']+':'+args.request_id))
             result=api.call('message_send',{'quorum_id':record['quorum_id'],'sender_agent_id':record['agent_id'],
                  'recipient_agent_id':peer['agent_id'],'conversation_id':conv,'body':text,'reply_to':None,
-                 'priority':args.priority},args.request_id)
+                 'priority':priority},args.request_id)
             return {**result,'conversation_id':conv}
         if args.action=='run':
             import signal,threading
