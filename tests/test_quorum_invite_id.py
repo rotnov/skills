@@ -121,4 +121,57 @@ class IdInvitationTests(unittest.TestCase):
             self.assertEqual(help_result.returncode,0)
 
 
+class CliLedgerLifetimeTests(unittest.TestCase):
+    def test_main_closes_its_ledger_on_success_and_handled_errors(self):
+        import quorum
+        import sqlite3
+        from quorum_state import LocalLedger
+        cases = (
+            (['status'], 0),
+            (['accept-id', INVITE], 4),
+            (['configure', '--origin', 'http://example.invalid', '--publishable-key', 'synthetic'], 3),
+        )
+        for arguments, expected in cases:
+            with self.subTest(arguments=arguments), tempfile.TemporaryDirectory() as root:
+                ledger = LocalLedger(Path(root))
+                try:
+                    # Retain the real connection: GC must not determine its lifetime.
+                    with patch('quorum.LocalLedger', return_value=ledger), \
+                            contextlib.redirect_stdout(io.StringIO()):
+                        self.assertEqual(quorum.main(['--state', root, *arguments]), expected)
+                    with self.assertRaisesRegex(sqlite3.ProgrammingError, 'closed'):
+                        ledger.db.execute('select 1')
+                finally:
+                    ledger.db.close()
+
+    def test_live_dispatch_keeps_ledger_open_until_return_or_interruption(self):
+        import quorum
+        import sqlite3
+        from quorum_state import LocalLedger
+        for command, failure in (('accept-id', None), ('mcp', None),
+                                 ('accept-id', RuntimeError('synthetic')),
+                                 ('accept-id', KeyboardInterrupt())):
+            with self.subTest(command=command, failure=type(failure)), tempfile.TemporaryDirectory() as root:
+                ledger = LocalLedger(Path(root))
+                def dispatch(args, active_ledger, register_agent):
+                    self.assertIs(active_ledger, ledger)
+                    active_ledger.setting('dispatch-active', {'open': True})
+                    if failure is not None: raise failure
+                    return {'membership_only': True}
+                arguments = ['accept-id', INVITE] if command == 'accept-id' else ['mcp', '--agent-id', 'synthetic']
+                try:
+                    with patch('quorum.LocalLedger', return_value=ledger), \
+                            patch('quorum_live.dispatch', side_effect=dispatch), \
+                            contextlib.redirect_stdout(io.StringIO()):
+                        if failure is None:
+                            self.assertEqual(quorum.main(['--state', root, *arguments]), 0)
+                        else:
+                            with self.assertRaises(type(failure)):
+                                quorum.main(['--state', root, *arguments])
+                    with self.assertRaisesRegex(sqlite3.ProgrammingError, 'closed'):
+                        ledger.db.execute('select 1')
+                finally:
+                    ledger.db.close()
+
+
 if __name__ == '__main__': unittest.main()
