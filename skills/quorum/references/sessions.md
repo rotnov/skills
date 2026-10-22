@@ -88,7 +88,8 @@ messages also require receipt, but do not require an answer. If the process dies
 after writing, preserve the ledger and inspect the chat before reconciliation.
 `session status` reports the number of `pending_receipts`; a running listener
 with a pending receipt is not proof of UI delivery. Its `handled` count includes
-a Claude message only after that receipt, from the listener's next poll.
+a Claude message only after that receipt, at the listener's next check: a wake,
+or at most the safety/fallback interval later.
 
 When replacing a headless pilot, stop the old `listen` process and confirm it is
 offline before upgrading the installed skill. Do not run both consumers for the

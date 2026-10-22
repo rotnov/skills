@@ -155,6 +155,39 @@ class SessionTests(unittest.TestCase):
                     self.assertEqual((result['handled'],result['state'],result.get('code')),(1,'stopped',None))
                 finally: ledger.db.close()
 
+    def test_realtime_wait_counts_a_receipt_made_while_waiting_once(self):
+        from quorum_listener import Control, run_listener
+        from quorum_session import Relay
+        from quorum_state import LocalLedger
+        with tempfile.TemporaryDirectory() as root:
+            ledger,receiver=LocalLedger(Path(root)),LocalLedger(Path(root))
+            try:
+                message={'id':MID,'recipient_id':'a'}
+                class Api:
+                    acked=False
+                    def call(self,op,data,request_id=None):
+                        if op=='session_inbox': return [] if self.acked else [message]
+                        if op=='session_ack': self.acked=True
+                        return {'queued':True}
+                api,control,waits=Api(),Control(ledger),[]
+                class Waiter:
+                    def prepare(self,stopping): pass
+                    def close(self): pass
+                    def wait(self,stopping):
+                        # No signal follows the chat's own receipt; the safety scan returns.
+                        waits.append(control.status()['handled'])
+                        if len(waits)==1:
+                            receiver.setting('delivery:'+MID,{'state':'queued'})
+                            api.call('session_ack',{})
+                            receiver.setting('delivery:'+MID,{'state':'acked'})
+                        if len(waits)==3: control.request_stop()
+                result=run_listener(ledger,lambda:Relay(api,ledger,{'agent_id':'a','session_ref':SID},lambda _:'submitted'),
+                                    str(uuid.uuid4()),sleep=lambda _:self.fail('waiter replaces sleep'),
+                                    timeout=0,waiter=Waiter())
+                self.assertEqual(waits,[0,1,1])
+                self.assertEqual((result['handled'],result['state']),(1,'stopped'))
+            finally: ledger.db.close(); receiver.db.close()
+
     def test_listener_counts_codex_queue_acceptance_without_a_chat_receipt(self):
         from quorum_listener import Control, run_listener
         from quorum_session import Relay
