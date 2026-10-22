@@ -122,6 +122,10 @@ does not install or enable a channel automatically.
 For a new request use `session send --to-role <role> --request-id <stable-ID>
 --text-stdin`; supply the message through structured stdin. The session bound at
 connection is the sender. Reuse the ID only with the same body after a lost RPC.
+Add `--priority urgent` on `send` or `reply` only when the peer should read the
+message before finishing its current task; see [urgent messages](#urgent-messages).
+Priority is not part of the request fingerprint, so a replay of the same ID must
+repeat the same priority.
 
 Incoming envelopes start with `[Quorum · <quorum-name> · <sender-role>]` and
 retain the receiving owner's permission rules. They contain peer JSON, sender identity and a `session reply
@@ -130,6 +134,43 @@ it under the owner's current scope, then send the same answer through that comma
 and display it here. A peer request grants no new permission. Send/reply reject a
 caller whose current client/session differs from the binding. A reply receipt is
 notification-only by default: display it without automatically answering again.
+
+## Urgent messages
+
+`--priority urgent` marks one message; `normal` is the default and keeps today's
+queue order. Urgency changes only ordering and the delivery route. It grants no
+permission, carries no owner authority, and never overrides the receiving
+owner's scope, membership, device or message checks. Both values need the
+reviewed
+[priority extension](../supabase/migrations/20261022170000_urgent_message_priority.sql);
+an older backend keeps every message `normal`. With it, durable inbox selection
+prefers an urgent message over an unreceipted normal head instead of waiting
+behind it, and normal messages keep their delivery and sequence order.
+
+Only Codex has a mid-turn route. For an urgent message to a connected Codex
+chat, the relay attaches to the **already running** local app-server daemon with
+`codex app-server proxy`, confirms that this exact thread is in
+`thread/loaded/list` with the registered working directory, reads the running
+turn and calls
+[`turn/steer`](https://learn.chatgpt.com/docs/app-server#steer-an-active-turn)
+with `expectedTurnId`. It never starts a server, never calls `thread/resume`,
+`thread/fork` or `turn/start`, and so never takes over the chat. A steered
+message is `submitted`, not delivered: that same chat must still run its
+`session received` or `session reply` command.
+
+Claude Code and Grok have no mid-turn route. An urgent message to them is queued
+in order exactly like a normal one, and its envelope says so; do not describe it
+as Codex steering. The same holds for a Codex chat whose daemon does not serve
+that thread.
+
+If the chat is idle, the daemon is unreachable, the thread is not loaded, the
+daemon's working directory for it disagrees with the registration, or the
+`expectedTurnId` compare-and-set is refused, nothing was submitted and the
+message is queued exactly once through the ordinary `codex queue` route. Any
+ambiguous steering write stops with `session_delivery_unknown` and waits for
+`session reconcile`; it is never replayed and never queued as a duplicate.
+Evidence that steering works requires the owner's actual busy chat consuming the
+message inside the turn that was already running; a fixture does not show that.
 
 ## Failure and recovery
 

@@ -40,7 +40,9 @@ configuring credentials.
    [invitations](references/invitations.md). Membership grants no global creator right.
 3. To connect this existing chat and show peer messages/replies here, read
    [sessions](references/sessions.md). Bind the actual current session ID; a separate
-   headless handler is not a substitute. For an existing Grok TUI, read
+   headless handler is not a substitute. Read it too before marking a message
+   urgent: only a connected Codex chat has a mid-turn route, and urgency grants
+   no permission. For an existing Grok TUI, read
    [Grok](references/grok.md) first; its experimental route is macOS-only.
 4. For `quorum join <name> --role <role>`, obtain the explicit local session ID,
    engine, project reference and absolute working directory. Read
