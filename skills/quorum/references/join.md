@@ -36,6 +36,13 @@ and no service address/key bundled in the skill. Credentials remain local as
 described in [setup](setup.md). Missing uv/browser access is a blocker, not permission to
 install other transports or request secrets.
 
+GitHub login needs a browser on this host that can reach its `127.0.0.1:8768`
+callback. `browser_unavailable` (headless, cloud or SSH session) and
+`login_timeout` (no callback within 120 seconds) are such blockers: report them
+and accept the invitation from a session on a host with its own browser. Never
+paste OAuth codes or copy credentials into the agent. Only the owner decides
+whether to issue an open invitation instead.
+
 `accept-id` performs the first machine login if necessary and establishes membership only. It does not
 register a device/agent, guess a session ID, start a model/listener or connect a
 headless pilot. A consumed invite cannot restore revoked membership. Expired,

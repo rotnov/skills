@@ -208,6 +208,33 @@ class IdInvitationTests(unittest.TestCase):
             self.assertEqual(json.loads(output.getvalue())['code'], 'browser_unavailable')
 
     @isolated_profiles
+    def test_headless_login_failures_report_fixed_codes_for_login_and_accept(self):
+        import itertools
+        import types
+        import quorum
+        class Loopback:
+            # No real callback port: a headless host never reaches it.
+            def __init__(self, *_): pass
+            def __enter__(self): return self
+            def __exit__(self, *_): return False
+            def handle_request(self): pass
+        flags = ['--origin', 'https://example.com', '--publishable-key', 'sb_publishable_synthetic']
+        cases = (({'return_value': False}, 'browser_unavailable'), ({'return_value': True}, 'login_timeout'))
+        for browser, expected in cases:
+            for command in (['accept-id', INVITE, *flags], ['login']):
+                clock = types.SimpleNamespace(monotonic=itertools.count(0, 200).__next__)
+                with self.subTest(code=expected, command=command[0]), tempfile.TemporaryDirectory() as root, \
+                        patch('http.server.HTTPServer', Loopback), patch('webbrowser.open', **browser), \
+                        patch('quorum_auth.time', clock), \
+                        patch('quorum_api.request_json', side_effect=AssertionError('no network')):
+                    if command == ['login']:
+                        with contextlib.redirect_stdout(io.StringIO()):
+                            self.assertEqual(quorum.main(['--state', root, 'configure', *flags]), 0)
+                    with contextlib.redirect_stdout(io.StringIO()) as output:
+                        self.assertEqual(quorum.main(['--state', root, *command]), 3)
+                    self.assertEqual(json.loads(output.getvalue()), {'ok': False, 'code': expected, 'data': {}})
+
+    @isolated_profiles
     def test_owner_access_commands_select_open_mode(self):
         import quorum
         calls = []

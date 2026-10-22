@@ -208,11 +208,15 @@ class UpdateTests(unittest.TestCase):
         stage.mkdir()
         with patch.dict('os.environ', NODE_EXTRA_CA_CERTS='/synthetic/ca.pem', GIT_SSL_CAINFO='/synthetic/ca.pem',
                         NODE_OPTIONS='--require /synthetic/hook.js', GIT_CONFIG_COUNT='1',
-                        GIT_CONFIG_KEY_0='http.extraHeader', GIT_CONFIG_VALUE_0='secret'):
+                        GIT_CONFIG_KEY_0='http.extraHeader', GIT_CONFIG_VALUE_0='secret',
+                        NPM_CONFIG_SCRIPT_SHELL='/synthetic/shell', NPM_CONFIG_REGISTRY='https://untrusted.invalid',
+                        NODE_TLS_REJECT_UNAUTHORIZED='0', GIT_SSL_NO_VERIFY='1'):
             env = self.module.child_environment(stage)
         self.assertEqual(env['NODE_EXTRA_CA_CERTS'], '/synthetic/ca.pem')
         self.assertEqual(env['GIT_SSL_CAINFO'], '/synthetic/ca.pem')
-        for name in ('NODE_OPTIONS', 'GIT_CONFIG_COUNT', 'GIT_CONFIG_KEY_0', 'GIT_CONFIG_VALUE_0'):
+        for name in ('NODE_OPTIONS', 'GIT_CONFIG_COUNT', 'GIT_CONFIG_KEY_0', 'GIT_CONFIG_VALUE_0',
+                     'NPM_CONFIG_SCRIPT_SHELL', 'NPM_CONFIG_REGISTRY', 'NODE_TLS_REJECT_UNAUTHORIZED',
+                     'GIT_SSL_NO_VERIFY'):
             self.assertNotIn(name, env)
 
     @unittest.skipUnless(shutil.which('npm'), 'npm is required for the real config isolation check')
