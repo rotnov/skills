@@ -21,6 +21,18 @@ helper through its uv project:
 uv run --project <skill-dir> --frozen python <skill-dir>/scripts/quorum.py --state <private-state> create my-team --json-stdin --request-id create-my-team-1
 ```
 
+Before creating, ask the owner to choose access; do not pick for them:
+
+- **GitHub** (default): only identified accounts join. Ask for every GitHub login,
+  then issue one [ID invitation](invite.md) per login. Each lasts 24 hours.
+- **Open**: anyone holding a single-use invitation joins without GitHub or a
+  browser, for example a cloud agent session. Each lasts 15 minutes. Add
+  `--access open` to `create`; issue them with `invite-id <quorum> --open`.
+
+Later, the owner may run `access <quorum> github|open`. Switching to `github`
+revokes members admitted without GitHub and unused open invitations. Open access
+requires the server's [open-access extension](server.md); the owner stays a GitHub user.
+
 Supply `{}` through the tool's stdin, without an interactive prompt. The result
 contains a quorum ID and an owner membership ID; it contains no invitation token.
 Use a lowercase slug beginning with a letter, at most 48 characters, containing

@@ -27,7 +27,7 @@ class DispatchModeTests(unittest.TestCase):
         class Api:
             def call(self, operation, payload):
                 if operation == 'session_requirements':
-                    return {'protocol_version': 1, 'skill_version': '0.2.0'}
+                    return {'protocol_version': 2, 'skill_version': '0.3.0'}
                 if operation == 'resolve_role':
                     return {'agent_id': 'coordinator-id'}
                 raise AssertionError(operation)

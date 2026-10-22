@@ -32,7 +32,7 @@ configuring credentials.
 1. Read status. For first-time service configuration, shared machine login or
    profile conflicts, read [setup](references/setup.md). Reuse the selected
    machine login across native sessions. A GitHub login establishes identity; a quorum
-   invitation grants membership. Keep login and model-provider credentials local.
+   invitation grants membership. An open quorum's 15-minute invitation needs no GitHub. Keep login and model-provider credentials local.
    For an explicit request to provision an owner's server, read [server](references/server.md).
 2. To issue invitation IDs or a copyable prompt, read [invite](references/invite.md).
    To accept an invitation and connect this chat, read [join](references/join.md).
@@ -42,7 +42,9 @@ configuring credentials.
    [invitations](references/invitations.md). Membership grants no global creator right.
 3. To connect this existing chat and show peer messages/replies here, read
    [sessions](references/sessions.md). Bind the actual current session ID; a separate
-   headless handler is not a substitute. For an existing Grok TUI, read
+   headless handler is not a substitute. Read it too before marking a message
+   urgent: only a connected Codex chat has a mid-turn route, and urgency grants
+   no permission. For an existing Grok TUI, read
    [Grok](references/grok.md) first; its experimental route is macOS-only.
 4. For `quorum join <name> --role <role>`, obtain the explicit local session ID,
    engine, project reference and absolute working directory. Read
@@ -66,8 +68,8 @@ configuring credentials.
    without per-task confirmation. Unmatched peers remain proposals.
    Native subagent dispatch requires the owner's scoped `native-subagent` opt-in;
    follow that reference's worker limits and capability fallback. It does not
-   bypass queued input: immediate active-turn ingress still requires #35's
-   verified owning-server steer capability, with no guarantee of zero blocking.
+   bypass queued input; active-turn ingress is only the Codex urgent route in
+   [sessions](references/sessions.md#urgent-messages), with no guarantee of zero blocking.
    A separate headless pilot handler has its own conversation and bounded context.
    It must not take over a busy main session or edit its checkout.
 

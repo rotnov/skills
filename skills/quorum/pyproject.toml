@@ -1,6 +1,6 @@
 [project]
 name = "quorum-pilot-client"
-version = "0.2.0"
+version = "0.3.0"
 description = "Portable owner-side client for the Quorum coordination pilot"
 requires-python = ">=3.12,<3.13"
 dependencies = ["websockets==17.2"]

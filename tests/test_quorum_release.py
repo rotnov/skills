@@ -18,7 +18,7 @@ sys.path.insert(0, str(SCRIPTS))
 SID = '11111111-1111-4111-8111-111111111111'
 AID = '22222222-2222-4222-8222-222222222222'
 MID = '33333333-3333-4333-8333-333333333333'
-RELEASE = {'protocol_version': 1, 'skill_version': '0.2.0'}
+RELEASE = {'protocol_version': 2, 'skill_version': '0.3.0'}
 
 
 class Backend:
@@ -153,8 +153,8 @@ class ReleaseTests(unittest.TestCase):
             try:
                 presence=Presence(transport,{'agent_id':AID,'session_ref':SID},ledger,clock=clock)
                 presence.tick()
-                self.assertEqual(backend.calls[-1][1]['protocol_version'],1)
-                self.assertEqual(backend.calls[-1][1]['skill_version'],'0.2.0')
+                self.assertEqual(backend.calls[-1][1]['protocol_version'],2)
+                self.assertEqual(backend.calls[-1][1]['skill_version'],'0.3.0')
                 backend.required={'protocol_version':3,'skill_version':'0.2.0'}
                 clock.sleep(20); backend.calls.clear()
                 waiter=RealtimeWait(transport,{'agent_id':AID},ledger,clock=clock,sleep=clock.sleep,keepalive=presence)
@@ -255,7 +255,7 @@ class RunningReleaseTests(unittest.TestCase):
             shutil.copytree(SCRIPTS.parent,skill,ignore=shutil.ignore_patterns('.venv','__pycache__'))
             script=("import json,sys; from pathlib import Path; sys.path.insert(0,sys.argv[1]); "
                     "from quorum_release import installed_release; before=installed_release().copy(); "
-                    "Path(sys.argv[2]).write_text('{\"protocol_version\":2,\"skill_version\":\"0.3.0\"}'); "
+                    "Path(sys.argv[2]).write_text('{\"protocol_version\":3,\"skill_version\":\"0.4.0\"}'); "
                     "print(json.dumps([before,installed_release()]))")
             result=subprocess.run([sys.executable,'-c',script,str(skill/'scripts'),str(skill/'assets/release.json')],
                                   capture_output=True,text=True,timeout=20)

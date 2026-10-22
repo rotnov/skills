@@ -50,6 +50,7 @@ An uncertain attempt stops the listener. Restarting it does not replay that mode
 turn: unresolved local attempts block startup until the owner reconciles them.
 RPC, credential, subscription and adapter failures also stop processing; inspect
 the safe `state`/`code` fields in `listen status` and the private `listener.log`.
+A process that ended without reporting shows `code: listener_exited`.
 No service key, invitation or provider credential belongs in messages or logs.
 
 For teammate coordination, message the registered peer agent through Quorum first

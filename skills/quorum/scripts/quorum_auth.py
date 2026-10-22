@@ -174,6 +174,16 @@ def token_provider(config, store, clock=time.time, *, locked=False):
     return token
 
 
+def verified_user(config, access_token):
+    """Ask the selected Auth server for the token's user; local JWT/user claims are never trusted."""
+    from quorum_api import get_json, QuorumError
+    user = get_json(config.origin.rstrip('/') + '/auth/v1/user',
+                    {'apikey': config.publishable_key, 'Authorization': 'Bearer ' + access_token})
+    if not isinstance(user, dict) or not isinstance(user.get('id'), str) or not user['id']:
+        raise QuorumError('invalid_response')
+    return user
+
+
 def login_pkce(config, store):
     from http.server import BaseHTTPRequestHandler, HTTPServer
     import webbrowser
@@ -203,3 +213,20 @@ def login_pkce(config, store):
     session['expires_at'] = time.time() + session['expires_in']
     store.save(config.origin, session)
     return {'authenticated': True}
+
+
+def login_anonymous(config, store):
+    """Create a new Supabase anonymous user for open quorum invitations only."""
+    from quorum_api import request_json, QuorumError
+    try:
+        session = request_json(config.origin.rstrip('/') + '/auth/v1/signup',
+                               {'apikey': config.publishable_key, 'Content-Type': 'application/json'}, b'{}')
+    except QuorumError as error:
+        # Disabled anonymous sign-ins (422) and rate limits (429) look alike here.
+        if str(error) == 'service_error': raise QuorumError('anonymous_login_unavailable') from None
+        raise
+    if not isinstance(session, dict) or type(session.get('expires_in')) is not int:
+        raise QuorumError('invalid_response')
+    session['expires_at'] = time.time() + session['expires_in']
+    store.save(config.origin, session)
+    return {'authenticated': True, 'anonymous': True}

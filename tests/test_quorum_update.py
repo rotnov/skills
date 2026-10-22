@@ -137,7 +137,7 @@ class UpdateTests(unittest.TestCase):
                         elif corruption == 'oversized-release':
                             for client in ('.agents', '.claude'):
                                 (Path(kwargs['cwd']) / client / 'skills/quorum/assets/release.json').write_text(
-                                    json.dumps({'protocol_version':1,'skill_version':'0.2.0','padding':'x'*1024}))
+                                    json.dumps({'protocol_version':2,'skill_version':'0.3.0','padding':'x'*1024}))
                         elif corruption == 'different-client': (target / 'extra').write_text('different')
                         elif corruption == 'invalid-python':
                             for client in ('.agents', '.claude'):

@@ -50,7 +50,7 @@ or overwrite an active installation. No background updater is installed.
 
 ## Version mismatch recovery
 
-The packaged release is skill `0.2.0`, protocol integer `1`. The offline
+The packaged release is skill `0.3.0`, protocol integer `2`. The offline
 `quorum.py version` command prints those installed versions without login,
 network or state creation. The server's authenticated `session_requirements`
 RPC supplies only required versions. Exact equality is required, including the
@@ -69,8 +69,8 @@ A current invitation explicitly authorizes this update/reconnect lifecycle for
 its one bound listener. With that grant, run `session --session-id <same-UUID>
 stop` against the same state, confirm that listener is offline, and connect/start
 that exact binding using the returned copy. Verify its offline `version` and
-`session status`: both installed and required must be protocol `1` / skill
-`0.2.0`, `update_required` must be false, and the listener must be running.
+`session status`: both installed and required must be protocol `2` / skill
+`0.3.0`, `update_required` must be false, and the listener must be running.
 A still-running stale process is not upgraded by `start`; it requests a scoped
 stop and reports `skill_update_required`. Wait for that exact process to stop
 before the authorized restart. Report any remaining mismatch, stop failure or

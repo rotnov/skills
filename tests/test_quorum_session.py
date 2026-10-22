@@ -1,4 +1,5 @@
 """Native-session transport tests never start a model or contact a service."""
+import contextlib
 import io
 import json
 import os
@@ -25,6 +26,49 @@ CLIENT_SESSION_VARIABLES = ('CODEX_THREAD_ID', 'GROK_SESSION_ID', 'GROK_LEADER_S
 
 def without_client_session():
     return {key: value for key, value in os.environ.items() if key not in CLIENT_SESSION_VARIABLES}
+
+
+class RequirementsApi:
+    def __init__(self): self.calls = []
+    def call(self, operation, payload, request_id=None):
+        if operation == 'session_requirements': return {'protocol_version':2, 'skill_version':'0.3.0'}
+        self.calls.append((operation, payload))
+        if operation == 'session_inbox': return []
+        if operation == 'conversation_read': return [{'sequence': 1, 'body': 'synthetic'}]
+        raise AssertionError(operation)
+
+
+class Generation:
+    """An in-process listener run holding the real listener.lock; never a model."""
+    def __init__(self, ledger_root, run_id=None):
+        import threading
+        from quorum_listener import run_listener
+        from quorum_state import LocalLedger
+        self.run_id = run_id or str(uuid.uuid4())
+        self.ledger = LocalLedger(ledger_root)
+        class Idle:
+            def reconcile(self): pass
+            def run_once(self): return 'idle'
+        def run():
+            # SQLite connections are per thread, like a separate listener process.
+            own = LocalLedger(ledger_root)
+            try: run_listener(own, Idle, self.run_id, sleep=lambda _: time.sleep(.01), timeout=0)
+            finally: own.db.close()
+        self.thread = threading.Thread(target=run, daemon=True)
+        self.thread.start()
+        deadline = time.monotonic() + 10
+        while (self.ledger.setting('listener') or {}).get('state') not in ('waiting', 'checking'):
+            if time.monotonic() > deadline: raise AssertionError('generation did not start')
+            time.sleep(.01)
+
+    def poll(self): return None if self.thread.is_alive() else 0
+
+    def close(self):
+        from quorum_listener import Control
+        if self.thread.is_alive():
+            Control(self.ledger).request_stop(self.run_id)
+            self.thread.join(timeout=10)
+        self.ledger.db.close()
 
 
 
@@ -55,7 +99,7 @@ class SessionTests(unittest.TestCase):
                 calls, queued = [], []
                 class Api:
                     def call(self, operation, payload):
-                        if operation == 'session_requirements': return {'protocol_version':1, 'skill_version':'0.2.0'}
+                        if operation == 'session_requirements': return {'protocol_version':2, 'skill_version':'0.3.0'}
                         calls.append(operation)
                         if operation == 'session_inbox': return [message]
                         return {'queued':True}
@@ -82,7 +126,7 @@ class SessionTests(unittest.TestCase):
                 class Api:
                     fail=True
                     def call(self,operation,payload):
-                        if operation == 'session_requirements': return {'protocol_version':1, 'skill_version':'0.2.0'}
+                        if operation == 'session_requirements': return {'protocol_version':2, 'skill_version':'0.3.0'}
                         if operation=='session_inbox': return [message]
                         if self.fail:
                             self.fail=False
@@ -121,7 +165,7 @@ class SessionTests(unittest.TestCase):
             try:
                 class Api:
                     def call(self,op,data):
-                        if op == 'session_requirements': return {'protocol_version':1, 'skill_version':'0.2.0'}
+                        if op == 'session_requirements': return {'protocol_version':2, 'skill_version':'0.3.0'}
                         if op=='session_inbox': return [{'id':MID,'recipient_id':'a'}]
                         return {'queued':True}
                 result=Relay(Api(),ledger,{'agent_id':'a','session_ref':SID},lambda _:'submitted').run_once()
@@ -144,7 +188,7 @@ class SessionTests(unittest.TestCase):
                     class Api:
                         acked=False
                         def call(self,op,data,request_id=None):
-                            if op == 'session_requirements': return {'protocol_version':1, 'skill_version':'0.2.0'}
+                            if op == 'session_requirements': return {'protocol_version':2, 'skill_version':'0.3.0'}
                             if op=='session_inbox': return [] if self.acked else [message]
                             if op=='session_ack': self.acked=True
                             return {'queued':True}
@@ -183,7 +227,7 @@ class SessionTests(unittest.TestCase):
                 class Api:
                     acked=False
                     def call(self,op,data,request_id=None):
-                        if op == 'session_requirements': return {'protocol_version':1, 'skill_version':'0.2.0'}
+                        if op == 'session_requirements': return {'protocol_version':2, 'skill_version':'0.3.0'}
                         if op=='session_inbox': return [] if self.acked else [message]
                         if op=='session_ack': self.acked=True
                         return {'queued':True}
@@ -218,7 +262,7 @@ class SessionTests(unittest.TestCase):
                 class Api:
                     acked=False
                     def call(self,op,data,request_id=None):
-                        if op == 'session_requirements': return {'protocol_version':1, 'skill_version':'0.2.0'}
+                        if op == 'session_requirements': return {'protocol_version':2, 'skill_version':'0.3.0'}
                         if op=='session_inbox': return [] if self.acked else [message]
                         if op=='session_ack': self.acked=True
                         return {'queued':True}
@@ -240,7 +284,7 @@ class SessionTests(unittest.TestCase):
                 class Api:
                     polls=0
                     def call(self,op,data):
-                        if op == 'session_requirements': return {'protocol_version':1, 'skill_version':'0.2.0'}
+                        if op == 'session_requirements': return {'protocol_version':2, 'skill_version':'0.3.0'}
                         if op!='session_inbox': return {'queued':True}
                         self.polls+=1
                         # The chat confirms after the service already returned the message.
@@ -262,7 +306,7 @@ class SessionTests(unittest.TestCase):
                 class Api:
                     inbox,during_poll=[first,second],None
                     def call(self,op,data):
-                        if op == 'session_requirements': return {'protocol_version':1, 'skill_version':'0.2.0'}
+                        if op == 'session_requirements': return {'protocol_version':2, 'skill_version':'0.3.0'}
                         if op=='session_ack':
                             self.inbox=[m for m in self.inbox if m['id']!=data['message_id']]
                             return {'queued':True}
@@ -301,8 +345,64 @@ class SessionTests(unittest.TestCase):
     def test_missing_current_session_cannot_be_guessed(self):
         from quorum_session import current_session
         with patch.dict(os.environ, {}, clear=True):
-            with self.assertRaisesRegex(ValueError, 'current_codex_session_required'):
+            with self.assertRaisesRegex(ValueError, '^unsupported_client$'):
                 current_session()
+
+    @isolated_profiles
+    def test_client_preflight_names_supported_transports_without_leaking_environment(self):
+        from quorum_session import UnsupportedClient, client_preflight
+        cases = ((without_client_session(), 'linux', None, 'no_client_session', None),
+                 ({**without_client_session(), 'GROK_SESSION_ID': SID, 'GROK_LEADER_SOCKET': '/private/secret.sock'},
+                  'linux', None, 'grok_leader_platform_unsupported', 'grok'),
+                 ({**without_client_session(), 'CODEX_THREAD_ID': SID}, 'linux', None, 'codex_cli_missing', 'codex'),
+                 ({**without_client_session(), 'CLAUDE_CODE_SESSION_ID': SID}, 'linux', None,
+                  'claude_inbox_unavailable', 'claude'))
+        for env, platform, codex, reason, detected in cases:
+            with self.subTest(reason=reason), patch.dict(os.environ, env, clear=True), \
+                    patch('quorum_session.sys.platform', platform), patch('quorum_session.shutil.which', return_value=codex):
+                with self.assertRaises(UnsupportedClient) as caught:
+                    client_preflight()
+                data = caught.exception.diagnostic()
+                self.assertEqual(str(caught.exception), 'unsupported_client')
+                self.assertEqual((data['reason'], data['detected_client']), (reason, detected))
+                self.assertEqual({row['client'] for row in data['supported_transports']}, {'codex', 'claude', 'grok'})
+                self.assertIn('not accepted', data['next_step'])
+                self.assertNotIn(SID, json.dumps(data))
+                self.assertNotIn('secret', json.dumps(data))
+        with patch.dict(os.environ, {**without_client_session(), 'CODEX_THREAD_ID': SID}, clear=True), \
+                patch('quorum_session.shutil.which', return_value='/usr/bin/codex'):
+            self.assertEqual(client_preflight(), 'codex')
+
+    @isolated_profiles
+    def test_grok_preflight_requires_this_chats_private_leader_binding(self):
+        from quorum_session import UnsupportedClient, client_preflight
+        from quorum_grok_leader import GrokBindingError
+        cwd = str(Path.cwd().resolve())
+        with tempfile.TemporaryDirectory() as home:
+            secret = str(Path(home)/'secret-leader.sock')
+            env = {**without_client_session(), 'GROK_SESSION_ID': SID, 'GROK_HOME': home,
+                   'GROK_LEADER_SOCKET': secret}
+            # Real binding check: no socket exists for this chat on macOS.
+            failures = [None, GrokBindingError('leader_socket_missing'), ValueError(secret),
+                        OSError(secret), KeyError(secret), TypeError(secret)]
+            for failure in failures:
+                with self.subTest(failure=type(failure).__name__), patch.dict(os.environ, env, clear=True), \
+                        patch('quorum_session.sys.platform', 'darwin'), \
+                        patch('quorum_grok_leader.sys.platform', 'darwin'), \
+                        patch('quorum_grok_leader.binding', side_effect=failure) if failure else \
+                        contextlib.nullcontext():
+                    with self.assertRaises(UnsupportedClient) as caught:
+                        client_preflight()
+                    data = caught.exception.diagnostic()
+                    self.assertEqual((data['reason'], data['detected_client']), ('grok_leader_unavailable', 'grok'))
+                    self.assertIsNone(caught.exception.__cause__)
+                    self.assertNotIn(home, json.dumps(data))
+                    self.assertNotIn('secret', json.dumps(data))
+                    self.assertNotIn(SID, json.dumps(data))
+            with patch.dict(os.environ, env, clear=True), patch('quorum_session.sys.platform', 'darwin'), \
+                    patch('quorum_grok_leader.binding', return_value={}) as binding:
+                self.assertEqual(client_preflight(), 'grok')
+            binding.assert_called_once_with(SID, cwd)
 
     @isolated_profiles
     def test_ack_retry_does_not_queue_a_message_twice(self):
@@ -318,7 +418,7 @@ class SessionTests(unittest.TestCase):
                 class Api:
                     fail = True
                     def call(self, op, data, request_id=None):
-                        if op == 'session_requirements': return {'protocol_version':1, 'skill_version':'0.2.0'}
+                        if op == 'session_requirements': return {'protocol_version':2, 'skill_version':'0.3.0'}
                         calls.append(op)
                         if op == 'session_inbox': return [message]
                         if self.fail:
@@ -343,7 +443,7 @@ class SessionTests(unittest.TestCase):
                 message={'id':MID, 'recipient_id':'a'}
                 class Api:
                     def call(self, op, data, request_id=None):
-                        if op == 'session_requirements': return {'protocol_version':1, 'skill_version':'0.2.0'}
+                        if op == 'session_requirements': return {'protocol_version':2, 'skill_version':'0.3.0'}
                         return [message]
                 calls=[]
                 def queue(message):
@@ -364,7 +464,7 @@ class SessionTests(unittest.TestCase):
             try:
                 class Api:
                     def call(self, op, data):
-                        if op == 'session_requirements': return {'protocol_version':1, 'skill_version':'0.2.0'}
+                        if op == 'session_requirements': return {'protocol_version':2, 'skill_version':'0.3.0'}
                         return [{'id':MID,'recipient_id':'other'}]
                 relay=Relay(Api(),ledger,{'agent_id':'a','session_ref':SID},lambda _: self.fail('foreign message'))
                 with self.assertRaisesRegex(ValueError, 'session_binding_denied'): relay.run_once()
@@ -417,14 +517,14 @@ l.setting('session-agent',{'session_ref':a.session_id})
 class Api:
  def call(self,operation,payload):
   assert operation=='session_requirements'
-  return {'protocol_version':1,'skill_version':'0.2.0'}
+  return {'protocol_version':2,'skill_version':'0.3.0'}
 class Idle:
  def reconcile(self): return []
  def run_once(self): return 'idle'
 try:
  if a.action=='start': result=start(a.state,l,a.session_id,api=Api())
  elif a.action=='run':
-  l.setting('listener-release',{'protocol_version':1,'skill_version':'0.2.0','run_id':a.run_id})
+  l.setting('listener-release',{'protocol_version':2,'skill_version':'0.3.0','run_id':a.run_id})
   result=run_listener(l,lambda:Idle(),a.run_id,timeout=0)
  elif a.action=='stop': result=stop_listener(l)
  else: result=Control(l).status()
@@ -462,11 +562,28 @@ finally: l.db.close()
             try:
                 class Api:
                     def call(self, op, data):
-                        if op == 'session_requirements': return {'protocol_version':1, 'skill_version':'0.2.0'}
+                        if op == 'session_requirements': return {'protocol_version':2, 'skill_version':'0.3.0'}
                         if op=='session_inbox': raise ValueError('session_binding_denied')
                         return {'registered':True}
                 relay=Relay(Api(),ledger,{'agent_id':'a','session_ref':SID},lambda _:None)
                 with self.assertRaisesRegex(ValueError,'session_binding_denied'): relay.reconcile()
+            finally: ledger.db.close()
+
+    @isolated_profiles
+    def test_session_start_child_that_exits_unreported_is_an_explicit_error(self):
+        from quorum_api import QuorumError
+        from quorum_listener import Control
+        from quorum_session import start
+        from quorum_state import LocalLedger
+        with tempfile.TemporaryDirectory() as root:
+            ledger=LocalLedger(Path(root)/'sessions'/SID)
+            try:
+                ledger.setting('session-agent',{'session_ref':SID})
+                with patch('quorum_session.spawn_background',return_value=SimpleNamespace(poll=lambda:2)):
+                    with self.assertRaisesRegex(QuorumError,'listener_start_failed'):
+                        start(Path(root),ledger,SID,api=RequirementsApi())
+                status=Control(ledger).status()
+                self.assertEqual((status['state'],status['code'],status['listener']),('error','listener_exited','offline'))
             finally: ledger.db.close()
 
     @isolated_profiles
@@ -477,6 +594,202 @@ finally: l.db.close()
             require_caller(SID)
             with self.assertRaisesRegex(ValueError,'session_binding_denied'):
                 require_caller(MID)
+
+
+OLD, NEW = '/synthetic/old/inbox.sock', '/synthetic/new/inbox.sock'
+CID = '33333333-3333-4333-8333-333333333333'
+
+
+def own_endpoint(session_id):
+    """Stand-in for the platform validator: the caller's own exports only."""
+    if os.environ.get('CLAUDE_CODE_SESSION_ID') != session_id: raise ValueError('session_binding_denied')
+    if not os.environ.get('CLAUDE_CODE_MESSAGING_TOKEN'): raise ValueError('claude_pipe_unavailable')
+    return os.environ['CLAUDE_CODE_MESSAGING_SOCKET']
+
+
+class NativeBindingTests(unittest.TestCase):
+    def setUp(self):
+        isolated = patch.dict(os.environ, without_client_session(), clear=True)
+        isolated.start()
+        self.addCleanup(isolated.stop)
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        from quorum_state import LocalLedger
+        self.root = Path(temporary.name)
+        self.ledger = LocalLedger(self.root/'sessions'/SID)
+        self.addCleanup(self.ledger.db.close)
+        registration = {'engine':'claude','session_ref':SID,'project_ref':'shared-project','cwd':str(self.root)}
+        self.record = {'agent_id':'native-agent','device_id':'native-device','quorum_id':'synthetic-quorum',
+                       'worker':'offline',**registration,'registration':registration,'role':'claude-test',
+                       'quorum':'team','messaging_socket':OLD,
+                       'delegation':{'coordinator_id':'coordinator-agent','coordinator_role':'coordinator',
+                                     'dispatch_mode':'inline'}}
+        self.ledger.setting('session-agent', self.record)
+        self.api, self.spawned = RequirementsApi(), []
+
+    def generation(self, run_id=None):
+        generation = Generation(self.ledger.root, run_id)
+        self.addCleanup(generation.close)
+        return generation
+
+    def spawn(self, command, ledger):
+        # Prove the new child would inherit the caller's current exports.
+        self.spawned.append((os.environ.get('CLAUDE_CODE_MESSAGING_SOCKET'),
+                             [g.thread.is_alive() for g in self.live]))
+        return self.generation(command[command.index('--run-id')+1])
+
+    def dispatch(self, action, *, session=SID, socket=NEW, real_binding=False, **extra):
+        import quorum_claude_pipe
+        from quorum_session import dispatch
+        env = {'CLAUDE_CODE_SESSION_ID':session, 'CLAUDE_CODE_MESSAGING_SOCKET':socket,
+               'CLAUDE_CODE_MESSAGING_TOKEN':'synthetic-token-only'}
+        validator = quorum_claude_pipe.binding if real_binding else own_endpoint
+        with patch.dict(os.environ, env), \
+             patch('quorum_live.api_for', return_value=(self.api, None, None)), \
+             patch.object(quorum_claude_pipe, 'binding', validator), \
+             patch('quorum_session.spawn_background', side_effect=self.spawn):
+            return dispatch(SimpleNamespace(session_id=SID, action=action, **extra),
+                            SimpleNamespace(root=self.root), None)
+
+    def assert_unchanged(self, old):
+        self.assertEqual(self.ledger.setting('session-agent'), self.record)
+        self.assertTrue(old.thread.is_alive(), 'old listener must not be disturbed')
+        self.assertEqual(self.spawned, [])
+
+    @isolated_profiles
+    def test_same_chat_rotation_stops_old_generation_then_rebinds_only_the_endpoint(self):
+        old = self.generation()
+        self.live = [old]
+        self.ledger.setting('delivery:'+MID, {'state':'submitted'})
+        result = self.dispatch('start')
+        self.assertFalse(old.thread.is_alive())
+        self.assertEqual(self.spawned, [(NEW, [False])])
+        self.assertEqual((result['listener'], result['messaging_rebound'], result['session_id']),
+                         ('running', True, SID))
+        self.assertNotEqual(result['run_id'], old.run_id)
+        self.assertEqual(self.ledger.setting('session-agent'), {**self.record, 'messaging_socket':NEW})
+        self.assertNotIn('synthetic-token-only', json.dumps(self.ledger.setting('session-agent')))
+        # The receipt-pending write stays pending; nothing is replayed.
+        self.assertEqual(self.ledger.setting('delivery:'+MID), {'state':'submitted'})
+
+    @isolated_profiles
+    def test_unchanged_endpoint_reuses_the_running_generation(self):
+        old = self.generation()
+        self.live = [old]
+        result = self.dispatch('start', socket=OLD)
+        self.assertEqual(result['run_id'], old.run_id)
+        self.assertNotIn('messaging_rebound', result)
+        self.assert_unchanged(old)
+
+    @isolated_profiles
+    def test_foreign_session_cannot_rebind_or_stop_this_binding(self):
+        old = self.generation()
+        self.live = [old]
+        with self.assertRaisesRegex(ValueError, 'session_binding_denied'):
+            self.dispatch('start', session=MID)
+        self.assert_unchanged(old)
+
+    @isolated_profiles
+    def test_invalid_rotated_endpoint_is_refused_before_any_change(self):
+        old = self.generation()
+        self.live = [old]
+        with self.assertRaisesRegex(ValueError, 'claude_pipe_unavailable'):
+            self.dispatch('start', socket='relative-not-a-private-endpoint', real_binding=True)
+        self.assert_unchanged(old)
+
+    @isolated_profiles
+    def test_stale_process_cannot_adopt_a_rotated_endpoint(self):
+        self.live = []
+        with self.assertRaisesRegex(ValueError, 'session_binding_denied'):
+            self.dispatch('run', run_id=str(uuid.uuid4()))
+        self.assertEqual(self.ledger.setting('session-agent'), self.record)
+
+    @isolated_profiles
+    def test_uncertain_delivery_blocks_rebinding(self):
+        old = self.generation()
+        self.live = [old]
+        self.ledger.setting('delivery:'+MID, {'state':'intent'})
+        with self.assertRaisesRegex(ValueError, 'session_delivery_unknown'):
+            self.dispatch('start')
+        self.assert_unchanged(old)
+        self.assertEqual(self.ledger.setting('delivery:'+MID), {'state':'intent'})
+
+    @isolated_profiles
+    def test_unresponsive_old_generation_is_an_actionable_rejection(self):
+        from quorum_os import FileLock
+        self.live, run_id, clock = [], str(uuid.uuid4()), [0]
+        self.ledger.setting('listener', {'run_id':run_id, 'state':'waiting', 'handled':0})
+        self.ledger.setting('listener-release', {'protocol_version':2, 'skill_version':'0.3.0', 'run_id':run_id})
+        def sleep(_): clock[0] += 1
+        with FileLock(self.ledger.root/'listener.lock'), \
+             patch('quorum_session.time.monotonic', side_effect=lambda: clock[0]), \
+             patch('quorum_session.time.sleep', side_effect=sleep):
+            with self.assertRaisesRegex(ValueError, 'listener_stop_pending'):
+                self.dispatch('start')
+        self.assertEqual(self.ledger.setting('session-agent'), self.record)
+        self.assertEqual(self.ledger.setting('listener-stop'), {'run_id':run_id})
+        self.assertEqual(self.spawned, [])
+
+    @isolated_profiles
+    def test_thread_reads_as_the_native_agent_even_with_a_retired_pilot(self):
+        from quorum_state import LocalLedger
+        pilot = LocalLedger(self.root)
+        try: pilot.setting('pilot-agent', {'agent_id':'retired-pilot', 'quorum_id':'pilot-quorum'})
+        finally: pilot.db.close()
+        result = self.dispatch('thread', conversation_id=CID, after_sequence=16)
+        self.assertEqual(result, [{'sequence':1, 'body':'synthetic'}])
+        self.assertEqual(self.api.calls, [('conversation_read', {'quorum_id':'synthetic-quorum',
+            'agent_id':'native-agent', 'conversation_id':CID, 'after_sequence':16})])
+
+    @isolated_profiles
+    def test_thread_cli_pages_and_rejects_invalid_cursors(self):
+        import contextlib
+        import quorum
+        def main(*argv):
+            with patch.dict(os.environ, {'CLAUDE_CODE_SESSION_ID':SID}), \
+                 patch('quorum_live.api_for', return_value=(self.api, None, None)), \
+                 contextlib.redirect_stdout(io.StringIO()) as output, \
+                 contextlib.redirect_stderr(io.StringIO()):
+                code = quorum.main(['--state', str(self.root), 'session', 'thread', *argv])
+            return code, output.getvalue()
+        code, output = main(CID, '--after-sequence', '32')
+        self.assertEqual((code, json.loads(output)['data']), (0, [{'sequence':1, 'body':'synthetic'}]))
+        self.assertEqual(self.api.calls[-1][1]['after_sequence'], 32)
+        for bad in (('not-a-uuid',), (CID, '--after-sequence', '-1'), (CID, '--after-sequence', str(2**63))):
+            with self.subTest(bad=bad), self.assertRaises(SystemExit):
+                main(*bad)
+        self.assertEqual(len(self.api.calls), 1)
+
+    @isolated_profiles
+    def test_thread_from_a_foreign_session_is_denied_before_any_read(self):
+        self.live = []
+        with self.assertRaisesRegex(ValueError, 'session_binding_denied'):
+            self.dispatch('thread', session=MID, conversation_id=CID, after_sequence=0)
+        self.assertEqual(self.api.calls, [])
+
+    @isolated_profiles
+    def test_thread_for_an_unbound_session_never_falls_back_to_the_pilot(self):
+        from quorum_state import LocalLedger
+        self.ledger.db.execute("delete from settings where key='session-agent'")
+        self.ledger.db.commit()
+        pilot = LocalLedger(self.root)
+        try: pilot.setting('pilot-agent', {'agent_id':'retired-pilot', 'quorum_id':'pilot-quorum'})
+        finally: pilot.db.close()
+        with self.assertRaisesRegex(ValueError, 'session_not_connected'):
+            self.dispatch('thread', conversation_id=CID, after_sequence=0)
+        self.assertEqual(self.api.calls, [])
+
+    @isolated_profiles
+    def test_thread_backend_denial_is_returned_without_fallback(self):
+        from quorum_api import QuorumError
+        class Denied(RequirementsApi):
+            def call(self, operation, payload, request_id=None):
+                self.calls.append((operation, payload))
+                raise QuorumError('auth_required')
+        self.api = Denied()
+        with self.assertRaisesRegex(QuorumError, 'auth_required'):
+            self.dispatch('thread', conversation_id=CID, after_sequence=0)
+        self.assertEqual([call[1]['agent_id'] for call in self.api.calls], ['native-agent'])
 
 
 if __name__=='__main__': unittest.main()

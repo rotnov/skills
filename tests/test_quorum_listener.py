@@ -31,7 +31,7 @@ def temporary_ledger():
 class RequirementsApi:
     def call(self, operation, payload):
         assert operation == 'session_requirements'
-        return {'protocol_version':1, 'skill_version':'0.2.0'}
+        return {'protocol_version':2, 'skill_version':'0.3.0'}
 
 
 class ListenerTests(unittest.TestCase):
@@ -185,7 +185,7 @@ class ListenerTests(unittest.TestCase):
             class Api:
                 def __init__(self): self.claims, self.replies = 0, []
                 def call(self, operation, data, request_id=None):
-                    if operation == 'session_requirements': return {'protocol_version':1, 'skill_version':'0.2.0'}
+                    if operation == 'session_requirements': return {'protocol_version':2, 'skill_version':'0.3.0'}
                     if operation == 'inbox_claim':
                         self.claims += 1
                         return {'attempt_id': str(self.claims), 'generation': 1,
@@ -268,6 +268,160 @@ class ListenerTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'worker_already_running'):
                     run_listener(ledger, lambda: self.fail('second worker started'), str(uuid.uuid4()))
 
+    def test_abrupt_listener_death_is_reported_and_logged_without_secrets(self):
+        from quorum_listener import Control
+        secret = 'synthetic-secret-' + uuid.uuid4().hex
+        with temporary_ledger() as (temporary, ledger):
+            run_id = str(uuid.uuid4())
+            # A real process dies inside its loop: no finally, no self-reporting.
+            child = ('import os,sys\nsys.path.insert(0,sys.argv[1])\nfrom pathlib import Path\n'
+                     'from quorum_listener import run_listener\nfrom quorum_state import LocalLedger\n'
+                     'class Dying:\n def reconcile(self): pass\n def run_once(self): os._exit(9)\n'
+                     'run_listener(LocalLedger(Path(sys.argv[2])),Dying,sys.argv[3],timeout=0)\n')
+            result = subprocess.run([sys.executable, '-c', child, str(SCRIPTS), temporary, run_id],
+                                    env=dict(os.environ, QUORUM_SYNTHETIC_SECRET=secret),
+                                    capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 9, result.stderr)
+            self.assertEqual(ledger.setting('listener')['state'], 'checking')
+            first, second = Control(ledger).status(), Control(ledger).status()
+            for status in (first, second):
+                self.assertEqual((status['listener'], status['state'], status['code'], status['run_id']),
+                                 ('offline', 'error', 'listener_exited', run_id))
+            self.assertEqual(ledger.setting('listener')['previous_state'], 'checking')
+            log = (Path(temporary) / 'listener.log').read_text()
+            entries = [json.loads(line) for line in log.splitlines()]
+            self.assertEqual([(e['event'], e['run_id'], e['previous_state']) for e in entries],
+                             [('listener_exited', run_id, 'checking')])
+            self.assertEqual(set(entries[0]), {'event', 'run_id', 'previous_state', 'detected_at'})
+            persisted = log + json.dumps(first) + json.dumps(ledger.setting('listener'))
+            self.assertNotIn(secret, persisted)
+            self.assertNotIn('QUORUM_SYNTHETIC_SECRET', persisted)
+
+    def test_clean_and_never_started_runs_are_not_reported_lost(self):
+        from quorum_listener import Control, run_listener
+        with temporary_ledger() as (temporary, ledger):
+            self.assertEqual(Control(ledger).status()['state'], 'stopped')
+            self.assertFalse((Path(temporary) / 'listener-control.lock').exists())
+            control = Control(ledger)
+            class Idle:
+                def reconcile(self): pass
+                def run_once(self):
+                    control.request_stop()
+                    return 'idle'
+            stopped = run_listener(ledger, Idle, str(uuid.uuid4()), sleep=lambda _: None)
+            self.assertEqual((stopped['state'], stopped.get('code')), ('stopped', None))
+            self.assertEqual((control.status()['state'], control.status().get('code')), ('stopped', None))
+            self.assertFalse((Path(temporary) / 'listener.log').exists())
+
+    def test_in_progress_start_is_not_mistaken_for_death(self):
+        from quorum_listener import Control
+        from quorum_os import FileLock
+        with temporary_ledger() as (temporary, ledger):
+            control, run_id = Control(ledger), str(uuid.uuid4())
+            with FileLock(ledger.root / 'listener-control.lock'):
+                control.begin(run_id, 0)
+                status = control.status()
+                self.assertEqual((status['state'], status.get('code'), status['listener']),
+                                 ('starting', None, 'offline'))
+            self.assertEqual(ledger.setting('listener')['state'], 'starting')
+            # Once the start transition ends without a live run, the loss is explicit.
+            self.assertEqual(control.status()['code'], 'listener_exited')
+
+    def test_live_pid_reuse_cannot_mask_a_lost_run(self):
+        from quorum_listener import Control
+        with temporary_ledger() as (_, ledger):
+            run_id = str(uuid.uuid4())
+            ledger.setting('listener', {'run_id': run_id, 'pid': os.getpid(), 'state': 'waiting',
+                                        'handled': 3, 'timeout': 0, 'started_at': 1, 'updated_at': 1})
+            status = Control(ledger).status()
+            self.assertEqual((status['state'], status['code'], status['handled'], status['pid']),
+                             ('error', 'listener_exited', 3, os.getpid()))
+
+    def test_stop_reports_a_previously_lost_run(self):
+        from quorum_listener import stop_listener
+        with temporary_ledger() as (_, ledger):
+            run_id = str(uuid.uuid4())
+            ledger.setting('listener', {'run_id': run_id, 'state': 'waiting', 'handled': 0})
+            result = stop_listener(ledger)
+            self.assertEqual((result['state'], result['code'], result['stop_requested']),
+                             ('error', 'listener_exited', True))
+
+    def test_start_records_a_child_that_exits_before_publishing(self):
+        from quorum_listener import Control, start_listener
+        from quorum_api import QuorumError
+        with temporary_ledger() as (temporary, ledger):
+            native_popen = subprocess.Popen
+            class Crashed:
+                def poll(self): return 1
+            def spawn(command, **kwargs):
+                if '--run-id' not in command: return native_popen(command, **kwargs)
+                return Crashed()
+            with patch('quorum_live.api_for', return_value=(RequirementsApi(), None, None)), \
+                    patch('quorum_listener.subprocess.Popen', side_effect=spawn):
+                with self.assertRaisesRegex(QuorumError, 'listener_start_failed'):
+                    start_listener(ledger, temporary, 60, True)
+            status = Control(ledger).status()
+            self.assertEqual((status['listener'], status['state'], status['code']),
+                             ('offline', 'error', 'listener_exited'))
+            entry = json.loads((Path(temporary) / 'listener.log').read_text().splitlines()[-1])
+            self.assertEqual((entry['previous_state'], entry['exit_code']), ('starting', 1))
+
+    def test_start_terminates_its_unresponsive_child_with_a_bound(self):
+        from quorum_listener import Control, start_listener
+        from quorum_api import QuorumError
+        with temporary_ledger() as (temporary, ledger):
+            clock, native_popen, events = [0], subprocess.Popen, []
+            class Hung:
+                code = None
+                def poll(self): return self.code
+                def terminate(self): events.append('terminate'); self.code = -15
+                def wait(self, timeout): events.append(('wait', timeout)); return self.code
+            def spawn(command, **kwargs):
+                if '--run-id' not in command: return native_popen(command, **kwargs)
+                return Hung()
+            def sleep(_): clock[0] += 1
+            with patch('quorum_live.api_for', return_value=(RequirementsApi(), None, None)), \
+                    patch('quorum_listener.subprocess.Popen', side_effect=spawn), \
+                    patch('quorum_listener.time.monotonic', side_effect=lambda: clock[0]), \
+                    patch('quorum_listener.time.sleep', side_effect=sleep):
+                with self.assertRaisesRegex(QuorumError, 'listener_start_failed'):
+                    start_listener(ledger, temporary, 60, True)
+            self.assertEqual(events, ['terminate', ('wait', 5)])
+            self.assertLess(clock[0], 120)
+            self.assertEqual(Control(ledger).status()['code'], 'listener_exited')
+
+    def test_child_exiting_between_poll_and_signal_is_still_recorded(self):
+        from quorum_listener import Control, abandon_start
+        from quorum_os import FileLock
+        with temporary_ledger() as (temporary, ledger):
+            clock, events = [0], []
+            class Racing:
+                code = None
+                def poll(self): return self.code
+                def terminate(self):
+                    # It exits on its own just after the final poll.
+                    events.append('terminate'); self.code = 3
+                    raise ProcessLookupError('already exited')
+                def wait(self, timeout): events.append(('wait', timeout)); return self.code
+            class Live(Racing):
+                def terminate(self): events.append('terminate'); raise PermissionError('denied')
+            run_id = str(uuid.uuid4())
+            control = Control(ledger)
+            ledger.setting('listener', {'run_id': run_id, 'state': 'starting', 'handled': 0})
+            # The child's run lock keeps the stop request from recording the loss first.
+            with FileLock(ledger.root / 'listener.lock'), \
+                    patch('quorum_listener.time.monotonic', side_effect=lambda: clock[0]), \
+                    patch('quorum_listener.time.sleep', side_effect=lambda _: clock.__setitem__(0, clock[0] + 1)):
+                abandon_start(control, run_id, Racing())
+                self.assertEqual(events, ['terminate', ('wait', 5)])
+                entry = json.loads((Path(temporary) / 'listener.log').read_text().splitlines()[-1])
+                self.assertEqual((entry['event'], entry['exit_code']), ('listener_exited', 3))
+                self.assertEqual(ledger.setting('listener')['code'], 'listener_exited')
+                ledger.setting('listener', {'run_id': run_id, 'state': 'starting', 'handled': 0})
+                # A signal failure while the owned child still runs is never swallowed.
+                with self.assertRaises(PermissionError):
+                    abandon_start(control, run_id, Live())
+
     def test_copy_installed_background_start_status_and_stop(self):
         with tempfile.TemporaryDirectory(prefix='quorum listener ') as temporary:
             root = Path(temporary)
@@ -285,14 +439,14 @@ l=LocalLedger(a.state)
 class Api:
     def call(self, operation, payload):
         assert operation=='session_requirements'
-        return {'protocol_version':1,'skill_version':'0.2.0'}
+        return {'protocol_version':2,'skill_version':'0.3.0'}
 import quorum_live
 quorum_live.api_for=lambda ledger:(Api(),None,None)
 class Idle:
     def reconcile(self): return []
     def run_once(self): return 'idle'
 try:
-    if a.action=='run': l.setting('listener-release',{'protocol_version':1,'skill_version':'0.2.0','run_id':a.run_id})
+    if a.action=='run': l.setting('listener-release',{'protocol_version':2,'skill_version':'0.3.0','run_id':a.run_id})
     result = run_listener(l, lambda: Idle(), a.run_id) if a.action=='run' else dispatch(a,l)
     print(json.dumps(result))
 except Exception:

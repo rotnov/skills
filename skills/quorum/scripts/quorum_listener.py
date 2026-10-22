@@ -7,8 +7,11 @@ import sys
 import threading
 import time
 import uuid
-from quorum_os import FileLock, open_private, protect
+from quorum_os import FileLock, background_flags, open_private, protect
 from quorum_release import ReleaseGuard, ReleaseMismatch, installed_release
+
+# A run in these states holds listener.lock for as long as its process lives.
+LIVE_STATES = ('starting', 'waiting', 'checking')
 
 
 def locked(path):
@@ -21,20 +24,62 @@ def locked(path):
 
 
 class Control:
-    def __init__(self, ledger): self.ledger = ledger
+    def __init__(self, ledger, *, holding_control=False):
+        # holding_control: the caller already owns listener-control.lock.
+        self.ledger, self.holding_control = ledger, holding_control
 
     def begin(self, run_id, timeout):
         now = time.time()
         self.ledger.setting('listener', {'run_id': run_id, 'state': 'starting', 'handled': 0,
                                         'timeout': timeout, 'started_at': now, 'updated_at': now})
 
+    def mark_lost(self, run_id, *, exit_code=None):
+        """Supervisor-side record of a run whose process ended without reporting.
+
+        A killed process cannot log its own death. Persist only fixed fields:
+        no exception text, environment, arguments or credentials.
+        """
+        record = self.ledger.setting('listener') or {}
+        if record.get('run_id') != run_id or record.get('state') not in LIVE_STATES: return False
+        now = time.time()
+        self.ledger.setting('listener', {**record, 'state': 'error', 'code': 'listener_exited',
+                                        'previous_state': record['state'], 'lost_at': now, 'updated_at': now})
+        entry = {'event': 'listener_exited', 'run_id': run_id, 'previous_state': record['state'],
+                 'detected_at': now}
+        if isinstance(exit_code, int): entry['exit_code'] = exit_code
+        path = self.ledger.root / 'listener.log'
+        try:
+            fd = open_private(path, os.O_CREAT | os.O_WRONLY | os.O_APPEND)
+            try: os.write(fd, (json.dumps(entry) + '\n').encode())
+            finally: os.close(fd)
+        except (OSError, ValueError): pass  # The ledger record remains authoritative.
+        return True
+
+    def diagnose(self, record):
+        """Mark a live run lost only when no start/stop transition is in progress."""
+        def lost():
+            current = self.ledger.setting('listener') or {}
+            if (current.get('run_id') == record.get('run_id') and current.get('state') in LIVE_STATES
+                    and not locked(self.ledger.root / 'listener.lock')):
+                self.mark_lost(current['run_id'])
+        if self.holding_control: return lost()
+        try:
+            with FileLock(self.ledger.root / 'listener-control.lock'): lost()
+        except ValueError as error:
+            if str(error) != 'worker_already_running': raise
+
     def status(self):
         record = self.ledger.setting('listener') or {}
+        running = locked(self.ledger.root / 'listener.lock')
+        if not running and record.get('run_id') and record.get('state') in LIVE_STATES:
+            # The lock, not a possibly reused PID, proves the run is alive.
+            self.diagnose(record)
+            record = self.ledger.setting('listener') or {}
         result = {key: record[key] for key in ('run_id', 'pid', 'state', 'handled', 'code',
-                                              'started_at', 'updated_at', 'timeout') if key in record}
+                                              'started_at', 'updated_at', 'timeout', 'lost_at') if key in record}
         result.setdefault('state', 'stopped')
         result.setdefault('handled', 0)
-        result.update(listener='running' if locked(self.ledger.root / 'listener.lock') else 'offline',
+        result.update(listener='running' if running else 'offline',
                       poll_seconds=10, mode=self.ledger.setting('listener-mode') or 'continuous_claude')
         waiting = self.ledger.setting('listener-wait')
         if waiting:
@@ -136,6 +181,40 @@ def run_listener(ledger, make_worker, run_id, *, sleep=time.sleep, stop_event=No
     return control.status()
 
 
+def abandon_start(control, run_id, child, *, grace=10):
+    """Stop this start's exact unconfirmed child and record an unreported exit."""
+    control.request_stop(run_id)
+    deadline = time.monotonic() + grace
+    while child.poll() is None and time.monotonic() < deadline: time.sleep(.1)
+    if child.poll() is None:
+        # Bounded cleanup of a child that ignored the stop request; this is the
+        # owned Popen handle, never a PID looked up later.
+        signal_owned(child, child.terminate)
+        try: child.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            signal_owned(child, child.kill)
+            child.wait(timeout=5)
+    control.mark_lost(run_id, exit_code=child.poll())
+
+
+def signal_owned(child, send):
+    """Signal the owned child; tolerate only its own exit after the last poll."""
+    try: send()
+    except OSError:
+        if child.poll() is None: raise
+
+
+def spawn_background(command, ledger):
+    """Start a console-free child that appends only to the private listener.log."""
+    path = ledger.root / 'listener.log'
+    fd = open_private(path, os.O_CREAT | os.O_WRONLY | os.O_APPEND)
+    try:
+        protect(path)
+        return subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=fd, stderr=fd,
+                                cwd=str(ledger.root), close_fds=True, **background_flags())
+    finally: os.close(fd)
+
+
 def start_listener(ledger, toolchain, timeout, approved):
     from quorum_acp import ExecutionPolicy
     from quorum_live import supervisor_running
@@ -156,19 +235,11 @@ def start_listener(ledger, toolchain, timeout, approved):
                    '--approve-subscription', '--timeout', str(timeout), '--run-id', run_id]
         # Publish before spawn so a concurrent stop can target this exact run.
         control.begin(run_id, timeout)
-        log_path = ledger.root / 'listener.log'
-        fd = None
         try:
-            fd = open_private(log_path, os.O_CREAT | os.O_WRONLY | os.O_APPEND)
-            protect(log_path)
-            flags = {'creationflags': subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == 'nt' else {'start_new_session': True}
-            process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=fd, stderr=fd,
-                                       cwd=str(ledger.root), close_fds=True, **flags)
+            process = spawn_background(command, ledger)
         except Exception as error:
             control.update(run_id, 'error', 0, timeout=timeout, code=error_code(error))
             raise QuorumError('listener_start_failed') from None
-        finally:
-            if fd is not None: os.close(fd)
         deadline = time.monotonic() + 90
         while time.monotonic() < deadline:
             status = control.status()
@@ -179,7 +250,7 @@ def start_listener(ledger, toolchain, timeout, approved):
                 if status['state'] in ('error', 'unknown', 'stopped'): break
             if process.poll() is not None: break
             time.sleep(.1)
-        control.request_stop(run_id)
+        abandon_start(control, run_id, process)
         diagnostic = ledger.setting('release') or {}
         if diagnostic.get('update_required'):
             control.update(run_id, 'error', 0, timeout=timeout, code='skill_update_required')
@@ -200,7 +271,7 @@ def stop_listener(ledger):
             time.sleep(.1)
             continue
         try:
-            return Control(ledger).request_stop()
+            return Control(ledger, holding_control=True).request_stop()
         finally:
             guard.__exit__()
 
