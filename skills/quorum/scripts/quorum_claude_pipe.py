@@ -87,7 +87,8 @@ def submit(session_id, message_id, content):
     payload = json.dumps({'session_id':session_id,'message_id':message_id,'content':content},ensure_ascii=False)
     try:
         result = subprocess.run([sys.executable,str(Path(__file__).resolve())], input=payload,
-                                text=True,encoding='utf-8',capture_output=True,timeout=10)
+                                text=True,encoding='utf-8',capture_output=True,timeout=10,
+                                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
     except (OSError,subprocess.TimeoutExpired):
         raise ValueError('session_delivery_unknown') from None
     if result.returncode: raise ValueError('session_delivery_unknown')

@@ -42,7 +42,8 @@ $acl.AddAccessRule($rule)
     system = Path(os.environ['SystemRoot']) / 'System32/WindowsPowerShell/v1.0/powershell.exe'
     encoded = base64.b64encode(script.encode('utf-16-le')).decode('ascii')
     result = subprocess.run([str(system), '-NoProfile', '-NonInteractive', '-EncodedCommand', encoded],
-                            env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15)
+                            env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15,
+                            creationflags=subprocess.CREATE_NO_WINDOW)
     if result.returncode != 0: raise ValueError('private_acl_unavailable')
 
 
