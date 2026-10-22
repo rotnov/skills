@@ -113,6 +113,7 @@ from quorum_api import ServiceConfig
 import uuid
 
 assert (pathlib.Path(sys.argv[1]) / "references/invite.md").is_file()
+assert (pathlib.Path(sys.argv[1]) / "references/join.md").is_file()
 class IdApi:
     def call(self, operation, payload, request_id=None):
         if operation == "quorum_lookup": return {"quorum_id": "synthetic-quorum"}
@@ -123,6 +124,7 @@ invitation = create_id_invitation(IdApi(), ServiceConfig("https://example.invali
                                   "team", "123", "synthetic-request")
 assert invitation["invite_id"] in invitation["session_prompt"]
 assert "rotnov/skills" in invitation["session_prompt"]
+assert "references/join.md" in invitation["session_prompt"]
 assert "token" not in invitation
 
 root = pathlib.Path(sys.argv[2]) / "credentials"

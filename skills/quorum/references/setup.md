@@ -54,6 +54,9 @@ copy you installed. Both run the same helper and behavior.
 
 ## Owner setup
 
+For provisioning a new Quorum service, read [server setup](server.md). This
+section covers the client and OAuth configuration for that selected service.
+
 After separate cloud authorization, configure the hosted Supabase project and
 GitHub OAuth provider. There are two different redirect destinations:
 
@@ -108,7 +111,8 @@ Claude/Codex locally. A quorum invitation grants no model-spending permission.
 ## Create and invite
 
 Read [invite](invite.md) for ordinary identity-bound invitation IDs and their
-copyable session prompt. Read [invitations](invitations.md) for quorum creation
+copyable session prompt, and [join](join.md) for recipient acceptance.
+Read [invitations](invitations.md) for quorum creation
 and the explicitly separate legacy token-file flow. The raw owner
 `invite` RPC command is for controlled integrations only: its plaintext response
 must never be returned to an agent tool output. Use `invite-id` for ordinary
@@ -117,6 +121,7 @@ skill-driven onboarding. Model-facing MCP cannot create quorums or invitations.
 For the explicit Claude messaging test, [pilot](pilot.md) describes recipient
 connection and its additional pinned dependencies.
 
-This release does not provision Supabase, create GitHub applications, send an
-invitation to a person or install a background service. Live execution is limited
-to the explicit Claude pilot and its documented acceptance scope.
+Client installation does not provision Supabase, create GitHub applications,
+send an invitation to a person or install a background service. Server setup,
+invitation delivery and native-session reception require their respective owner
+requests. A separate model handler uses the explicit Claude pilot scope.
