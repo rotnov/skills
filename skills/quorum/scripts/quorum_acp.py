@@ -257,17 +257,25 @@ class ClaudePilotRunner:
             handle.wait(timeout=3)
             return
         import time
+        deadline = time.monotonic() + 3
         def group_exists():
             try:
                 os.killpg(handle.pid, 0)
             except ProcessLookupError:
                 return False
             except PermissionError:
-                # Darwin can report EPERM for an unreaped zombie-only group.
+                # Darwin can report EPERM before the dying child is reapable.
                 # Child exit alone says nothing about surviving descendants.
-                handle.poll()
-                try: os.killpg(handle.pid, 0)
-                except ProcessLookupError: return False
+                while True:
+                    handle.poll()
+                    try: os.killpg(handle.pid, 0)
+                    except ProcessLookupError: return False
+                    except PermissionError:
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0: raise
+                        time.sleep(min(.05, remaining))
+                        continue
+                    break
             return True
 
         try: os.killpg(handle.pid, signal.SIGTERM)
@@ -275,7 +283,6 @@ class ClaudePilotRunner:
         except PermissionError:
             handle.poll()
             if group_exists(): raise
-        deadline = time.monotonic() + 3
         while time.monotonic() < deadline:
             handle.poll()  # Reap the leader; descendants may still be executing.
             if not group_exists(): break

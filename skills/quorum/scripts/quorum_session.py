@@ -319,7 +319,6 @@ def dispatch(args, auth_ledger, register_agent):
                  'recipient_agent_id':peer['agent_id'],'conversation_id':conv,'body':text,'reply_to':None},args.request_id)
             return {**result,'conversation_id':conv}
         if args.action=='run':
-            ledger.setting('listener-release', {**release.installed, 'run_id':args.run_id})
             import signal,threading
             from quorum_realtime import RealtimeWait
             from quorum_presence import Presence

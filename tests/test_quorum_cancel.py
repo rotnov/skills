@@ -6,6 +6,7 @@ from pathlib import Path
 import signal
 import sys
 import threading
+import time
 import unittest
 from unittest.mock import patch
 
@@ -79,6 +80,43 @@ class CancellationTests(unittest.TestCase):
         self.assertTrue(self.child.stdout.closed)
         self.assertFalse(self.child.waited)
 
+    def test_multiple_transient_permissions_wait_for_owned_child_reap(self):
+        self.child.reap_after = 5
+        unreaped_probes = []
+        def boundary(pid, sig):
+            self.assertEqual(pid, self.child.pid)
+            if sig == signal.SIGTERM: return
+            self.assertEqual(sig, 0)
+            if self.child.returncode is None:
+                unreaped_probes.append(self.child.polls)
+                raise PermissionError(errno.EPERM, 'child not reapable yet')
+            raise ProcessLookupError(errno.ESRCH, 'reaped group gone')
+        self.signals(boundary)
+        with self.assertRaisesRegex(ValueError, '^adapter_timeout$'):
+            list(self.runner.events(self.child))
+        self.assertGreaterEqual(len(unreaped_probes), 4)
+        self.assertTrue(self.child.waited)
+        self.assertTrue(self.child.stdout.closed)
+
+    def test_persistent_permission_retries_until_bounded_deadline(self):
+        self.child.reap_after = 10000
+        probes = 0
+        def boundary(pid, sig):
+            nonlocal probes
+            if sig == signal.SIGTERM: return
+            self.assertEqual(sig, 0)
+            probes += 1
+            raise PermissionError(errno.EPERM, 'persistent group denial')
+        self.signals(boundary)
+        started = time.monotonic()
+        with self.assertRaisesRegex(PermissionError, 'persistent group denial'):
+            self.runner.cancel(self.child)
+        elapsed = time.monotonic() - started
+        self.assertGreaterEqual(elapsed, 2.8, 'must allow the reap deadline')
+        self.assertLess(elapsed, 4.5, 'persistent denial must remain bounded')
+        self.assertGreater(probes, 2)
+        self.assertFalse(self.child.waited)
+
     def test_permission_failure_returns_while_pipe_reader_is_blocked(self):
         entered, closed = threading.Event(), threading.Event()
         class ObservedPipe(io.BufferedReader):
@@ -111,7 +149,7 @@ class CancellationTests(unittest.TestCase):
         consumer.start()
         try:
             self.assertTrue(entered.wait(timeout=1))
-            self.assertTrue(finished.wait(timeout=3), 'buffered close blocked cancellation failure')
+            self.assertTrue(finished.wait(timeout=6), 'buffered close blocked cancellation failure')
             self.assertEqual(len(errors), 1)
             self.assertIsInstance(errors[0], PermissionError)
             self.assertIn('live writer inaccessible', str(errors[0]))

@@ -51,6 +51,17 @@ class ReleaseGuard:
         required = self.api.call('session_requirements', {})
         return self.accept(required)
 
+    def _listener(self, required):
+        # One SQLite snapshot pairs the marker with the current control run even
+        # if a new owner publishes between fetching the two rows.
+        rows = self.ledger.db.execute("select key,data from settings where key in ('listener','listener-release')")
+        records = {key:json.loads(value) for key,value in rows}
+        active = records.get('listener-release')
+        run_id = (records.get('listener') or {}).get('run_id')
+        compatible = (required is not None and versions(active) == required and bool(run_id)
+                      and isinstance(active, dict) and active.get('run_id') == run_id)
+        return run_id, active, compatible
+
     def accept(self, required):
         required = versions(required)
         diagnostic = {'installed':self.installed, 'required':required,
@@ -58,10 +69,13 @@ class ReleaseGuard:
         if diagnostic['update_required']: diagnostic['code'] = 'skill_update_required'
         self.ledger.setting('release', diagnostic)
         if diagnostic['update_required']:
-            # Stop only this ledger's bound listener, retaining every message,
-            # receipt, registration and credential. Never spawn an updater here.
-            from quorum_listener import Control
-            if self.stop_on_mismatch: Control(self.ledger).request_stop()
+            # A retained old helper still fails, but must not stop a verified
+            # upgraded owner. Stale or unverified listeners remain fail-closed.
+            from quorum_listener import Control, locked
+            if self.stop_on_mismatch:
+                run_id, _, compatible = self._listener(required)
+                if run_id and not (locked(self.ledger.root/'listener.lock') and compatible):
+                    Control(self.ledger).request_stop(run_id)
             raise ReleaseMismatch(diagnostic)
         return self.installed.copy()
 
@@ -69,12 +83,10 @@ class ReleaseGuard:
         from quorum_listener import locked
         if locked(self.ledger.root/'listener.lock'):
             # A fresh helper cannot bless an older running Python process.
-            active = self.ledger.setting('listener-release')
-            run_id = (self.ledger.setting('listener') or {}).get('run_id')
-            if (versions(active) != self.installed or not run_id
-                    or not isinstance(active, dict) or active.get('run_id') != run_id):
+            run_id, active, compatible = self._listener(self.installed)
+            if not compatible:
                 from quorum_listener import Control
-                Control(self.ledger).request_stop()
+                if run_id: Control(self.ledger).request_stop(run_id)
                 diagnostic = self.ledger.setting('release') or {}
                 diagnostic = {**diagnostic, 'listener':versions(active), 'listener_run_verified':False,
                               'update_required':True, 'code':'skill_update_required'}

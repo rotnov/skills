@@ -1,4 +1,5 @@
 """Explicit continuous Claude listener; no automatic service or login installation."""
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -7,7 +8,7 @@ import threading
 import time
 import uuid
 from quorum_os import FileLock, open_private, protect
-from quorum_release import ReleaseGuard, ReleaseMismatch
+from quorum_release import ReleaseGuard, ReleaseMismatch, installed_release
 
 
 def locked(path):
@@ -51,13 +52,19 @@ class Control:
         result['stop_requested'] = bool(record.get('run_id') and self.stopping(record['run_id']))
         return result
 
-    def update(self, run_id, state, handled, *, timeout=60, code=None):
+    def update(self, run_id, state, handled, *, timeout=60, code=None, release=None):
         old = self.ledger.setting('listener') or {}
         record = {'run_id': run_id, 'pid': os.getpid(), 'state': state, 'handled': handled,
                   'timeout': timeout, 'updated_at': time.time(),
                   'started_at': old.get('started_at', time.time()) if old.get('run_id') == run_id else time.time()}
         if code is not None: record['code'] = code
-        self.ledger.setting('listener', record)
+        records = {'listener':record}
+        if release is not None: records['listener-release'] = {**release, 'run_id':run_id}
+        # Publish a winning run and its marker together; readers must never see
+        # a marker from one generation paired with another run's control record.
+        with self.ledger.db:
+            self.ledger.db.executemany('insert into settings values (?,?) on conflict(key) do update set data=excluded.data',
+                                      [(key,json.dumps(value)) for key,value in records.items()])
 
     def stopping(self, run_id):
         return self.ledger.setting('listener-stop') == {'run_id': run_id}
@@ -86,7 +93,7 @@ def run_listener(ledger, make_worker, run_id, *, sleep=time.sleep, stop_event=No
     def stopping(): return stop_event.is_set() or control.stopping(run_id)
     # The shared lock also excludes the original one-message pilot worker.
     with LocalSupervisorLock(ledger.root), FileLock(ledger.root / 'listener.lock'):
-        control.update(run_id, 'starting', handled, timeout=timeout)
+        control.update(run_id, 'starting', handled, timeout=timeout, release=installed_release())
         try:
             uncertain = ledger.db.execute("select 1 from attempts where state in ('unknown','launch_intent','running') limit 1").fetchone()
             if stopping():
@@ -227,7 +234,6 @@ def dispatch(args, ledger):
         release = ReleaseGuard(api, ledger)
         release.check()
         release.running()
-        ledger.setting('listener-release', {**release.installed, 'run_id':args.run_id})
         def make_worker():
             return prepare_worker(ledger, api, args.toolchain, args.timeout, args.approve_subscription)
         return run_listener(ledger, make_worker, args.run_id, stop_event=stop_event, timeout=args.timeout)
