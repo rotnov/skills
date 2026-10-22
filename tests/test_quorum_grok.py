@@ -238,6 +238,52 @@ class GrokTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'grok_transport_unavailable'):
                 binding(SID, str(root))
             self.assertEqual(peer.methods, [])
+
+    @isolated_profiles
+    def test_accept_preflight_runs_the_read_only_leader_handshake_before_consuming_membership(self):
+        import quorum
+        invite = '33333333-3333-4333-8333-333333333333'
+        class Store:
+            backend = None
+            def load(self, _): return None
+        def accept(root, api):
+            output = io.StringIO()
+            with patch('quorum_session.Path.cwd', return_value=root), \
+                 patch('quorum_live.api_for', return_value=(api, __import__('quorum_api').ServiceConfig(
+                     'https://example.com', 'sb_publishable_synthetic'), Store())), \
+                 patch('quorum_auth.login_pkce', return_value={'authenticated': True}) as login, \
+                 patch('quorum_api.request_json', side_effect=AssertionError('no live call')), \
+                 contextlib.redirect_stdout(output):
+                code = quorum.main(['--state', str(root.resolve()/'state'), 'accept-id', invite, '--origin',
+                                    'https://example.com', '--publishable-key', 'sb_publishable_synthetic'])
+            return code, json.loads(output.getvalue()), login
+        class Api:
+            def __init__(self): self.calls = []
+            def call(self, op, payload, request_id=None):
+                self.calls.append(op)
+                return {'quorum_id': 'q', 'membership_id': 'm'}
+        with own_session() as (root, _, peer):
+            api = Api()
+            code, result, login = accept(root, api)
+            self.assertEqual((code, result['data'].get('native_preflight')), (0, 'passed'), result)
+            self.assertEqual(peer.methods, ['_x.ai/session/info', '_x.ai/sessions/list'])
+            self.assertEqual((api.calls, login.call_count), (['invite_accept_id'], 1))
+        def unsupported(peer, home): peer.version = '1.0.68'
+        def foreign(peer, home): peer.sid = '44444444-4444-4444-8444-444444444444'
+        def nonresident(peer, home): peer.resident = False
+        def missing(peer, home): os.environ['GROK_LEADER_SOCKET'] = str(home/'missing.sock')
+        for change in (unsupported, foreign, nonresident, missing):
+            with self.subTest(change=change.__name__), own_session() as (root, home, peer):
+                change(peer, home)
+                api = Api()
+                code, result, login = accept(root, api)
+                self.assertEqual((code, result['code'], result['data']['reason']),
+                                 (3, 'unsupported_client', 'grok_leader_unavailable'))
+                self.assertEqual((api.calls, login.call_count, peer.prompts), ([], 0, []))
+                self.assertNotIn('session/prompt', peer.methods)
+                for secret in (str(root), SID, peer.sid):
+                    self.assertNotIn(secret, json.dumps(result))
+
     @isolated_profiles
     def test_current_grok_identity_is_used_and_mixed_client_exports_are_denied(self):
         from quorum_session import current_engine, current_session
@@ -270,7 +316,7 @@ class GrokTests(unittest.TestCase):
             requests = []
             class Api:
                 def call(self, method, payload, request_id=None):
-                    if method == 'session_requirements': return {'protocol_version':1, 'skill_version':'0.2.0'}
+                    if method == 'session_requirements': return {'protocol_version':2, 'skill_version':'0.3.0'}
                     requests.append((method, payload))
                     return {'quorum_id': 'q', 'device_id': 'd', 'agent_id': 'a'}
             output = io.StringIO()
@@ -295,7 +341,7 @@ class GrokTests(unittest.TestCase):
         with own_session() as (root, _, peer):
             class Api:
                 def call(self, *args, **kwargs):
-                    if args[0] == 'session_requirements': return {'protocol_version':1, 'skill_version':'0.2.0'}
+                    if args[0] == 'session_requirements': return {'protocol_version':2, 'skill_version':'0.3.0'}
                     raise AssertionError('missing transport must not register an agent')
             output = io.StringIO()
             with patch.dict(os.environ):
@@ -421,7 +467,7 @@ class GrokTests(unittest.TestCase):
             message = {'id':MID, 'recipient_id':'a'}
             class Api:
                 def call(self, method, data):
-                    if method == 'session_requirements': return {'protocol_version':1, 'skill_version':'0.2.0'}
+                    if method == 'session_requirements': return {'protocol_version':2, 'skill_version':'0.3.0'}
                     if method == 'session_inbox': return [message]
                     raise AssertionError('unconfirmed message acknowledged')
             ledger = LocalLedger(root/'state')

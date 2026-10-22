@@ -125,7 +125,7 @@ class ClaudePilotRunner:
         import json
         import os
         import subprocess
-        from quorum_os import open_private, WindowsJob
+        from quorum_os import background_flags, open_private, WindowsJob
         policy.validate()
         if binding.engine != 'claude' or policy.max_turns != 1:
             raise ValueError('pilot_claude_one_turn_only')
@@ -153,9 +153,9 @@ class ClaudePilotRunner:
                    '--allowed-tools', '', '--timeout', str(policy.timeout), '--prompt-retries', '0',
                    '--mcp-config', str(Path(binding.cwd) / 'empty-mcp.json'),
                    'quorum-pilot-claude', 'exec', '--file', '-']
-        flags = {'creationflags': subprocess.CREATE_NEW_PROCESS_GROUP | 0x4} if os.name == 'nt' else {'start_new_session': True}
+        # CREATE_SUSPENDED (0x4) until the job owns it; no visible console window.
         process = subprocess.Popen(command, cwd=binding.cwd, env=self.environment(), stdin=subprocess.PIPE,
-                                   stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, **flags)
+                                   stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, **background_flags(0x4))
         if os.name == 'nt':
             try:
                 # Assign while suspended so no descendant can escape the job.

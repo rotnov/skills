@@ -19,8 +19,13 @@ Core RPCs: `quorum_create`, `invite_create`, `invite_accept`, `device_register`,
 separately reviewed backend; it is not supplied by a generic Supabase database.
 
 `message_send` takes explicit quorum, sender, recipient and conversation IDs,
-optional `reply_to`, and a UTF-8 body up to 16 KiB. `resolve_role` requires exactly
-one live match. A role name alone cannot grant authority or choose an arbitrary
+optional `reply_to`, and a UTF-8 body up to 16 KiB. It also takes an optional
+`priority` of `normal` (default) or `urgent`, as does `session_reply`; any other
+value is rejected. Priority is metadata: it orders durable selection and selects
+the client's delivery route, and never affects identity, membership, device,
+ownership or any permission check. It stays outside the deduplication
+fingerprint, so a replayed request ID must repeat the stored priority.
+`resolve_role` requires exactly one live match. A role name alone cannot grant authority or choose an arbitrary
 online agent. Conversations are ordered; follow-ups to one handler are serialized.
 
 `inbox_claim` atomically creates an attempt. The server holds one running handler

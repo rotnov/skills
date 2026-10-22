@@ -49,7 +49,7 @@ class DelegationCommandTests(unittest.TestCase):
         class Api:
             peer=coordinator
             def call(self, operation, payload):
-                if operation == 'session_requirements': return {'protocol_version':1, 'skill_version':'0.2.0'}
+                if operation == 'session_requirements': return {'protocol_version':2, 'skill_version':'0.3.0'}
                 assert operation=='resolve_role'
                 assert payload['project_ref']=='project'
                 return {'agent_id':self.peer}
