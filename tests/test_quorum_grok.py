@@ -142,6 +142,95 @@ class GrokTests(unittest.TestCase):
             self.assertEqual(peer.prompts, [])
 
     @isolated_profiles
+    def test_owner_relaunch_of_the_exact_session_with_resume_binds(self):
+        from quorum_grok_leader import binding
+        with own_session() as (root, _, peer):
+            resumed = {'pid_start':12345, 'uid':os.geteuid(), 'tty':True, 'executable':'/fixture/grok',
+                       'argv':['/fixture/grok', '--leader', '--leader-socket', str(peer.path),
+                               '--cwd', str(root), '--resume', SID]}
+            with patch('quorum_grok_leader.process_identity', return_value=resumed):
+                result = binding(SID, str(root))
+            self.assertEqual((result['leader_socket'], result['tui_pid']), (str(peer.path), os.getpid()))
+            self.assertEqual(peer.methods, ['_x.ai/session/info', '_x.ai/sessions/list'])
+            self.assertEqual(peer.prompts, [])
+
+    @isolated_profiles
+    def test_resume_of_another_session_title_fork_or_mixed_ids_is_denied(self):
+        from quorum_grok_leader import binding
+        with own_session() as (root, _, peer):
+            base = ['/fixture/grok', '--leader', '--leader-socket', str(peer.path)]
+            for tail in (['--resume', MID], ['--resume', 'my chat title'], ['--resume'],
+                         ['--resume', SID, '--session-id', SID], ['--session-id', MID, '--resume', SID],
+                         ['--resume', SID, '--resume', SID], ['-r', SID], ['--resume='+SID],
+                         ['--resume', SID, '--fork-session'], ['--resume', SID, '--restore-code'],
+                         ['--resume', SID, '--worktree'], ['--continue'], ['-c'], []):
+                identity = {'pid_start':12345, 'uid':os.geteuid(), 'tty':True,
+                            'executable':'/fixture/grok', 'argv':base+tail}
+                with self.subTest(tail=tail), patch('quorum_grok_leader.process_identity', return_value=identity):
+                    with self.assertRaisesRegex(ValueError, 'session_binding_denied'):
+                        binding(SID, str(root))
+            self.assertEqual(peer.methods, [])
+
+    @isolated_profiles
+    def test_missing_export_never_probes_a_stale_or_foreign_default_socket(self):
+        from quorum_grok_leader import GrokBindingError, binding
+        with own_session() as (root, home, _):
+            default = Peer(home/'leader.sock', root)
+            try:
+                with patch.dict(os.environ):
+                    del os.environ['GROK_LEADER_SOCKET']
+                    with self.assertRaises(GrokBindingError) as refused:
+                        binding(SID, str(root))
+                self.assertEqual(refused.exception.diagnostic()['reason'], 'leader_socket_missing')
+                self.assertEqual(default.methods, [])
+            finally: default.close()
+
+    @isolated_profiles
+    def test_exported_socket_that_is_absent_reports_missing_before_any_probe(self):
+        from quorum_grok_leader import GrokBindingError, binding
+        with own_session() as (root, _, peer):
+            private = root / 'private'
+            private.mkdir(mode=0o700)
+            with patch.dict(os.environ, {'GROK_LEADER_SOCKET': str(private / 'leader.sock')}):
+                with self.assertRaises(GrokBindingError) as refused:
+                    binding(SID, str(root))
+            self.assertEqual(refused.exception.diagnostic()['reason'], 'leader_socket_missing')
+            self.assertEqual(peer.methods, [])
+
+    @isolated_profiles
+    def test_plain_grok_inheriting_another_leaders_socket_is_not_attached(self):
+        from quorum_grok_leader import binding
+        with own_session() as (root, _, peer):
+            # A plain TUI started from another leader's shell inherits its export.
+            for argv in (['/fixture/grok'], ['/fixture/grok', '--resume', SID],
+                         ['/fixture/grok', '--leader', '--resume', SID]):
+                identity = {'pid_start':12345, 'uid':os.geteuid(), 'tty':True,
+                            'executable':'/fixture/grok', 'argv':argv}
+                with self.subTest(argv=argv), patch('quorum_grok_leader.process_identity', return_value=identity):
+                    with self.assertRaisesRegex(ValueError, 'session_binding_denied'):
+                        binding(SID, str(root))
+            self.assertEqual(peer.methods, [])
+
+    @isolated_profiles
+    def test_resume_socket_under_a_shared_default_style_parent_is_refused(self):
+        from quorum_grok_leader import binding
+        with own_session() as (root, _, _):
+            shared = root / 'shared'
+            shared.mkdir()
+            shared.chmod(0o755)  # Like Grok's default ~/.grok parent.
+            exposed = Peer(shared / 'leader.sock', root)
+            try:
+                identity = {'pid_start':12345, 'uid':os.geteuid(), 'tty':True, 'executable':'/fixture/grok',
+                            'argv':['/fixture/grok', '--leader', '--leader-socket', str(exposed.path),
+                                    '--resume', SID]}
+                with patch.dict(os.environ, {'GROK_LEADER_SOCKET': str(exposed.path)}), \
+                     patch('quorum_grok_leader.process_identity', return_value=identity):
+                    with self.assertRaisesRegex(ValueError, 'grok_transport_unavailable'):
+                        binding(SID, str(root))
+                self.assertEqual(exposed.methods, [])
+            finally: exposed.close()
+
+    @isolated_profiles
     def test_untested_binary_version_is_refused(self):
         from quorum_grok_leader import binding
         with own_session() as (root, _, peer):

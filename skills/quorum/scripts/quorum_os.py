@@ -2,6 +2,9 @@
 import os
 from pathlib import Path
 
+# One Windows PowerShell 5.1 launch per protect(); 15 s was exceeded on a hosted runner.
+PRIVATE_ACL_TIMEOUT = 30
+
 
 def reject_link(path):
     path = Path(path)
@@ -41,9 +44,13 @@ $acl.AddAccessRule($rule)
     env = dict(os.environ, QUORUM_ACL_PATH=str(path.resolve()), QUORUM_ACL_DIRECTORY='1' if directory else '0')
     system = Path(os.environ['SystemRoot']) / 'System32/WindowsPowerShell/v1.0/powershell.exe'
     encoded = base64.b64encode(script.encode('utf-16-le')).decode('ascii')
-    result = subprocess.run([str(system), '-NoProfile', '-NonInteractive', '-EncodedCommand', encoded],
-                            env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15,
-                            creationflags=subprocess.CREATE_NO_WINDOW)
+    try:
+        # subprocess.run kills and reaps PowerShell when the deadline expires.
+        result = subprocess.run([str(system), '-NoProfile', '-NonInteractive', '-EncodedCommand', encoded],
+                                env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                timeout=PRIVATE_ACL_TIMEOUT, creationflags=subprocess.CREATE_NO_WINDOW)
+    except (OSError, subprocess.SubprocessError):
+        raise ValueError('private_acl_unavailable') from None
     if result.returncode != 0: raise ValueError('private_acl_unavailable')
 
 

@@ -1,11 +1,32 @@
 """Real Windows ACL regression; no credentials, models or hosted service calls."""
+import contextlib
+import io
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
+import traceback
+from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
+
+SCRIPTS = Path(__file__).resolve().parents[1] / 'skills/quorum/scripts'
+CHECK_TIMEOUT = 15
+
+
+def timed(timings, phase, action):
+    # Report only fixed phase names, durations and exception types: no paths or commands.
+    started = time.monotonic()
+    try: value = action()
+    except Exception as error:
+        timings.append(f'{phase}={time.monotonic() - started:.1f}s:{type(error).__name__}')
+        print('probe_failed ' + ' '.join(timings), file=sys.stderr)
+        raise SystemExit(1) from None
+    timings.append(f'{phase}={time.monotonic() - started:.1f}s')
+    return value
 
 
 def probe_without_sacl_privilege(root):
@@ -45,10 +66,12 @@ def probe_without_sacl_privilege(root):
             raise ctypes.WinError(ctypes.get_last_error())
     finally:
         kernel.CloseHandle(token)
-    privileges = subprocess.check_output(['whoami', '/priv'], text=True)
+    timings = []
+    privileges = timed(timings, 'privileges', lambda: subprocess.check_output(
+        ['whoami', '/priv'], text=True, timeout=CHECK_TIMEOUT))
     assert 'SeSecurityPrivilege' not in privileges, 'SACL privilege was not removed'
 
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'skills/quorum/scripts'))
+    sys.path.insert(0, str(SCRIPTS))
     from quorum_os import protect
     directory = root / "private $data ' unicode"
     directory.mkdir()
@@ -68,21 +91,27 @@ $rules = @($acl.GetAccessRules($true, $true, $sidType) | ForEach-Object {
 '''
     powershell = Path(os.environ['SystemRoot']) / 'System32/WindowsPowerShell/v1.0/powershell.exe'
     results = []
-    for path, is_directory in ((directory, True), (file, False)):
-        protect(path, directory=is_directory)
-        inspected = subprocess.run([str(powershell), '-NoProfile', '-NonInteractive', '-Command', script],
-                                   env=dict(os.environ, QUORUM_TEST_PATH=str(path)),
-                                   capture_output=True, text=True, check=True, timeout=15)
+    for path, kind in ((directory, 'directory'), (file, 'file')):
+        timed(timings, f'protect_{kind}', lambda: protect(path, directory=kind == 'directory'))
+        inspected = timed(timings, f'inspect_{kind}', lambda: subprocess.run(
+            [str(powershell), '-NoProfile', '-NonInteractive', '-Command', script],
+            env=dict(os.environ, QUORUM_TEST_PATH=str(path)),
+            capture_output=True, text=True, check=True, timeout=CHECK_TIMEOUT))
         results.append(json.loads(inspected.stdout))
     print(json.dumps(results))
+    print('probe_ok ' + ' '.join(timings), file=sys.stderr)
 
 
 @unittest.skipUnless(os.name == 'nt', 'Real NTFS ACL check runs in the Windows CI job')
 class WindowsAclTests(unittest.TestCase):
     def test_owner_only_directory_and_file_without_sacl_privilege(self):
+        sys.path.insert(0, str(SCRIPTS))
+        from quorum_os import PRIVATE_ACL_TIMEOUT
+        # Exceed every bounded probe operation plus interpreter and token setup.
+        deadline = CHECK_TIMEOUT + 2 * (PRIVATE_ACL_TIMEOUT + CHECK_TIMEOUT) + 30
         with tempfile.TemporaryDirectory() as temporary:
             result = subprocess.run([sys.executable, str(Path(__file__).resolve()), '--probe', temporary],
-                                    capture_output=True, text=True, timeout=90)
+                                    capture_output=True, text=True, timeout=deadline)
         self.assertEqual(result.returncode, 0, result.stderr)
         results = json.loads(result.stdout)
         self.assertEqual(len(results), 2)
@@ -91,6 +120,77 @@ class WindowsAclTests(unittest.TestCase):
             self.assertEqual(acl['owner'], acl['current_user'])
             self.assertEqual(acl['rules'], [{'sid': acl['current_user'], 'rights': 2032127,
                                            'inherited': False, 'inheritance': inheritance, 'type': 'Allow'}])
+
+
+class PrivateAclDeadlineTests(unittest.TestCase):
+    """Synthetic Windows host: success, timeout and launch failure stay fail-closed and hidden."""
+    def protect(self, run):
+        sys.path.insert(0, str(SCRIPTS))
+        import quorum_os
+        temporary = self.enterContext(tempfile.TemporaryDirectory())
+        path = Path(temporary) / "hostile $(x) ' `n; & é"
+        path.touch()
+        host = SimpleNamespace(name='nt', environ=dict(os.environ, SystemRoot='C:/Windows'))
+        with patch.object(quorum_os, 'os', host), \
+             patch.object(subprocess, 'CREATE_NO_WINDOW', 0x08000000, create=True), \
+             patch.object(subprocess, 'run', side_effect=run) as launched:
+            try: quorum_os.protect(path)
+            except ValueError as error: failure = error
+            else: failure = None
+        return quorum_os, path, launched, failure
+
+    def assert_hidden_failure(self, path, failure):
+        self.assertIsInstance(failure, ValueError)
+        self.assertEqual(str(failure), 'private_acl_unavailable')
+        self.assertIsNone(failure.__cause__)
+        self.assertTrue(failure.__context__ is None or failure.__suppress_context__)
+        rendered = ''.join(traceback.format_exception(failure))
+        for leaked in (path.name, str(path), 'EncodedCommand', 'timed out', 'secret'):
+            self.assertNotIn(leaked, rendered)
+
+    def test_success_uses_owned_deadline_hidden_window_and_path_as_environment_data(self):
+        quorum_os, path, launched, failure = self.protect(lambda *_, **__: SimpleNamespace(returncode=0))
+        self.assertIsNone(failure)
+        command, options = launched.call_args.args[0], launched.call_args.kwargs
+        self.assertEqual(options['timeout'], quorum_os.PRIVATE_ACL_TIMEOUT)
+        self.assertEqual(options['creationflags'], 0x08000000)
+        self.assertEqual(options['env']['QUORUM_ACL_PATH'], str(path.resolve()))
+        self.assertFalse(any(path.name in part for part in command))
+
+    def test_nonzero_exit_reports_fixed_code(self):
+        _, path, _, failure = self.protect(lambda *_, **__: SimpleNamespace(returncode=1))
+        self.assert_hidden_failure(path, failure)
+
+    def test_timeout_reports_fixed_code_without_command_or_path(self):
+        def expire(command, **options):
+            raise subprocess.TimeoutExpired(command + [options['env']['QUORUM_ACL_PATH']], options['timeout'])
+        _, path, launched, failure = self.protect(expire)
+        self.assertEqual(launched.call_count, 1)  # No blind retry after the deadline.
+        self.assert_hidden_failure(path, failure)
+
+    def test_launch_failure_reports_fixed_code_without_os_text(self):
+        def missing(command, **_):
+            raise FileNotFoundError(2, 'secret launcher detail', command[0])
+        _, path, launched, failure = self.protect(missing)
+        self.assertEqual(launched.call_count, 1)
+        self.assert_hidden_failure(path, failure)
+
+
+class LocalSetupErrorCodeTests(unittest.TestCase):
+    def test_fixed_local_setup_codes_are_reported_and_other_text_is_hidden(self):
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'skills/quorum/scripts'))
+        import quorum
+        for error, expected in ((ValueError('private_acl_unavailable'), 'private_acl_unavailable'),
+                                (ValueError('unsafe_link'), 'unsafe_link'),
+                                (ValueError('login_timeout'), 'login_timeout'),
+                                (OSError('private_acl_unavailable'), 'operation_failed'),
+                                (ValueError('C:\\Users\\secret'), 'operation_failed')):
+            output = io.StringIO()
+            with self.subTest(expected=expected), tempfile.TemporaryDirectory() as temporary, \
+                 patch('quorum.LocalLedger', side_effect=error), contextlib.redirect_stdout(output):
+                code = quorum.main(['--state', temporary, 'status'])
+            self.assertEqual(code, 3)
+            self.assertEqual(json.loads(output.getvalue()), {'ok': False, 'code': expected, 'data': {}})
 
 
 if __name__ == '__main__':
