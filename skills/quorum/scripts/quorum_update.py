@@ -85,12 +85,18 @@ def child_environment(stage):
     env = {key: os.environ[key] for key in allowed if key in os.environ}
     home = stage / 'tool-home'
     home.mkdir(mode=0o700)
+    npm_user, npm_global = home / 'npm-user.npmrc', home / 'npm-global.npmrc'
+    for path in (npm_user, npm_global): path.touch(mode=0o600)
     env.update(HOME=str(home), USERPROFILE=str(home), XDG_CONFIG_HOME=str(home / '.config'),
                XDG_DATA_HOME=str(home / '.local/share'), XDG_CACHE_HOME=str(home / '.cache'),
                APPDATA=str(home / 'AppData/Roaming'), LOCALAPPDATA=str(home / 'AppData/Local'),
                GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=os.devnull, GIT_TERMINAL_PROMPT='0',
-               NPM_CONFIG_USERCONFIG=os.devnull, DISABLE_TELEMETRY='1', DO_NOT_TRACK='1',
+               NPM_CONFIG_USERCONFIG=str(npm_user), NPM_CONFIG_GLOBALCONFIG=str(npm_global),
+               GIT_ALLOW_PROTOCOL='https', GIT_SSH_COMMAND='exit 1',
+               DISABLE_TELEMETRY='1', DO_NOT_TRACK='1',
                SKILLS_CLONE_TIMEOUT_MS='90000', UV_NO_PROGRESS='1', UV_PYTHON=sys.executable)
+    # The pinned installer widens GIT_ALLOW_PROTOCOL internally. Its SSH fallback
+    # preserves this command; Git runs only its shell's exit builtin, never SSH.
     return env
 
 

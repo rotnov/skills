@@ -3,7 +3,9 @@ import contextlib
 import importlib
 import io
 import json
+import os
 from pathlib import Path
+import shlex
 import shutil
 import subprocess
 import sys
@@ -165,11 +167,62 @@ class UpdateTests(unittest.TestCase):
             for name in ('GITHUB_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN', 'SKILLS_DOWNLOAD_URL'):
                 self.assertNotIn(name, env)
             self.assertNotEqual(env['HOME'], str(Path.home()))
-            self.assertEqual(env['GIT_CONFIG_GLOBAL'], __import__('os').devnull)
+            self.assertEqual(env['GIT_CONFIG_GLOBAL'], os.devnull)
             return self.runner(command, **kwargs)
         with patch.dict('os.environ', GITHUB_TOKEN='secret', CLAUDE_CODE_OAUTH_TOKEN='secret',
                         SKILLS_DOWNLOAD_URL='https://untrusted.invalid'):
             self.assertEqual(self.refresh(runner=isolated)['status'], 'updated')
+
+    @unittest.skipUnless(shutil.which('npm'), 'npm is required for the real config isolation check')
+    def test_npm_ignores_prefix_global_registry_config(self):
+        stage = self.root / 'npm stage'
+        stage.mkdir()
+        prefix = self.root / 'synthetic npm prefix'
+        (prefix / 'etc').mkdir(parents=True)
+        (prefix / 'etc/npmrc').write_text('registry=https://synthetic.invalid/\n')
+        env = self.module.child_environment(stage)
+        command = [shutil.which('npm'), '--prefix', str(prefix), 'config', 'get', 'registry']
+        control = dict(env)
+        control.pop('NPM_CONFIG_GLOBALCONFIG', None)
+        exposed = subprocess.run(command, cwd=self.root, env=control, capture_output=True,
+                                 text=True, timeout=30)
+        self.assertEqual(exposed.returncode, 0, exposed.stderr)
+        self.assertEqual(exposed.stdout.strip(), 'https://synthetic.invalid/')
+        isolated = subprocess.run(command, cwd=self.root, env=env, capture_output=True,
+                                  text=True, timeout=30)
+        self.assertEqual(isolated.returncode, 0, isolated.stderr)
+        self.assertEqual(isolated.stdout.strip(), 'https://registry.npmjs.org/')
+
+    @unittest.skipUnless(shutil.which('git'), 'git is required for the real fallback isolation check')
+    def test_git_ssh_fallback_is_denied_even_when_installer_overrides_allowed_protocols(self):
+        stage = self.root / 'git stage'
+        stage.mkdir()
+        marker = self.root / 'synthetic SSH authentication was invoked'
+        ssh_fixture = self.root / 'synthetic ssh.py'
+        ssh_fixture.write_text('import pathlib,sys\npathlib.Path(sys.argv[1]).touch()\nraise SystemExit(1)\n')
+        env = self.module.child_environment(stage)
+        # skills@1.5.20 createGitClient overrides GIT_ALLOW_PROTOCOL and uses
+        # process.env.GIT_SSH_COMMAND ?? its SSH default after HTTPS auth failure.
+        # Replace only that default with a safe marker, never the host SSH binary.
+        fixture_command = shlex.join([Path(sys.executable).as_posix(),
+                                     ssh_fixture.as_posix(), marker.as_posix()])
+        env.update(GIT_ALLOW_PROTOCOL='https:http:ssh:git:file', GIT_SSH_VARIANT='ssh',
+                   GIT_SSH_COMMAND=env.get('GIT_SSH_COMMAND', fixture_command))
+        result = subprocess.run([shutil.which('git'), 'clone', '--depth', '1',
+                                 'git@synthetic.invalid:rotnov/skills.git', str(stage / 'clone')],
+                                cwd=self.root, env=env, capture_output=True, text=True, timeout=30)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(marker.exists(), 'fallback reached an SSH authentication command')
+
+    @unittest.skipUnless(shutil.which('git'), 'git is required for the real protocol isolation check')
+    def test_direct_non_https_git_transport_is_blocked_before_network(self):
+        stage = self.root / 'protocol stage'
+        stage.mkdir()
+        env = self.module.child_environment(stage)
+        result = subprocess.run([shutil.which('git'), 'ls-remote', 'git://synthetic.invalid/skills.git'],
+                                cwd=self.root, env=env, capture_output=True, text=True, timeout=30)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("transport 'git' not allowed", result.stderr)
 
     def test_concurrent_update_does_not_start_a_second_installer(self):
         from quorum_os import FileLock

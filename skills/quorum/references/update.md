@@ -23,7 +23,9 @@ trigger a second refresh within the same owner request. Even `status: current`
 returns a validated persistent path.
 
 The installer stages both client copies under a private temporary directory and
-isolates its home/configuration to avoid updating live client metadata. The helper
+isolates its home, Git configuration and both npm configuration levels to avoid
+using owner credentials or updating live client metadata. Git SSH fallback is
+denied; an HTTPS authentication failure blocks the update. The helper
 compares their source contents, validates required files and Python syntax, syncs
 the exact frozen lock (downloading missing locked dependencies if necessary), then
 runs an offline status check with temporary state. Only then does it publish or
