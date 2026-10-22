@@ -17,6 +17,20 @@ import time
 import uuid
 
 
+class GrokBindingError(ValueError):
+    """Only fixed local diagnostics may cross the JSON CLI boundary."""
+    def __init__(self, reason):
+        super().__init__('grok_transport_unavailable')
+        self.reason = reason
+
+    def diagnostic(self):
+        if self.reason == 'leader_socket_missing':
+            return {'reason': 'leader_socket_missing', 'next_step':
+                    'No leader socket is available for this chat. An already-running standalone '
+                    'Grok TUI cannot attach in place; keep the chat open and read references/grok.md.'}
+        return {}
+
+
 def process_identity(pid):
     """macOS proc_info.h ABI; do not inspect process environment or credentials."""
     if sys.platform != 'darwin': raise OSError('unsupported_platform')
@@ -75,6 +89,12 @@ def local_binding(session_id, cwd):
     home = Path(os.environ.get('GROK_HOME') or Path.home()/'.grok')
     endpoint = os.environ.get('GROK_LEADER_SOCKET') or str(home/'leader.sock')
     from quorum_claude_pipe import unix_endpoint
+    try:
+        Path(endpoint).lstat()
+    except FileNotFoundError:
+        raise GrokBindingError('leader_socket_missing') from None
+    except OSError:
+        raise ValueError('grok_transport_unavailable') from None
     try:
         # Grok creates mode0755 sockets; require owner-only write and a private
         # parent. Claude retains its stricter default0600 requirement.

@@ -12,6 +12,7 @@ sys.dont_write_bytecode = True
 from quorum_api import QuorumApi, ServiceConfig, QuorumError
 from quorum_auth import token_provider
 from quorum_state import LocalLedger
+from quorum_grok_leader import GrokBindingError
 
 
 def register_agent(api, ledger, slug, role, data, *, device_key="device"):
@@ -126,10 +127,15 @@ def main(argv=None):
         code = str(error) if str(error) in codes else 'operation_failed'
         print(json.dumps({'ok': False, 'code': code, 'data': {}}))
         return codes.get(code, 3)
+    except GrokBindingError as error:
+        print(json.dumps({'ok': False, 'code': 'grok_transport_unavailable', 'data': error.diagnostic()}))
+        return 3
     except (ValueError, OSError, KeyError, TypeError, subprocess.SubprocessError) as error:
-        # Never serialize exception text: it may contain remote bodies or secrets.
+        # Allow only fixed local codes; arbitrary exception text may contain secrets.
         safe = {'machine_profile_unavailable', 'service_profile_ambiguous', 'auth_profile_conflict',
                 'service_config_conflict', 'github_identity_required', 'auth_lock_timeout'}
+        if isinstance(error, ValueError):
+            safe.update({'grok_transport_unavailable', 'session_binding_denied'})
         code = str(error) if str(error) in safe else 'operation_failed'
         print(json.dumps({'ok': False, 'code': code, 'data': {}}))
         return 3

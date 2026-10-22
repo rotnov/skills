@@ -199,6 +199,53 @@ class GrokTests(unittest.TestCase):
             finally: state.db.close()
 
     @isolated_profiles
+    def test_plain_tui_without_leader_reports_actionable_diagnostic_before_registration(self):
+        import quorum
+        from quorum_state import LocalLedger
+        with own_session() as (root, _, peer):
+            class Api:
+                def call(self, *args, **kwargs):
+                    raise AssertionError('missing transport must not register an agent')
+            output = io.StringIO()
+            with patch.dict(os.environ):
+                del os.environ['GROK_LEADER_SOCKET']
+                with patch('quorum_live.api_for', return_value=(Api(), None, None)), \
+                     patch('quorum_session.Path.cwd', return_value=root), \
+                     contextlib.redirect_stdout(output):
+                    code = quorum.main(['--state', str(root/'state'), 'session', 'connect', 'test-team',
+                                        '--role', 'grok-test', '--project-ref', 'shared-project'])
+            result = json.loads(output.getvalue())
+            self.assertEqual(code, 3)
+            self.assertEqual(result['code'], 'grok_transport_unavailable')
+            self.assertEqual(result['data']['reason'], 'leader_socket_missing')
+            self.assertIn('already-running standalone', result['data']['next_step'])
+            self.assertIn('references/grok.md', result['data']['next_step'])
+            self.assertNotIn(str(root), output.getvalue())
+            self.assertNotIn(SID, output.getvalue())
+            state = LocalLedger(root/'state/sessions'/SID)
+            try:
+                self.assertIsNone(state.setting('session-agent'))
+            finally: state.db.close()
+            self.assertEqual(peer.methods, [])
+
+    @isolated_profiles
+    def test_safe_binding_error_codes_do_not_expose_untrusted_exception_text(self):
+        import quorum
+        from quorum_grok_leader import GrokBindingError
+        with own_session() as (root, _, _):
+            for error, expected in ((ValueError('grok_transport_unavailable'), 'grok_transport_unavailable'),
+                                    (ValueError('session_binding_denied'), 'session_binding_denied'),
+                                    (GrokBindingError('secret provider body'), 'grok_transport_unavailable'),
+                                    (ValueError('secret provider body'), 'operation_failed')):
+                output = io.StringIO()
+                with self.subTest(expected=expected), \
+                     patch('quorum_live.dispatch', side_effect=error), contextlib.redirect_stdout(output):
+                    code = quorum.main(['--state', str(root/'state'), 'session', 'status'])
+                self.assertEqual(code, 3)
+                self.assertEqual(json.loads(output.getvalue()),
+                                 {'ok': False, 'code': expected, 'data': {}})
+
+    @isolated_profiles
     def test_bind_verifies_current_export_active_tui_and_exact_resident_metadata(self):
         from quorum_grok_leader import binding
         with own_session() as (root, _, peer):
