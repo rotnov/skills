@@ -83,6 +83,30 @@ class UpdateTests(unittest.TestCase):
         self.assertEqual(selected.parts[-3:], ('.agents', 'skills', 'quorum'))
         self.assertTrue((selected/'SKILL.md').is_file())
 
+    def test_tool_output_survives_a_non_utf_locale_without_decoding_logs(self):
+        # UTF-8 for this character contains 0x90, which cp1252 cannot decode.
+        script = ('import os\n'
+                  'os.write(1, \'{"message":"\\U0001f610"}\'.encode("utf-8"))\n'
+                  'os.write(2, bytes([0x90]))\n')
+        with patch('subprocess._text_encoding', return_value='cp1252'):
+            result = self.module.checked_run(subprocess.run, [sys.executable, '-c', script],
+                                             self.root, dict(os.environ), 'update_fetch_failed', 30)
+        self.assertEqual(json.loads(result.stdout), {'message': '\U0001f610'})
+        self.assertEqual(result.stderr, b'\x90')
+
+    def test_non_utf_validation_json_is_rejected_without_publishing(self):
+        def invalid_status(command, **kwargs):
+            if command[1] == 'run':
+                # Valid JSON if incorrectly decoded as cp1252, invalid UTF-8.
+                raw = b'{"ok":true,"data":{"configured":false,"worker":"offline","text":"\xff"}}'
+                return subprocess.run([sys.executable, '-c', 'import os; os.write(1, '+repr(raw)+')'],
+                                      **kwargs)
+            return self.runner(command, **kwargs)
+        with patch('subprocess._text_encoding', return_value='cp1252'):
+            with self.assertRaisesRegex(ValueError, '^update_validation_failed$'):
+                self.refresh(runner=invalid_status)
+        self.assertFalse(any(p.is_dir() for p in self.cache.iterdir()))
+
     def test_fetch_failure_is_a_blocker_without_partial_publish_or_secret_output(self):
         def failing(command, **kwargs):
             return subprocess.CompletedProcess(command, 1, 'secret-token', 'secret-token')
