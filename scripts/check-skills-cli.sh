@@ -1,6 +1,10 @@
 #!/bin/sh
 set -eu
 
+# Smoke a clean install, not the Codex or Claude Code chat that runs this gate.
+unset CODEX_THREAD_ID CLAUDE_CODE_SESSION_ID \
+  CLAUDE_CODE_MESSAGING_SOCKET CLAUDE_CODE_MESSAGING_TOKEN
+
 repo_root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 install_root=$(mktemp -d "${TMPDIR:-/tmp}/rotnov skills-cli.XXXXXX")
 
