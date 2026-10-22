@@ -12,12 +12,14 @@ import tempfile
 import subprocess
 import threading
 import unittest
+from quorum_test_support import isolated_profiles
 from unittest.mock import patch
 
 SCRIPTS = Path(__file__).resolve().parents[1] / 'skills/quorum/scripts'
 sys.path.insert(0, str(SCRIPTS))
 SID = '11111111-1111-4111-8111-111111111111'
 MID = '22222222-2222-4222-8222-222222222222'
+
 
 
 class Peer:
@@ -118,6 +120,7 @@ class GrokTests(unittest.TestCase):
             code = quorum_grok_leader.main()
         return subprocess.CompletedProcess(argv, code, '', '')
 
+    @isolated_profiles
     def test_closed_reused_foreign_or_headless_process_is_denied(self):
         from quorum_grok_leader import binding
         with own_session() as (root, _, peer):
@@ -138,6 +141,7 @@ class GrokTests(unittest.TestCase):
                     binding(SID, str(root))
             self.assertEqual(peer.prompts, [])
 
+    @isolated_profiles
     def test_untested_binary_version_is_refused(self):
         from quorum_grok_leader import binding
         with own_session() as (root, _, peer):
@@ -145,6 +149,7 @@ class GrokTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'grok_transport_unavailable'):
                 binding(SID, str(root))
             self.assertEqual(peer.methods, [])
+    @isolated_profiles
     def test_current_grok_identity_is_used_and_mixed_client_exports_are_denied(self):
         from quorum_session import current_engine, current_session
         with own_session():
@@ -153,6 +158,7 @@ class GrokTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'ambiguous_current_session'):
                     current_session()
 
+    @isolated_profiles
     def test_normal_envelope_uses_grok_and_requires_same_chat_receipt(self):
         from quorum_grok_leader import binding
         from quorum_session import enqueue
@@ -166,6 +172,7 @@ class GrokTests(unittest.TestCase):
             self.assertIn('"received", "'+MID+'"', text)
             self.assertIn('Preserve the owner task and permissions.', text)
 
+    @isolated_profiles
     def test_connect_registers_the_actual_grok_chat_without_starting_a_listener(self):
         import quorum
         from quorum_listener import Control
@@ -191,6 +198,7 @@ class GrokTests(unittest.TestCase):
                 self.assertEqual(state.setting('session-agent')['grok_transport']['leader_socket'], str(peer.path))
             finally: state.db.close()
 
+    @isolated_profiles
     def test_bind_verifies_current_export_active_tui_and_exact_resident_metadata(self):
         from quorum_grok_leader import binding
         with own_session() as (root, _, peer):
@@ -201,6 +209,7 @@ class GrokTests(unittest.TestCase):
             self.assertEqual(peer.prompts, [])
             self.assertEqual(peer.methods, ['_x.ai/session/info', '_x.ai/sessions/list'])
 
+    @isolated_profiles
     def test_submit_uses_existing_session_and_stable_prompt_id_without_waiting_for_model(self):
         from quorum_grok_leader import binding, submit
         with own_session() as (root, _, peer):
@@ -215,6 +224,7 @@ class GrokTests(unittest.TestCase):
             self.assertNotIn('session/new', peer.methods)
             self.assertNotIn('session/load', peer.methods)
 
+    @isolated_profiles
     def test_wrong_export_foreign_live_session_or_cwd_is_denied_before_a_prompt(self):
         from quorum_grok_leader import binding
         with own_session() as (root, _, peer):
@@ -228,6 +238,7 @@ class GrokTests(unittest.TestCase):
                 binding(SID, str(root))
             self.assertEqual(peer.prompts, [])
 
+    @isolated_profiles
     def test_missing_active_tui_or_hidden_headless_row_is_not_resumed(self):
         from quorum_grok_leader import binding
         with own_session() as (root, home, peer):
@@ -240,6 +251,7 @@ class GrokTests(unittest.TestCase):
                 binding(SID, str(root))
             self.assertEqual(peer.prompts, [])
 
+    @isolated_profiles
     def test_unsafe_socket_file_symlink_or_writable_mode_is_refused(self):
         from quorum_grok_leader import binding
         with own_session() as (root, _, peer):
@@ -259,6 +271,7 @@ class GrokTests(unittest.TestCase):
                 binding(SID, str(root))
             self.assertEqual(path.read_text(), 'unchanged')
 
+    @isolated_profiles
     def test_ambiguous_closed_submission_is_not_replayed(self):
         from quorum_grok_leader import binding, submit
         from quorum_session import Relay
@@ -281,6 +294,7 @@ class GrokTests(unittest.TestCase):
                 self.assertEqual(len(peer.prompts), 1)
             finally: ledger.db.close()
 
+    @isolated_profiles
     def test_changed_tui_binding_is_not_submitted_by_the_detached_helper(self):
         from quorum_grok_leader import binding, submit
         with own_session() as (root, home, peer):
@@ -295,6 +309,7 @@ class GrokTests(unittest.TestCase):
 
 class NativeProcessTests(unittest.TestCase):
     @unittest.skipUnless(sys.platform == 'darwin', 'macOS proc_info ABI')
+    @isolated_profiles
     def test_actual_process_birth_uid_and_executable_are_read_without_environment(self):
         from quorum_grok_leader import process_identity
         current = process_identity(os.getpid())
@@ -311,6 +326,7 @@ class NativeProcessTests(unittest.TestCase):
         self.assertNotIn('environment', current)
         with self.assertRaises(OSError): process_identity(2147483647)
 
+    @isolated_profiles
     def test_invalid_or_oversized_framing_is_refused(self):
         from quorum_grok_leader import Leader
         import time
@@ -326,6 +342,7 @@ class NativeProcessTests(unittest.TestCase):
             with self.assertRaises((ValueError, EOFError)):
                 leader.receive(time.monotonic()+1)
 
+    @isolated_profiles
     def test_unsupported_platform_is_explicit(self):
         from quorum_grok_leader import local_binding
         with patch.dict(os.environ, {'GROK_SESSION_ID':SID}, clear=True), patch('sys.platform', 'win32'):

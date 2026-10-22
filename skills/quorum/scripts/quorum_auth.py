@@ -154,9 +154,9 @@ class FileCredentials:
             pass
 
 
-def token_provider(config, store, clock=time.time):
+def token_provider(config, store, clock=time.time, *, locked=False):
     from quorum_api import request_json, QuorumError
-    def token():
+    def refresh():
         session = store.load(config.origin)
         if session is None: raise QuorumError('auth_required')
         if session.get('expires_at', 0) <= clock() + 30:
@@ -166,6 +166,11 @@ def token_provider(config, store, clock=time.time):
             session['expires_at'] = clock() + session['expires_in']
             store.save(config.origin, session)
         return session['access_token']
+    def token():
+        from contextlib import nullcontext
+        from quorum_profiles import auth_lock
+        with nullcontext() if locked else auth_lock(store):
+            return refresh()
     return token
 
 

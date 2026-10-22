@@ -12,19 +12,28 @@ possible. The helper uses only the standard library and never installs adapters.
 
 ## Paths and command examples
 
-The project-local copy-install above places Codex's skill at
-`<project>/.agents/skills/quorum` and Claude Code's at
-`<project>/.claude/skills/quorum`. Ask the client to load `quorum` and use the
-actual loaded skill directory; for a global/custom installation, do not assume
-these project paths. `<skill-dir>` in commands is that absolute directory,
+For a first installation, use the owner's selected global default without another
+global-versus-project question:
+
+```text
+npx --yes skills@1.5.20 add rotnov/skills --skill quorum -a claude-code codex --copy -g -y
+```
+
+This places the Codex skill at `~/.agents/skills/quorum` and the Claude Code
+copy at `~/.claude/skills/quorum`. For an already installed skill, use immutable
+[automatic refresh](update.md) rather than overwriting an active copy.
+Ask the client to load `quorum` and resolve its actual loaded directory.
+An explicitly requested project installation may use `.agents/skills/quorum` or
+`.claude/skills/quorum` under that project. `<skill-dir>` is the absolute directory
 containing `SKILL.md`, `pyproject.toml` and `scripts/quorum.py`.
 
 `<private-state>` is an absolute writable directory you choose outside the
 repository, such as `~/.local/share/quorum/my-instance` on macOS/Linux or
 `$env:LOCALAPPDATA\Quorum\my-instance` on Windows. Expand it to an absolute
-path and pass `--state` before the command. Reuse it for this identity/service;
-use another directory for another service. It holds the config, ledger and
-private login credentials, not another copy of the skill.
+path and pass `--state` before the command. It holds an authoritative service
+config and independent ledgers/session bindings. New state directories can reuse
+the machine's selected service and login; another service needs its own state.
+Credentials use the shared machine profile described below.
 
 `<stable-id>` is a chosen request identifier, for example `create-my-team-1` or
 `invite-my-team-teammate-1`. Keep it for an identical retry after an uncertain
@@ -85,8 +94,45 @@ python3.12 <skill-dir>/scripts/quorum.py configure --origin https://PROJECT.supa
 python3.12 <skill-dir>/scripts/quorum.py login
 ```
 
-Quorum sessions are stored **unencrypted** in `<state>/credentials/` for this
-owner-approved pilot. The directory is mode 0700; each profile file is mode 0600.
+### One machine login per service
+
+Sign in with GitHub **via Supabase Auth**; a Supabase dashboard registration is
+not needed. The GitHub account must match an invitation's immutable numeric ID.
+After initial configuration/login, all of this OS user's new state directories,
+sessions and quorums on that service reuse the same local login without another
+browser. `login` reuses valid auth and is also the explicit way to reauthenticate
+after missing auth; it must retain the established GitHub identity. Revoked
+refresh tokens block rather than triggering a browser fallback; `logout`, then
+explicit `login`, reauthenticates the pinned identity.
+
+The private registry defaults to `~/.local/share/quorum/machine-profiles/` on every
+host. `QUORUM_PROFILE_ROOT` selects an explicit absolute private alternative;
+keep it stable for this OS user (tests use isolated temporary roots). Each service
+origin has its own public key, credential path and pinned GitHub ID. With one
+registered service, an unconfigured state can use `accept-id <invite-id>` alone.
+With several services, configure the intended state explicitly first. A UUID
+never identifies its backend. Existing state config remains authoritative;
+conflicting flags/keys or a different existing login stop instead of overriding.
+
+On first use of an existing authenticated state, the registry adopts that state's
+`<state>/credentials/` **in place**. This retained legacy directory remains the
+credential location for old listeners and new helpers; do not move/delete it or
+copy its rotating tokens into the registry. No other state or owner's files are
+scanned. A distinct legacy credential path is a conflict even for the same GitHub
+user; select the established state rather than replacing either token family.
+New installations store credentials inside their machine profile directory.
+
+Missing/deleted credential directories, ambiguous services, identity/key conflicts
+and expired/revoked authentication are explicit blockers. A selected dead profile
+is never silently recreated or replaced by another state's credentials. New
+helpers serialize first login and refresh at the canonical credential path,
+re-read inside the lock, and persist each rotation atomically. Old running code
+keeps its path and existing behavior; a code refresh alone does not upgrade it.
+`logout` removes this service's shared local auth for all its new helpers, retains
+the profile/identity selection, and clears capabilities in the selected ledger.
+
+Quorum credentials are stored **unencrypted** for this owner-approved pilot.
+Directories are mode 0700; each profile file is mode 0600 (owner-only ACLs on Windows).
 Writes are atomic and reject symlinks, shared files and unsafe permissions. The
 store has no Keychain, encryption or external-service dependency. Never display
 or copy the session JSON into model context, logs, source control or another

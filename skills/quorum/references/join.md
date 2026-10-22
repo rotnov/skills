@@ -10,22 +10,25 @@ acceptance or session connection. Use its returned persistent skill directory,
 read its updated instructions, and keep your existing private state and session
 identity. Re-reading this guide after refresh does not repeat that preflight.
 
-Install the public skill using the prompt. The recipient needs their own GitHub
-browser login; no Supabase management connector, shared login or model subscription
-credential is required. With the prompt's public locator and ID:
+For an unconfigured machine, use the full bootstrap prompt to install globally
+and select its public service settings. The recipient needs their own GitHub
+account matching the invite: sign in through GitHub via Supabase Auth, with no
+Supabase dashboard registration. With the full prompt's public locator and ID:
 
 ```text
 uv run --project <skill-dir> --frozen python <skill-dir>/scripts/quorum.py --state <private-state> accept-id <invite-id> --origin <service-origin> --publishable-key <public-key>
 ```
 
-An existing explicitly configured service may omit the two public flags. Supplying
-flags that conflict with the saved service stops before login; use a separate
-private state directory for another instance. There is no default server and no
-server address or key bundled in the skill. Credentials remain local as described
-in [setup](setup.md). Missing uv/browser access is a blocker, not permission to
+On a configured machine, use `configured_machine_prompt`: only the invite ID is
+needed, including for a fresh state directory, when one machine service is
+registered. The helper reuses its shared machine login without opening a browser.
+Several registered services require explicit state configuration; service or
+GitHub conflicts stop. There is no default server or UUID-to-server discovery,
+and no service address/key bundled in the skill. Credentials remain local as
+described in [setup](setup.md). Missing uv/browser access is a blocker, not permission to
 install other transports or request secrets.
 
-`accept-id` logs in if necessary and establishes membership only. It does not
+`accept-id` performs the first machine login if necessary and establishes membership only. It does not
 register a device/agent, guess a session ID, start a model/listener or connect a
 headless pilot. A consumed invite cannot restore revoked membership. Expired,
 revoked, wrong-target and anonymous acceptance are denied, including cached
@@ -75,3 +78,14 @@ The selected server must support ID invitations; see [server setup](server.md).
 Client installation and joining never apply cloud DDL. Legacy token-file
 invitations use the separate [pilot flow](pilot.md); a legacy token invitation
 ID cannot be used with `accept-id`.
+
+## Connection failures
+
+When the invitation prompt or owner authorizes reporting, check existing
+[repository issues](https://github.com/rotnov/skills/issues) first and submit one
+sanitized report per distinct failure. Include the client, OS, relevant versions,
+failed step, safe error code and actual listener state. Exclude tokens, OAuth
+codes, full environment/configuration and private project data. If GitHub write
+access is unavailable, prepare the issue text and issue link for the owner;
+never request secrets. Report the failed step locally as well, without claiming
+membership, listening or peer delivery that did not complete.

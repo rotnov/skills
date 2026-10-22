@@ -91,13 +91,10 @@ def add_commands(commands):
 
 
 def api_for(ledger):
-    import json
-    from quorum_api import QuorumApi, ServiceConfig
-    from quorum_auth import CredentialStore, token_provider
-    path = ledger.root / 'config.json'
-    if path.is_symlink(): raise ValueError('unsafe_config_file')
-    config = ServiceConfig(**json.loads(path.read_text()))
-    store = CredentialStore(root=ledger.root / 'credentials')
+    from quorum_api import QuorumApi
+    from quorum_auth import token_provider
+    from quorum_profiles import resolve_profile
+    config, store = resolve_profile(ledger.root)
     return QuorumApi(config, token_provider(config, store)), config, store
 
 
@@ -108,7 +105,6 @@ def dispatch(args, ledger, register_agent):
     import re
     import time
     import uuid
-    from quorum_auth import login_pkce
     if args.command == 'session':
         from quorum_session import dispatch as session_dispatch
         return session_dispatch(args, ledger, register_agent)
@@ -118,9 +114,6 @@ def dispatch(args, ledger, register_agent):
     if args.command == 'accept-id':
         from quorum_invitations import accept_id_invitation
         return accept_id_invitation(args, ledger)
-    if args.command == 'invite-id' and not (ledger.root / 'config.json').is_file():
-        from quorum_api import QuorumError
-        raise QuorumError('service_not_configured')
     if args.command == 'connect':
         invite = read_invitation(args.invite_file)
         config_path = ledger.root / 'config.json'
@@ -132,7 +125,8 @@ def dispatch(args, ledger, register_agent):
             fd = open_private(config_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
             with os.fdopen(fd, 'w') as output: json.dump(public, output)
         api, config, store = api_for(ledger)
-        if store.load(config.origin) is None: login_pkce(config, store)
+        from quorum_profiles import ensure_login
+        ensure_login(config, store)
         accepted = api.call('invite_accept', {'token': invite['token']},
                             'accept:' + hashlib.sha256(invite['token'].encode()).hexdigest())
         if accepted['quorum_id'] != invite['quorum_id']: raise ValueError('quorum_mismatch')
@@ -142,7 +136,7 @@ def dispatch(args, ledger, register_agent):
     if args.command == 'invite-id':
         from quorum_invitations import create_id_invitation, github_id
         target = args.github_id or github_id(args.github_user)
-        return create_id_invitation(api, config, args.quorum, target, args.request_id)
+        return create_id_invitation(api, config, args.quorum, target, args.request_id, github_user=args.github_user)
     if args.command == 'invite-file':
         from quorum_invitations import create_invitation, github_id
         target = args.github_id or github_id(args.github_user)

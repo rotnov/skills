@@ -34,14 +34,24 @@ intended GitHub account (case-insensitively), then use its positive integer `id`
 Do not use a display name, editable profile field or guessed ID. This is also how
 the helper resolves `--github-user`; no GitHub API token is needed.
 
-Output includes `invite_id`, expiry, public
-`service` locator and a ready-to-copy `session_prompt` that installs from
-`rotnov/skills`. Give that entire prompt to the owner to share. It carries no
-invitation secret and requires no ZIP or file transfer. Do not send it to anyone
+Output identifies the intended `@GitHub-login` when supplied, immutable numeric
+ID, quorum and expiry. GitHub is required; the recipient signs in through GitHub
+via Supabase Auth and does not register for the Supabase dashboard.
+
+Share `session_prompt` for a first machine: it includes only the public `service`
+locator and installs from `rotnov/skills` globally with the pinned CLI. An already
+installed copy uses immutable automatic refresh. For a configured machine, share
+`configured_machine_prompt`, which only needs `invite_id` and reuses its selected
+machine profile/login, including in a new state directory. Missing/ambiguous
+profiles block; never guess a backend from the UUID. Both prompts carry no
+invitation secret and require no ZIP or file transfer. Do not send either to anyone
 unless the owner explicitly requests delivery. Reuse a request ID only for an
 identical retry; the server returns the same invitation. The prompt requests the
 full join workflow: membership, this exact chat's native listener and a local
 Hello. Read [join](join.md) for default role/project selection and delivery checks.
+Both prompts authorize sanitized connection-failure reporting to the repository
+issue tracker; follow [the failure-reporting procedure](join.md#connection-failures),
+including duplicate checks and the no-write-access fallback.
 
 ## Server prerequisite and legacy flow
 

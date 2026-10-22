@@ -33,8 +33,10 @@ Run from the intended chat's shell tool, using this skill's own uv project and
 the already configured private state. The helper binds the actual current UUID
 from the client exports; it never selects a recent chat. If multiple clients' session
 variables are present, it fails closed. Choose a shared project reference and an
-unambiguous role. Credentials and GitHub identity stay in the existing root state;
-each native session gets its own device and private ledger beneath it.
+unambiguous role. Credentials and GitHub identity reuse the selected shared machine
+profile; the root state config stays authoritative. Each native session gets its
+own device and private ledger beneath the state. Read [setup](setup.md) only for
+initial login, legacy credential adoption or profile conflicts.
 
 ```text
 uv run --project <skill-dir> --frozen python <skill-dir>/scripts/quorum.py --state <private-state> session connect <quorum> --role <role> --project-ref <shared-project>

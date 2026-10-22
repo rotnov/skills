@@ -7,6 +7,9 @@ unset CODEX_THREAD_ID GROK_SESSION_ID GROK_LEADER_SOCKET CLAUDE_CODE_SESSION_ID 
 
 repo_root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 install_root=$(mktemp -d "${TMPDIR:-/tmp}/rotnov skills-cli.XXXXXX")
+install_root=$(CDPATH='' cd -- "$install_root" && pwd -P)
+# No smoke invocation may discover the owner's shared machine login.
+export QUORUM_PROFILE_ROOT="$install_root/machine-profiles"
 
 cleanup() {
   rm -rf -- "$install_root"
@@ -28,6 +31,35 @@ uv_bin=$(command -v uv)
   cd "$install_root"
   npx --yes skills@1.5.20 add "$repo_root" --list >/dev/null
 )
+
+# Verify global copy-install with an isolated home and npm/Git configuration.
+# The updater's internal project-local staging command remains unchanged.
+"$uv_bin" run --no-project --python 3.12 python - "$repo_root" "$install_root" <<'PY'
+from pathlib import Path
+import json
+import subprocess
+import sys
+
+repo, temporary = map(Path, sys.argv[1:])
+sys.path.insert(0, str(repo / 'skills/quorum/scripts'))
+from quorum_update import child_environment, content_hash
+stage = temporary / 'global-install'
+stage.mkdir(mode=0o700)
+env = child_environment(stage)
+env['QUORUM_PROFILE_ROOT'] = str(stage / 'machine-profiles')
+command = ['npx', '--yes', 'skills@1.5.20', 'add', str(repo), '--skill', 'quorum',
+           '-a', 'claude-code', 'codex', '--copy', '-g', '-y']
+subprocess.run(command, cwd=stage, env=env, check=True, stdout=subprocess.DEVNULL, timeout=180)
+for relative in ('.agents/skills/quorum', '.claude/skills/quorum'):
+    installed = Path(env['HOME']) / relative
+    assert installed.is_dir() and not installed.is_symlink()
+    assert content_hash(installed) == content_hash(repo / 'skills/quorum')
+    result = subprocess.run([sys.executable, str(installed / 'scripts/quorum.py'),
+                             '--state', str(stage / relative.split('/')[0]), 'status'],
+                            cwd=stage, env=env, capture_output=True, check=True, timeout=30)
+    assert json.loads(result.stdout)['data']['configured'] is False
+print('Pinned isolated global Quorum copy-install: valid')
+PY
 
 learning_install_root=""
 for skill_dir in "$repo_root"/skills/*; do
