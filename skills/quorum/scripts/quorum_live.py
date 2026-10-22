@@ -2,6 +2,7 @@
 from pathlib import Path
 from quorum_state import SessionBinding
 from quorum_os import FileLock, open_private, protect
+from quorum_release import ReleaseGuard
 
 
 def bind_delivery(ledger, delivery):
@@ -129,6 +130,7 @@ def dispatch(args, ledger, register_agent):
         api, config, store = api_for(ledger)
         from quorum_profiles import ensure_login
         ensure_login(config, store)
+        ReleaseGuard(api, ledger).check()
         accepted = api.call('invite_accept', {'token': invite['token']},
                             'accept:' + hashlib.sha256(invite['token'].encode()).hexdigest())
         if accepted['quorum_id'] != invite['quorum_id']: raise ValueError('quorum_mismatch')
@@ -144,6 +146,7 @@ def dispatch(args, ledger, register_agent):
         target = args.github_id or github_id(args.github_user)
         return create_invitation(api, config, ledger, args.quorum, target, args.request_id)
     if args.command in ('pilot-init', 'connect'):
+        ReleaseGuard(api, ledger).check()
         if not re.fullmatch('[a-z][a-z0-9-]{0,47}', args.role): raise ValueError('invalid_role')
         if not args.session_ref or len(args.session_ref) > 128: raise ValueError('invalid_session_ref')
         cwd = ledger.root / 'scratch' / args.role
@@ -212,6 +215,7 @@ def prepare_worker(ledger, api, toolchain, timeout, approved):
     if record is None: raise ValueError('pilot_agent_required')
     policy = ExecutionPolicy(1, timeout, 'subscription', True, approved)
     policy.validate()
+    ReleaseGuard(api, ledger).check()
     validate_pilot_profile(ledger, record)
     api.call('agent_status', {'agent_id': record['agent_id']})
     cwd = Path(record['registration']['cwd'])

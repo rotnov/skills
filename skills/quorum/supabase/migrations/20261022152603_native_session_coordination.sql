@@ -1,7 +1,8 @@
 -- Native listener health is separate from registration, delivery and task acceptance.
 create table if not exists quorum_private.session_health (
  agent_id uuid primary key references quorum_private.agents(id),
- last_seen timestamptz not null default now()
+ last_seen timestamptz not null default now(),
+ protocol_version integer, skill_version text
 );
 create table if not exists quorum_private.session_connections (
  agent_id uuid references quorum_private.agents(id), connection_id uuid,
@@ -17,15 +18,32 @@ alter table quorum_private.session_notices enable row level security;
 revoke all on quorum_private.session_health, quorum_private.session_connections,
  quorum_private.session_notices from public, anon, authenticated;
 
-create or replace function public.session_heartbeat(p_agent_id uuid, p_session_ref text, p_connection_id uuid)
+-- Public release metadata only; require a real authenticated GitHub identity.
+create or replace function public.session_requirements()
 returns jsonb language plpgsql security definer set search_path=pg_catalog as $function$
-declare q uuid; own quorum_private.agents%rowtype; peer record; fresh integer; sent jsonb;
+begin
+ if auth.uid() is null or not exists(select 1 from auth.identities where user_id=auth.uid() and provider='github') then
+  raise insufficient_privilege using message='github_identity_required'; end if;
+ return jsonb_build_object('protocol_version',1,'skill_version','0.2.0');
+end $function$;
+
+create or replace function public.session_heartbeat(p_agent_id uuid, p_session_ref text, p_connection_id uuid,
+ p_protocol_version integer, p_skill_version text)
+returns jsonb language plpgsql security definer set search_path=pg_catalog as $function$
+declare q uuid; own quorum_private.agents%rowtype; peer record; fresh integer; sent jsonb; required jsonb;
 begin
  q:=quorum_private.native_session(p_agent_id,p_session_ref);
+ required:=public.session_requirements();
+ if p_protocol_version is distinct from (required->>'protocol_version')::integer
+  or p_skill_version is distinct from required->>'skill_version' then
+  return jsonb_build_object('code','skill_update_required','required',required);
+ end if;
  if p_connection_id is null then raise exception 'connection_id_required'; end if;
  select * into own from quorum_private.agents where id=p_agent_id;
- insert into quorum_private.session_health(agent_id,last_seen) values(p_agent_id,now())
- on conflict(agent_id) do update set last_seen=excluded.last_seen;
+ insert into quorum_private.session_health(agent_id,last_seen,protocol_version,skill_version)
+ values(p_agent_id,now(),p_protocol_version,p_skill_version)
+ on conflict(agent_id) do update set last_seen=excluded.last_seen,
+  protocol_version=excluded.protocol_version,skill_version=excluded.skill_version;
  insert into quorum_private.session_connections values(p_agent_id,p_connection_id) on conflict do nothing;
  get diagnostics fresh=row_count;
  if fresh=1 then
@@ -45,7 +63,7 @@ begin
    update quorum_private.deliveries set requires_handler=false where message_id=(sent->>'message_id')::uuid;
   end loop;
  end if;
- return jsonb_build_object('online',true,'new_connection',fresh=1,'last_seen',now());
+ return jsonb_build_object('online',true,'new_connection',fresh=1,'last_seen',now(),'required',required);
 end $function$;
 
 -- A real delivery receipt is health activity too. This prevents a slow queue/ACK
@@ -71,6 +89,10 @@ begin
  select project_ref into project from quorum_private.agents where id=p_agent_id;
  select coalesce(jsonb_agg(to_jsonb(x)),'[]'::jsonb) into result from (
   select a.id as agent_id,a.role,a.engine,a.project_ref,h.last_seen,
+   jsonb_build_object('protocol_version',h.protocol_version,'skill_version',h.skill_version) as client,
+   public.session_requirements() as required,
+   (h.protocol_version is distinct from (public.session_requirements()->>'protocol_version')::integer
+    or h.skill_version is distinct from public.session_requirements()->>'skill_version') as update_required,
    case when pending.oldest<=now()-interval '60 seconds' then 'unavailable'
         when h.last_seen<=now()-interval '60 seconds' then 'unavailable'
         when h.last_seen is null then 'unknown' else 'online' end as availability,
@@ -109,5 +131,5 @@ begin
  ) x;
  return result;
 end $function$;
-revoke all on function public.session_heartbeat(uuid,text,uuid), public.session_peers(uuid,text) from public,anon,authenticated;
-grant execute on function public.session_heartbeat(uuid,text,uuid), public.session_peers(uuid,text) to authenticated;
+revoke all on function public.session_heartbeat(uuid,text,uuid,integer,text), public.session_peers(uuid,text), public.session_requirements() from public,anon,authenticated;
+grant execute on function public.session_heartbeat(uuid,text,uuid,integer,text), public.session_peers(uuid,text), public.session_requirements() to authenticated;

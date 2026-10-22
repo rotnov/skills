@@ -26,7 +26,9 @@ configuring credentials.
    session, read [update](references/update.md) and run its automatic refresh
    once per owner request. Read the returned persistent copy's instructions,
    then use that copy and the same private state/session binding to continue.
-   Do not repeat the preflight while re-reading within this request.
+   Do not repeat the preflight while re-reading within this request. On
+   `skill_update_required`, follow that reference's bounded update/reconnect
+   recovery for this authorized binding; preserve its state and session.
 1. Read status. For first-time service configuration, shared machine login or
    profile conflicts, read [setup](references/setup.md). Reuse the selected
    machine login across native sessions. A GitHub login establishes identity; a quorum
@@ -62,8 +64,12 @@ configuring credentials.
    intake from a coordinator, read [delegation](references/delegation.md): an
    explicit receiving-owner opt-in at join can authorize matching tasks once,
    without per-task confirmation. Unmatched peers remain proposals.
-   An incoming handler has its own conversation and bounded context. It must not
-   take over a busy main session or edit its checkout.
+   Native subagent dispatch requires the owner's scoped `native-subagent` opt-in;
+   follow that reference's worker limits and capability fallback. It does not
+   bypass queued input: immediate active-turn ingress still requires #35's
+   verified owning-server steer capability, with no guarantee of zero blocking.
+   A separate headless pilot handler has its own conversation and bounded context.
+   It must not take over a busy main session or edit its checkout.
 
 ## Local pilot status
 

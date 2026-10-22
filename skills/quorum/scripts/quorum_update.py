@@ -21,7 +21,7 @@ CLIENTS = {'codex': '.agents/skills/quorum', 'claude': '.claude/skills/quorum',
 GENERATED = {'.venv', '__pycache__', '.git', 'node_modules'}
 REQUIRED = ('SKILL.md', 'pyproject.toml', 'uv.lock', 'scripts/quorum.py',
             'scripts/quorum_update.py', 'references/update.md', 'references/join.md',
-            'references/invitations.md')
+            'references/invitations.md', 'assets/release.json', 'scripts/quorum_release.py')
 ERRORS = {'update_tool_missing', 'update_fetch_failed', 'update_invalid_copy',
           'update_validation_failed', 'update_cache_conflict', 'update_unsafe_cache',
           'update_in_progress'}
@@ -67,6 +67,10 @@ def validate_source(root):
             raise ValueError('invalid_skill_name')
         project = tomllib.loads((root / 'pyproject.toml').read_text(encoding='utf-8'))
         lock = tomllib.loads((root / 'uv.lock').read_text(encoding='utf-8'))
+        from quorum_release import read_release
+        release = read_release(root / 'assets/release.json')
+        if release['skill_version'] != project.get('project', {}).get('version'):
+            raise ValueError('invalid_release_manifest')
         if not project.get('project', {}).get('requires-python') or not lock.get('version'):
             raise ValueError('missing_lock_contract')
         for path in (root / 'scripts').glob('*.py'):

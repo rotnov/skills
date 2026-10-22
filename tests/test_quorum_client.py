@@ -143,6 +143,7 @@ class ClientTests(unittest.TestCase):
         calls = []
         class Api:
             def call(self, operation, payload, request_id=None):
+                if operation == 'session_requirements': return {'protocol_version':1, 'skill_version':'0.2.0'}
                 calls.append(operation)
                 return {'quorum_lookup': {'quorum_id': 'q'}, 'device_register': {'device_id': 'd'},
                         'agent_join': {'agent_id': 'a'}, 'agent_status': {'registered': True}}[operation]
@@ -162,6 +163,7 @@ class ClientTests(unittest.TestCase):
         class Api:
             revoked = False
             def call(self, operation, payload, request_id=None):
+                if operation == 'session_requirements': return {'protocol_version':1, 'skill_version':'0.2.0'}
                 if operation == 'agent_status' and self.revoked:
                     raise self_error('auth_required')
                 return {'quorum_lookup': {'quorum_id': 'q'}, 'device_register': {'device_id': 'd'},

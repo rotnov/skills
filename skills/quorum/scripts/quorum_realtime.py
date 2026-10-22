@@ -105,7 +105,7 @@ class RealtimeWait:
         if stopping(): return
         try: self._join(stopping)
         except QuorumError as error:
-            if str(error) in ('auth_required', 'coordination_unavailable'):
+            if str(error) in ('auth_required', 'coordination_unavailable', 'skill_update_required', 'release_manifest_invalid'):
                 self._close_socket()
                 raise
             self._fallback()
@@ -163,7 +163,7 @@ class RealtimeWait:
                     return
             if not stopping(): self._status(last_wake='safety_poll')
         except QuorumError as error:
-            if str(error) in ('auth_required', 'coordination_unavailable'):
+            if str(error) in ('auth_required', 'coordination_unavailable', 'skill_update_required', 'release_manifest_invalid'):
                 self._close_socket()
                 raise
             self._fallback()

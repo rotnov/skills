@@ -55,7 +55,8 @@ is queued once in the existing chat, where the owner's existing subscription,
 context and permissions apply. Busy chats keep their queue order. Verify both
 busy and idle delivery in the actual receiving chat before claiming acceptance.
 The client/app must remain available; stopping the process, logout or reboot
-ends reception. Stop before upgrading the installed skill. Status/stop from an
+ends reception. Follow [version mismatch recovery](update.md#version-mismatch-recovery)
+when this binding has an explicit update/reconnect grant. Status/stop from an
 external terminal require `session --session-id <exact-UUID> status|stop`.
 
 Status includes `wait_mode` (`realtime`, `polling_fallback`, or `stopped`), the
@@ -63,6 +64,11 @@ current `poll_seconds` safety/fallback interval and `notification_signals`.
 `last_signal_at`, `last_connected_at`, `last_fallback_at` are local Unix timestamps;
 `last_wake` distinguishes a signal, subscription, safety scan or fallback poll.
 These diagnostics prove transport activity, not delivery to the actual chat.
+`release` contains the last compatibility check's `installed`, `required` and
+`update_required` fields (unknown fields are null); status is offline and does
+not fetch current server requirements. A stale active process can also appear
+as `release.listener`. The offline `version` command identifies the selected
+helper copy. It does not prove that an older listener is running that code.
 
 ## Claude Code / macOS, Linux and Windows
 
@@ -154,12 +160,25 @@ For the receiving owner's one-time coordinator task grant, read
 [delegation](delegation.md). Connecting without that opt-in grants reception only.
 `session delegate --revoke` takes effect for new envelopes immediately; inspect
 current status before acting on a grant quoted in an older queued envelope.
+Add `--dispatch-mode native-subagent` to `session connect` alongside
+`--accept-tasks-from <coordinator-role>`, or to `session delegate` alongside
+`--coordinator-role <coordinator-role>`, only on the receiving owner's explicit
+instruction. The private grant/status stores this choice; default and legacy
+grants execute inline, and revocation removes the mode. Follow
+[delegation](delegation.md#dispatch-matching-tasks) for matching-only native
+workers, the two-worker limit, parent replies and unavailable-capability fallback.
+Workers do not bypass queued input. Immediate active-turn ingestion still needs
+[#35](https://github.com/rotnov/skills/issues/35)'s verified owning-server steer
+capability; this policy does not implement it or eliminate all blocking/tool-call
+latency. Verify actual native UI acceptance separately from source tests.
 
 The listener requires the administrator-reviewed
 [native coordination extension](../supabase/migrations/20261022152603_native_session_coordination.sql)
 for heartbeat and transport notices. Installation/join never applies server SQL.
 `session peers` reports registered native sessions in this quorum and shared
-project (up to 128), including `availability` and a reason. No heartbeat yet means
+project (up to 128), including `availability`, a reason, `client` versions, `required` versions and
+`update_required`. Missing legacy versions also require update; that flag is
+independent of availability, membership, task permissions and queue retention. No heartbeat yet means
 `unknown`; an unacknowledged queued message aged at least 60 seconds means
 `unavailable` / `receipt_timeout`. A heartbeat gap (with no fresh delivery receipt) of at least 60 seconds means
 `heartbeat_timeout`. Healthy listener heartbeat alone cannot clear an overdue
@@ -178,3 +197,32 @@ Codex queue acceptance counts as a delivery receipt even while the model is busy
 Claude/Grok require the actual chat's `received` or `reply`. Consequently a busy
 Claude chat can appear unavailable until it processes its queued receipt command.
 This does not mean its process is dead or that its task was refused.
+
+## Release compatibility
+
+This release requires protocol integer `1` and skill `0.2.0` exactly. Connect
+checks requirements before any device/agent registration. Start/run, each
+heartbeat and reconnect, and the active inbox drain check compatibility too.
+The heartbeat sends the client versions; the server rejects a mismatch before
+writing health or sending Hello. New clients stop with `skill_update_required`
+and safe installed/required diagnostics. A fresh helper refuses to reuse a
+running listener whose release is stale or unknown. No low-level listener
+spawns an updater or re-execs itself.
+
+Use [version mismatch recovery](update.md#version-mismatch-recovery) for the
+one-time fixed refresh, re-reading instructions and restarting only the exact
+authorized binding with the same state/session. Current invitations authorize
+that lifecycle; existing joins need their owner's grant. Report a remaining
+mismatch instead of repeating refreshes or substituting another session.
+
+Checks occur before queueing and acknowledging each inbound. The native UI
+write and the server version change cannot be one atomic transaction: a version
+flip during UI I/O may leave one already accepted chat message. Its durable
+local receipt is retained; a detected mismatch prevents the subsequent ACK and
+new queue work. Never replay an uncertain UI write to make an upgrade look clean.
+
+Old code does not acquire these checks when the server changes. Legacy
+inbox/receipt/reply APIs remain available so existing clients can receive an
+update notice. A new client that has already stopped for mismatch cannot receive
+a later peer upgrade request; recovery waits for the owner's/current session's
+next interaction. A version update never expands task delegation or tool rights.

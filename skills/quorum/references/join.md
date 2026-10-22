@@ -9,6 +9,12 @@ Complete the [automatic refresh](update.md) once for this owner request before
 acceptance or session connection. Use its returned persistent skill directory,
 read its updated instructions, and keep your existing private state and session
 identity. Re-reading this guide after refresh does not repeat that preflight.
+If connect/start reports `skill_update_required`, use [version mismatch
+recovery](update.md#version-mismatch-recovery): the current invitation authorizes
+one fixed refresh and stop/reconnect of only this same binding. Re-read the
+returned instructions, verify exact installed/required versions, and report a
+remaining mismatch instead of looping. Existing joins receive no new permission
+from this text.
 
 For an unconfigured machine, use the full bootstrap prompt to install globally
 and select its public service settings. The recipient needs their own GitHub
@@ -93,7 +99,8 @@ membership, listening or peer delivery that did not complete.
 ## Coordinator task intake
 
 A complete invitation also requests one-time project task delegation. When the
-receiving owner pastes that prompt, add its `--accept-tasks-from <coordinator-role>`
+receiving owner pastes that prompt as their own instruction, add its
+`--accept-tasks-from <coordinator-role> --dispatch-mode native-subagent`
 to `session connect` and report the stored grant once. The default invitation role
 is `coordinator`; the issuer can select another using `invite-id --coordinator-role`.
 Use the chat's intended local project and the supplied shared project reference.
@@ -103,7 +110,9 @@ existing members merely because they update the skill. Read
 
 The updated listener sends Hello transport notices after connection/reconnection,
 without a model call. It keeps a quiet heartbeat every 20 seconds. Use
-`session peers` for same-project availability: after 60 seconds without a delivery
+`session peers` for same-project availability and client/required versions.
+A missing legacy version sets `update_required`; it does not change permissions
+or remove queued messages. For availability: after 60 seconds without a delivery
 receipt, or without listener heartbeat, a recipient is `unavailable`. This is a
 transport status, not membership revocation or proof that a task was declined.
 The durable message remains queued. The client app must still be available.

@@ -19,6 +19,9 @@ def register_agent(api, ledger, slug, role, data, *, device_key="device"):
     required = {'engine', 'project_ref', 'session_ref', 'cwd'}
     if set(data) != required or data['engine'] not in ('claude', 'codex', 'grok') or not Path(data['cwd']).is_absolute():
         raise ValueError('invalid_registration')
+    from quorum_release import ReleaseGuard
+    # Registration is not permission to stop a different binding's listener.
+    ReleaseGuard(api, ledger, stop_on_mismatch=False).check()
     quorum = api.call('quorum_lookup', {'slug': slug})['quorum_id']
     binding_key = [quorum, role, data] + ([] if device_key == 'device' else [device_key])
     identity = hashlib.sha256(json.dumps(binding_key, sort_keys=True).encode()).hexdigest()
@@ -48,7 +51,7 @@ def main(argv=None):
     config = commands.add_parser('configure')
     config.add_argument('--origin', required=True)
     config.add_argument('--publishable-key', required=True)
-    for name in ('status', 'login', 'logout', 'worker', 'doctor'):
+    for name in ('status', 'login', 'logout', 'worker', 'doctor', 'version'):
         commands.add_parser(name)
     for name in ('create', 'invite', 'accept', 'join', 'leave', 'send', 'context', 'work'):
         sub = commands.add_parser(name)
@@ -61,6 +64,10 @@ def main(argv=None):
     args = parser.parse_args(argv)
     ledger = None
     try:
+        if args.command == 'version':
+            from quorum_release import installed_release
+            print(json.dumps({'ok':True, 'code':'ok', 'data':installed_release()}))
+            return 0
         ledger = LocalLedger(args.state)
         config_path = ledger.root / 'config.json'
         from quorum_live import dispatch, LIVE_COMMANDS
@@ -120,12 +127,14 @@ def main(argv=None):
         print(json.dumps({'ok': True, 'code': 'ok', 'data': value}))
         return 0
     except QuorumError as error:
-        codes = {'auth_required': 3, 'service_not_configured': 4, 'live_agents_disabled': 4,
+        codes = {'skill_update_required': 4, 'release_manifest_invalid': 4, 'auth_required': 3, 'service_not_configured': 4, 'live_agents_disabled': 4,
                  'engine_acceptance_pending': 4, 'service_profile_ambiguous': 4, 'machine_profile_unavailable': 4,
                  'auth_profile_conflict': 3, 'service_config_conflict': 4, 'service_unavailable': 5, 'service_error': 5,
                  'response_too_large': 5, 'invalid_response': 5, 'listener_start_failed': 5, 'listener_stop_failed': 5}
         code = str(error) if str(error) in codes else 'operation_failed'
-        print(json.dumps({'ok': False, 'code': code, 'data': {}}))
+        from quorum_release import ReleaseMismatch
+        data = {'release':error.diagnostic} if isinstance(error, ReleaseMismatch) else {}
+        print(json.dumps({'ok': False, 'code': code, 'data': data}))
         return codes.get(code, 3)
     except GrokBindingError as error:
         print(json.dumps({'ok': False, 'code': 'grok_transport_unavailable', 'data': error.diagnostic()}))
