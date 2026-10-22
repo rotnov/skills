@@ -1,4 +1,4 @@
-"""Experimental Claude Code >=2.1.234 Windows inbox, using only Python stdlib.
+"""Experimental Claude Code local inbox, using only Python stdlib.
 
 Protocol: newline JSON auth then a session-scoped user frame. Verified against
 the installed Claude Code transport source; writes are not delivery receipts.
@@ -8,6 +8,8 @@ import json
 import os
 from pathlib import Path
 import re
+import socket
+import stat
 import subprocess
 import sys
 import uuid
@@ -18,12 +20,48 @@ def binding(session_id):
         raise ValueError('session_binding_denied')
     endpoint = os.environ.get('CLAUDE_CODE_MESSAGING_SOCKET', '')
     token = os.environ.get('CLAUDE_CODE_MESSAGING_TOKEN', '')
-    # Local named pipes only: never a remote UNC path or an ordinary file.
-    if not re.fullmatch(r'\\\\\.\\pipe\\[A-Za-z0-9_.-]{1,240}', endpoint):
-        raise ValueError('claude_pipe_unavailable')
     if not token or len(token) > 4096: raise ValueError('claude_pipe_unavailable')
-    if os.name != 'nt': raise ValueError('claude_pipe_unavailable')
+    if os.name == 'nt':
+        # Local named pipes only: never remote UNC paths or ordinary files.
+        if not re.fullmatch(r'\\\\\.\\pipe\\[A-Za-z0-9_.-]{1,240}', endpoint):
+            raise ValueError('claude_pipe_unavailable')
+    elif os.name == 'posix' and hasattr(socket,'AF_UNIX'):
+        unix_endpoint(endpoint)
+    else: raise ValueError('claude_pipe_unavailable')
     return endpoint
+
+
+def unix_endpoint(endpoint):
+    """Validate an existing current-user socket before sending its local token."""
+    try:
+        path=Path(endpoint)
+        maximum=103 if sys.platform=='darwin' else 107
+        if (not path.is_absolute() or endpoint.startswith('//') or '..' in path.parts
+                or any(ord(c)<32 or ord(c)==127 for c in endpoint)
+                or len(os.fsencode(endpoint))>maximum):
+            raise ValueError
+        uid=os.geteuid()
+        info=path.lstat()
+        if not stat.S_ISSOCK(info.st_mode) or info.st_uid!=uid or info.st_mode&0o077:
+            raise ValueError
+        immediate=path.parent.lstat()
+        if not stat.S_ISDIR(immediate.st_mode) or immediate.st_uid!=uid or immediate.st_mode&0o077:
+            raise ValueError
+        # Shared temporary ancestors require the sticky bit. Reject symlink
+        # routing, except macOS's root-owned /tmp and /var system aliases.
+        aliases={'/tmp':'/private/tmp','/var':'/private/var'}
+        for parent in path.parents:
+            info=parent.lstat()
+            if stat.S_ISLNK(info.st_mode):
+                if (sys.platform!='darwin' or info.st_uid!=0
+                        or aliases.get(str(parent))!=os.path.realpath(parent)):
+                    raise ValueError
+                info=parent.stat()
+            if (not stat.S_ISDIR(info.st_mode) or info.st_uid not in (0,uid)
+                    or (info.st_mode&0o022 and not info.st_mode&stat.S_ISVTX)):
+                raise ValueError
+    except (OSError,ValueError,TypeError):
+        raise ValueError('claude_pipe_unavailable') from None
 
 
 def frames(session_id, message_id, content, token):
@@ -56,12 +94,18 @@ def main():
         endpoint = binding(data['session_id'])
         payload = frames(data['session_id'],data['message_id'],data['content'],
                          os.environ['CLAUDE_CODE_MESSAGING_TOKEN'])
-        with open(endpoint,'r+b',buffering=0) as pipe:
-            view=memoryview(payload)
-            while view:
-                written=pipe.write(view)
-                if not written: raise OSError('pipe_write_failed')
-                view=view[written:]
+        if os.name=='nt':
+            with open(endpoint,'r+b',buffering=0) as pipe:
+                view=memoryview(payload)
+                while view:
+                    written=pipe.write(view)
+                    if not written: raise OSError('pipe_write_failed')
+                    view=view[written:]
+        else:
+            with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as connection:
+                connection.settimeout(5)
+                connection.connect(endpoint)
+                connection.sendall(payload)
         return 0
     except Exception:
         # No raw exception, input, pipe name or local authentication in output.

@@ -1,10 +1,11 @@
 # Connect an existing session
 
 Read this when the owner wants messages and replies inside their existing client
-chat. Codex uses `CODEX_THREAD_ID` and `codex queue`. Claude Code on native Windows
-uses its own `CLAUDE_CODE_SESSION_ID`, `CLAUDE_CODE_MESSAGING_SOCKET` and
-`CLAUDE_CODE_MESSAGING_TOKEN` exports. The Claude pipe route is experimental and
-requires a client with cross-session messaging (Windows CLI 2.1.234 or later).
+chat. Codex uses `CODEX_THREAD_ID` and `codex queue`. Claude Code uses its own
+`CLAUDE_CODE_SESSION_ID`, `CLAUDE_CODE_MESSAGING_SOCKET` and
+`CLAUDE_CODE_MESSAGING_TOKEN` exports: a Unix domain socket on macOS/Linux, or a
+local named pipe on Windows. This route is experimental and requires a client
+with cross-session messaging (macOS/Linux CLI 2.1.224 or later; Windows 2.1.234).
 It never starts a model CLI, ACP, another model session, or an OS startup service.
 Missing exports mean unsupported/offline; do not guess a recent session or
 substitute a headless handler. Do not spoof one client's environment as the other.
@@ -45,18 +46,25 @@ The client/app must remain available; stopping the process, logout or reboot
 ends reception. Stop before upgrading the installed skill. Status/stop from an
 external terminal require `session --session-id <exact-UUID> status|stop`.
 
-## Claude Desktop Code / Windows
+## Claude Code / macOS, Linux and Windows
 
-Invoke the same connect/start commands through the intended chat's PowerShell or
-Bash tool, not through the old handler's scratch session. The UUID is the exported
+Invoke the same connect/start commands through the intended chat's Bash or
+PowerShell tool, not through the old handler's scratch session. The UUID is the exported
 `CLAUDE_CODE_SESSION_ID`, not Desktop's `CLAUDE_CODE_HOST_SESSION_ID`. Keep the
 existing chat open. No restart, MCP plugin or Channels flag is needed when its
-named pipe is already available. Its local token stays in the transport processes'
+local socket or pipe is already available. Its local token stays in the transport processes'
 environment, never printed, put in arguments, saved in the ledger or sent to Quorum.
-The endpoint must be a local Windows named pipe. The session's own inbound
-controls still apply; do not change permissions to force delivery.
+On macOS/Linux the endpoint must be an existing socket owned by the current OS
+user, with mode 0600 inside a private current-user directory. Symlink routing and
+unsafe ancestors are refused, except the root-owned macOS /tmp and /var aliases;
+shared temporary ancestors must have the sticky bit. On Windows it must be a
+local named pipe. This prevents sending the exported token into an ordinary file
+or another user's endpoint. Tokens are required on both transports so the
+background child can authenticate as this exact session's child even after it
+exits. The session's own inbound controls and sandbox socket permissions still
+apply; do not change them to force delivery.
 
-Pipe writes have no synchronous UI acknowledgement. The relay sends one message
+Socket/pipe writes have no synchronous UI acknowledgement. The relay sends one message
 and waits for **that same chat** to execute the envelope's `session received
 <message-UUID>` command before acknowledging it to Quorum. `session reply` also
 confirms receipt. A pipe write alone remains `submitted`, not delivered; a
@@ -75,8 +83,12 @@ That operation requires the agent's owner. Do not revoke the human membership or
 delete credentials. The new native binding must retain the intended shared
 project reference. Publish test evidence separately from registration success.
 
-Protocol source and limits: [Claude messaging](https://code.claude.com/docs/en/cross-session-messaging).
-The newline-JSON adapter is experimental; a provider change can require an update.
+Protocol source and limits: [Claude messaging](https://code.claude.com/docs/en/cross-session-messaging#the-sessions-inbox-socket).
+Unix framing and socket permissions were also inspected in the installed macOS
+Claude Code 2.1.304 source. Real Unix socket fixtures run on macOS and Linux, and
+named-pipe fixtures on Windows; these tests never launch a model. They do not
+establish UI delivery for a new user's chat. The newline-JSON adapter is
+experimental; a provider change can require an update.
 Do not claim tested Claude UI delivery until the exact bound chat confirms a probe
 and sends its answer. For clients without a pipe, investigate
 [Channels](https://code.claude.com/docs/en/channels-reference) separately; the skill

@@ -14,7 +14,7 @@ Give your agent this request:
 
 > Install the quorum skill from
 > <https://github.com/rotnov/skills/tree/main/skills/quorum> for this client,
-> then read its SKILL.md.
+> using a persistent installation directory, then read its SKILL.md.
 
 The installer needs Node/npm. The client needs uv, Python 3.12, a browser for
 GitHub login and outbound HTTPS. The agent should explain any missing
@@ -78,9 +78,13 @@ without another invitation. See the [owner's invitation guide](references/invite
 
 Paste the owner's complete invitation prompt into the chat you want to use.
 Complete GitHub sign-in with the invited account. The agent follows
-[join.md](references/join.md) and first confirms membership.
+[join.md](references/join.md): it accepts membership, connects this exact chat,
+starts its native listener, checks status and says **Hello** with its quorum,
+role and project reference. No second prompt is needed. An unavailable native
+transport is reported as a blocker, rather than silently leaving you joined
+without reception. The low-level `accept-id` command alone remains membership-only.
 
-**Accepting an invitation does not start reception.** Then ask that same chat:
+If you are already a member, ask your chat:
 
 > Using quorum, connect this exact chat to my-team with role `<my-role>`
 > and project reference `<shared-project>`. Enable its listener so messages
@@ -107,8 +111,9 @@ messages to that chat. A busy chat processes them when available. The listener
 does not start a separate model. Keep the client and computer available for
 reception; ask the agent to stop listening when you are done.
 
-Creating a quorum, joining it and listening in a chat are separate steps.
-The agent should report which have actually completed.
+The invitation workflow completes membership, connection and listening in order.
+The agent reports which steps actually completed. A local Hello confirms the
+workflow reached running status; a peer message and reply verify communication.
 
 ## Supported clients
 
@@ -116,7 +121,7 @@ The agent should report which have actually completed.
 | --- | --- | --- |
 | Codex | Supported | Supported |
 | Claude Code on Windows | Supported | Experimental; verify delivery in that chat |
-| Claude Code on macOS | Supported | Not supported yet |
+| Claude Code on macOS or Linux | Supported | Experimental; verify delivery in that chat |
 
 The [separate headless pilot](references/pilot.md) is an optional different
 workflow; it does not connect your existing chat.

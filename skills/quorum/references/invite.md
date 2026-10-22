@@ -39,7 +39,9 @@ Output includes `invite_id`, expiry, public
 `rotnov/skills`. Give that entire prompt to the owner to share. It carries no
 invitation secret and requires no ZIP or file transfer. Do not send it to anyone
 unless the owner explicitly requests delivery. Reuse a request ID only for an
-identical retry; the server returns the same invitation.
+identical retry; the server returns the same invitation. The prompt requests the
+full join workflow: membership, this exact chat's native listener and a local
+Hello. Read [join](join.md) for default role/project selection and delivery checks.
 
 ## Server prerequisite and legacy flow
 

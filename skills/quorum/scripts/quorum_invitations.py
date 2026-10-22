@@ -94,15 +94,24 @@ def create_id_invitation(api, config, slug, target, request_id):
     # Only select public fields; never forward an unexpected backend credential.
     prompt = ('Install the public quorum skill using: '
               'npx --yes skills@1.5.20 add rotnov/skills --skill quorum -a claude-code codex --copy -y. '
+              'Run installation in a persistent directory outside the project, not a temporary scratch folder. '
               f'The selected quorum slug is {json.dumps(slug)}. '
               'Read its SKILL.md and references/join.md. Resolve the installed skill directory, '
               'choose a private local state directory outside the repository, and run its frozen uv '
               f'helper accept-id {invite_id} with --origin and --publishable-key from this public '
               f'service locator: {json.dumps(service)}. Complete my own GitHub browser login if needed. '
-              'Accept membership only, then report the quorum ID. Do not start a model, daemon or '
-              'headless pilot. For connecting this existing chat, inspect the separate native-session '
-              'route and use only its actual session identity. If native transport is unavailable '
-              '(including macOS Claude), report that blocker; do not ask for secrets or spoof another client.')
+              'After acceptance, complete references/join.md in this same chat: read references/sessions.md, '
+              'run session connect for the selected quorum, then session start and session status. '
+              'This request authorizes the native transport listener until I stop it. '
+              'Use my supplied role and shared project reference if present; otherwise use '
+              '<engine>-<first-eight-characters-of-this-session-UUID> as the role and the quorum slug '
+              'as the project reference. Use only this actual current session identity. '
+              'Reuse a matching existing binding; stop on a conflicting one instead of replacing it. '
+              'Once status confirms the listener is running, say Hello in this chat with the quorum, '
+              'role and project reference, and report the persistent installed skill path. '
+              'A local greeting is not a peer delivery receipt; verify a peer message and reply separately. '
+              'Do not start a model, another session, headless pilot or OS startup service. '
+              'If native transport is unavailable report that blocker; do not ask for secrets or spoof another client.')
     return {'invite_id': invite_id, 'quorum': slug, 'quorum_id': quorum_id, 'target_github_id': target,
             'expires_at': data['expires_at'], 'service': service,
             'session_prompt': prompt}

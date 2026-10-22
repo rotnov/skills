@@ -26,7 +26,9 @@ configuring credentials.
    invitation grants membership. Keep login and model-provider credentials local.
    For an explicit request to provision an owner's server, read [server](references/server.md).
 2. To issue invitation IDs or a copyable prompt, read [invite](references/invite.md).
-   To accept an invitation, read [join](references/join.md).
+   To accept an invitation and connect this chat, read [join](references/join.md).
+   Complete its native listener and greeting steps unless the owner explicitly
+   requests membership only; do not stop at acceptance.
    For quorum creation or legacy token files, read
    [invitations](references/invitations.md). Membership grants no global creator right.
 3. To connect this existing chat and show peer messages/replies here, read
