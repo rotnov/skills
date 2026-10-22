@@ -299,7 +299,13 @@ class NativeProcessTests(unittest.TestCase):
         from quorum_grok_leader import process_identity
         current = process_identity(os.getpid())
         self.assertEqual(current['uid'], os.geteuid())
-        self.assertEqual(current['executable'], str(Path(sys.executable).resolve()))
+        # Framework Python may exec Python.app while sys.executable still names
+        # its launcher. Compare the OS image with independent dyld metadata.
+        import ctypes
+        image = ctypes.create_string_buffer(4096)
+        size = ctypes.c_uint32(len(image))
+        self.assertEqual(ctypes.CDLL(None)._NSGetExecutablePath(image, ctypes.byref(size)), 0)
+        self.assertEqual(current['executable'], str(Path(os.fsdecode(image.value)).resolve()))
         self.assertGreater(current['pid_start'], 0)
         self.assertEqual(process_identity(os.getpid())['pid_start'], current['pid_start'])
         self.assertNotIn('environment', current)
