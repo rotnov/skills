@@ -1,6 +1,7 @@
 """Single-step worker; preserves launch uncertainty instead of blind replay."""
 import json
 import uuid
+from quorum_release import ReleaseGuard, ReleaseMismatch
 
 
 class Worker:
@@ -8,9 +9,11 @@ class Worker:
         self.api, self.ledger, self.runner = api, ledger, runner
         self.device_id, self.policy = device_id, policy
         self.binding_resolver = binding_resolver
+        self.release = ReleaseGuard(api, ledger)
 
     def run_once(self):
         self.policy.validate()
+        self.release.check()
         with self.ledger.worker_lock():
             pending = self.ledger.db.execute("select id,generation,reply from attempts where state='reply_ready' order by rowid limit 1").fetchone()
             if pending is not None:
@@ -34,6 +37,7 @@ class Worker:
             prompt = json.dumps({'peer_message': delivery['body'], 'context': context}, ensure_ascii=False)
             if len(prompt.encode()) > 65536 or len(delivery['body'].encode()) > 16384:
                 raise ValueError('context_too_large')
+            self.release.check()
             data = {'attempt_id': attempt_id, 'generation': generation}
             self.api.call('attempt_update', {**data, 'event': 'launch_intent'}, attempt_id + ':intent')
             self.ledger.set_attempt(attempt_id, generation, 'launch_intent')
@@ -41,6 +45,7 @@ class Worker:
             # No automatic retry after this boundary: an exception may follow a spawn.
             handle = None
             try:
+                self.release.check()
                 handle = self.runner.start(binding, prompt, self.policy)
                 result = None
                 for event in self.runner.events(handle):
@@ -48,6 +53,7 @@ class Worker:
                         self.api.call('attempt_update', {**data, 'event': 'started'}, attempt_id + ':started')
                         self.ledger.set_attempt(attempt_id, generation, 'running')
                     elif event.get('type') == 'heartbeat':
+                        self.release.check()
                         # A fresh request ID rechecks revocation and extends the lease.
                         status = self.api.call('attempt_update', {**data, 'event': 'heartbeat'}, str(uuid.uuid4()))
                         if status and status.get('state') == 'cancel_requested':
@@ -56,7 +62,7 @@ class Worker:
                         result = event.get('text')
                 if not isinstance(result, str) or len(result.encode()) > 16384:
                     raise ValueError('completion_unconfirmed')
-            except Exception:
+            except Exception as error:
                 if handle is not None:
                     try: self.runner.cancel(handle)
                     except Exception: pass
@@ -65,17 +71,20 @@ class Worker:
                     self.api.call('attempt_update', {**data, 'event': 'unknown'}, attempt_id + ':unknown')
                 except Exception:
                     pass
+                if isinstance(error, ReleaseMismatch): raise
                 return 'unknown'
             self.ledger.set_attempt(attempt_id, generation, 'reply_ready', result)
             return self._complete(attempt_id, generation, result)
 
     def _complete(self, attempt_id, generation, reply):
+        self.release.check()
         self.api.call('delivery_complete', {'attempt_id': attempt_id, 'generation': generation,
                                          'reply_body': reply}, attempt_id + ':reply')
         self.ledger.set_attempt(attempt_id, generation, 'answered')
         return 'answered'
 
     def reconcile(self):
+        self.release.check()
         rows = self.ledger.db.execute("select id,generation from attempts where state in ('launch_intent','running')").fetchall()
         for attempt, generation in rows:
             self.ledger.set_attempt(attempt, generation, 'unknown')

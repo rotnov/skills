@@ -20,7 +20,7 @@ try {
   `);
   const migrations = root + '/skills/quorum/supabase/migrations/';
   for (const name of readdirSync(migrations).sort()) {
-    if (name.endsWith('_invite_id_and_creator_gate.sql') || name.endsWith('_native_realtime_wakeups.sql') || name.endsWith('_native_grok_session.sql') || name.endsWith('_urgent_message_priority.sql')) {
+    if (name.endsWith('_invite_id_and_creator_gate.sql') || name.endsWith('_native_realtime_wakeups.sql') || name.endsWith('_native_grok_session.sql') || name.endsWith('_native_session_coordination.sql') || name.endsWith('_urgent_message_priority.sql')) {
       await db.exec(readFileSync(migrations + name, 'utf8'));
     }
   }
@@ -32,9 +32,10 @@ try {
   await db.exec(readFileSync(root + '/tests/quorum_invite_id_backend.sql', 'utf8'));
   await db.exec(readFileSync(root + '/tests/quorum_session_backend.sql', 'utf8'));
   await db.exec(readFileSync(root + '/tests/quorum_realtime_backend.sql', 'utf8'));
+  await db.exec(readFileSync(root + '/tests/quorum_coordination_backend.sql', 'utf8'));
   await db.exec(readFileSync(root + '/tests/quorum_priority_backend.sql', 'utf8'));
   await db.exec('rollback');
-  console.log('Invitation, session, Realtime and priority regression: PASS (disposable PostgreSQL)');
+  console.log('Invitation, session, Realtime, coordination and priority regression: PASS (disposable PostgreSQL)');
 } catch (error) {
   console.error(error.message, error.where || '');
   process.exitCode = 1;

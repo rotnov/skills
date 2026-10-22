@@ -28,6 +28,12 @@ def temporary_ledger():
             ledger.db.close()
 
 
+class RequirementsApi:
+    def call(self, operation, payload):
+        assert operation == 'session_requirements'
+        return {'protocol_version':1, 'skill_version':'0.2.0'}
+
+
 class ListenerTests(unittest.TestCase):
     def test_stop_waits_for_an_in_progress_start_to_publish_its_run(self):
         from types import SimpleNamespace
@@ -67,7 +73,8 @@ class ListenerTests(unittest.TestCase):
                 return {**record, 'listener': 'running', 'stop_requested': False,
                         'state': 'waiting' if clock[0] >= 60 else 'starting'}
             def sleep(_): clock[0] += 10
-            with patch('quorum_listener.subprocess.Popen', side_effect=spawn), \
+            with patch('quorum_live.api_for', return_value=(RequirementsApi(), None, None)), \
+                 patch('quorum_listener.subprocess.Popen', side_effect=spawn), \
                  patch('quorum_listener.time.monotonic', side_effect=lambda: clock[0]), \
                  patch('quorum_listener.time.sleep', side_effect=sleep), \
                  patch.object(Control, 'status', status):
@@ -99,7 +106,8 @@ class ListenerTests(unittest.TestCase):
                 run_id = command[command.index('--run-id') + 1]
                 run_listener(ledger, prepare, run_id)
                 return Exited()
-            with patch('quorum_listener.subprocess.Popen', side_effect=spawn):
+            with patch('quorum_live.api_for', return_value=(RequirementsApi(), None, None)), \
+                    patch('quorum_listener.subprocess.Popen', side_effect=spawn):
                 with self.assertRaisesRegex(QuorumError, 'listener_start_failed'):
                     start_listener(ledger, temporary, 60, True)
             self.assertTrue(acknowledgements[0]['stop_requested'])
@@ -115,7 +123,8 @@ class ListenerTests(unittest.TestCase):
             def spawn(command, **kwargs):
                 if '--run-id' in command: raise OSError('synthetic-private-token')
                 return native_popen(command, **kwargs)
-            with patch('quorum_listener.subprocess.Popen', side_effect=spawn):
+            with patch('quorum_live.api_for', return_value=(RequirementsApi(), None, None)), \
+                    patch('quorum_listener.subprocess.Popen', side_effect=spawn):
                 with self.assertRaisesRegex(QuorumError, 'listener_start_failed'):
                     start_listener(ledger, temporary, 60, True)
             status = Control(ledger).status()
@@ -137,11 +146,12 @@ class ListenerTests(unittest.TestCase):
             command = [sys.executable, str(SCRIPTS / 'quorum.py'), '--state', temporary, 'listen']
             result = subprocess.run(command + ['start', '--toolchain', temporary, '--approve-subscription'],
                                     capture_output=True, text=True, timeout=50)
-            self.assertEqual(result.returncode, 5, result.stdout + result.stderr)
-            self.assertEqual(json.loads(result.stdout)['code'], 'listener_start_failed')
+            self.assertEqual(result.returncode, 4, result.stdout + result.stderr)
+            self.assertEqual(json.loads(result.stdout)['code'], 'service_not_configured')
+            self.assertFalse((Path(temporary)/'listener.log').exists())
             status = subprocess.run(command + ['status'], capture_output=True, text=True, check=True, timeout=15)
             data = json.loads(status.stdout)['data']
-            self.assertEqual((data['listener'], data['state']), ('offline', 'error'))
+            self.assertEqual((data['listener'], data['state']), ('offline', 'stopped'))
 
     def test_unconfigured_background_start_cannot_discover_the_default_owner_profile(self):
         # Exercise the actual test/subprocess chain with a synthetic OS home.
@@ -175,6 +185,7 @@ class ListenerTests(unittest.TestCase):
             class Api:
                 def __init__(self): self.claims, self.replies = 0, []
                 def call(self, operation, data, request_id=None):
+                    if operation == 'session_requirements': return {'protocol_version':1, 'skill_version':'0.2.0'}
                     if operation == 'inbox_claim':
                         self.claims += 1
                         return {'attempt_id': str(self.claims), 'generation': 1,
@@ -261,9 +272,9 @@ class ListenerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='quorum listener ') as temporary:
             root = Path(temporary)
             installed = root / 'installed skill'
-            shutil.copytree(SCRIPTS, installed)
+            shutil.copytree(SCRIPTS.parent, installed, ignore=shutil.ignore_patterns('.venv','__pycache__'))
             # Replace only the copied CLI entrypoint with a provider-free host fixture.
-            (installed / 'quorum.py').write_text('''import argparse, json, sys
+            (installed / 'scripts/quorum.py').write_text('''import argparse, json, sys
 from quorum_listener import add_commands, dispatch, run_listener
 from quorum_state import LocalLedger
 p=argparse.ArgumentParser()
@@ -271,17 +282,24 @@ p.add_argument('--state', type=__import__('pathlib').Path, required=True)
 add_commands(p.add_subparsers(dest='command', required=True))
 a=p.parse_args()
 l=LocalLedger(a.state)
+class Api:
+    def call(self, operation, payload):
+        assert operation=='session_requirements'
+        return {'protocol_version':1,'skill_version':'0.2.0'}
+import quorum_live
+quorum_live.api_for=lambda ledger:(Api(),None,None)
 class Idle:
     def reconcile(self): return []
     def run_once(self): return 'idle'
 try:
+    if a.action=='run': l.setting('listener-release',{'protocol_version':1,'skill_version':'0.2.0','run_id':a.run_id})
     result = run_listener(l, lambda: Idle(), a.run_id) if a.action=='run' else dispatch(a,l)
     print(json.dumps(result))
 except Exception:
     print(json.dumps({'error':'fixture_failed'}))
     sys.exit(3)
 ''', encoding='utf-8')
-            command = [sys.executable, str(installed / 'quorum.py'), '--state', str(root / 'state'), 'listen']
+            command = [sys.executable, str(installed / 'scripts/quorum.py'), '--state', str(root / 'state'), 'listen']
             def invoke(*args):
                 result = subprocess.run(command + list(args), capture_output=True, text=True, timeout=40)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

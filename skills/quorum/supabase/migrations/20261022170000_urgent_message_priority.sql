@@ -19,6 +19,10 @@ begin
   raise exception 'reviewed_dispatcher_changed'; end if;
  if to_regprocedure('quorum_private.call_priority_core(text,jsonb,text)') is not null then
   raise exception 'priority_core_present'; end if;
+ -- session_inbox below keeps the native-session coordination notification
+ -- field, so that reviewed extension must already be applied.
+ if to_regclass('quorum_private.session_notices') is null then
+  raise exception 'session_coordination_required'; end if;
  alter function quorum_private.call(text,jsonb,text) rename to call_priority_core;
 end $migration$;
 revoke all on function quorum_private.call_priority_core(text,jsonb,text) from public,anon,authenticated,service_role;
@@ -76,15 +80,18 @@ grant execute on function public.message_send(uuid,uuid,uuid,uuid,uuid,text,text
 
 -- An unreceipted normal head must not hide a later urgent message behind it.
 -- Ordering stays deterministic within a priority: delivery time, then the
--- conversation's own sequence, so normal queue order is unchanged.
+-- conversation's own sequence, so normal queue order is unchanged. This is the
+-- reviewed coordination definition (notification included) plus only the
+-- priority column and the urgent-first ordering term.
 create or replace function public.session_inbox(p_agent_id uuid,p_session_ref text)
 returns jsonb language plpgsql security definer set search_path=pg_catalog as $$
 declare q uuid; result jsonb;
 begin
  q:=quorum_private.native_session(p_agent_id,p_session_ref);
  select coalesce(jsonb_agg(to_jsonb(x)),'[]'::jsonb) into result from (
-  select m.id,m.conversation_id,m.sequence,m.sender_id,m.recipient_id,m.reply_to,m.body,
-   m.priority,a.role as sender_role
+  select m.id,m.conversation_id,m.sequence,m.sender_id,m.recipient_id,m.reply_to,m.body,a.role as sender_role,
+   exists(select 1 from quorum_private.session_notices n where n.message_id=m.id) as notification,
+   m.priority
   from quorum_private.messages m join quorum_private.deliveries d on d.message_id=m.id
   join quorum_private.agents a on a.id=m.sender_id
   where m.quorum_id=q and m.recipient_id=p_agent_id

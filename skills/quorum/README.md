@@ -21,6 +21,15 @@ The installer needs Node/npm. The client needs uv, Python 3.12, a browser for
 GitHub login and outbound HTTPS. The agent should explain any missing
 prerequisites. Installation alone does not connect a chat or start reception.
 
+This release uses skill version **0.2.0** and protocol **1**. The server requires
+an exact match; a guarded listener stops with `skill_update_required` when they
+differ. Your agent can follow the [update and reconnect guide](references/update.md#version-mismatch-recovery)
+to refresh once and restart the same authorized chat binding, keeping its state,
+login and messages. A current invitation authorizes that lifecycle; older joins
+need their owner's grant. Legacy listeners remain reachable for a rollout notice
+but are not force-updated. A listener already stopped for mismatch needs your or
+the current session's next interaction to recover.
+
 ## Set up your own server
 
 Skip this section if someone has sent you an invitation.
@@ -146,3 +155,30 @@ person's login, model subscription credentials or Supabase administrator secrets
 For agent instructions, see [SKILL.md](SKILL.md). Technical commands and recovery
 steps live in [setup](references/setup.md), [inviting](references/invite.md),
 [joining](references/join.md) and [sessions](references/sessions.md).
+
+## Coordinator tasks and availability
+
+The complete invite prompt lets the receiving owner authorize coordinator tasks
+once for the selected project. No repeated assignment approval is needed within
+that grant; other project and action permissions stay in force. See
+[delegation and revocation](references/delegation.md). Old joins do not gain this
+permission automatically.
+
+When the receiving human pastes the generated prompt as their own instruction,
+it also explicitly opts into built-in native subagents for matching coordinator
+tasks using `--accept-tasks-from <coordinator> --dispatch-mode native-subagent`.
+The stored grant keeps existing project/action boundaries. Old grants stay
+inline, and revocation removes the mode. The parent chat acknowledges intake,
+uses at most two actual supported native workers, returns to the owner's work
+and forwards results itself; unavailable capability or slots leave tasks pending.
+See [dispatch policy](references/delegation.md#dispatch-matching-tasks).
+Subagents do not bypass queued input: immediate active-turn ingestion still
+depends on [#35](https://github.com/rotnov/skills/issues/35)'s verified owning-server
+steer capability. This opt-in/instruction change neither implements that feature
+nor eliminates all blocking or tool-call latency; native UI acceptance is separate.
+
+The server also needs the reviewed native coordination migration listed in
+[server setup](references/server.md). Updated listeners send a quiet heartbeat
+every 20 seconds. `session peers` marks a recipient unavailable after 60 seconds
+without delivery acknowledgement or heartbeat; messages and membership remain.
+Reconnect sends a single Hello transport notice, without launching a model.

@@ -101,6 +101,7 @@ class LiveBoundaryTests(unittest.TestCase):
         from quorum_state import LocalLedger, SessionBinding
         class Api:
             def call(self, op, data, request_id=None):
+                if op == 'session_requirements': return {'protocol_version':1, 'skill_version':'0.2.0'}
                 if op == 'inbox_claim':
                     return {'attempt_id': 'x', 'generation': 1,
                             'delivery': {'conversation_id': 'c', 'body': 'ping'}}
@@ -157,6 +158,7 @@ class LiveBoundaryTests(unittest.TestCase):
         from quorum_state import LocalLedger
         class Api:
             def call(self, op, data, request_id=None):
+                if op == 'session_requirements': return {'protocol_version':1, 'skill_version':'0.2.0'}
                 if op == 'inbox_claim': raise AssertionError('must finish saved reply first')
                 if op == 'delivery_complete': return {'reply_message_id': 'reply'}
                 raise AssertionError('unexpected RPC')
@@ -201,9 +203,15 @@ class PortableHostTests(unittest.TestCase):
                                 stdout=subprocess.PIPE, start_new_session=True)
         proc.quorum_timeout = 0.1
         runner = ClaudePilotRunner.__new__(ClaudePilotRunner)
-        with self.assertRaisesRegex(ValueError, 'adapter_timeout'):
-            list(runner.events(proc))
-        self.assertIsNotNone(proc.poll())
+        try:
+            with self.assertRaisesRegex(ValueError, 'adapter_timeout'):
+                list(runner.events(proc))
+            self.assertIsNotNone(proc.poll())
+            self.assertTrue(proc.stdout.closed)
+        finally:
+            if proc.poll() is None: proc.kill()
+            proc.wait(timeout=3)
+            proc.stdout.close()
 
     @isolated_profiles
     def test_individual_copy_runs_through_its_own_uv_project(self):
@@ -261,6 +269,7 @@ class PublicationReviewTests(unittest.TestCase):
         class Api:
             devices = 0
             def call(self, op, payload, request_id=None):
+                if op == 'session_requirements': return {'protocol_version':1, 'skill_version':'0.2.0'}
                 if op == 'quorum_lookup': return {'quorum_id': 'q'}
                 if op == 'device_register':
                     self.devices += 1

@@ -34,6 +34,12 @@ def queued(seen):
     return run
 
 
+def release():
+    """The release guard compares the server requirement with this manifest."""
+    from quorum_release import installed_release
+    return installed_release().copy()
+
+
 class PriorityTests(unittest.TestCase):
     """Urgent delivery is a Codex steering route, never a new permission."""
 
@@ -178,6 +184,7 @@ class PriorityTests(unittest.TestCase):
             try:
                 class Api:
                     def call(self, operation, payload):
+                        if operation == 'session_requirements': return release()
                         return [{'id': MID, 'recipient_id': 'a', 'priority': 'critical'}]
                 relay = Relay(Api(), ledger, {'agent_id': 'a', 'session_ref': SID},
                               lambda _: self.fail('delivered an unknown priority'))
@@ -199,6 +206,7 @@ class PriorityTests(unittest.TestCase):
                     """Durable selection returns an urgent message ahead of an
                     unreceipted normal head, exactly as the migration orders it."""
                     def call(self, operation, payload):
+                        if operation == 'session_requirements': return release()
                         if operation != 'session_inbox':
                             acked.append(payload['message_id'])
                             return {'queued': True}
@@ -236,6 +244,7 @@ class PriorityTests(unittest.TestCase):
         class Api:
             def call(self, operation, payload, request_id=None):
                 calls.append((operation, payload, request_id))
+                if operation == 'session_requirements': return release()
                 if operation == 'resolve_role': return {'agent_id': 'peer'}
                 return {'message_id': MID}
         with tempfile.TemporaryDirectory() as root:
@@ -259,8 +268,10 @@ class PriorityTests(unittest.TestCase):
             finally: auth.db.close()
         sent = [payload for operation, payload, _ in calls if operation == 'message_send'][0]
         self.assertEqual(sent['priority'], 'urgent')
+        # A normal message keeps the exact payload a server without the
+        # priority extension accepts: the field is not named at all.
         replied = [payload for operation, payload, _ in calls if operation == 'session_reply'][0]
-        self.assertEqual(replied['priority'], 'normal')
+        self.assertNotIn('priority', replied)
 
     @isolated_profiles
     def test_a_caller_without_the_priority_option_still_sends_and_replies(self):
@@ -272,6 +283,7 @@ class PriorityTests(unittest.TestCase):
         class Api:
             def call(self, operation, payload, request_id=None):
                 calls.append((operation, payload))
+                if operation == 'session_requirements': return release()
                 if operation == 'resolve_role': return {'agent_id': 'peer'}
                 return {'message_id': MID}
         with tempfile.TemporaryDirectory() as root:
@@ -289,8 +301,8 @@ class PriorityTests(unittest.TestCase):
                     with patch('sys.stdin', SimpleNamespace(buffer=io.BytesIO(b'answer'))):
                         dispatch(reply, auth, None)
             finally: auth.db.close()
-        self.assertEqual([payload for operation, payload in calls
-                          if operation == 'session_reply'][0]['priority'], 'normal')
+        self.assertNotIn('priority', [payload for operation, payload in calls
+                                      if operation == 'session_reply'][0])
 
     @isolated_profiles
     def test_the_command_line_accepts_only_the_two_defined_priorities(self):

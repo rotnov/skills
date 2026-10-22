@@ -41,6 +41,7 @@ class WorkerTests(unittest.TestCase):
         class FakeApi:
             def __init__(self): self.calls = []
             def call(self, op, data, request_id=None):
+                if op == 'session_requirements': return {'protocol_version':1, 'skill_version':'0.2.0'}
                 self.calls.append((op, data, request_id))
                 if op == 'inbox_claim':
                     return {'attempt_id': 'attempt', 'generation': 1,
