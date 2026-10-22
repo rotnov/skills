@@ -23,7 +23,7 @@ trigger a second refresh within the same owner request. Even `status: current`
 returns a validated persistent path.
 
 The installer stages both client copies under a private temporary directory and
-isolates its home, Git configuration and both npm configuration levels to avoid
+isolates its home, Git configuration and npm project/user/global configuration to avoid
 using owner credentials or updating live client metadata. Git SSH fallback is
 denied; an HTTPS authentication failure blocks the update. The helper
 compares their source contents, validates required files and Python syntax, syncs

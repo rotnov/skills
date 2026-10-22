@@ -193,6 +193,30 @@ class UpdateTests(unittest.TestCase):
         self.assertEqual(isolated.returncode, 0, isolated.stderr)
         self.assertEqual(isolated.stdout.strip(), 'https://registry.npmjs.org/')
 
+    @unittest.skipUnless(shutil.which('npm'), 'npm is required for the real config isolation check')
+    def test_npm_ignores_ancestor_project_registry_config(self):
+        project = self.root / 'owner project'
+        project.mkdir()
+        (project / 'package.json').write_text('{}\n')
+        (project / '.npmrc').write_text('registry=https://synthetic-project.invalid/\n')
+        stage = project / 'private-cache/.staging-test'
+        stage.mkdir(parents=True)
+        control_stage = project / 'private-cache/.control'
+        control_stage.mkdir()
+        env = self.module.child_environment(stage)
+        command = [shutil.which('npm'), 'config', 'get', 'registry']
+        exposed = subprocess.run(command, cwd=control_stage, env=env, capture_output=True,
+                                 text=True, timeout=30)
+        self.assertEqual(exposed.returncode, 0, exposed.stderr)
+        self.assertEqual(exposed.stdout.strip(), 'https://synthetic-project.invalid/')
+        isolated = subprocess.run(command, cwd=stage, env=env, capture_output=True,
+                                  text=True, timeout=30)
+        self.assertEqual(isolated.returncode, 0, isolated.stderr)
+        self.assertEqual(isolated.stdout.strip(), 'https://registry.npmjs.org/')
+        self.assertEqual((project / 'package.json').read_text(), '{}\n')
+        self.assertEqual((project / '.npmrc').read_text(),
+                         'registry=https://synthetic-project.invalid/\n')
+
     @unittest.skipUnless(shutil.which('git'), 'git is required for the real fallback isolation check')
     def test_git_ssh_fallback_is_denied_even_when_installer_overrides_allowed_protocols(self):
         stage = self.root / 'git stage'

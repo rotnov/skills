@@ -85,6 +85,10 @@ def child_environment(stage):
     env = {key: os.environ[key] for key in allowed if key in os.environ}
     home = stage / 'tool-home'
     home.mkdir(mode=0o700)
+    # Stop npm's project lookup here even when a private cache is nested in an
+    # owner's repository. An isolated HOME doesn't isolate ancestor .npmrc files.
+    (stage / 'package.json').write_text('{"private":true}\n', encoding='utf-8')
+    (stage / '.npmrc').touch(mode=0o600)
     npm_user, npm_global = home / 'npm-user.npmrc', home / 'npm-global.npmrc'
     for path in (npm_user, npm_global): path.touch(mode=0o600)
     env.update(HOME=str(home), USERPROFILE=str(home), XDG_CONFIG_HOME=str(home / '.config'),
