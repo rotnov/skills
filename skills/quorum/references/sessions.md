@@ -74,7 +74,10 @@ On macOS/Linux the endpoint must be an existing socket owned by the current OS
 user, with mode 0600 inside a private current-user directory. Symlink routing and
 unsafe ancestors are refused, except the root-owned macOS /tmp and /var aliases;
 shared temporary ancestors must have the sticky bit. On Windows it must be a
-local named pipe. This prevents sending the exported token into an ordinary file
+local named pipe under `\\.\pipe\`, with at most 240 characters after that prefix.
+Backslash-separated ASCII name components are accepted; empty, dot, parent,
+trailing-dot, remote and ambiguous path components are refused.
+This prevents sending the exported token into an ordinary file
 or another user's endpoint. Tokens are required on both transports so the
 background child can authenticate as this exact session's child even after it
 exits. The session's own inbound controls and sandbox socket permissions still
