@@ -7,6 +7,11 @@ For first service configuration or login, read [setup](setup.md).
 
 ## Create a quorum
 
+Complete the [automatic refresh](update.md) once for this owner request and use
+the returned persistent skill directory before creation. Read its updated
+instructions and retain the same private state, login and request ID. Re-reading
+this guide after refresh does not repeat that preflight.
+
 Use the configured backend and the owner's own GitHub login. Creation requires
 an administrator-granted instance creator capability; GitHub login and quorum
 ownership alone do not grant it. Run the installed

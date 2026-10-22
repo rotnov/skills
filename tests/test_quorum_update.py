@@ -1,0 +1,202 @@
+"""Refresh code copies without replacing active installations or private state."""
+import contextlib
+import importlib
+import io
+import json
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import tempfile
+import unittest
+from unittest.mock import patch
+
+SCRIPTS = Path(__file__).resolve().parents[1] / 'skills/quorum/scripts'
+sys.path.insert(0, str(SCRIPTS))
+
+
+class UpdateTests(unittest.TestCase):
+    def setUp(self):
+        self.module = importlib.import_module('quorum_update')
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+        self.current = self.root / 'installed skill'
+        shutil.copytree(SCRIPTS.parent, self.current,
+                        ignore=shutil.ignore_patterns('__pycache__', '.venv'))
+        self.cache = self.root / 'private updates'
+        self.source = self.root / 'public source'
+        shutil.copytree(self.current, self.source)
+        self.state = self.root / 'private state'
+        self.state.mkdir()
+        (self.state / 'credentials.json').write_text('owner-private-state')
+        (self.current / 'active-reader.txt').write_text('old-code-must-remain')
+
+    def runner(self, command, **kwargs):
+        if command[1:4] == ['--yes', 'skills@1.5.20', 'add']:
+            self.assertEqual(command[4:], ['rotnov/skills', '--skill', 'quorum', '-a',
+                                         'claude-code', 'codex', '--copy', '-y'])
+            for client in ('.agents', '.claude'):
+                shutil.copytree(self.source, Path(kwargs['cwd']) / client / 'skills/quorum')
+            return subprocess.CompletedProcess(command, 0, 'installer log', '')
+        if command[1:4] == ['sync', '--frozen', '--project']:
+            return subprocess.CompletedProcess(command, 0, '', '')
+        self.assertEqual(command[1:4], ['run', '--offline', '--frozen'])
+        # Exercise the real copied helper; only installer/package resolution is synthetic.
+        marker = command.index('python')
+        return subprocess.run([sys.executable, *command[marker + 1:]],
+                              cwd=kwargs['cwd'], env=kwargs['env'], stdin=kwargs['stdin'],
+                              capture_output=True, text=True, timeout=30)
+
+    def refresh(self, engine='codex', runner=None):
+        with patch('quorum_update.shutil.which', side_effect=lambda name: name):
+            return self.module.refresh(self.current, self.cache, engine,
+                                       run=runner or self.runner)
+
+    def test_changed_code_publishes_both_copies_and_preserves_active_tree_and_state(self):
+        (self.source / 'new-version.txt').write_text('new-public-code')
+        result = self.refresh()
+        self.assertEqual(result['status'], 'updated')
+        selected = Path(result['skill_dir'])
+        self.assertTrue(selected.is_relative_to(self.cache))
+        self.assertEqual((selected / 'new-version.txt').read_text(), 'new-public-code')
+        self.assertTrue((selected.parents[2] / '.claude/skills/quorum/SKILL.md').is_file())
+        self.assertFalse((self.current / 'new-version.txt').exists())
+        self.assertEqual((self.current / 'active-reader.txt').read_text(), 'old-code-must-remain')
+        self.assertEqual((self.state / 'credentials.json').read_text(), 'owner-private-state')
+        self.assertEqual(list(self.state.iterdir()), [self.state / 'credentials.json'])
+
+    def test_identical_version_reuses_persistent_content_path_for_either_client(self):
+        one = self.refresh()
+        two = self.refresh('claude')
+        self.assertEqual(Path(one['skill_dir']).parents[2], Path(two['skill_dir']).parents[2])
+        self.assertEqual(Path(two['skill_dir']).parts[-3:], ('.claude', 'skills', 'quorum'))
+        self.assertEqual(len([p for p in self.cache.iterdir() if p.is_dir()]), 1)
+        self.current = Path(one['skill_dir'])
+        self.assertEqual(self.refresh()['status'], 'current')
+
+    def test_fetch_failure_is_a_blocker_without_partial_publish_or_secret_output(self):
+        def failing(command, **kwargs):
+            return subprocess.CompletedProcess(command, 1, 'secret-token', 'secret-token')
+        with self.assertRaisesRegex(ValueError, '^update_fetch_failed$'):
+            self.refresh(runner=failing)
+        self.assertEqual((self.current / 'active-reader.txt').read_text(), 'old-code-must-remain')
+        self.assertFalse(any(p.is_dir() for p in self.cache.iterdir()))
+
+    def test_missing_tool_blocks_before_network_or_current_tree_changes(self):
+        with patch('quorum_update.shutil.which', return_value=None):
+            with self.assertRaisesRegex(ValueError, '^update_tool_missing$'):
+                self.module.refresh(self.current, self.cache, 'codex',
+                                    run=lambda *_args, **_kwargs: self.fail('network call'))
+        self.assertFalse(self.cache.exists())
+
+    def test_incomplete_or_different_client_copy_is_never_published(self):
+        for corruption in ('missing-lock', 'different-client', 'invalid-python', 'symlink'):
+            with self.subTest(corruption=corruption):
+                def corrupt(command, **kwargs):
+                    result = self.runner(command, **kwargs)
+                    if command[1:4] == ['--yes', 'skills@1.5.20', 'add']:
+                        target = Path(kwargs['cwd']) / '.claude/skills/quorum'
+                        if corruption == 'missing-lock': (target / 'uv.lock').unlink()
+                        elif corruption == 'different-client': (target / 'extra').write_text('different')
+                        elif corruption == 'invalid-python':
+                            for client in ('.agents', '.claude'):
+                                (Path(kwargs['cwd']) / client / 'skills/quorum/scripts/broken.py').write_text('def (')
+                        else:
+                            try: (target / 'external').symlink_to(self.state, target_is_directory=True)
+                            except OSError: self.skipTest('host does not permit symlink fixtures')
+                    return result
+                with self.assertRaisesRegex(ValueError, '^update_invalid_copy$'):
+                    self.refresh(runner=corrupt)
+                self.assertFalse(any(p.is_dir() for p in self.cache.iterdir()))
+
+    def test_dependency_sync_or_offline_validation_failure_keeps_installed_copy(self):
+        for fail_sync in (True, False):
+            def fail(command, **kwargs):
+                if command[1] == ('sync' if fail_sync else 'run'):
+                    return subprocess.CompletedProcess(command, 1, 'private failure detail', '')
+                return self.runner(command, **kwargs)
+            with self.subTest(fail_sync=fail_sync):
+                with self.assertRaisesRegex(ValueError, '^update_validation_failed$'):
+                    self.refresh(runner=fail)
+                self.assertFalse(any(p.is_dir() for p in self.cache.iterdir()))
+
+    def test_cache_with_corrupt_published_content_is_not_reused_or_overwritten(self):
+        result = self.refresh()
+        published = Path(result['skill_dir'])
+        (published / 'SKILL.md').write_text('corrupt')
+        with self.assertRaisesRegex(ValueError, '^update_cache_conflict$'):
+            self.refresh()
+        self.assertEqual((published / 'SKILL.md').read_text(), 'corrupt')
+
+    def test_cache_symlink_cannot_redirect_a_previously_published_version(self):
+        result = self.refresh()
+        published = Path(result['skill_dir']).parents[2]
+        displaced = self.root / 'displaced version'
+        published.rename(displaced)
+        try: published.symlink_to(displaced, target_is_directory=True)
+        except OSError: self.skipTest('host does not permit symlink fixtures')
+        with self.assertRaisesRegex(ValueError, '^update_cache_conflict$'):
+            self.refresh()
+
+    def test_successful_status_process_with_live_or_configured_state_is_rejected(self):
+        def wrong_status(command, **kwargs):
+            if command[1] == 'run':
+                return subprocess.CompletedProcess(command, 0, json.dumps(
+                    {'ok': True, 'data': {'worker': 'running', 'configured': True}}), '')
+            return self.runner(command, **kwargs)
+        with self.assertRaisesRegex(ValueError, '^update_validation_failed$'):
+            self.refresh(runner=wrong_status)
+        self.assertFalse(any(p.is_dir() for p in self.cache.iterdir()))
+
+    def test_cache_cannot_be_inside_loaded_skill_and_source_is_not_overridable(self):
+        with self.assertRaisesRegex(ValueError, '^update_unsafe_cache$'):
+            self.module.refresh(self.current, self.current / 'cache', 'codex')
+        with self.assertRaisesRegex(ValueError, '^update_unsafe_cache$'):
+            self.module.refresh(self.current, Path('relative-cache'), 'codex')
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as error:
+                self.module.main(['--source', 'untrusted/repo'])
+        self.assertEqual(error.exception.code, 2)
+
+    def test_update_environment_cannot_reuse_auth_or_redirect_the_public_source(self):
+        def isolated(command, **kwargs):
+            env = kwargs['env']
+            for name in ('GITHUB_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN', 'SKILLS_DOWNLOAD_URL'):
+                self.assertNotIn(name, env)
+            self.assertNotEqual(env['HOME'], str(Path.home()))
+            self.assertEqual(env['GIT_CONFIG_GLOBAL'], __import__('os').devnull)
+            return self.runner(command, **kwargs)
+        with patch.dict('os.environ', GITHUB_TOKEN='secret', CLAUDE_CODE_OAUTH_TOKEN='secret',
+                        SKILLS_DOWNLOAD_URL='https://untrusted.invalid'):
+            self.assertEqual(self.refresh(runner=isolated)['status'], 'updated')
+
+    def test_concurrent_update_does_not_start_a_second_installer(self):
+        from quorum_os import FileLock
+        self.cache.mkdir()
+        with FileLock(self.cache / 'update.lock'):
+            with self.assertRaisesRegex(ValueError, '^update_in_progress$'):
+                self.refresh(runner=lambda *_args, **_kwargs: self.fail('second installer'))
+
+    def test_validation_that_changes_source_cannot_publish_under_an_old_hash(self):
+        def mutate(command, **kwargs):
+            result = self.runner(command, **kwargs)
+            if command[1] == 'run':
+                target = Path(kwargs['cwd']) / '.agents/skills/quorum/new.py'
+                target.write_text('print("changed during validation")')
+            return result
+        with self.assertRaisesRegex(ValueError, '^update_invalid_copy$'):
+            self.refresh(runner=mutate)
+        self.assertFalse(any(p.is_dir() for p in self.cache.iterdir()))
+
+    def test_cli_reports_only_safe_blocker_codes(self):
+        with patch('quorum_update.refresh', side_effect=OSError('private-secret')), \
+                contextlib.redirect_stdout(io.StringIO()) as output:
+            code = self.module.main(['--engine', 'codex', '--cache-root', str(self.cache)])
+        self.assertEqual(code, 3)
+        self.assertEqual(json.loads(output.getvalue()),
+                         {'ok': False, 'code': 'update_failed', 'data': {}})
+
+
+if __name__ == '__main__':
+    unittest.main()

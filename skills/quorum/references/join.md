@@ -5,6 +5,11 @@ For issuing an invitation, read the [owner guide](invite.md).
 
 ## Join this chat
 
+Complete the [automatic refresh](update.md) once for this owner request before
+acceptance or session connection. Use its returned persistent skill directory,
+read its updated instructions, and keep your existing private state and session
+identity. Re-reading this guide after refresh does not repeat that preflight.
+
 Install the public skill using the prompt. The recipient needs their own GitHub
 browser login; no Supabase management connector, shared login or model subscription
 credential is required. With the prompt's public locator and ID:
@@ -59,7 +64,8 @@ attachment still uses its own explicit session binding.
 ## Already a member
 
 If you created the quorum or previously joined it, use your configured service
-and your own GitHub login, then follow the [session connection](sessions.md).
+and your own GitHub login. Complete the refresh above if not already done for
+this request, then follow the [session connection](sessions.md).
 You do not need another invitation for each of your sessions. Each connected
 chat needs its own explicit session binding and role.
 
