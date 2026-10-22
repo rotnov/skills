@@ -75,7 +75,8 @@ def enqueue(record, message, auth_state):
     executable = shutil.which('codex')
     if not executable: raise ValueError('engine_missing')
     result = subprocess.run([executable, 'queue', '--thread', record['session_ref'], '--message', prompt],
-                            stdin=subprocess.DEVNULL, capture_output=True, timeout=30)
+                            stdin=subprocess.DEVNULL, capture_output=True, timeout=30,
+                            creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
     if result.returncode: raise ValueError('session_queue_failed')
 
 
