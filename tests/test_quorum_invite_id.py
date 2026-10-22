@@ -161,7 +161,8 @@ class IdInvitationTests(unittest.TestCase):
         real_init = QuorumApi.__init__
         def init(api, config, token, request_=None):
             real_init(api, config, token, request)
-        arguments = ['accept-id', INVITE, '--anonymous', '--origin', 'https://example.com',
+        # Auth-only: an explicit membership-only accept never depends on this host's native session.
+        arguments = ['accept-id', INVITE, '--anonymous', '--membership-only', '--origin', 'https://example.com',
                      '--publishable-key', 'sb_publishable_synthetic']
         with tempfile.TemporaryDirectory() as root, \
                 patch('quorum_api.request_json', side_effect=request), \
@@ -175,11 +176,13 @@ class IdInvitationTests(unittest.TestCase):
             registry = Path(os.environ['QUORUM_PROFILE_ROOT'])
             self.assertFalse(registry.exists() and any(registry.iterdir()), 'anonymous login entered the machine profile')
             # Retries reuse the stored identity; a lost one needs a new open invitation.
-            with contextlib.redirect_stdout(io.StringIO()):
-                self.assertEqual(quorum.main(['--state', root, *arguments]), 0)
-            self.assertEqual(sum(url.endswith('/signup') for url, _ in requests), 1)
             with contextlib.redirect_stdout(io.StringIO()) as output:
-                self.assertEqual(quorum.main(['--state', root, 'accept-id', INVITE]), 3)
+                self.assertEqual(quorum.main(['--state', root, *arguments]), 0, output.getvalue())
+            self.assertEqual(json.loads(output.getvalue())['data']['native_preflight'], 'skipped')
+            self.assertEqual(sum(url.endswith('/signup') for url, _ in requests), 1)
+            # A GitHub accept on this anonymous state conflicts at auth, not at native preflight.
+            with contextlib.redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(quorum.main(['--state', root, 'accept-id', INVITE, '--membership-only']), 3)
             self.assertEqual(json.loads(output.getvalue())['code'], 'anonymous_state_conflict')
             for path in (Path(root) / 'anonymous-credentials').glob('*.json'): path.unlink()
             with contextlib.redirect_stdout(io.StringIO()) as output:
@@ -216,8 +219,9 @@ class IdInvitationTests(unittest.TestCase):
                     patch('quorum_api.get_json', side_effect=AssertionError('principal verification')), \
                     patch('quorum_auth.login_pkce', side_effect=AssertionError('no browser login')):
                 with contextlib.redirect_stdout(io.StringIO()) as output:
-                    self.assertEqual(quorum.main(['--state', root, 'accept-id', INVITE, '--anonymous', '--origin',
-                                                  config.origin, '--publishable-key', config.publishable_key]), 0,
+                    self.assertEqual(quorum.main(['--state', root, 'accept-id', INVITE, '--anonymous',
+                                                  '--membership-only', '--origin', config.origin,
+                                                  '--publishable-key', config.publishable_key]), 0,
                                      output.getvalue())
                 # Explicit login may refresh a legacy GitHub family; here it only reuses this state's own login.
                 with contextlib.redirect_stdout(io.StringIO()) as output:
@@ -252,8 +256,9 @@ class IdInvitationTests(unittest.TestCase):
                 patch('quorum_api.QuorumApi.__init__', init), \
                 patch('quorum_auth.login_pkce', side_effect=AssertionError('no browser login')):
             with contextlib.redirect_stdout(io.StringIO()):
-                self.assertEqual(quorum.main(['--state', root, 'accept-id', INVITE, '--anonymous', '--origin',
-                                              'https://example.com', '--publishable-key', 'sb_publishable_synthetic']), 0)
+                self.assertEqual(quorum.main(['--state', root, 'accept-id', INVITE, '--anonymous', '--membership-only',
+                                              '--origin', 'https://example.com',
+                                              '--publishable-key', 'sb_publishable_synthetic']), 0)
             # Session connect/start/run resolve the same state: never the machine login.
             auth, session = LocalLedger(Path(root)), LocalLedger(Path(root) / 'sessions' / 'synthetic')
             try:
@@ -352,15 +357,62 @@ class IdInvitationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             with patch('quorum_api.request_json', side_effect=QuorumError('service_error')), \
                     contextlib.redirect_stdout(io.StringIO()) as output:
-                self.assertEqual(quorum.main(['--state', root, 'accept-id', INVITE, '--anonymous', '--origin',
-                                              'https://example.com', '--publishable-key', 'sb_publishable_synthetic']), 4)
+                self.assertEqual(quorum.main(['--state', root, 'accept-id', INVITE, '--anonymous', '--membership-only',
+                                              '--origin', 'https://example.com',
+                                              '--publishable-key', 'sb_publishable_synthetic']), 4)
             self.assertEqual(json.loads(output.getvalue())['code'], 'anonymous_login_unavailable')
         with tempfile.TemporaryDirectory() as root:
             with patch('webbrowser.open', return_value=False), \
                     contextlib.redirect_stdout(io.StringIO()) as output:
-                self.assertEqual(quorum.main(['--state', root, 'accept-id', INVITE, '--origin',
+                self.assertEqual(quorum.main(['--state', root, 'accept-id', INVITE, '--membership-only', '--origin',
                                               'https://example.com', '--publishable-key', 'sb_publishable_synthetic']), 3)
             self.assertEqual(json.loads(output.getvalue())['code'], 'browser_unavailable')
+
+    @isolated_profiles
+    def test_auth_only_accepts_are_independent_of_inherited_native_exports(self):
+        import quorum
+        from quorum_api import QuorumApi
+        from quorum_session import current_session
+        native = ('CODEX_THREAD_ID', 'CLAUDE_CODE_SESSION_ID', 'CLAUDE_CODE_HOST_SESSION_ID',
+                  'CLAUDE_CODE_MESSAGING_SOCKET', 'CLAUDE_CODE_MESSAGING_TOKEN', 'GROK_SESSION_ID',
+                  'GROK_LEADER_SOCKET')
+        flags = ['--membership-only', '--origin', 'https://example.com', '--publishable-key', 'sb_publishable_synthetic']
+        requests = []
+        def request(url, headers, body):
+            requests.append(url)
+            if url.endswith('/auth/v1/signup'):
+                return {'access_token': 'anon-access', 'refresh_token': 'anon-refresh', 'expires_in': 3600}
+            return {'quorum_id': 'q', 'membership_id': 'm'}
+        real_init = QuorumApi.__init__
+        def init(api, config, token, request_=None):
+            real_init(api, config, token, request)
+        # CI exports no native session; a local chat may export a valid Codex SID.
+        for codex_sid in (None, '22222222-2222-4222-8222-222222222222'):
+            requests.clear()
+            with self.subTest(codex_sid_set=codex_sid is not None), patch.dict(os.environ), \
+                    patch('quorum_session.client_preflight', side_effect=AssertionError('native preflight')):
+                for key in native: os.environ.pop(key, None)
+                if codex_sid: os.environ['CODEX_THREAD_ID'] = codex_sid
+                self.assertEqual(os.environ.get('CODEX_THREAD_ID'), codex_sid)
+                if codex_sid: self.assertEqual(current_session(), codex_sid)
+                with tempfile.TemporaryDirectory() as root, \
+                        patch('quorum_api.request_json', side_effect=request), \
+                        patch('quorum_api.QuorumApi.__init__', init), \
+                        patch('quorum_auth.login_pkce', side_effect=AssertionError('no browser login')):
+                    for _ in range(2):
+                        with contextlib.redirect_stdout(io.StringIO()) as output:
+                            self.assertEqual(quorum.main(['--state', root, 'accept-id', INVITE, '--anonymous', *flags]),
+                                             0, output.getvalue())
+                        data = json.loads(output.getvalue())['data']
+                        self.assertEqual((data['membership_only'], data['native_preflight']), (True, 'skipped'))
+                    self.assertEqual(sum(url.endswith('/signup') for url in requests), 1)
+                    with contextlib.redirect_stdout(io.StringIO()) as output:
+                        self.assertEqual(quorum.main(['--state', root, 'accept-id', INVITE, '--membership-only']), 3)
+                    self.assertEqual(json.loads(output.getvalue())['code'], 'anonymous_state_conflict')
+                with tempfile.TemporaryDirectory() as root, patch('webbrowser.open', return_value=False), \
+                        contextlib.redirect_stdout(io.StringIO()) as output:
+                    self.assertEqual(quorum.main(['--state', root, 'accept-id', INVITE, *flags]), 3)
+                self.assertEqual(json.loads(output.getvalue())['code'], 'browser_unavailable')
 
     @isolated_profiles
     def test_headless_login_failures_report_fixed_codes_for_login_and_accept(self):

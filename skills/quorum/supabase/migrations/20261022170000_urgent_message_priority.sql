@@ -145,7 +145,8 @@ begin
  if not found then raise insufficient_privilege using message='message_denied'; end if;
  select * into answer from quorum_private.messages where reply_to=p_message_id and sender_id=p_agent_id order by sequence limit 1;
  if found then
-  if answer.body<>p_body then raise exception 'reply_already_sent'; end if;
+  if answer.body<>p_body or answer.priority<>coalesce(p_priority,'normal') then
+   raise exception 'reply_already_sent'; end if;
   return jsonb_build_object('reply_message_id',answer.id,'conversation_id',answer.conversation_id);
  end if;
  if exists(select 1 from quorum_private.deliveries where message_id=p_message_id and state not in ('queued','answered')) then

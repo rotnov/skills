@@ -91,6 +91,18 @@ begin
  result:=public.session_reply(agent,sid,normal_id,'normal done');
  if (select priority from quorum_private.messages where id=(result->>'reply_message_id')::uuid)<>'normal' then
   raise exception 'open_member_default_reply'; end if;
+ -- The open member's reply replays bind priority in both directions.
+ if public.session_reply(agent,sid,normal_id,'normal done',null)->>'reply_message_id'<>result->>'reply_message_id' then
+  raise exception 'open_member_null_replay'; end if;
+ begin perform public.session_reply(agent,sid,normal_id,'normal done','urgent');
+  raise exception 'open_member_replay_raised_priority';
+ exception when others then if sqlerrm<>'reply_already_sent' then raise; end if; end;
+ begin perform public.session_reply(agent,sid,urgent_id,'urgent done');
+  raise exception 'open_member_replay_lowered_priority';
+ exception when others then if sqlerrm<>'reply_already_sent' then raise; end if; end;
+ if (select string_agg(priority||':'||body,',' order by body) from quorum_private.messages
+     where reply_to in (urgent_id,normal_id))<>'normal:normal done,urgent:urgent done' then
+  raise exception 'open_member_reply_mutated'; end if;
  result:=public.message_send(q,agent,gen_random_uuid(),owner_agent,null,'status',req||'-status');
  if (select priority from quorum_private.messages where id=(result->>'message_id')::uuid)<>'normal' then
   raise exception 'open_member_default_send'; end if;

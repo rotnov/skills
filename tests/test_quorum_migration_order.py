@@ -10,7 +10,7 @@ SERIALIZATION = '_open_access_close_serialization.sql'
 REVIEWED_SOURCES = {
     '20261022150000_open_access_quorums.sql': 'd9d1e1b3409da29ba59574e90bd5d96946d965ec4fa240d6bb7b8290d1a16bab',
     '20261022160000_open_session_requirements.sql': '360665bd4ee5b918e5685fa99f4c1b7241ca61fc16bc906808c9b582ebb62a13',
-    '20261022170000_urgent_message_priority.sql': '7e9a3404540ef6393ebfe8eea8dc6842f91f6f85c14caf22e9e10f71366cb5ec',
+    '20261022170000_urgent_message_priority.sql': 'a382fb74abf40cee84ef15d28046230dcc06ffc97783cef11db28ae5b47dd9f2',
 }
 # prosrc hashes on a database after 170000; the disposable harnesses recompute them.
 SERIALIZATION_PINS = {
