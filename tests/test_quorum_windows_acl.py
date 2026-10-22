@@ -1,4 +1,6 @@
 """Real Windows ACL regression; no credentials, models or hosted service calls."""
+import contextlib
+import io
 import json
 import os
 from pathlib import Path
@@ -6,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 def probe_without_sacl_privilege(root):
@@ -91,6 +94,23 @@ class WindowsAclTests(unittest.TestCase):
             self.assertEqual(acl['owner'], acl['current_user'])
             self.assertEqual(acl['rules'], [{'sid': acl['current_user'], 'rights': 2032127,
                                            'inherited': False, 'inheritance': inheritance, 'type': 'Allow'}])
+
+
+class LocalSetupErrorCodeTests(unittest.TestCase):
+    def test_fixed_local_setup_codes_are_reported_and_other_text_is_hidden(self):
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'skills/quorum/scripts'))
+        import quorum
+        for error, expected in ((ValueError('private_acl_unavailable'), 'private_acl_unavailable'),
+                                (ValueError('unsafe_link'), 'unsafe_link'),
+                                (ValueError('login_timeout'), 'login_timeout'),
+                                (OSError('private_acl_unavailable'), 'operation_failed'),
+                                (ValueError('C:\\Users\\secret'), 'operation_failed')):
+            output = io.StringIO()
+            with self.subTest(expected=expected), tempfile.TemporaryDirectory() as temporary, \
+                 patch('quorum.LocalLedger', side_effect=error), contextlib.redirect_stdout(output):
+                code = quorum.main(['--state', temporary, 'status'])
+            self.assertEqual(code, 3)
+            self.assertEqual(json.loads(output.getvalue()), {'ok': False, 'code': expected, 'data': {}})
 
 
 if __name__ == '__main__':
