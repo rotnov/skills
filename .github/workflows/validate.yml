@@ -63,6 +63,11 @@ jobs:
       - name: Verify native Claude Unix socket without a model
         run: uv run --no-project --python 3.12 python -m unittest discover -s tests -p test_quorum_claude_pipe.py -v
 
+      - name: Verify scoped task intake and listener heartbeat without models
+        run: |
+          uv run --project skills/quorum --frozen python -m unittest discover -s tests -p test_quorum_delegation.py -v
+          uv run --project skills/quorum --frozen python -m unittest discover -s tests -p test_quorum_presence.py -v
+
       - name: Verify native Realtime wakeups without a provider
         run: uv run --project skills/quorum --frozen python -m unittest discover -s tests -p test_quorum_realtime.py -v
 
@@ -95,6 +100,11 @@ jobs:
 
       - name: Verify shared machine login and refresh serialization
         run: uv run --no-project --python 3.12 python -m unittest discover -s tests -p test_quorum_profiles.py -v
+
+      - name: Verify scoped task intake and listener heartbeat without models
+        run: |
+          uv run --project skills/quorum --frozen python -m unittest discover -s tests -p test_quorum_delegation.py -v
+          uv run --project skills/quorum --frozen python -m unittest discover -s tests -p test_quorum_presence.py -v
 
       - name: Verify native Realtime wakeups without a provider
         run: uv run --project skills/quorum --frozen python -m unittest discover -s tests -p test_quorum_realtime.py -v

@@ -10,7 +10,7 @@ OPERATIONS = frozenset(('quorum_create invite_create invite_accept device_regist
     'message_send inbox_claim attempt_update delivery_complete context_read member_revoke '
     'work_register work_admit work_transition agent_status agent_leave conversation_read '
     'quorum_lookup quorum_check_owner resolve_role session_inbox session_ack session_reply '
-    'invite_create_id invite_accept_id invite_revoke_id').split())
+    'invite_create_id invite_accept_id invite_revoke_id session_heartbeat session_peers session_requirements').split())
 
 
 class QuorumError(ValueError):

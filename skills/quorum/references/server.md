@@ -34,7 +34,10 @@ Review and apply the following in one administrator-controlled transaction:
 3. Apply [native Realtime wakeups](../supabase/migrations/20261022084959_native_realtime_wakeups.sql).
    This adds receive-only private-channel authorization and empty inbox hints.
    Read [Realtime setup](realtime.md) for prerequisites, policy review and recovery.
-4. Explicitly grant creation to the intended instance owner's verified immutable
+4. Apply [native coordination](../supabase/migrations/20261022152603_native_session_coordination.sql)
+   for private listener heartbeats, same-project availability and idempotent Hello
+   notices. It adds no client table access and never revokes users on timeout.
+5. Explicitly grant creation to the intended instance owner's verified immutable
    numeric GitHub ID. Look up `https://api.github.com/users/<login>`, check the
    returned `login` matches, and use the positive integer `id`.
    Never use an editable profile field.

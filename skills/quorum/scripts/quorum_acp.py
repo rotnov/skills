@@ -204,6 +204,10 @@ class ClaudePilotRunner:
                 if not stop_reader.is_set():
                     try: chunks.put_nowait(None)
                     except queue.Full: pass
+            finally:
+                # The reader owns the buffered stream lock. If cancellation
+                # fails, close only after its blocking read eventually returns.
+                handle.stdout.close()
         reader = threading.Thread(target=read_pipe, daemon=True)
         reader.start()
         try:
@@ -237,9 +241,10 @@ class ClaudePilotRunner:
             yield {'type': 'completed', 'success': True, 'text': result}
         finally:
             stop_reader.set()
-            self.cancel(handle)
-            reader.join(timeout=2)
-            handle.stdout.close()
+            try:
+                self.cancel(handle)
+            finally:
+                reader.join(timeout=2)
 
     def cancel(self, handle):
         import os
@@ -252,15 +257,40 @@ class ClaudePilotRunner:
             handle.wait(timeout=3)
             return
         import time
+        deadline = time.monotonic() + 3
+        def group_exists():
+            try:
+                os.killpg(handle.pid, 0)
+            except ProcessLookupError:
+                return False
+            except PermissionError:
+                # Darwin can report EPERM before the dying child is reapable.
+                # Child exit alone says nothing about surviving descendants.
+                while True:
+                    handle.poll()
+                    try: os.killpg(handle.pid, 0)
+                    except ProcessLookupError: return False
+                    except PermissionError:
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0: raise
+                        time.sleep(min(.05, remaining))
+                        continue
+                    break
+            return True
+
         try: os.killpg(handle.pid, signal.SIGTERM)
         except ProcessLookupError: pass
-        deadline = time.monotonic() + 3
+        except PermissionError:
+            handle.poll()
+            if group_exists(): raise
         while time.monotonic() < deadline:
             handle.poll()  # Reap the leader; descendants may still be executing.
-            try: os.killpg(handle.pid, 0)
-            except ProcessLookupError: break
+            if not group_exists(): break
             time.sleep(.05)
         else:
             try: os.killpg(handle.pid, signal.SIGKILL)
             except ProcessLookupError: pass
+            except PermissionError:
+                handle.poll()
+                if group_exists(): raise
         handle.wait(timeout=3)
