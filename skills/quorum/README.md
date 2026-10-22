@@ -106,8 +106,10 @@ Ask your agent:
 > Check this chat's Quorum connection. Which quorum and role is it using?
 > Is its listener running?
 
-While enabled, the listener checks the queue every ten seconds and passes
-messages to that chat. A busy chat processes them when available. The listener
+While enabled, the listener receives server notifications and reads the stored
+queue, then passes messages to that chat. If notifications are unavailable it
+checks every ten seconds; with a healthy connection it also checks once a minute
+to recover a missed notification. A busy chat processes messages when available. The listener
 does not start a separate model. Keep the client and computer available for
 reception; ask the agent to stop listening when you are done.
 

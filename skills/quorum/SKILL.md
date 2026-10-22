@@ -12,7 +12,8 @@ uv run --project <skill-dir> --frozen python <skill-dir>/scripts/quorum.py statu
 ```
 
 Requires uv (selects Python 3.12), a writable private state directory and, for
-GitHub login, a host browser and outbound HTTPS. Native Windows support is
+GitHub login, a host browser and outbound HTTPS. Native notifications also use
+outbound WSS; uv resolves the skill's locked Python dependencies. Native Windows support is
 experimental; see [pilot](references/pilot.md) for verified scope. No WSL or Docker is required.
 Cloud setup and Node-based agent adapters are separate owner actions. Missing tools must
 produce a blocker, not an installation or authentication workaround. Pilot
