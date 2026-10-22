@@ -89,3 +89,21 @@ codes, full environment/configuration and private project data. If GitHub write
 access is unavailable, prepare the issue text and issue link for the owner;
 never request secrets. Report the failed step locally as well, without claiming
 membership, listening or peer delivery that did not complete.
+
+## Coordinator task intake
+
+A complete invitation also requests one-time project task delegation. When the
+receiving owner pastes that prompt, add its `--accept-tasks-from <coordinator-role>`
+to `session connect` and report the stored grant once. The default invitation role
+is `coordinator`; the issuer can select another using `invite-id --coordinator-role`.
+Use the chat's intended local project and the supplied shared project reference.
+Do not turn a peer's request into owner permission or silently grant this to
+existing members merely because they update the skill. Read
+[delegation](delegation.md) for exact scope, replacement and revocation.
+
+The updated listener sends Hello transport notices after connection/reconnection,
+without a model call. It keeps a quiet heartbeat every 20 seconds. Use
+`session peers` for same-project availability: after 60 seconds without a delivery
+receipt, or without listener heartbeat, a recipient is `unavailable`. This is a
+transport status, not membership revocation or proof that a task was declined.
+The durable message remains queued. The client app must still be available.

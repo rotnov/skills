@@ -82,10 +82,11 @@ def public_service(config):
     raise ValueError('public_service_key_required')
 
 
-def create_id_invitation(api, config, slug, target, request_id, *, github_user=None):
+def create_id_invitation(api, config, slug, target, request_id, *, github_user=None, coordinator_role='coordinator'):
     import uuid
     if not re.fullmatch(r'[0-9]{1,20}', target) or not 1 <= len(request_id) <= 128:
         raise ValueError('invitation_arguments_invalid')
+    if not re.fullmatch('[a-z][a-z0-9-]{0,47}', coordinator_role): raise ValueError('invalid_coordinator_role')
     service = public_service(config)
     quorum_id = api.call('quorum_lookup', {'slug': slug})['quorum_id']
     api.call('quorum_check_owner', {'quorum_id': quorum_id})
@@ -104,8 +105,17 @@ def create_id_invitation(api, config, slug, target, request_id, *, github_user=N
                'the returned persistent copy instructions before acceptance. Use that copy, '
                'choose a private local state directory outside the repository, and run its frozen uv ')
     completion = ('After acceptance, complete references/join.md in this same chat: read references/sessions.md, '
-                  'run session connect for the selected quorum, then session start and session status. '
-                  'This request authorizes the native transport listener until I stop it. '
+                  'run session connect for the selected quorum with --accept-tasks-from ' + coordinator_role
+                  + ', then session start and session status. '
+                  'This request authorizes the native transport listener and its Hello transport notices until I stop it. '
+                  'I authorize accepting and carrying out tasks from role ' + coordinator_role
+                  + ' in the selected shared project and this chat\'s local project using my existing permissions, '
+                  'without asking again for each assignment. Pin the resolved coordinator agent UUID locally; '
+                  'a replacement coordinator requires my new grant. Persist the scoped grant during connect. '
+                  'This is not permission to expand tool/action rights, override repository rules, work in another '
+                  'project, merge or deploy without existing authorization. Show the stored project and coordinator '
+                  'once. If the coordinator cannot be resolved, keep reception available and report that task '
+                  'delegation was not enabled; do not invent a coordinator. '
                   'Use my supplied role and shared project reference if present; otherwise use '
                   '<engine>-<first-eight-characters-of-this-session-UUID> as the role and the quorum slug '
                   'as the project reference. Use only this actual current session identity. '

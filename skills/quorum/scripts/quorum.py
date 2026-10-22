@@ -135,7 +135,7 @@ def main(argv=None):
         safe = {'machine_profile_unavailable', 'service_profile_ambiguous', 'auth_profile_conflict',
                 'service_config_conflict', 'github_identity_required', 'auth_lock_timeout'}
         if isinstance(error, ValueError):
-            safe.update({'grok_transport_unavailable', 'session_binding_denied'})
+            safe.update({'grok_transport_unavailable', 'session_binding_denied', 'coordinator_changed'})
         code = str(error) if str(error) in safe else 'operation_failed'
         print(json.dumps({'ok': False, 'code': code, 'data': {}}))
         return 3

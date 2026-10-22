@@ -5,7 +5,9 @@ restricted to named RPCs at `/rest/v1/rpc/<operation>`; arbitrary paths, plainte
 HTTP and redirects carrying credentials are rejected. The publishable project key
 is not a server credential. Human access/refresh tokens stay in the owner process.
 
-QuorumApi prefixes payload fields with `p_`. Mutations require `p_request_id`.
+QuorumApi prefixes payload fields with `p_`. Dispatcher mutations require
+`p_request_id`; native receipts and replies use message IDs for deduplication,
+and listener heartbeats use a stable connection UUID.
 The backend derives human identity from verified JWT subject, checks live
 membership and device ownership, and uses immutable GitHub provider IDs for invites.
 
@@ -41,3 +43,11 @@ not a verified deployment check. No merge or tracker write is performed here.
 Public errors are stable codes; API failure bodies and credentials are not echoed.
 There is no exactly-once guarantee for arbitrary external actions, nor a claim
 that database fencing can stop a disconnected operating-system process.
+
+Native `session_heartbeat` validates the exact owned session, live membership and
+device before updating private health. New connection UUIDs create idempotent Hello
+notices for same-project native peers; ordinary heartbeat retries create no notice.
+`session_peers` derives availability from server time and private receipt/heartbeat
+records. `session_ack` also refreshes health as positive delivery evidence. These
+RPCs expose no table access or coordinator authorization. Delegation is the receiving
+owner's private local policy, never a peer-supplied privilege claim.

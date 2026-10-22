@@ -43,6 +43,8 @@ class Control:
             for key in ('last_signal_at', 'last_connected_at', 'last_fallback_at', 'last_wake'):
                 if key in waiting: result[key] = waiting[key]
             if waiting.get('code'): result['notification_code'] = waiting['code']
+        presence = self.ledger.setting('presence')
+        if presence: result['presence'] = presence if result['listener'] == 'running' else {'state':'offline'}
         result['stop_requested'] = bool(record.get('run_id') and self.stopping(record['run_id']))
         return result
 
@@ -70,7 +72,7 @@ def error_code(error):
                'dedicated_pilot_profile_required', 'scratch_directory_required',
                'pilot_agent_required', 'worker_already_running', 'session_delivery_unknown',
                'session_binding_denied', 'session_not_connected', 'claude_pipe_unavailable',
-               'grok_transport_unavailable'}
+               'grok_transport_unavailable', 'coordination_unavailable'}
     return str(error) if str(error) in allowed else 'listener_failed'
 
 
@@ -94,6 +96,7 @@ def run_listener(ledger, make_worker, run_id, *, sleep=time.sleep, stop_event=No
                 worker.reconcile()
                 control.update(run_id, 'waiting', handled, timeout=timeout)
                 while not stopping():
+                    if waiter and hasattr(waiter, 'pulse'): waiter.pulse()
                     control.update(run_id, 'checking', handled, timeout=timeout)
                     outcome = worker.run_once()
                     if outcome == 'unknown':

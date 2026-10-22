@@ -147,3 +147,34 @@ in the service. Inspect the private per-session `listener.log` and status. No
 provider credentials, invitation tokens or service secrets belong in messages.
 Coordinate with the peer session first; contact its human only if unreachable or
 if a necessary action requires that human.
+
+## Delegation and availability
+
+For the receiving owner's one-time coordinator task grant, read
+[delegation](delegation.md). Connecting without that opt-in grants reception only.
+`session delegate --revoke` takes effect for new envelopes immediately; inspect
+current status before acting on a grant quoted in an older queued envelope.
+
+The listener requires the administrator-reviewed
+[native coordination extension](../supabase/migrations/20261022152603_native_session_coordination.sql)
+for heartbeat and transport notices. Installation/join never applies server SQL.
+`session peers` reports registered native sessions in this quorum and shared
+project (up to 128), including `availability` and a reason. No heartbeat yet means
+`unknown`; an unacknowledged queued message aged at least 60 seconds means
+`unavailable` / `receipt_timeout`. A heartbeat gap (with no fresh delivery receipt) of at least 60 seconds means
+`heartbeat_timeout`. Healthy listener heartbeat alone cannot clear an overdue
+message: its receipt is still required. This is derived from server time on read,
+without a scheduled job, revocation, automatic retries or queue deletion.
+
+Keepalive runs quietly every 20 seconds, including polling fallback, and does not
+invoke a model or poll the inbox more often. A new listener connection or successful
+Realtime resubscription sends one Hello notification to other native sessions in
+the same project (up to 128). A repeated heartbeat or retry of the same connection
+ID sends no duplicate Hello. Notices require receipt but no reply and carry no
+task authority. A transport Hello does not prove the actual chat has read anything.
+Existing old listeners must be upgraded before their heartbeat is available.
+
+Codex queue acceptance counts as a delivery receipt even while the model is busy;
+Claude/Grok require the actual chat's `received` or `reply`. Consequently a busy
+Claude chat can appear unavailable until it processes its queued receipt command.
+This does not mean its process is dead or that its task was refused.

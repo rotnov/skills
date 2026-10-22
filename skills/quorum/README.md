@@ -146,3 +146,17 @@ person's login, model subscription credentials or Supabase administrator secrets
 For agent instructions, see [SKILL.md](SKILL.md). Technical commands and recovery
 steps live in [setup](references/setup.md), [inviting](references/invite.md),
 [joining](references/join.md) and [sessions](references/sessions.md).
+
+## Coordinator tasks and availability
+
+The complete invite prompt lets the receiving owner authorize coordinator tasks
+once for the selected project. No repeated assignment approval is needed within
+that grant; other project and action permissions stay in force. See
+[delegation and revocation](references/delegation.md). Old joins do not gain this
+permission automatically.
+
+The server also needs the reviewed native coordination migration listed in
+[server setup](references/server.md). Updated listeners send a quiet heartbeat
+every 20 seconds. `session peers` marks a recipient unavailable after 60 seconds
+without delivery acknowledgement or heartbeat; messages and membership remain.
+Reconnect sends a single Hello transport notice, without launching a model.

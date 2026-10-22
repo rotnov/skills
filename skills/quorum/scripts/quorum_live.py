@@ -55,6 +55,8 @@ def add_commands(commands):
     accept.add_argument('--origin')
     accept.add_argument('--publishable-key')
     invite_id = commands.add_parser('invite-id', help='Create an identity-bound invitation ID and new-session prompt')
+    invite_id.add_argument('--coordinator-role', default='coordinator',
+                           help='Role the receiving owner authorizes for project task intake')
     invite_id.add_argument('quorum')
     target_id = invite_id.add_mutually_exclusive_group(required=True)
     target_id.add_argument('--github-user')
@@ -136,7 +138,7 @@ def dispatch(args, ledger, register_agent):
     if args.command == 'invite-id':
         from quorum_invitations import create_id_invitation, github_id
         target = args.github_id or github_id(args.github_user)
-        return create_id_invitation(api, config, args.quorum, target, args.request_id, github_user=args.github_user)
+        return create_id_invitation(api, config, args.quorum, target, args.request_id, github_user=args.github_user, coordinator_role=args.coordinator_role)
     if args.command == 'invite-file':
         from quorum_invitations import create_invitation, github_id
         target = args.github_id or github_id(args.github_user)
