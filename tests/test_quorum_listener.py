@@ -1,5 +1,6 @@
 """Continuous listener checks use synthetic peers and disposable state only."""
 import json
+import os
 from contextlib import contextmanager
 from pathlib import Path
 import shutil
@@ -10,6 +11,7 @@ import time
 import unittest
 import uuid
 from unittest.mock import patch
+from quorum_test_support import isolated_profiles
 
 SCRIPTS = Path(__file__).resolve().parents[1] / 'skills/quorum/scripts'
 sys.path.insert(0, str(SCRIPTS))
@@ -129,6 +131,7 @@ class ListenerTests(unittest.TestCase):
             self.assertEqual(result.returncode, 2)
             self.assertFalse(state.exists())
 
+    @isolated_profiles
     def test_unconfigured_background_start_fails_without_leaving_a_listener(self):
         with tempfile.TemporaryDirectory() as temporary:
             command = [sys.executable, str(SCRIPTS / 'quorum.py'), '--state', temporary, 'listen']
@@ -139,6 +142,26 @@ class ListenerTests(unittest.TestCase):
             status = subprocess.run(command + ['status'], capture_output=True, text=True, check=True, timeout=15)
             data = json.loads(status.stdout)['data']
             self.assertEqual((data['listener'], data['state']), ('offline', 'error'))
+
+    def test_unconfigured_background_start_cannot_discover_the_default_owner_profile(self):
+        # Exercise the actual test/subprocess chain with a synthetic OS home.
+        # Canonical temp paths ensure a macOS /var guard cannot hide leakage.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            home, temp = root / 'synthetic-home', root / 'canonical-temp'
+            home.mkdir(mode=0o700)
+            temp.mkdir(mode=0o700)
+            env = dict(os.environ, HOME=str(home), USERPROFILE=str(home),
+                       TMPDIR=str(temp), TEMP=str(temp), TMP=str(temp))
+            env.pop('QUORUM_PROFILE_ROOT', None)
+            result = subprocess.run([sys.executable, '-m', 'unittest',
+                                     'test_quorum_listener.ListenerTests.'
+                                     'test_unconfigured_background_start_fails_without_leaving_a_listener'],
+                                    cwd=Path(__file__).parent, env=env,
+                                    capture_output=True, text=True, timeout=60)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertFalse((home / '.local/share/quorum/machine-profiles').exists(),
+                             'the listener fixture discovered the synthetic owner profile')
 
     def test_two_messages_are_handled_serially_without_reply_loops(self):
         from quorum_listener import Control, run_listener

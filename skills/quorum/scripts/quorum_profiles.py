@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import time
+from urllib.parse import urlsplit
 
 from quorum_api import ServiceConfig, QuorumError
 from quorum_auth import CredentialStore, FileCredentials
@@ -150,6 +151,13 @@ def read_config(path):
     return ServiceConfig(**json.loads(raw))
 
 
+def origin_identity(origin):
+    """Compare HTTPS services without changing their stored credential keys."""
+    parsed = urlsplit(origin)
+    port = parsed.port
+    return parsed.scheme, parsed.hostname, 443 if port is None else port
+
+
 def resolve_profile(state, explicit=None):
     """Bind only the supplied state/legacy directory; never scan other installs."""
     state = private_directory(state, create=True)
@@ -169,7 +177,7 @@ def resolve_profile(state, explicit=None):
             config = ServiceConfig(origin, record['publishable_key'])
         # Preserve an adopted origin's exact credential hash. An alternate
         # spelling of the same service must not create another token family.
-        if any(origin != config.origin and origin.rstrip('/').lower() == config.origin.rstrip('/').lower()
+        if any(origin != config.origin and origin_identity(origin) == origin_identity(config.origin)
                for origin in records):
             raise ValueError('service_config_conflict')
         record = records.get(config.origin)

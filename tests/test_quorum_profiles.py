@@ -86,6 +86,45 @@ class MachineProfileTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'service_config_conflict'):
             self.resolve('state-two', CONFIG)
 
+    def test_default_https_port_alias_cannot_create_another_profile_or_implicit_login(self):
+        from quorum_profiles import ensure_login
+        config, first = self.resolve()
+        first.save(config.origin, session(expires=time.time() + 3600))
+        browser_logins = []
+        def login(config, store):
+            browser_logins.append(config.origin)
+            store.save(config.origin, session(expires=time.time() + 3600))
+        aliases = ('https://one.example:443', 'https://ONE.EXAMPLE:443/',
+                   'HTTPS://ONE.EXAMPLE/', 'https://one.example/')
+        with patch('quorum_auth.login_pkce', side_effect=login):
+            for index, origin in enumerate(aliases):
+                state = 'alias-' + str(index)
+                with self.subTest(origin=origin):
+                    with self.assertRaisesRegex(ValueError, 'service_config_conflict'):
+                        alias_config, alias_store = self.resolve(state, ServiceConfig(origin, CONFIG.publishable_key))
+                        ensure_login(alias_config, alias_store)
+                    self.assertFalse((self.root / state / 'config.json').exists())
+        self.assertEqual(browser_logins, [])
+        self.assertEqual(list(first.profiles.read()), [ORIGIN])
+        self.assertEqual([path for path in (self.root / 'machine').iterdir() if path.is_dir()],
+                         [first.backend.root])
+
+    def test_default_port_comparison_preserves_legacy_origin_and_nondefault_port_isolation(self):
+        legacy_origin = 'HTTPS://ONE.EXAMPLE:443/'
+        (self.root / 'state-one').mkdir(mode=0o700)
+        legacy = CredentialStore(root=self.root / 'state-one/credentials')
+        legacy.save(legacy_origin, session())
+        config, shared = self.resolve(config=ServiceConfig(legacy_origin, CONFIG.publishable_key))
+        self.assertEqual(config.origin, legacy_origin)
+        self.assertEqual(shared.backend.root, legacy.backend.root)
+        self.assertEqual(shared.load(legacy_origin)['refresh_token'], 'refresh')
+        with self.assertRaisesRegex(ValueError, 'service_config_conflict'):
+            self.resolve('state-two', CONFIG)
+        other_origin = 'https://one.example:8443'
+        _, independent = self.resolve('state-three', ServiceConfig(other_origin, CONFIG.publishable_key))
+        self.assertNotEqual(independent.backend.root, legacy.backend.root)
+        self.assertIsNone(independent.load(other_origin))
+
     def test_separate_origins_and_os_roots_are_isolated_and_uuid_never_guesses(self):
         _, first = self.resolve()
         first.save(ORIGIN, session())
