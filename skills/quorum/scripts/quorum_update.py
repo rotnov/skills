@@ -16,7 +16,8 @@ import tomllib
 sys.dont_write_bytecode = True
 from quorum_os import FileLock, protect, reject_link
 
-CLIENTS = {'codex': '.agents/skills/quorum', 'claude': '.claude/skills/quorum'}
+CLIENTS = {'codex': '.agents/skills/quorum', 'claude': '.claude/skills/quorum',
+           'grok': '.agents/skills/quorum'}
 GENERATED = {'.venv', '__pycache__', '.git', 'node_modules'}
 REQUIRED = ('SKILL.md', 'pyproject.toml', 'uv.lock', 'scripts/quorum.py',
             'scripts/quorum_update.py', 'references/update.md', 'references/join.md',
@@ -136,7 +137,7 @@ def refresh(current, cache, engine, *, run=subprocess.run):
             checked_run(run, [tools['npx'], '--yes', 'skills@1.5.20', 'add', 'rotnov/skills',
                               '--skill', 'quorum', '-a', 'claude-code', 'codex', '--copy', '-y'],
                         stage, env, 'update_fetch_failed', 180)
-            copies = [stage / relative for relative in CLIENTS.values()]
+            copies = [stage / relative for relative in dict.fromkeys(CLIENTS.values())]
             digests = [validate_source(copy) for copy in copies]
             if len(set(digests)) != 1: raise ValueError('update_invalid_copy')
             for index, copy in enumerate(copies):

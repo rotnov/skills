@@ -14,14 +14,16 @@ from quorum_state import LocalLedger
 
 
 def current_engine():
-    engines = [engine for engine, key in (('codex','CODEX_THREAD_ID'), ('claude','CLAUDE_CODE_SESSION_ID'))
+    engines = [engine for engine, key in (('codex','CODEX_THREAD_ID'), ('claude','CLAUDE_CODE_SESSION_ID'),
+                                        ('grok','GROK_SESSION_ID'))
                if os.environ.get(key)]
     if len(engines) > 1: raise ValueError('ambiguous_current_session')
     return engines[0] if engines else 'codex'
 
 
 def current_session():
-    value = os.environ.get('CODEX_THREAD_ID') or os.environ.get('CLAUDE_CODE_SESSION_ID')
+    value = (os.environ.get('CODEX_THREAD_ID') or os.environ.get('CLAUDE_CODE_SESSION_ID')
+             or os.environ.get('GROK_SESSION_ID'))
     if not value: raise ValueError('current_codex_session_required')
     current_engine()
     return str(uuid.UUID(value))
@@ -42,7 +44,7 @@ def enqueue(record, message, auth_state):
     header = ('[Quorum · ' + label(record.get('quorum') or record.get('quorum_id') or 'unknown')
               + ' · ' + label(message.get('sender_role') or message.get('sender_id') or 'agent') + ']\n')
     receipt_hint = ''
-    if engine == 'claude':
+    if engine in ('claude', 'grok'):
         receipt = command[:-3] + ['received', message['id']]
         receipt_hint = ('First confirm that this message reached THIS chat by running the receipt command '
                         '(argument array): ' + json.dumps(receipt) + '\n')
@@ -58,6 +60,11 @@ def enqueue(record, message, auth_state):
               'Reply command (argument array; answer text goes to stdin): ' + json.dumps(command) + '\n'
               'Peer message JSON:\n' + json.dumps(message, ensure_ascii=False))
     if len(prompt.encode()) > 48000: raise ValueError('message_too_large')
+    if engine == 'grok':
+        from quorum_grok_leader import submit
+        require_caller(record['session_ref'], 'grok')
+        submit(record, message['id'], prompt)
+        return 'submitted'
     if engine == 'claude':
         from quorum_claude_pipe import submit
         require_caller(record['session_ref'], 'claude')
@@ -206,18 +213,27 @@ def dispatch(args, auth_ledger, register_agent):
                 from quorum_claude_pipe import binding
                 endpoint = binding(sid)
             data={'engine':engine,'session_ref':sid,'project_ref':args.project_ref,'cwd':str(Path.cwd().resolve())}
+            transport = None
+            if engine == 'grok':
+                from quorum_grok_leader import binding
+                transport = binding(sid, data['cwd'])
             old=ledger.setting('session-agent')
             if old and (old['registration']!=data or old['role']!=args.role or old['quorum']!=args.quorum):
                 raise ValueError('binding_conflict')
             result=register_agent(api,auth_ledger,args.quorum,args.role,data,device_key='session-device:'+sid)
             record={**result,**data,'registration':data,'role':args.role,'quorum':args.quorum}
             if endpoint is not None: record['messaging_socket']=endpoint
+            if transport is not None: record['grok_transport']=transport
             ledger.setting('session-agent',record)
             return {**result,'session_ref':sid,'transport':'offline'}
         if not record or record['session_ref']!=sid: raise ValueError('session_not_connected')
         if engine == 'claude' and args.action in ('start','run'):
             from quorum_claude_pipe import binding
             if binding(sid) != record['messaging_socket']: raise ValueError('session_binding_denied')
+        if engine == 'grok' and args.action in ('start','run'):
+            from quorum_grok_leader import binding
+            if binding(sid, record['cwd']) != record['grok_transport']:
+                raise ValueError('session_binding_denied')
         if args.action=='start': return {**start(auth_ledger.root,ledger,sid),'session_id':sid}
         scope={'agent_id':record['agent_id'],'session_ref':sid}
         if args.action in ('reconcile','received'):
@@ -232,7 +248,7 @@ def dispatch(args, auth_ledger, register_agent):
             if not text or len(text.encode())>16384: raise ValueError('invalid_message')
             if args.action=='reply':
                 result=api.call('session_reply',{**scope,'message_id':args.message_id,'body':text})
-                if engine == 'claude':
+                if engine in ('claude', 'grok'):
                     ledger.setting('delivery:'+args.message_id,{'state':'queued'})
                     api.call('session_ack',{**scope,'message_id':args.message_id})
                     ledger.setting('delivery:'+args.message_id,{'state':'acked'})

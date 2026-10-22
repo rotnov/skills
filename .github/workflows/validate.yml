@@ -66,6 +66,9 @@ jobs:
       - name: Verify native Realtime wakeups without a provider
         run: uv run --project skills/quorum --frozen python -m unittest discover -s tests -p test_quorum_realtime.py -v
 
+      - name: Verify experimental Grok existing-TUI IPC without a model
+        run: uv run --project skills/quorum --frozen python -m unittest discover -s tests -p test_quorum_grok.py -v
+
   windows-acl:
     runs-on: windows-latest
     steps:

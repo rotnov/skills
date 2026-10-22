@@ -20,7 +20,7 @@ try {
   `);
   const migrations = root + '/skills/quorum/supabase/migrations/';
   for (const name of readdirSync(migrations).sort()) {
-    if (name.endsWith('_invite_id_and_creator_gate.sql') || name.endsWith('_native_realtime_wakeups.sql')) {
+    if (name.endsWith('_invite_id_and_creator_gate.sql') || name.endsWith('_native_realtime_wakeups.sql') || name.endsWith('_native_grok_session.sql')) {
       await db.exec(readFileSync(migrations + name, 'utf8'));
     }
   }

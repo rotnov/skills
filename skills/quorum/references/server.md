@@ -39,12 +39,16 @@ Review and apply the following in one administrator-controlled transaction:
    returned `login` matches, and use the positive integer `id`.
    Never use an editable profile field.
 
-After loading the bootstrap and both migrations within `BEGIN`, substitute the verified ID:
+For Grok sessions only, also apply [the native Grok engine extension](../supabase/migrations/20261022094041_native_grok_session.sql) after Realtime.
+It adds the engine to the existing exact-session and private-notification checks;
+it grants no new creation, membership or table rights.
+
+After loading the bootstrap and required migrations within `BEGIN`, substitute the verified ID:
 
 ```sql
 INSERT INTO quorum_private.instance_creators(github_id)
 VALUES ('<verified-owner-github-id>');
--- COMMIT only after the reviewed bootstrap and both migrations succeeded.
+-- COMMIT only after the reviewed bootstrap and required migrations succeeded.
 ```
 
 The published allowlist starts empty. Repository authors, quorum owners and

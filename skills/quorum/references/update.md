@@ -5,10 +5,11 @@ joining/connecting another session. Run this preflight **once per owner request*
 before login, membership or registration changes:
 
 ```text
-uv run --project <loaded-skill-dir> --frozen python <loaded-skill-dir>/scripts/quorum_update.py --engine <codex-or-claude>
+uv run --project <loaded-skill-dir> --frozen python <loaded-skill-dir>/scripts/quorum_update.py --engine <codex-or-claude-or-grok>
 ```
 
-Use the actual current client. The helper requires Node.js >=22.20/npx, git, uv, Python
+Use the actual current client. Grok uses the portable `.agents/skills/quorum`
+copy that its native skill loader scans; no unsupported installer agent name is used. The helper requires Node.js >=22.20/npx, git, uv, Python
 3.12 selected by uv, writable private storage and outbound HTTPS to npm, GitHub
 and the locked Python package sources. Missing tools are a blocker; do not
 install substitutes or obtain credentials. The only source is public

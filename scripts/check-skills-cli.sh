@@ -2,7 +2,7 @@
 set -eu
 
 # Smoke a clean install, not the Codex or Claude Code chat that runs this gate.
-unset CODEX_THREAD_ID CLAUDE_CODE_SESSION_ID \
+unset CODEX_THREAD_ID GROK_SESSION_ID GROK_LEADER_SOCKET CLAUDE_CODE_SESSION_ID \
   CLAUDE_CODE_MESSAGING_SOCKET CLAUDE_CODE_MESSAGING_TOKEN
 
 repo_root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)

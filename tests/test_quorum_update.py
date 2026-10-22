@@ -77,6 +77,12 @@ class UpdateTests(unittest.TestCase):
         self.current = Path(one['skill_dir'])
         self.assertEqual(self.refresh()['status'], 'current')
 
+    def test_grok_uses_the_shared_agents_copy_without_an_unknown_installer_target(self):
+        result = self.refresh('grok')
+        selected = Path(result['skill_dir'])
+        self.assertEqual(selected.parts[-3:], ('.agents', 'skills', 'quorum'))
+        self.assertTrue((selected/'SKILL.md').is_file())
+
     def test_fetch_failure_is_a_blocker_without_partial_publish_or_secret_output(self):
         def failing(command, **kwargs):
             return subprocess.CompletedProcess(command, 1, 'secret-token', 'secret-token')
