@@ -137,9 +137,11 @@ class SessionTests(unittest.TestCase):
                         # The receiving chat runs the envelope command on its own ledger connection.
                         args=SimpleNamespace(session_id=SID,action=action,message_id=MID)
                         stdin=SimpleNamespace(buffer=io.BytesIO(b'synthetic answer'))
-                        with patch.dict(os.environ,{'CLAUDE_CODE_SESSION_ID':SID},clear=True), \
+                        # Keep the rest of the environment: Windows ACL helpers need SystemRoot.
+                        with patch.dict(os.environ,{'CLAUDE_CODE_SESSION_ID':SID}), \
                              patch('quorum_live.api_for',return_value=(api,None,None)), \
                              patch('quorum_session.sys.stdin',stdin):
+                            os.environ.pop('CODEX_THREAD_ID',None)
                             dispatch(args,SimpleNamespace(root=Path(root)),None)
                     def sleep(_):
                         sleeps.append(1)
@@ -150,7 +152,7 @@ class SessionTests(unittest.TestCase):
                     result=run_listener(ledger,lambda:Relay(api,ledger,record,lambda _:'submitted'),
                                         str(uuid.uuid4()),sleep=sleep,timeout=0)
                     self.assertEqual(before,[(0,{'state':'submitted'})])
-                    self.assertEqual((result['handled'],result['state']),(1,'stopped'))
+                    self.assertEqual((result['handled'],result['state'],result.get('code')),(1,'stopped',None))
                 finally: ledger.db.close()
 
     def test_listener_counts_codex_queue_acceptance_without_a_chat_receipt(self):
