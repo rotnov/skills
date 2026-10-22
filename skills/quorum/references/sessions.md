@@ -11,8 +11,10 @@ substitute a headless handler. Do not spoof one client's environment as the othe
 
 ## Backend prerequisite
 
-The existing pilot backend needs the owner-reviewed extension
-[session-transport.sql](session-transport.sql). Only its administrator applies it;
+Older existing backends without native-session RPCs need the owner-reviewed
+extension [session-transport.sql](session-transport.sql). Fresh servers installed
+from [server-bootstrap.sql](server-bootstrap.sql) already include these RPCs and
+do not need that extension reapplied. Only an administrator applies server SQL;
 installation, connection and reception never execute DDL or request service keys.
 It adds owner/session-scoped inbox reads, UI queue receipts and idempotent replies.
 These receipts include automatic peer answers without launching reply loops.

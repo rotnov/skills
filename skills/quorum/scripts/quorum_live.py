@@ -42,7 +42,7 @@ def read_invitation(path):
     return data
 
 
-LIVE_COMMANDS = {'connect', 'pilot-init', 'pilot-worker', 'ping', 'thread', 'mcp', 'invite-file', 'listen', 'session'}
+LIVE_COMMANDS = {'connect', 'pilot-init', 'pilot-worker', 'ping', 'thread', 'mcp', 'invite-file', 'listen', 'session', 'invite-id', 'accept-id'}
 
 
 def add_commands(commands):
@@ -50,6 +50,16 @@ def add_commands(commands):
     add_listener_commands(commands)
     from quorum_session import add_commands as add_session_commands
     add_session_commands(commands)
+    accept = commands.add_parser('accept-id', help='Accept membership by public invitation ID using your own GitHub login')
+    accept.add_argument('invite_id')
+    accept.add_argument('--origin')
+    accept.add_argument('--publishable-key')
+    invite_id = commands.add_parser('invite-id', help='Create an identity-bound invitation ID and new-session prompt')
+    invite_id.add_argument('quorum')
+    target_id = invite_id.add_mutually_exclusive_group(required=True)
+    target_id.add_argument('--github-user')
+    target_id.add_argument('--github-id')
+    invite_id.add_argument('--request-id', required=True)
     invite = commands.add_parser('invite-file', help='Create an owner-only invitation file without printing its token')
     invite.add_argument('quorum')
     target = invite.add_mutually_exclusive_group(required=True)
@@ -105,6 +115,12 @@ def dispatch(args, ledger, register_agent):
     if args.command == 'listen':
         from quorum_listener import dispatch as listener_dispatch
         return listener_dispatch(args, ledger)
+    if args.command == 'accept-id':
+        from quorum_invitations import accept_id_invitation
+        return accept_id_invitation(args, ledger)
+    if args.command == 'invite-id' and not (ledger.root / 'config.json').is_file():
+        from quorum_api import QuorumError
+        raise QuorumError('service_not_configured')
     if args.command == 'connect':
         invite = read_invitation(args.invite_file)
         config_path = ledger.root / 'config.json'
@@ -123,6 +139,10 @@ def dispatch(args, ledger, register_agent):
         args.quorum = invite['quorum']
     else:
         api, config, store = api_for(ledger)
+    if args.command == 'invite-id':
+        from quorum_invitations import create_id_invitation, github_id
+        target = args.github_id or github_id(args.github_user)
+        return create_id_invitation(api, config, args.quorum, target, args.request_id)
     if args.command == 'invite-file':
         from quorum_invitations import create_invitation, github_id
         target = args.github_id or github_id(args.github_user)

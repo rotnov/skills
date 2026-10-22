@@ -1,0 +1,124 @@
+"""ID onboarding is membership-only, portable and independent of model providers."""
+import contextlib
+import io
+import json
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import tempfile
+import unittest
+from unittest.mock import patch
+
+SCRIPTS = Path(__file__).resolve().parents[1] / 'skills/quorum/scripts'
+sys.path.insert(0, str(SCRIPTS))
+INVITE = '11111111-1111-4111-8111-111111111111'
+
+
+class IdInvitationTests(unittest.TestCase):
+    def test_owner_gets_public_id_and_ready_session_prompt_without_file(self):
+        import quorum_invitations as invitations
+        from quorum_api import ServiceConfig
+        calls = []
+        class Api:
+            def call(self, op, payload, request_id=None):
+                calls.append((op, payload, request_id))
+                if op == 'quorum_lookup': return {'quorum_id': 'q'}
+                if op == 'quorum_check_owner': return True
+                if op == 'invite_create_id': return {'invite_id': INVITE, 'expires_at': 'tomorrow'}
+                raise AssertionError(op)
+        with tempfile.TemporaryDirectory() as root:
+            result = invitations.create_id_invitation(Api(), ServiceConfig('https://example.com', 'sb_publishable_synthetic'),
+                                                      'team', '123', 'r')
+            self.assertEqual(result['invite_id'], INVITE)
+            self.assertIn(INVITE, result['session_prompt'])
+            self.assertIn('references/invite.md', result['session_prompt'])
+            self.assertIn('rotnov/skills', result['session_prompt'])
+            self.assertEqual(result['service'], {'origin':'https://example.com','publishable_key':'sb_publishable_synthetic'})
+            self.assertNotIn('token', result)
+            self.assertEqual(list(Path(root).iterdir()), [])
+        self.assertEqual(calls[-1], ('invite_create_id', {'quorum_id': 'q', 'target_github_id': '123'}, 'r'))
+
+    def test_accept_bootstraps_own_login_and_only_accepts_membership(self):
+        import quorum
+        from quorum_state import LocalLedger
+        calls = []
+        class Store:
+            def load(self, _): return None
+        class Api:
+            def call(self, op, payload, request_id=None):
+                calls.append((op, payload, request_id))
+                return {'quorum_id': 'q', 'membership_id': 'm'}
+        with tempfile.TemporaryDirectory() as root:
+            with patch('quorum_live.api_for', return_value=(Api(), __import__('quorum_api').ServiceConfig('https://example.com','sb_publishable_synthetic'), Store())), \
+                    patch('quorum_auth.login_pkce', return_value={'authenticated': True}) as login, \
+                    patch('quorum.register_agent', side_effect=AssertionError('registration forbidden')), \
+                    contextlib.redirect_stdout(io.StringIO()) as output:
+                code = quorum.main(['--state', root, 'accept-id', INVITE, '--origin','https://example.com','--publishable-key','sb_publishable_synthetic'])
+            self.assertEqual(code, 0, output.getvalue())
+            self.assertEqual(calls, [('invite_accept_id', {'invite_id': INVITE}, 'accept-id:' + INVITE)])
+            login.assert_called_once()
+            self.assertTrue(json.loads(output.getvalue())['data']['membership_only'])
+            self.assertEqual(set(json.loads((Path(root)/'config.json').read_text())), {'origin', 'publishable_key'})
+            ledger = LocalLedger(Path(root))
+            self.assertIsNone(ledger.setting('pilot-agent'))
+            ledger.db.close()
+
+    def test_invalid_id_and_service_conflict_stop_before_login(self):
+        import quorum
+        with tempfile.TemporaryDirectory() as root:
+            with patch('quorum_auth.login_pkce', side_effect=AssertionError('must not login')), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(quorum.main(['--state', root, 'accept-id', 'not-an-id', '--origin','https://example.com','--publishable-key','sb_publishable_synthetic']), 3)
+                path = Path(root)/'config.json'
+                path.write_text(json.dumps({'origin':'https://different.invalid','publishable_key':'sb_publishable_synthetic'}))
+                self.assertEqual(quorum.main(['--state', root, 'accept-id', INVITE, '--origin','https://example.com','--publishable-key','sb_publishable_synthetic']), 3)
+
+    def test_no_bundled_service_or_implicit_backend(self):
+        import quorum
+        with tempfile.TemporaryDirectory() as root:
+            with contextlib.redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(quorum.main(['--state',root,'accept-id',INVITE]),4)
+            self.assertEqual(json.loads(output.getvalue())['code'],'service_not_configured')
+            with contextlib.redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(quorum.main(['--state',root,'invite-id','team','--github-id','123','--request-id','r']),4)
+            self.assertEqual(json.loads(output.getvalue())['code'],'service_not_configured')
+        self.assertFalse((SCRIPTS.parent/'assets/service-profiles.json').exists())
+
+    def test_invitation_never_publishes_secret_or_session_key(self):
+        from quorum_invitations import create_id_invitation
+        from quorum_api import ServiceConfig
+        import base64
+        claims = base64.urlsafe_b64encode(json.dumps({'role': 'service_role'}).encode()).decode().rstrip('=')
+        service_key = '.'.join(('e30', claims, 'x'))  # Unsigned synthetic JWT.
+        for key in ('sb_secret_x', service_key, 'provider-token'):
+            with self.assertRaisesRegex(ValueError,'public_service_key_required'):
+                create_id_invitation(None,ServiceConfig('https://example.com',key),'team','123','r')
+
+    def test_api_allows_explicit_id_operations(self):
+        from quorum_api import QuorumApi, ServiceConfig
+        calls=[]
+        api=QuorumApi(ServiceConfig('https://example.com','sb_publishable_synthetic'), lambda:'own-access',
+                      request=lambda url, headers, body: calls.append((url,json.loads(body))) or {})
+        api.call('invite_accept_id', {'invite_id':INVITE}, 'r')
+        self.assertEqual(calls[0][1], {'p_invite_id':INVITE,'p_request_id':'r'})
+
+    def test_clean_copy_cli_bootstraps_without_credentials_or_providers(self):
+        # Runs unchanged on native Windows CI and on both CLI-installed clients.
+        with tempfile.TemporaryDirectory() as root:
+            root=Path(root)
+            installed=root/'quorum'
+            shutil.copytree(SCRIPTS.parent, installed, ignore=shutil.ignore_patterns('__pycache__','.venv'))
+            state=root/'private state'
+            result=subprocess.run([sys.executable,str(installed/'scripts/quorum.py'),'--state',str(state),
+                                   'configure','--origin','https://example.com','--publishable-key','sb_publishable_synthetic'],cwd=root,capture_output=True,text=True)
+            self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+            self.assertTrue(json.loads(result.stdout)['ok'])
+            self.assertFalse((state/'credentials').exists())
+            self.assertTrue((installed/'references/invite.md').is_file())
+            help_result=subprocess.run([sys.executable,str(installed/'scripts/quorum.py'),'accept-id','--help'],
+                                       cwd=root,capture_output=True,text=True)
+            self.assertEqual(help_result.returncode,0)
+
+
+if __name__ == '__main__': unittest.main()

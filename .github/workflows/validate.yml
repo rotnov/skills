@@ -37,6 +37,11 @@ jobs:
           uv run --frozen python scripts/validate_skills.py
           uv run --frozen python -m unittest discover -s tests -v
 
+      - name: Verify invitation authorization in disposable PostgreSQL
+        run: |
+          npm ci --prefix tests/quorum-backend --no-audit --no-fund
+          npm test --prefix tests/quorum-backend
+
       - name: Validate the official Agent Skills format
         run: ./scripts/check-agent-skills-spec.sh
 
@@ -66,3 +71,6 @@ jobs:
 
       - name: Verify native Claude named-pipe transport without a model
         run: uv run --no-project --python 3.12 python -m unittest discover -s tests -p test_quorum_claude_pipe.py -v
+
+      - name: Verify standalone ID onboarding without model providers
+        run: uv run --no-project --python 3.12 python -m unittest discover -s tests -p test_quorum_invite_id.py -v
