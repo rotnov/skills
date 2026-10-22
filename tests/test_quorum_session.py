@@ -14,6 +14,13 @@ SCRIPTS = Path(__file__).resolve().parents[1] / 'skills/quorum/scripts'
 sys.path.insert(0, str(SCRIPTS))
 SID = '11111111-1111-4111-8111-111111111111'
 MID = '22222222-2222-4222-8222-222222222222'
+# The suite may run inside a Codex or Claude Code chat; never inherit that caller's session.
+CLIENT_SESSION_VARIABLES = ('CODEX_THREAD_ID', 'CLAUDE_CODE_SESSION_ID',
+                            'CLAUDE_CODE_MESSAGING_SOCKET', 'CLAUDE_CODE_MESSAGING_TOKEN')
+
+
+def without_client_session():
+    return {key: value for key, value in os.environ.items() if key not in CLIENT_SESSION_VARIABLES}
 
 
 class SessionTests(unittest.TestCase):
@@ -108,7 +115,8 @@ class SessionTests(unittest.TestCase):
     def test_offline_status_is_available_without_service_or_model(self):
         with tempfile.TemporaryDirectory() as root:
             r = subprocess.run([sys.executable, str(SCRIPTS/'quorum.py'), '--state', root,
-                                'session', '--session-id', SID, 'status'], capture_output=True, text=True)
+                                'session', '--session-id', SID, 'status'], capture_output=True, text=True,
+                               env=without_client_session())
             self.assertEqual(r.returncode, 0, r.stderr)
             data = json.loads(r.stdout)['data']
             self.assertEqual(data['listener'], 'offline')
@@ -271,6 +279,7 @@ finally: l.db.close()
     def test_reply_requires_the_bound_calling_session(self):
         from quorum_session import require_caller
         with patch.dict(os.environ,{'CODEX_THREAD_ID':SID}):
+            os.environ.pop('CLAUDE_CODE_SESSION_ID',None)
             require_caller(SID)
             with self.assertRaisesRegex(ValueError,'session_binding_denied'):
                 require_caller(MID)
