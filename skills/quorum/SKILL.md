@@ -22,6 +22,11 @@ configuring credentials.
 
 ## Workflow
 
+0. Before creating a quorum, accepting an invitation or joining/connecting a
+   session, read [update](references/update.md) and run its automatic refresh
+   once per owner request. Read the returned persistent copy's instructions,
+   then use that copy and the same private state/session binding to continue.
+   Do not repeat the preflight while re-reading within this request.
 1. Read status. For first-time service configuration or login, read
    [setup](references/setup.md). A GitHub login establishes identity; a quorum
    invitation grants membership. Keep login and model-provider credentials local.

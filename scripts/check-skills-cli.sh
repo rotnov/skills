@@ -149,6 +149,36 @@ else:
     raise AssertionError("corrupt installed credential store was accepted")
 store.delete("https://example.invalid")
 PY
+        "$uv_bin" run --no-project --python 3.12 python - \
+          "$client_skill" "$repo_root" "$skill_install_root/update-cache" <<'PY'
+from pathlib import Path
+import subprocess
+import sys
+
+installed, source, cache = map(Path, sys.argv[1:])
+sys.path.insert(0, str(installed / 'scripts'))
+from quorum_update import content_hash, refresh
+
+before = content_hash(installed)
+def local_source_run(command, **kwargs):
+    if command[1:4] == ['--yes', 'skills@1.5.20', 'add']:
+        assert command[4] == 'rotnov/skills'
+        # Only the source locator is redirected to the candidate under review.
+        # The pinned official CLI and uv staging/validation run unchanged.
+        command = [*command[:4], str(source), *command[5:]]
+        kwargs['env']['NPM_CONFIG_CACHE'] = str(Path.home() / '.npm')
+    return subprocess.run(command, **kwargs)
+
+engine = 'claude' if '.claude' in installed.parts else 'codex'
+result = refresh(installed, cache, engine, run=local_source_run)
+selected = Path(result['skill_dir'])
+assert selected.is_file() is False and selected.is_dir()
+assert selected.is_relative_to(cache.resolve())
+assert content_hash(selected) == before == content_hash(installed)
+assert result['status'] == 'current'
+assert not (selected / '.venv').exists()
+assert not (selected / 'credentials').exists()
+PY
       )
     done
   fi

@@ -97,6 +97,8 @@ def create_id_invitation(api, config, slug, target, request_id):
               'Run installation in a persistent directory outside the project, not a temporary scratch folder. '
               f'The selected quorum slug is {json.dumps(slug)}. '
               'Read its SKILL.md and references/join.md. Resolve the installed skill directory, '
+              'perform references/update.md automatic refresh once for this request, and read '
+              'the returned persistent copy instructions before acceptance. Use that copy, '
               'choose a private local state directory outside the repository, and run its frozen uv '
               f'helper accept-id {invite_id} with --origin and --publishable-key from this public '
               f'service locator: {json.dumps(service)}. Complete my own GitHub browser login if needed. '
