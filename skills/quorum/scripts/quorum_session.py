@@ -75,6 +75,7 @@ def enqueue(record, message, auth_state):
 class Relay:
     def __init__(self, api, ledger, record, queue):
         self.api, self.ledger, self.record, self.queue = api, ledger, record, queue
+        self.awaiting = []
 
     def scope(self):
         return {'agent_id': self.record['agent_id'], 'session_ref': self.record['session_ref']}
@@ -85,6 +86,12 @@ class Relay:
         self.api.call('session_inbox', self.scope())
 
     def run_once(self):
+        # The chat's `received`/`reply` acknowledges submitted messages itself,
+        # so count each confirmation here once; a bare pipe write is never counted.
+        for pending in self.awaiting:
+            if self.ledger.setting(pending)['state'] == 'acked':
+                self.awaiting.remove(pending)
+                return 'delivered'
         messages = self.api.call('session_inbox', self.scope())
         if not messages: return 'idle'
         message = messages[0]
@@ -104,9 +111,12 @@ class Relay:
             with self.ledger.db:
                 self.ledger.db.execute('update settings set data=? where key=? and data=?',
                                        (json.dumps(state),key,json.dumps({'state':'intent'})))
-        if self.ledger.setting(key)['state'] == 'submitted': return 'idle'
+        if self.ledger.setting(key)['state'] == 'submitted':
+            if key not in self.awaiting: self.awaiting.append(key)
+            return 'idle'
         self.api.call('session_ack', {**self.scope(), 'message_id':message['id']})
         self.ledger.setting(key, {'state':'acked'})
+        if key in self.awaiting: self.awaiting.remove(key)
         return 'delivered'
 
 

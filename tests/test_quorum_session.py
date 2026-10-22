@@ -1,4 +1,5 @@
 """Native-session transport tests never start a model or contact a service."""
+import io
 import json
 import os
 from pathlib import Path
@@ -7,8 +8,10 @@ import shutil
 import time
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
+import uuid
 
 SCRIPTS = Path(__file__).resolve().parents[1] / 'skills/quorum/scripts'
 sys.path.insert(0, str(SCRIPTS))
@@ -111,6 +114,152 @@ class SessionTests(unittest.TestCase):
                 self.assertEqual(result,'delivered')
                 self.assertEqual(receiver.setting('delivery:'+MID),{'state':'acked'})
             finally: connection.close(); receiver.db.close()
+
+    def test_listener_counts_a_pipe_delivery_only_after_the_chat_confirms_it(self):
+        from quorum_listener import Control, run_listener
+        from quorum_session import Relay, dispatch
+        from quorum_state import LocalLedger
+        for action in ('received', 'reply'):
+            with self.subTest(action=action), tempfile.TemporaryDirectory() as root:
+                record={'engine':'claude','agent_id':'a','session_ref':SID}
+                ledger=LocalLedger(Path(root)/'sessions'/SID)
+                try:
+                    ledger.setting('session-agent',record)
+                    message={'id':MID,'recipient_id':'a'}
+                    class Api:
+                        acked=False
+                        def call(self,op,data,request_id=None):
+                            if op=='session_inbox': return [] if self.acked else [message]
+                            if op=='session_ack': self.acked=True
+                            return {'queued':True}
+                    api,control,sleeps,before=Api(),Control(ledger),[],[]
+                    def confirm():
+                        # The receiving chat runs the envelope command on its own ledger connection.
+                        args=SimpleNamespace(session_id=SID,action=action,message_id=MID)
+                        stdin=SimpleNamespace(buffer=io.BytesIO(b'synthetic answer'))
+                        # Keep the rest of the environment: Windows ACL helpers need SystemRoot.
+                        with patch.dict(os.environ,{'CLAUDE_CODE_SESSION_ID':SID}), \
+                             patch('quorum_live.api_for',return_value=(api,None,None)), \
+                             patch('quorum_session.sys.stdin',stdin):
+                            os.environ.pop('CODEX_THREAD_ID',None)
+                            dispatch(args,SimpleNamespace(root=Path(root)),None)
+                    def sleep(_):
+                        sleeps.append(1)
+                        if len(sleeps)==1:
+                            before.append((control.status()['handled'],ledger.setting('delivery:'+MID)))
+                            confirm()
+                        if len(sleeps)>30: control.request_stop()
+                    result=run_listener(ledger,lambda:Relay(api,ledger,record,lambda _:'submitted'),
+                                        str(uuid.uuid4()),sleep=sleep,timeout=0)
+                    self.assertEqual(before,[(0,{'state':'submitted'})])
+                    self.assertEqual((result['handled'],result['state'],result.get('code')),(1,'stopped',None))
+                finally: ledger.db.close()
+
+    def test_realtime_wait_counts_a_receipt_made_while_waiting_once(self):
+        from quorum_listener import Control, run_listener
+        from quorum_session import Relay
+        from quorum_state import LocalLedger
+        with tempfile.TemporaryDirectory() as root:
+            ledger,receiver=LocalLedger(Path(root)),LocalLedger(Path(root))
+            try:
+                message={'id':MID,'recipient_id':'a'}
+                class Api:
+                    acked=False
+                    def call(self,op,data,request_id=None):
+                        if op=='session_inbox': return [] if self.acked else [message]
+                        if op=='session_ack': self.acked=True
+                        return {'queued':True}
+                api,control,waits=Api(),Control(ledger),[]
+                class Waiter:
+                    def prepare(self,stopping): pass
+                    def close(self): pass
+                    def wait(self,stopping):
+                        # No signal follows the chat's own receipt; the safety scan returns.
+                        waits.append(control.status()['handled'])
+                        if len(waits)==1:
+                            receiver.setting('delivery:'+MID,{'state':'queued'})
+                            api.call('session_ack',{})
+                            receiver.setting('delivery:'+MID,{'state':'acked'})
+                        if len(waits)==3: control.request_stop()
+                result=run_listener(ledger,lambda:Relay(api,ledger,{'agent_id':'a','session_ref':SID},lambda _:'submitted'),
+                                    str(uuid.uuid4()),sleep=lambda _:self.fail('waiter replaces sleep'),
+                                    timeout=0,waiter=Waiter())
+                self.assertEqual(waits,[0,1,1])
+                self.assertEqual((result['handled'],result['state']),(1,'stopped'))
+            finally: ledger.db.close(); receiver.db.close()
+
+    def test_listener_counts_codex_queue_acceptance_without_a_chat_receipt(self):
+        from quorum_listener import Control, run_listener
+        from quorum_session import Relay
+        from quorum_state import LocalLedger
+        with tempfile.TemporaryDirectory() as root:
+            ledger=LocalLedger(Path(root))
+            try:
+                message={'id':MID,'recipient_id':'a'}
+                class Api:
+                    acked=False
+                    def call(self,op,data,request_id=None):
+                        if op=='session_inbox': return [] if self.acked else [message]
+                        if op=='session_ack': self.acked=True
+                        return {'queued':True}
+                control=Control(ledger)
+                result=run_listener(ledger,lambda:Relay(Api(),ledger,{'agent_id':'a','session_ref':SID},lambda _:None),
+                                    str(uuid.uuid4()),sleep=lambda _:control.request_stop(),timeout=0)
+                self.assertEqual((result['handled'],result['state']),(1,'stopped'))
+                self.assertEqual(ledger.setting('delivery:'+MID),{'state':'acked'})
+            finally: ledger.db.close()
+
+    def test_chat_receipt_racing_the_inbox_poll_is_counted_once(self):
+        from quorum_session import Relay
+        from quorum_state import LocalLedger
+        with tempfile.TemporaryDirectory() as root:
+            ledger,receiver=LocalLedger(Path(root)),LocalLedger(Path(root))
+            try:
+                message={'id':MID,'recipient_id':'a'}
+                class Api:
+                    polls=0
+                    def call(self,op,data):
+                        if op!='session_inbox': return {'queued':True}
+                        self.polls+=1
+                        # The chat confirms after the service already returned the message.
+                        if self.polls==2: receiver.setting('delivery:'+MID,{'state':'acked'})
+                        return [message] if self.polls<=2 else []
+                relay=Relay(Api(),ledger,{'agent_id':'a','session_ref':SID},lambda _:'submitted')
+                self.assertEqual([relay.run_once() for _ in range(3)],['idle','delivered','idle'])
+            finally: ledger.db.close(); receiver.db.close()
+
+    def test_receipt_racing_a_poll_that_returns_the_next_message_is_still_counted(self):
+        from quorum_session import Relay
+        from quorum_state import LocalLedger
+        later='33333333-3333-4333-8333-333333333333'
+        with tempfile.TemporaryDirectory() as root:
+            ledger,receiver=LocalLedger(Path(root)),LocalLedger(Path(root))
+            try:
+                first,second={'id':MID,'recipient_id':'a'},{'id':later,'recipient_id':'a'}
+                class Api:
+                    inbox,during_poll=[first,second],None
+                    def call(self,op,data):
+                        if op=='session_ack':
+                            self.inbox=[m for m in self.inbox if m['id']!=data['message_id']]
+                            return {'queued':True}
+                        if self.during_poll: self.during_poll(); self.during_poll=None
+                        return list(self.inbox)
+                api,submitted=Api(),[]
+                def confirm(message):
+                    # The receiving chat's `session received` on its own connection.
+                    receiver.setting('delivery:'+message['id'],{'state':'queued'})
+                    api.call('session_ack',{'message_id':message['id']})
+                    receiver.setting('delivery:'+message['id'],{'state':'acked'})
+                relay=Relay(api,ledger,{'agent_id':'a','session_ref':SID},
+                            lambda message:submitted.append(message['id']) or 'submitted')
+                outcomes=[relay.run_once()]
+                api.during_poll=lambda:confirm(first)
+                outcomes+=[relay.run_once(),relay.run_once(),relay.run_once()]
+                confirm(second)
+                outcomes+=[relay.run_once(),relay.run_once()]
+                self.assertEqual(submitted,[MID,later])
+                self.assertEqual(outcomes,['idle','idle','delivered','idle','delivered','idle'])
+            finally: ledger.db.close(); receiver.db.close()
 
     def test_offline_status_is_available_without_service_or_model(self):
         with tempfile.TemporaryDirectory() as root:
