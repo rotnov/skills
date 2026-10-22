@@ -234,11 +234,13 @@ def dispatch(args, auth_ledger, register_agent):
             return {**result,'conversation_id':conv}
         if args.action=='run':
             import signal,threading
+            from quorum_realtime import RealtimeWait
             event=threading.Event()
             for name in ('SIGTERM','SIGINT','SIGBREAK'):
                 if hasattr(signal,name): signal.signal(getattr(signal,name),lambda *_:event.set())
             def make():
                 return Relay(api,ledger,record,lambda message:enqueue(record,message,auth_ledger.root))
-            return run_listener(ledger,make,args.run_id,stop_event=event,timeout=0)
+            return run_listener(ledger,make,args.run_id,stop_event=event,timeout=0,
+                                waiter=RealtimeWait(api,record,ledger))
         raise ValueError('unknown_operation')
     finally: ledger.db.close()

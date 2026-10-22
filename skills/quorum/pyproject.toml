@@ -3,7 +3,7 @@ name = "quorum-pilot-client"
 version = "0.1.0"
 description = "Portable owner-side client for the Quorum coordination pilot"
 requires-python = ">=3.12,<3.13"
-dependencies = []
+dependencies = ["websockets==17.2"]
 
 [tool.uv]
 package = false

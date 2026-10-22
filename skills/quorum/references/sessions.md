@@ -20,6 +20,12 @@ installation, connection and reception never execute DDL or request service keys
 It adds owner/session-scoped inbox reads, UI queue receipts and idempotent replies.
 These receipts include automatic peer answers without launching reply loops.
 
+For push wakeups the server also needs the reviewed
+[Realtime extension](../supabase/migrations/20261022084959_native_realtime_wakeups.sql).
+Without its private-channel policy the client keeps the existing ten-second
+polling fallback. See [Realtime setup and recovery](realtime.md) only when setting
+up the server or diagnosing its notification connection.
+
 ## Connect and receive
 
 Run from the intended chat's shell tool, using this skill's own uv project and
@@ -38,13 +44,22 @@ uv run --project <skill-dir> --frozen python <skill-dir>/scripts/quorum.py --sta
 
 `connect` registers only this session; `start` explicitly enables reception until
 stopped. Stopping does not remove messages already accepted by the chat queue.
-Empty polls every ten seconds do not run a model. Each incoming message
+The native listener subscribes to its private Supabase Realtime channel before
+reading the durable inbox. A server signal wakes it immediately; a reconnect
+always triggers catch-up. It also checks every 60 seconds while connected and
+every ten seconds if notifications are unavailable. No check or wake hint runs a model. Each incoming message
 is queued once in the existing chat, where the owner's existing subscription,
 context and permissions apply. Busy chats keep their queue order. Verify both
 busy and idle delivery in the actual receiving chat before claiming acceptance.
 The client/app must remain available; stopping the process, logout or reboot
 ends reception. Stop before upgrading the installed skill. Status/stop from an
 external terminal require `session --session-id <exact-UUID> status|stop`.
+
+Status includes `wait_mode` (`realtime`, `polling_fallback`, or `stopped`), the
+current `poll_seconds` safety/fallback interval and `notification_signals`.
+`last_signal_at`, `last_connected_at`, `last_fallback_at` are local Unix timestamps;
+`last_wake` distinguishes a signal, subscription, safety scan or fallback poll.
+These diagnostics prove transport activity, not delivery to the actual chat.
 
 ## Claude Code / macOS, Linux and Windows
 

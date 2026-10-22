@@ -34,6 +34,15 @@ class Control:
         result.setdefault('handled', 0)
         result.update(listener='running' if locked(self.ledger.root / 'listener.lock') else 'offline',
                       poll_seconds=10, mode=self.ledger.setting('listener-mode') or 'continuous_claude')
+        waiting = self.ledger.setting('listener-wait')
+        if waiting:
+            active = result['listener'] == 'running'
+            result.update(wait_mode=waiting['mode'] if active else 'stopped',
+                          poll_seconds=waiting['poll_seconds'] if active else 0,
+                          notification_signals=waiting.get('signals', 0))
+            for key in ('last_signal_at', 'last_connected_at', 'last_fallback_at', 'last_wake'):
+                if key in waiting: result[key] = waiting[key]
+            if waiting.get('code'): result['notification_code'] = waiting['code']
         result['stop_requested'] = bool(record.get('run_id') and self.stopping(record['run_id']))
         return result
 
@@ -64,7 +73,7 @@ def error_code(error):
     return str(error) if str(error) in allowed else 'listener_failed'
 
 
-def run_listener(ledger, make_worker, run_id, *, sleep=time.sleep, stop_event=None, timeout=60):
+def run_listener(ledger, make_worker, run_id, *, sleep=time.sleep, stop_event=None, timeout=60, waiter=None):
     from quorum_live import LocalSupervisorLock
     control, handled = Control(ledger), 0
     stop_event = stop_event or threading.Event()
@@ -80,6 +89,7 @@ def run_listener(ledger, make_worker, run_id, *, sleep=time.sleep, stop_event=No
                 control.update(run_id, 'unknown', handled, timeout=timeout, code='uncertain_attempt')
             else:
                 worker = make_worker()
+                if waiter: waiter.prepare(stopping)
                 worker.reconcile()
                 control.update(run_id, 'waiting', handled, timeout=timeout)
                 while not stopping():
@@ -96,6 +106,9 @@ def run_listener(ledger, make_worker, run_id, *, sleep=time.sleep, stop_event=No
                         control.update(run_id, 'error', handled, timeout=timeout, code='listener_failed')
                         break
                     control.update(run_id, 'waiting', handled, timeout=timeout)
+                    if waiter:
+                        waiter.wait(stopping)
+                        continue
                     for _ in range(10):
                         if stopping(): break
                         sleep(1)
@@ -104,6 +117,8 @@ def run_listener(ledger, make_worker, run_id, *, sleep=time.sleep, stop_event=No
         except Exception as error:
             # Do not blindly retry an RPC: even a lost claim response is uncertain.
             control.update(run_id, 'error', handled, timeout=timeout, code=error_code(error))
+        finally:
+            if waiter: waiter.close()
     return control.status()
 
 

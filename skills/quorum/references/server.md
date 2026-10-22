@@ -31,17 +31,20 @@ Review and apply the following in one administrator-controlled transaction:
    The baseline includes legacy creation behavior; do not commit or expose it
    without the gate. The extension verifies the reviewed dispatcher fingerprint.
    Review a modified server rather than bypassing that check.
-3. Explicitly grant creation to the intended instance owner's verified immutable
+3. Apply [native Realtime wakeups](../supabase/migrations/20261022084959_native_realtime_wakeups.sql).
+   This adds receive-only private-channel authorization and empty inbox hints.
+   Read [Realtime setup](realtime.md) for prerequisites, policy review and recovery.
+4. Explicitly grant creation to the intended instance owner's verified immutable
    numeric GitHub ID. Look up `https://api.github.com/users/<login>`, check the
    returned `login` matches, and use the positive integer `id`.
    Never use an editable profile field.
 
-After loading both SQL files within `BEGIN`, substitute the verified ID:
+After loading the bootstrap and both migrations within `BEGIN`, substitute the verified ID:
 
 ```sql
 INSERT INTO quorum_private.instance_creators(github_id)
 VALUES ('<verified-owner-github-id>');
--- COMMIT only after the reviewed bootstrap and migration both succeeded.
+-- COMMIT only after the reviewed bootstrap and both migrations succeeded.
 ```
 
 The published allowlist starts empty. Repository authors, quorum owners and
@@ -50,8 +53,8 @@ administrator manages this list; revocation sets the row's `revoked=true`.
 The server checks current identity and permission before creation, including
 cached retries.
 
-Existing servers apply only the reviewed extension with a separate explicit
-administrator grant. Skill installation never runs cloud DDL or grants.
+Existing servers apply only the missing reviewed migrations, with a separate
+explicit administrator creator grant when needed. Skill installation never runs cloud DDL or grants.
 
 ## Check readiness
 
