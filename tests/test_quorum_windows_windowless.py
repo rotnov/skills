@@ -11,9 +11,14 @@ from unittest.mock import patch
 
 SCRIPTS = Path(__file__).resolve().parents[1] / 'skills/quorum/scripts'
 sys.path.insert(0, str(SCRIPTS))
+import quorum_os  # noqa: E402
 NO_WINDOW = 0x08000000
 SID = '11111111-1111-4111-8111-111111111111'
 MID = '22222222-2222-4222-8222-222222222222'
+# The detached probe runs protect() then enqueue() sequentially; its parent
+# wait covers both owned deadlines plus Python startup/scheduler margin.
+ENQUEUE_TIMEOUT = 30
+PROBE_TIMEOUT = quorum_os.PRIVATE_ACL_TIMEOUT + ENQUEUE_TIMEOUT + 15
 
 
 class WindowlessHelpersTests(unittest.TestCase):
@@ -26,7 +31,7 @@ class WindowlessHelpersTests(unittest.TestCase):
                     stdin=subprocess.DEVNULL, stdout=log, stderr=log,
                     creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP)
             try:
-                self.assertEqual(process.wait(timeout=45), 0, (root / 'probe.log').read_text())
+                self.assertEqual(process.wait(timeout=PROBE_TIMEOUT), 0, (root / 'probe.log').read_text())
             finally:
                 if process.poll() is None:
                     process.kill()
@@ -57,6 +62,7 @@ class WindowlessHelpersTests(unittest.TestCase):
             quorum_session.enqueue({'session_ref': SID}, {'id': MID}, Path('/synthetic/state'))
         self.assertEqual(run.call_args.kwargs.get('creationflags', 0), NO_WINDOW)
         self.assertEqual(run.call_args.args[0][1:4], ['queue', '--thread', SID])
+        self.assertEqual(run.call_args.kwargs['timeout'], ENQUEUE_TIMEOUT)
 
     def test_windows_claude_io_helper_cannot_allocate_a_console(self):
         import quorum_claude_pipe
