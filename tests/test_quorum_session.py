@@ -278,7 +278,8 @@ finally: l.db.close()
 
     def test_reply_requires_the_bound_calling_session(self):
         from quorum_session import require_caller
-        with patch.dict(os.environ,{'CODEX_THREAD_ID':SID},clear=True):
+        with patch.dict(os.environ,{'CODEX_THREAD_ID':SID}):
+            os.environ.pop('CLAUDE_CODE_SESSION_ID',None)
             require_caller(SID)
             with self.assertRaisesRegex(ValueError,'session_binding_denied'):
                 require_caller(MID)
