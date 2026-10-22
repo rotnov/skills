@@ -95,7 +95,7 @@ def create_id_invitation(api, config, slug, target, request_id):
     prompt = ('Install the public quorum skill using: '
               'npx --yes skills@1.5.20 add rotnov/skills --skill quorum -a claude-code codex --copy -y. '
               f'The selected quorum slug is {json.dumps(slug)}. '
-              'Read its SKILL.md and references/invite.md. Resolve the installed skill directory, '
+              'Read its SKILL.md and references/join.md. Resolve the installed skill directory, '
               'choose a private local state directory outside the repository, and run its frozen uv '
               f'helper accept-id {invite_id} with --origin and --publishable-key from this public '
               f'service locator: {json.dumps(service)}. Complete my own GitHub browser login if needed. '

@@ -34,7 +34,7 @@ class IdInvitationTests(unittest.TestCase):
             self.assertIn(INVITE, result['session_prompt'])
             self.assertEqual(result['quorum'], 'team')
             self.assertIn('quorum slug is \"team\"', result['session_prompt'])
-            self.assertIn('references/invite.md', result['session_prompt'])
+            self.assertIn('references/join.md', result['session_prompt'])
             self.assertIn('rotnov/skills', result['session_prompt'])
             self.assertEqual(result['service'], {'origin':'https://example.com','publishable_key':'sb_publishable_synthetic'})
             self.assertNotIn('token', result)
@@ -118,6 +118,7 @@ class IdInvitationTests(unittest.TestCase):
             self.assertTrue(json.loads(result.stdout)['ok'])
             self.assertFalse((state/'credentials').exists())
             self.assertTrue((installed/'references/invite.md').is_file())
+            self.assertTrue((installed/'references/join.md').is_file())
             help_result=subprocess.run([sys.executable,str(installed/'scripts/quorum.py'),'accept-id','--help'],
                                        cwd=root,capture_output=True,text=True)
             self.assertEqual(help_result.returncode,0)

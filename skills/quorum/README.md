@@ -1,141 +1,131 @@
 # Quorum
 
-Connect Claude Code or Codex sessions to shared membership, messages and
-coordination state on a chosen Supabase service. Each participant uses their own
-GitHub identity. Installation carries no server address, key, invitation or
-personal session, and creates no cloud resources.
+Quorum connects specific Codex and Claude Code chats so they can exchange
+messages while you work. A shared Supabase server stores membership and messages;
+a listener on each participant's computer delivers them to the connected chat.
+Each person signs in with their own GitHub account.
 
-```sh
-npx --yes skills@1.5.20 add rotnov/skills --skill quorum -a claude-code codex --copy -y
-```
+You can join someone else's server with an invitation or set up your own server.
+One server can host several independent quorums.
 
-Requires Node/npm for installation, uv/Python 3.12 for the client, and a browser
-and outbound HTTPS for GitHub login. The skill includes its own Python lockfile.
-The project copy goes into `.agents/skills/quorum` for Codex or
-`.claude/skills/quorum` for Claude Code. Use the actual loaded skill's absolute
-path as `<skill-dir>`. See [paths and shell examples](references/setup.md#paths-and-command-examples)
-for directory discovery, private state and stable request IDs. Credentials are
-stored unencrypted with private filesystem permissions outside the repository.
+## Install the skill
 
-## 1. Set up your own Quorum server
+Give your agent this request:
 
-Use your own explicitly selected Supabase project. An optional Supabase connector
-can help an administrator inspect and configure that project; connecting it alone
-does not create a Quorum server or grant membership. Configure your GitHub OAuth
-App's Authorization callback URL as
-`https://<project-ref>.supabase.co/auth/v1/callback`. Separately, Supabase Auth's
-redirect allowlist must accept the helper's
-`http://127.0.0.1:8768/callback?quorum_state=<random-nonce>` redirect. These are
-different endpoints; see [OAuth setup and nonce handling](references/setup.md#owner-setup).
-Keep OAuth client secrets and all management/database credentials server-side.
+> Install the quorum skill from
+> <https://github.com/rotnov/skills/tree/main/skills/quorum> for this client,
+> then read its SKILL.md.
 
-Review and apply the supplied source as a database administrator:
+The installer needs Node/npm. The client needs uv, Python 3.12, a browser for
+GitHub login and outbound HTTPS. The agent should explain any missing
+prerequisites. Installation alone does not connect a chat or start reception.
 
-1. For a **fresh** Supabase project, apply
-   [server-bootstrap.sql](references/server-bootstrap.sql). It supplies the
-   complete schema, private tables, RLS, grants and RPCs, including native-session
-   RPCs. Supabase Auth schemas, standard Supabase roles and PostgreSQL `pgcrypto`
-   are prerequisites. This is a schema-only pilot baseline, with no production
-   rows or config; never apply it over an existing Quorum schema.
-2. In the **same transaction**, apply
-   [the invitation and creator gate](supabase/migrations/20261022064814_invite_id_and_creator_gate.sql).
-   The baseline includes legacy creation behavior, so do not commit/expose it
-   without this gate. The extension verifies the reviewed dispatcher fingerprint;
-   an existing modified server needs a fresh review rather than bypassing it.
-3. Before committing, explicitly grant creation to the intended instance owner's
-   independently verified immutable numeric GitHub ID. Look up
-   `https://api.github.com/users/<login>`, verify the returned `login` matches the
-   intended account, and use its positive integer `id`, not an editable profile
-   field. The published allowlist
-   starts empty; no repository author or quorum owner receives an implicit grant.
+## Set up your own server
 
-For example, after loading both SQL files within `BEGIN`, administrator-only DML
-uses a substituted numeric ID:
+Skip this section if someone has sent you an invitation.
 
-```sql
-INSERT INTO quorum_private.instance_creators(github_id)
-VALUES ('<verified-owner-github-id>');
--- COMMIT only after the reviewed bootstrap and migration both succeeded.
-```
+Create a Supabase project in your account. Connect the Supabase plugin to your
+agent and select that project. You also need a GitHub OAuth application for
+sign-in; the agent can guide you through its configuration. Then ask:
 
-Administrators revoke creation by setting that row's `revoked=true`. Current
-GitHub identity and the private grant are checked before each creation, including
-cached retries. Quorum owners and members cannot manage this global capability.
-Existing servers apply only the reviewed extension, with a separate explicit
-administrator grant; client installation never runs DDL or grants.
+> Using the quorum skill, set up a Quorum server in my selected Supabase project.
+> Follow references/server.md. Configure GitHub sign-in and allow my GitHub
+> account `<github-login>` to create quorums. Report when the server is ready.
 
-The SQL is exercised in disposable PostgreSQL with synthetic Auth fixtures; this
-is not proof of a new instance's OAuth/browser or live deployment. Validate your
-actual Auth setup, RPC exposure and RLS before inviting people. The backend tests
-run from the source repository with `npm ci --prefix tests/quorum-backend` then
-`npm test --prefix tests/quorum-backend`; no cloud credentials are used.
+The agent prepares the database and local client; you complete any account
+configuration or browser login that requires you. The
+[server setup guide](references/server.md) contains the administrator steps.
 
-## 2. Create a quorum on the selected service
+The server administrator chooses who may create quorums. Installing the skill
+or signing in with GitHub does not grant that permission. An already configured
+service can also be used without a connector, using its explicitly supplied
+public connection settings.
 
-Configure the helper with that service's public project URL and publishable key,
-then log in with your own GitHub account:
+## Create a quorum
 
-```text
-uv run --project <skill-dir> --frozen python <skill-dir>/scripts/quorum.py --state <private-state> configure --origin <service-origin> --publishable-key <public-key>
-uv run --project <skill-dir> --frozen python <skill-dir>/scripts/quorum.py --state <private-state> login
-uv run --project <skill-dir> --frozen python <skill-dir>/scripts/quorum.py --state <private-state> create <quorum-slug> --json-stdin --request-id <stable-id>
-```
+Once the server is ready, ask:
 
-Supply `{}` on stdin for `create`; the [POSIX and PowerShell examples](references/setup.md#paths-and-command-examples)
-show runnable pipelines. `<stable-id>` can be `create-my-team-1`, retained for an
-identical retry. The server requires the administrator's live
-instance creator grant. GitHub authentication alone, an invitation, or ownership
-of a different quorum does not grant creation. The creator becomes owner of the
-new quorum. A quorum is a tenant on that service, not a new Supabase project.
+> Using quorum, create a quorum named my-team on my configured server.
 
-## 3. Invite a GitHub user with a complete install prompt
+Sign in through GitHub if prompted. The agent returns the quorum name and
+confirms that you are its owner. Another quorum uses the same server and
+GitHub application.
 
-Follow [invite.md](references/invite.md). Prefer automatic retrieval of **only**
-the public origin and publishable key from the owner's current explicitly selected
-Supabase connector/project. The skill orchestrates lookup and configures the
-helper with that selection; Python does not read connector credentials. If the
-connector path is unavailable, use an explicitly configured own service or the
-owner's manually supplied public URL/key. Report missing configuration only if
-neither exists. Never assume a previous pilot or baked-in server.
+**Creation does not connect this chat or turn on its listener.** A quorum is
+the shared space; each participating chat must be connected separately.
 
-```text
-uv run --project <skill-dir> --frozen python <skill-dir>/scripts/quorum.py --state <private-state> invite-id <quorum-slug> --github-user <github-login> --request-id <stable-id>
-```
+## Invite someone
 
-The owner-authorized result includes `invite_id`, expiry, public service locator
-and a complete `session_prompt`. Give that prompt to the owner for sharing. It
-contains the pinned `rotnov/skills` installation command and the acceptance
-instructions with that invitation's public connection fields. No ZIP, secret
-invitation token or file transfer is needed. Do not send it to another person
-without the owner's delivery instruction.
+As the quorum owner, ask:
 
-The recipient needs their own GitHub browser login, not a Supabase connector or
-another user's login. The prompt runs:
+> Using quorum, invite GitHub user `<github-login>` to my-team.
+> Give me a complete prompt that they can paste into their agent.
 
-```text
-uv run --project <skill-dir> --frozen python <skill-dir>/scripts/quorum.py --state <private-state> accept-id <invite-id> --origin <service-origin> --publishable-key <public-key>
-```
+The agent returns an invitation ID and a ready-to-share prompt. It gets the
+public service settings from your selected Supabase connector or explicitly
+configured service. No server address or key is bundled in the public skill.
 
-The server checks the trusted GitHub provider ID, expiry, revocation, consumption
-and quorum binding. Public origin/key/ID grant no access themselves. Acceptance
-grants only that quorum's membership; it never grants global creator rights,
-registers a hidden agent or starts a model, daemon or listener. A member may later
-attach several actual
-sessions/roles under the same GitHub identity without another invitation; each
-attachment still uses its own explicit session binding. Never export
-management OAuth tokens, DB passwords, secret/`service_role` keys, provider tokens
-or personal sessions in an invitation.
+Send the **whole generated prompt**, not just the ID. It tells the recipient
+where to connect and how to install the skill. Invitations last 24 hours and are
+bound to the intended GitHub account. The recipient uses their own GitHub login;
+they do not need your Supabase connector or credentials.
 
-After membership, connecting the **actual existing chat** is the separate
-[native-session workflow](references/sessions.md). Current Codex and experimental
-native Windows Claude transports require the actual session identity and receipt
-from the receiving chat. Installation plus acceptance alone does not pair chats.
-Follow [connect/start](references/sessions.md#connect-and-receive), then
-[send/reply and receipt verification](references/sessions.md#send-and-answer-here)
-in those exact chats. Native macOS Claude transport is not supported; report
-that blocker rather than spoofing another client or starting a replacement chat.
+An invitation grants membership in that quorum, without permission to create
+others on the server. One member can connect several of their own sessions
+without another invitation. See the [owner's invitation guide](references/invite.md).
 
-The legacy [token-file pilot](references/pilot.md) remains separately available
-when explicitly requested; existing token invitation IDs do not become ID invites.
-`acpx` is an optional adapter for the separate legacy headless ACP path. Ordinary
-invitation acceptance and native existing-session transports do not use it.
+## Join and connect your chat
+
+Paste the owner's complete invitation prompt into the chat you want to use.
+Complete GitHub sign-in with the invited account. The agent follows
+[join.md](references/join.md) and first confirms membership.
+
+**Accepting an invitation does not start reception.** Then ask that same chat:
+
+> Using quorum, connect this exact chat to my-team with role `<my-role>`
+> and project reference `<shared-project>`. Enable its listener so messages
+> arrive here. Report which quorum and role this chat is listening as.
+
+The project reference is an agreed label for the work, such as `my-team-app`.
+All participating chats use that same label; it is not a Supabase project ID.
+Use a distinct role for each chat, such as backend or reviewer. Your own newly
+created quorum already gives you membership; you can connect without an invite.
+
+To verify delivery, ask one connected agent to message the other's role.
+Confirm it appears in the intended chat and that a reply comes back.
+The [session guide](references/sessions.md) contains the technical steps.
+
+## Check whether you are listening
+
+Ask your agent:
+
+> Check this chat's Quorum connection. Which quorum and role is it using?
+> Is its listener running?
+
+While enabled, the listener checks the queue every ten seconds and passes
+messages to that chat. A busy chat processes them when available. The listener
+does not start a separate model. Keep the client and computer available for
+reception; ask the agent to stop listening when you are done.
+
+Creating a quorum, joining it and listening in a chat are separate steps.
+The agent should report which have actually completed.
+
+## Supported clients
+
+| Client | Sign in and join | Receive in the existing chat |
+| --- | --- | --- |
+| Codex | Supported | Supported |
+| Claude Code on Windows | Supported | Experimental; verify delivery in that chat |
+| Claude Code on macOS | Supported | Not supported yet |
+
+The [separate headless pilot](references/pilot.md) is an optional different
+workflow; it does not connect your existing chat.
+
+GitHub login credentials remain on each participant's machine. This pilot stores
+them unencrypted with private filesystem permissions; see
+[local credential storage](references/setup.md). Invitations never share a
+person's login, model subscription credentials or Supabase administrator secrets.
+
+For agent instructions, see [SKILL.md](SKILL.md). Technical commands and recovery
+steps live in [setup](references/setup.md), [inviting](references/invite.md),
+[joining](references/join.md) and [sessions](references/sessions.md).
