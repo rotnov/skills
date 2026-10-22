@@ -195,6 +195,39 @@ class SessionTests(unittest.TestCase):
                 self.assertEqual([relay.run_once() for _ in range(3)],['idle','delivered','idle'])
             finally: ledger.db.close(); receiver.db.close()
 
+    def test_receipt_racing_a_poll_that_returns_the_next_message_is_still_counted(self):
+        from quorum_session import Relay
+        from quorum_state import LocalLedger
+        later='33333333-3333-4333-8333-333333333333'
+        with tempfile.TemporaryDirectory() as root:
+            ledger,receiver=LocalLedger(Path(root)),LocalLedger(Path(root))
+            try:
+                first,second={'id':MID,'recipient_id':'a'},{'id':later,'recipient_id':'a'}
+                class Api:
+                    inbox,during_poll=[first,second],None
+                    def call(self,op,data):
+                        if op=='session_ack':
+                            self.inbox=[m for m in self.inbox if m['id']!=data['message_id']]
+                            return {'queued':True}
+                        if self.during_poll: self.during_poll(); self.during_poll=None
+                        return list(self.inbox)
+                api,submitted=Api(),[]
+                def confirm(message):
+                    # The receiving chat's `session received` on its own connection.
+                    receiver.setting('delivery:'+message['id'],{'state':'queued'})
+                    api.call('session_ack',{'message_id':message['id']})
+                    receiver.setting('delivery:'+message['id'],{'state':'acked'})
+                relay=Relay(api,ledger,{'agent_id':'a','session_ref':SID},
+                            lambda message:submitted.append(message['id']) or 'submitted')
+                outcomes=[relay.run_once()]
+                api.during_poll=lambda:confirm(first)
+                outcomes+=[relay.run_once(),relay.run_once(),relay.run_once()]
+                confirm(second)
+                outcomes+=[relay.run_once(),relay.run_once()]
+                self.assertEqual(submitted,[MID,later])
+                self.assertEqual(outcomes,['idle','idle','delivered','idle','delivered','idle'])
+            finally: ledger.db.close(); receiver.db.close()
+
     def test_offline_status_is_available_without_service_or_model(self):
         with tempfile.TemporaryDirectory() as root:
             r = subprocess.run([sys.executable, str(SCRIPTS/'quorum.py'), '--state', root,
