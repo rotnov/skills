@@ -107,8 +107,9 @@ def child_environment(stage):
 
 def checked_run(run, command, stage, env, code, timeout):
     try:
+        # Keep tool logs as bytes; status JSON is decoded strictly by json.loads.
         result = run(command, cwd=str(stage), env=env, stdin=subprocess.DEVNULL,
-                     capture_output=True, text=True, timeout=timeout)
+                     capture_output=True, timeout=timeout)
         if result.returncode: raise ValueError(code)
         return result
     except (OSError, subprocess.SubprocessError, UnicodeError):
