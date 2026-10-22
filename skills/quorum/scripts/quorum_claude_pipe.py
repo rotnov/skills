@@ -23,7 +23,14 @@ def binding(session_id):
     if not token or len(token) > 4096: raise ValueError('claude_pipe_unavailable')
     if os.name == 'nt':
         # Local named pipes only: never remote UNC paths or ordinary files.
-        if not re.fullmatch(r'\\\\\.\\pipe\\[A-Za-z0-9_.-]{1,240}', endpoint):
+        prefix = '\\\\.\\pipe\\'
+        name = endpoint[len(prefix):]
+        # Windows' flat pipe namespace also accepts backslash-separated names.
+        # Refuse empty components and Win32 normalization aliases, not just UNC.
+        if (not endpoint.startswith(prefix) or not 1 <= len(name) <= 240
+                or any(not re.fullmatch(r'[A-Za-z0-9_.-]{1,240}', part)
+                       or part in ('.','..') or part.endswith('.')
+                       for part in name.split('\\'))):
             raise ValueError('claude_pipe_unavailable')
     elif os.name == 'posix' and hasattr(socket,'AF_UNIX'):
         unix_endpoint(endpoint)

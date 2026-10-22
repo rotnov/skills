@@ -154,6 +154,40 @@ class ClaudeUnixTests(unittest.TestCase):
 
 
 class ClaudePipeTests(unittest.TestCase):
+    def test_windows_binding_accepts_flat_and_nested_local_pipe_names(self):
+        from quorum_claude_pipe import binding
+        prefix = '\\\\.\\pipe\\'
+        values = {'CLAUDE_CODE_SESSION_ID':SID, 'CLAUDE_CODE_MESSAGING_TOKEN':'synthetic-only'}
+        # A synthetic 45-character nested name matches the observed 2.1.308 shape.
+        names = ('synthetic-quorum', 'cc-socks\\11111111-1111-4111-8111-111111111111',
+                 'LOCAL\\synthetic-quorum', 'x'*240, 'a\\'+'x'*238)
+        with patch.dict(os.environ, values, clear=True), patch('quorum_claude_pipe.os.name','nt'):
+            for name in names:
+                endpoint = prefix + name
+                with self.subTest(name=name), patch.dict(os.environ, {'CLAUDE_CODE_MESSAGING_SOCKET':endpoint}):
+                    try: selected = binding(SID)
+                    except ValueError as error: self.fail('safe local pipe rejected: '+str(error))
+                    self.assertEqual(selected,endpoint)
+                    with self.assertRaisesRegex(ValueError,'session_binding_denied'): binding(MID)
+                    for token in ('', 'x'*4097):
+                        with patch.dict(os.environ, {'CLAUDE_CODE_MESSAGING_TOKEN':token}):
+                            with self.assertRaisesRegex(ValueError,'claude_pipe_unavailable'): binding(SID)
+
+    def test_windows_binding_rejects_remote_and_ambiguous_nested_names(self):
+        from quorum_claude_pipe import binding
+        prefix = '\\\\.\\pipe\\'
+        values = {'CLAUDE_CODE_SESSION_ID':SID, 'CLAUDE_CODE_MESSAGING_TOKEN':'synthetic-only'}
+        names = ('', '.', '..', 'a\\.\\b', 'a\\..\\b', 'a\\b.', 'a\\b ', 'a\\',
+                 'a\\\\b', 'a/b', 'a:b', 'a\nb', 'a\x01b', 'a\x7fb', 'a\u202eb',
+                 'x'*241, 'a\\'+'x'*239)
+        endpoints = [prefix + name for name in names] + [
+            r'\\server\pipe\a\b', r'\\localhost\pipe\a\b', r'\\?\pipe\a\b',
+            r'\\.\mailslot\a\b', 'C:\\ordinary-file', '//./pipe/a/b']
+        with patch.dict(os.environ, values, clear=True), patch('quorum_claude_pipe.os.name','nt'):
+            for endpoint in endpoints:
+                with self.subTest(endpoint=endpoint), patch.dict(os.environ, {'CLAUDE_CODE_MESSAGING_SOCKET':endpoint}):
+                    with self.assertRaisesRegex(ValueError,'claude_pipe_unavailable'): binding(SID)
+
     def test_foreign_session_and_remote_pipe_cannot_be_selected(self):
         from quorum_claude_pipe import binding
         values = {'CLAUDE_CODE_SESSION_ID':SID, 'CLAUDE_CODE_MESSAGING_TOKEN':'synthetic-only'}
@@ -208,8 +242,14 @@ class ClaudePipeTests(unittest.TestCase):
 
     @unittest.skipUnless(os.name=='nt','native Windows named-pipe integration')
     def test_real_windows_pipe_accepts_auth_and_exact_session_frame(self):
+        self.windows_pipe_roundtrip('quorum-synthetic-'+uuid.uuid4().hex)
+
+    @unittest.skipUnless(os.name=='nt','native Windows named-pipe integration')
+    def test_real_windows_nested_pipe_accepts_auth_and_exact_session_frame(self):
+        self.windows_pipe_roundtrip('quorum-synthetic\\'+uuid.uuid4().hex)
+
+    def windows_pipe_roundtrip(self, name):
         from quorum_claude_pipe import submit
-        name='quorum-synthetic-'+uuid.uuid4().hex
         with tempfile.TemporaryDirectory(prefix='pipe fixture ') as root:
             ready=Path(root)/'ready'
             script=Path(root)/'server.ps1'
