@@ -32,6 +32,8 @@ class IdInvitationTests(unittest.TestCase):
                                                       'team', '123', 'r')
             self.assertEqual(result['invite_id'], INVITE)
             self.assertIn(INVITE, result['session_prompt'])
+            self.assertEqual(result['quorum'], 'team')
+            self.assertIn('quorum slug is \"team\"', result['session_prompt'])
             self.assertIn('references/invite.md', result['session_prompt'])
             self.assertIn('rotnov/skills', result['session_prompt'])
             self.assertEqual(result['service'], {'origin':'https://example.com','publishable_key':'sb_publishable_synthetic'})

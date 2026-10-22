@@ -94,6 +94,7 @@ def create_id_invitation(api, config, slug, target, request_id):
     # Only select public fields; never forward an unexpected backend credential.
     prompt = ('Install the public quorum skill using: '
               'npx --yes skills@1.5.20 add rotnov/skills --skill quorum -a claude-code codex --copy -y. '
+              f'The selected quorum slug is {json.dumps(slug)}. '
               'Read its SKILL.md and references/invite.md. Resolve the installed skill directory, '
               'choose a private local state directory outside the repository, and run its frozen uv '
               f'helper accept-id {invite_id} with --origin and --publishable-key from this public '
@@ -102,7 +103,7 @@ def create_id_invitation(api, config, slug, target, request_id):
               'headless pilot. For connecting this existing chat, inspect the separate native-session '
               'route and use only its actual session identity. If native transport is unavailable '
               '(including macOS Claude), report that blocker; do not ask for secrets or spoof another client.')
-    return {'invite_id': invite_id, 'quorum_id': quorum_id, 'target_github_id': target,
+    return {'invite_id': invite_id, 'quorum': slug, 'quorum_id': quorum_id, 'target_github_id': target,
             'expires_at': data['expires_at'], 'service': service,
             'session_prompt': prompt}
 
