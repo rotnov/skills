@@ -33,7 +33,8 @@ repository, such as `~/.local/share/quorum/my-instance` on macOS/Linux or
 path and pass `--state` before the command. It holds an authoritative service
 config and independent ledgers/session bindings. New state directories can reuse
 the machine's selected service and login; another service needs its own state.
-Credentials use the shared machine profile described below.
+Credentials use the shared machine profile described below, except an
+[open-invitation state](join.md#join-this-chat), which keeps its own anonymous login.
 
 `<stable-id>` is a chosen request identifier, for example `create-my-team-1` or
 `invite-my-team-teammate-1`. Keep it for an identical retry after an uncertain

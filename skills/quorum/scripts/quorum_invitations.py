@@ -82,73 +82,95 @@ def public_service(config):
     raise ValueError('public_service_key_required')
 
 
-def create_id_invitation(api, config, slug, target, request_id, *, github_user=None):
+REFRESH = ('Read the installed SKILL.md and references/join.md. Resolve the installed skill directory, '
+           'perform references/update.md automatic refresh once for this request, and read '
+           'the returned persistent copy instructions before acceptance. Use that copy, '
+           'choose a private local state directory outside the repository, and run its frozen uv ')
+COMPLETION = ('After acceptance, complete references/join.md in this same chat: read references/sessions.md, '
+              'run session connect for the selected quorum, then session start and session status. '
+              'This request authorizes the native transport listener until I stop it. '
+              'Use my supplied role and shared project reference if present; otherwise use '
+              '<engine>-<first-eight-characters-of-this-session-UUID> as the role and the quorum slug '
+              'as the project reference. Use only this actual current session identity. '
+              'Reuse a matching existing binding; stop on a conflicting one instead of replacing it. '
+              'Once status confirms the listener is running, say Hello in this chat with the quorum, '
+              'role and project reference, and report the persistent installed skill path. '
+              'A local greeting is not a peer delivery receipt; verify a peer message and reply separately. '
+              'Do not start a model, another session, headless pilot or OS startup service. '
+              'If native transport is unavailable report that blocker; do not ask for secrets or spoof another client. '
+              'For connection failures, I authorize a sanitized report to https://github.com/rotnov/skills/issues. '
+              'Check existing issues first; keep one report per distinct failure. Include client, OS, versions, '
+              'failed step, safe error code and actual listener state; no tokens, OAuth codes, full environment, '
+              'full configuration or private project data. With no GitHub write access, prepare issue text '
+              'and the issue link instead of requesting secrets.')
+INSTALL = ('If quorum is not installed, install it globally using: '
+           'npx --yes skills@1.5.20 add rotnov/skills --skill quorum -a claude-code codex --copy -g -y. '
+           'Run installation in a persistent directory outside the project, not a temporary scratch folder. '
+           'If already installed, use the immutable automatic refresh below. ')
+
+
+def issue_id_invitation(api, config, slug, operation, payload, request_id):
     import uuid
-    if not re.fullmatch(r'[0-9]{1,20}', target) or not 1 <= len(request_id) <= 128:
-        raise ValueError('invitation_arguments_invalid')
+    if not 1 <= len(request_id) <= 128: raise ValueError('invitation_arguments_invalid')
     service = public_service(config)
     quorum_id = api.call('quorum_lookup', {'slug': slug})['quorum_id']
     api.call('quorum_check_owner', {'quorum_id': quorum_id})
-    data = api.call('invite_create_id', {'quorum_id': quorum_id, 'target_github_id': target}, request_id)
-    invite_id = str(uuid.UUID(data['invite_id']))
+    data = api.call(operation, {'quorum_id': quorum_id, **payload}, request_id)
     # Only select public fields; never forward an unexpected backend credential.
+    return str(uuid.UUID(data['invite_id'])), quorum_id, data['expires_at'], service
+
+
+def create_id_invitation(api, config, slug, target, request_id, *, github_user=None):
+    if not re.fullmatch(r'[0-9]{1,20}', target): raise ValueError('invitation_arguments_invalid')
     if github_user is not None and not re.fullmatch(r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?', github_user):
         raise ValueError('github_user_invalid')
+    invite_id, quorum_id, expires_at, service = issue_id_invitation(
+        api, config, slug, 'invite_create_id', {'target_github_id': target}, request_id)
     target_label = (f'@{github_user}, ' if github_user else '') + f'GitHub ID {target}'
     introduction = (f'This invitation is for {target_label}; quorum slug is {json.dumps(slug)}; '
-                    f'expires at {json.dumps(data["expires_at"])}. GitHub is required and the account '
+                    f'expires at {json.dumps(expires_at)}. GitHub is required and the account '
                     'must match this invitation. Sign in through GitHub via Supabase Auth; '
                     'no Supabase dashboard registration is needed. ')
-    refresh = ('Read the installed SKILL.md and references/join.md. Resolve the installed skill directory, '
-               'perform references/update.md automatic refresh once for this request, and read '
-               'the returned persistent copy instructions before acceptance. Use that copy, '
-               'choose a private local state directory outside the repository, and run its frozen uv ')
-    completion = ('After acceptance, complete references/join.md in this same chat: read references/sessions.md, '
-                  'run session connect for the selected quorum, then session start and session status. '
-                  'This request authorizes the native transport listener until I stop it. '
-                  'Use my supplied role and shared project reference if present; otherwise use '
-                  '<engine>-<first-eight-characters-of-this-session-UUID> as the role and the quorum slug '
-                  'as the project reference. Use only this actual current session identity. '
-                  'Reuse a matching existing binding; stop on a conflicting one instead of replacing it. '
-                  'Once status confirms the listener is running, say Hello in this chat with the quorum, '
-                  'role and project reference, and report the persistent installed skill path. '
-                  'A local greeting is not a peer delivery receipt; verify a peer message and reply separately. '
-                  'Do not start a model, another session, headless pilot or OS startup service. '
-                  'If native transport is unavailable report that blocker; do not ask for secrets or spoof another client. '
-                  'For connection failures, I authorize a sanitized report to https://github.com/rotnov/skills/issues. '
-                  'Check existing issues first; keep one report per distinct failure. Include client, OS, versions, '
-                  'failed step, safe error code and actual listener state; no tokens, OAuth codes, full environment, '
-                  'full configuration or private project data. With no GitHub write access, prepare issue text '
-                  'and the issue link instead of requesting secrets.')
-    prompt = (introduction + 'If quorum is not installed, install it globally using: '
-              'npx --yes skills@1.5.20 add rotnov/skills --skill quorum -a claude-code codex --copy -g -y. '
-              'Run installation in a persistent directory outside the project, not a temporary scratch folder. '
-              'If already installed, use the immutable automatic refresh below. '
-              + refresh + f'helper accept-id {invite_id} with --origin and --publishable-key from this public '
+    prompt = (introduction + INSTALL + REFRESH + f'helper accept-id {invite_id} with --origin and --publishable-key from this public '
               f'service locator: {json.dumps(service)}. Reuse my machine login; complete my own GitHub '
-              'browser login only for initial setup or explicit reauthentication. ' + completion)
+              'browser login only for initial setup or explicit reauthentication. ' + COMPLETION)
     configured = (introduction + 'Use the installed quorum skill and my configured machine profile. '
-                  + refresh + f'helper accept-id {invite_id} without service flags. '
+                  + REFRESH + f'helper accept-id {invite_id} without service flags. '
                   'Reuse my existing machine login. Missing or ambiguous service profiles are blockers; '
-                  'never infer a server from the invitation UUID. ' + completion)
+                  'never infer a server from the invitation UUID. ' + COMPLETION)
     return {'invite_id': invite_id, 'quorum': slug, 'quorum_id': quorum_id, 'target_github_id': target,
-            'target_github_user': github_user, 'expires_at': data['expires_at'], 'service': service,
+            'target_github_user': github_user, 'expires_at': expires_at, 'service': service,
             'session_prompt': prompt, 'configured_machine_prompt': configured}
+
+
+def create_open_invitation(api, config, slug, request_id):
+    invite_id, quorum_id, expires_at, service = issue_id_invitation(
+        api, config, slug, 'invite_create_open', {}, request_id)
+    prompt = (f'This single-use open invitation joins quorum slug {json.dumps(slug)}; it expires at '
+              f'{json.dumps(expires_at)}. No GitHub login or browser is needed: accept it with a new '
+              'anonymous Quorum identity kept only in a fresh private state directory. Anyone holding this '
+              'text before acceptance can use it; do not forward it. ' + INSTALL + REFRESH
+              + f'helper accept-id {invite_id} --anonymous with --origin and --publishable-key from this '
+              f'public service locator: {json.dumps(service)}. ' + COMPLETION)
+    return {'invite_id': invite_id, 'quorum': slug, 'quorum_id': quorum_id, 'access': 'open',
+            'expires_at': expires_at, 'service': service, 'session_prompt': prompt}
 
 
 def accept_id_invitation(args, ledger):
     import uuid
     from quorum_live import api_for
-    from quorum_profiles import resolve_profile, ensure_login
+    from quorum_profiles import resolve_profile, ensure_login, AnonymousCredentials
     from quorum_api import ServiceConfig
     invite_id = str(uuid.UUID(args.invite_id))
     if bool(args.origin) != bool(args.publishable_key): raise ValueError('service_arguments_required')
     explicit = ServiceConfig(args.origin, args.publishable_key) if args.origin else None
     if explicit is not None: public_service(explicit)
-    config, _ = resolve_profile(ledger.root, explicit)
+    config, _ = resolve_profile(ledger.root, explicit, anonymous=args.anonymous)
     public_service(config)
     api, config, store = api_for(ledger)
-    ensure_login(config, store)
+    # A GitHub invitation needs the machine login, never this state's anonymous one.
+    if isinstance(store, AnonymousCredentials) != args.anonymous: raise ValueError('anonymous_state_conflict')
+    ensure_login(config, store, anonymous=args.anonymous)
     accepted = api.call('invite_accept_id', {'invite_id': invite_id}, 'accept-id:' + invite_id)
     return {'quorum_id': accepted['quorum_id'], 'membership_id': accepted['membership_id'],
             'membership_only': True}

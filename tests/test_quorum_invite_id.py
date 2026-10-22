@@ -2,6 +2,7 @@
 import contextlib
 import io
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -112,6 +113,126 @@ class IdInvitationTests(unittest.TestCase):
             ledger = LocalLedger(Path(root))
             self.assertIsNone(ledger.setting('pilot-agent'))
             ledger.db.close()
+
+    @isolated_profiles
+    def test_open_invitation_prompt_uses_anonymous_acceptance(self):
+        from quorum_invitations import create_open_invitation
+        from quorum_api import ServiceConfig
+        calls = []
+        class Api:
+            def call(self, op, payload, request_id=None):
+                calls.append((op, payload, request_id))
+                if op == 'quorum_lookup': return {'quorum_id': 'q'}
+                if op == 'quorum_check_owner': return True
+                return {'invite_id': INVITE, 'expires_at': '2026-10-22T15:15:00Z', 'token': 'unexpected'}
+        result = create_open_invitation(Api(), ServiceConfig('https://example.com', 'sb_publishable_synthetic'), 'team', 'r')
+        self.assertEqual(calls[-1], ('invite_create_open', {'quorum_id': 'q'}, 'r'))
+        prompt = result['session_prompt']
+        for required in (f'accept-id {INVITE} --anonymous', 'sb_publishable_synthetic', '2026-10-22T15:15:00Z',
+                         'single-use', 'No GitHub login', 'fresh private state', 'session connect', 'Hello',
+                         'https://github.com/rotnov/skills/issues'):
+            self.assertIn(required, prompt)
+        self.assertNotIn('GitHub is required', prompt)
+        self.assertNotIn('token', result)
+        self.assertNotIn('unexpected', json.dumps(result))
+        self.assertEqual(result['access'], 'open')
+
+    @isolated_profiles
+    def test_anonymous_accept_keeps_its_login_inside_a_fresh_state(self):
+        import quorum
+        from quorum_api import QuorumApi
+        requests = []
+        def request(url, headers, body):
+            requests.append((url, json.loads(body)))
+            if url.endswith('/auth/v1/signup'):
+                self.assertNotIn('Authorization', headers)
+                return {'access_token': 'anon-access', 'refresh_token': 'anon-refresh', 'expires_in': 3600}
+            self.assertEqual(headers['Authorization'], 'Bearer anon-access')
+            return {'quorum_id': 'q', 'membership_id': 'm'}
+        real_init = QuorumApi.__init__
+        def init(api, config, token, request_=None):
+            real_init(api, config, token, request)
+        arguments = ['accept-id', INVITE, '--anonymous', '--origin', 'https://example.com',
+                     '--publishable-key', 'sb_publishable_synthetic']
+        with tempfile.TemporaryDirectory() as root, \
+                patch('quorum_api.request_json', side_effect=request), \
+                patch('quorum_api.QuorumApi.__init__', init), \
+                patch('quorum_auth.login_pkce', side_effect=AssertionError('no browser login')):
+            with contextlib.redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(quorum.main(['--state', root, *arguments]), 0, output.getvalue())
+            self.assertEqual([url for url, _ in requests],
+                             ['https://example.com/auth/v1/signup', 'https://example.com/rest/v1/rpc/invite_accept_id'])
+            self.assertTrue((Path(root) / 'anonymous-credentials').is_dir())
+            registry = Path(os.environ['QUORUM_PROFILE_ROOT'])
+            self.assertFalse(registry.exists() and any(registry.iterdir()), 'anonymous login entered the machine profile')
+            # Retries reuse the stored identity; a lost one needs a new open invitation.
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(quorum.main(['--state', root, *arguments]), 0)
+            self.assertEqual(sum(url.endswith('/signup') for url, _ in requests), 1)
+            with contextlib.redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(quorum.main(['--state', root, 'accept-id', INVITE]), 3)
+            self.assertEqual(json.loads(output.getvalue())['code'], 'anonymous_state_conflict')
+            for path in (Path(root) / 'anonymous-credentials').glob('*.json'): path.unlink()
+            with contextlib.redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(quorum.main(['--state', root, 'login']), 3)
+            self.assertEqual(json.loads(output.getvalue())['code'], 'open_invite_required')
+
+    @isolated_profiles
+    def test_anonymous_accept_never_converts_a_github_state(self):
+        import quorum
+        with tempfile.TemporaryDirectory() as root:
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(quorum.main(['--state', root, 'configure', '--origin', 'https://example.com',
+                                              '--publishable-key', 'sb_publishable_synthetic']), 0)
+            with patch('quorum_api.request_json', side_effect=AssertionError('no network')), \
+                    contextlib.redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(quorum.main(['--state', root, 'accept-id', INVITE, '--anonymous']), 3)
+            self.assertEqual(json.loads(output.getvalue())['code'], 'anonymous_state_conflict')
+            self.assertFalse((Path(root) / 'anonymous-credentials').exists())
+
+    @isolated_profiles
+    def test_disabled_anonymous_sign_in_and_missing_browser_have_safe_codes(self):
+        import quorum
+        from quorum_api import QuorumError
+        with tempfile.TemporaryDirectory() as root:
+            with patch('quorum_api.request_json', side_effect=QuorumError('service_error')), \
+                    contextlib.redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(quorum.main(['--state', root, 'accept-id', INVITE, '--anonymous', '--origin',
+                                              'https://example.com', '--publishable-key', 'sb_publishable_synthetic']), 4)
+            self.assertEqual(json.loads(output.getvalue())['code'], 'anonymous_login_unavailable')
+        with tempfile.TemporaryDirectory() as root:
+            with patch('webbrowser.open', return_value=False), \
+                    contextlib.redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(quorum.main(['--state', root, 'accept-id', INVITE, '--origin',
+                                              'https://example.com', '--publishable-key', 'sb_publishable_synthetic']), 3)
+            self.assertEqual(json.loads(output.getvalue())['code'], 'browser_unavailable')
+
+    @isolated_profiles
+    def test_owner_access_commands_select_open_mode(self):
+        import quorum
+        calls = []
+        class Api:
+            def call(self, op, payload, request_id=None):
+                calls.append((op, payload, request_id))
+                if op == 'quorum_lookup': return {'quorum_id': 'q'}
+                if op == 'quorum_create': return {'quorum_id': 'q', 'membership_id': 'm'}
+                return {'quorum_id': 'q', 'access': payload['access']}
+        with tempfile.TemporaryDirectory() as root, \
+                patch('quorum_live.api_for', return_value=(Api(), None, None)), \
+                patch('quorum_profiles.resolve_profile', return_value=(None, None)), \
+                patch('quorum.QuorumApi', return_value=Api()), patch('quorum.token_provider'):
+            with contextlib.redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(quorum.main(['--state', root, 'access', 'team', 'github']), 0)
+            self.assertEqual(json.loads(output.getvalue())['data']['access'], 'github')
+            with patch('sys.stdin', io.TextIOWrapper(io.BytesIO(b'{}'))), \
+                    contextlib.redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(quorum.main(['--state', root, 'create', 'team', '--access', 'open',
+                                              '--json-stdin', '--request-id', 'c']), 0)
+            self.assertEqual(json.loads(output.getvalue())['data']['access'], 'open')
+        self.assertEqual(calls, [('quorum_lookup', {'slug': 'team'}, None),
+                                 ('quorum_set_access', {'quorum_id': 'q', 'access': 'github'}, 'access:q'),
+                                 ('quorum_create', {'slug': 'team'}, 'c'),
+                                 ('quorum_set_access', {'quorum_id': 'q', 'access': 'open'}, 'access:q')])
 
     @isolated_profiles
     def test_invalid_id_and_service_conflict_stop_before_login(self):

@@ -141,6 +141,10 @@ class SharedCredentials(CredentialStore):
             return self.profiles.read()[self.config.origin]['github_id'] is not None
 
 
+class AnonymousCredentials(CredentialStore):
+    """One state's open-quorum identity; never registered as the machine login."""
+
+
 def read_config(path):
     if os.name == 'nt' and path.exists(): protect(path)
     fd = open_private(path, os.O_RDONLY | getattr(os, 'O_NONBLOCK', 0))
@@ -158,7 +162,30 @@ def origin_identity(origin):
     return parsed.scheme, parsed.hostname, 443 if port is None else port
 
 
-def resolve_profile(state, explicit=None):
+def write_config(path, config):
+    fd = open_private(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
+    with os.fdopen(fd, 'w') as output:
+        json.dump({'origin': config.origin, 'publishable_key': config.publishable_key}, output)
+        output.flush()
+        os.fsync(output.fileno())
+    if os.name == 'nt': protect(path)
+
+
+def resolve_anonymous(state, path, saved, explicit, create):
+    """An open-invitation state keeps its anonymous login inside that state only."""
+    root = state / 'anonymous-credentials'
+    if not (root.exists() or root.is_symlink()):
+        # Never convert a GitHub or legacy state, even for the same service.
+        if not create or saved is not None or (state / 'credentials').exists():
+            raise ValueError('anonymous_state_conflict')
+    config = saved or explicit
+    if config is None: raise QuorumError('service_not_configured')
+    root = private_directory(root, create=True)
+    if saved is None: write_config(path, config)
+    return config, AnonymousCredentials(root=root)
+
+
+def resolve_profile(state, explicit=None, *, anonymous=False):
     """Bind only the supplied state/legacy directory; never scan other installs."""
     state = private_directory(state, create=True)
     path = state / 'config.json'
@@ -166,6 +193,8 @@ def resolve_profile(state, explicit=None):
     saved = read_config(path) if path.exists() else None
     if saved is not None and explicit is not None and saved != explicit:
         raise ValueError('service_config_conflict')
+    if anonymous or (state / 'anonymous-credentials').exists() or (state / 'anonymous-credentials').is_symlink():
+        return resolve_anonymous(state, path, saved, explicit, anonymous)
     profiles = MachineProfiles()
     with credential_lock(profiles.root):
         records = profiles.read()
@@ -203,21 +232,19 @@ def resolve_profile(state, explicit=None):
             if legacy_session and credential_root != legacy_root:
                 # Even the same human can have a distinct refresh-token family.
                 raise ValueError('auth_profile_conflict')
-        if saved is None:
-            fd = open_private(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
-            with os.fdopen(fd, 'w') as output:
-                json.dump({'origin': config.origin, 'publishable_key': config.publishable_key}, output)
-                output.flush()
-                os.fsync(output.fileno())
-            if os.name == 'nt': protect(path)
+        if saved is None: write_config(path, config)
     return config, SharedCredentials(profiles, config, credential_root)
 
 
-def ensure_login(config, store, *, explicit=False):
-    from quorum_auth import login_pkce, token_provider
+def ensure_login(config, store, *, explicit=False, anonymous=False):
+    from quorum_auth import login_anonymous, login_pkce, token_provider
     with auth_lock(store):
         session = store.load(config.origin)
         if session is None:
+            if isinstance(store, AnonymousCredentials):
+                # A replacement anonymous user would not hold the lost membership.
+                if not anonymous: raise QuorumError('open_invite_required')
+                return login_anonymous(config, store)
             if isinstance(store, SharedCredentials) and store.established() and not explicit:
                 raise QuorumError('auth_required')
             return login_pkce(config, store)

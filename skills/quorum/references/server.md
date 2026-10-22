@@ -43,6 +43,13 @@ For Grok sessions only, also apply [the native Grok engine extension](../supabas
 It adds the engine to the existing exact-session and private-notification checks;
 it grants no new creation, membership or table rights.
 
+To allow open quorums, apply [open access](../supabase/migrations/20261022150000_open_access_quorums.sql)
+last, after Realtime and Grok when used; applying the Grok extension afterwards
+restores GitHub-only session checks. Then enable **Allow anonymous sign-ins** in
+the project's Auth settings. Leave CAPTCHA for anonymous sign-ins off: the helper
+cannot solve it and reports `anonymous_login_unavailable`. Supabase's sign-in rate
+limits still apply; anonymous users get no access without an open invitation.
+
 After loading the bootstrap and required migrations within `BEGIN`, substitute the verified ID:
 
 ```sql

@@ -42,7 +42,7 @@ def read_invitation(path):
     return data
 
 
-LIVE_COMMANDS = {'connect', 'pilot-init', 'pilot-worker', 'ping', 'thread', 'mcp', 'invite-file', 'listen', 'session', 'invite-id', 'accept-id'}
+LIVE_COMMANDS = {'connect', 'pilot-init', 'pilot-worker', 'ping', 'thread', 'mcp', 'invite-file', 'listen', 'session', 'invite-id', 'accept-id', 'access'}
 
 
 def add_commands(commands):
@@ -54,11 +54,16 @@ def add_commands(commands):
     accept.add_argument('invite_id')
     accept.add_argument('--origin')
     accept.add_argument('--publishable-key')
-    invite_id = commands.add_parser('invite-id', help='Create an identity-bound invitation ID and new-session prompt')
+    accept.add_argument('--anonymous', action='store_true', help='Open invitation: anonymous login kept in this state')
+    invite_id = commands.add_parser('invite-id', help='Create an invitation ID and new-session prompt')
     invite_id.add_argument('quorum')
     target_id = invite_id.add_mutually_exclusive_group(required=True)
     target_id.add_argument('--github-user')
     target_id.add_argument('--github-id')
+    target_id.add_argument('--open', action='store_true', help='Single-use 15-minute invitation for an open quorum')
+    access = commands.add_parser('access', help='Owner: require GitHub or allow open invitations')
+    access.add_argument('quorum')
+    access.add_argument('mode', choices=('github', 'open'))
     invite_id.add_argument('--request-id', required=True)
     invite = commands.add_parser('invite-file', help='Create an owner-only invitation file without printing its token')
     invite.add_argument('quorum')
@@ -133,6 +138,12 @@ def dispatch(args, ledger, register_agent):
         args.quorum = invite['quorum']
     else:
         api, config, store = api_for(ledger)
+    if args.command == 'access':
+        quorum_id = api.call('quorum_lookup', {'slug': args.quorum})['quorum_id']
+        return api.call('quorum_set_access', {'quorum_id': quorum_id, 'access': args.mode}, 'access:' + quorum_id)
+    if args.command == 'invite-id' and args.open:
+        from quorum_invitations import create_open_invitation
+        return create_open_invitation(api, config, args.quorum, args.request_id)
     if args.command == 'invite-id':
         from quorum_invitations import create_id_invitation, github_id
         target = args.github_id or github_id(args.github_user)

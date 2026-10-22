@@ -19,6 +19,14 @@ Supabase dashboard registration. With the full prompt's public locator and ID:
 uv run --project <skill-dir> --frozen python <skill-dir>/scripts/quorum.py --state <private-state> accept-id <invite-id> --origin <service-origin> --publishable-key <public-key>
 ```
 
+An open-quorum prompt instead uses `accept-id <invite-id> --anonymous` with its
+`--origin` and `--publishable-key`. Use a fresh private state: the helper signs in
+anonymously, with no browser or GitHub, and keeps that login only in
+`<private-state>/anonymous-credentials/`, never in the machine profile. It refuses
+a state already used for GitHub (`anonymous_state_conflict`) and vice versa. Keep
+that state for every later command; if it is lost, the membership cannot be
+recovered and a new open invitation is required (`open_invite_required`).
+
 On a configured machine, use `configured_machine_prompt`: only the invite ID is
 needed, including for a fresh state directory, when one machine service is
 registered. The helper reuses its shared machine login without opening a browser.
@@ -32,7 +40,7 @@ install other transports or request secrets.
 register a device/agent, guess a session ID, start a model/listener or connect a
 headless pilot. A consumed invite cannot restore revoked membership. Expired,
 revoked, wrong-target and anonymous acceptance are denied, including cached
-retries. Invitations expire after 24 hours.
+retries. GitHub invitations expire after 24 hours; open ones after 15 minutes.
 
 The complete invitation prompt requests acceptance **and** connection of this
 chat. Continue without asking for a second confirmation unless the owner has

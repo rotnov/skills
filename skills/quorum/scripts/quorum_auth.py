@@ -203,3 +203,20 @@ def login_pkce(config, store):
     session['expires_at'] = time.time() + session['expires_in']
     store.save(config.origin, session)
     return {'authenticated': True}
+
+
+def login_anonymous(config, store):
+    """Create a new Supabase anonymous user for open quorum invitations only."""
+    from quorum_api import request_json, QuorumError
+    try:
+        session = request_json(config.origin.rstrip('/') + '/auth/v1/signup',
+                               {'apikey': config.publishable_key, 'Content-Type': 'application/json'}, b'{}')
+    except QuorumError as error:
+        # Disabled anonymous sign-ins (422) and rate limits (429) look alike here.
+        if str(error) == 'service_error': raise QuorumError('anonymous_login_unavailable') from None
+        raise
+    if not isinstance(session, dict) or type(session.get('expires_in')) is not int:
+        raise QuorumError('invalid_response')
+    session['expires_at'] = time.time() + session['expires_in']
+    store.save(config.origin, session)
+    return {'authenticated': True, 'anonymous': True}

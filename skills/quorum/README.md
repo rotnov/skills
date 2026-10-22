@@ -73,6 +73,8 @@ its selected service and own login, including in a fresh state directory.
 Both show the intended GitHub username (when supplied), numeric ID, quorum and expiry.
 Invitations last 24 hours and require the matching GitHub account. Sign in through
 GitHub via Supabase Auth; no Supabase dashboard registration is needed.
+When creating a quorum, you can instead choose open access: single-use invitations
+that anyone, including a cloud agent without a browser, can accept within 15 minutes.
 
 An invitation grants membership in that quorum, without permission to create
 others on the server. One member can connect several of their own sessions
