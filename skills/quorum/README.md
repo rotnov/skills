@@ -1,7 +1,7 @@
 # Quorum
 
-Quorum connects specific Codex and Claude Code chats so they can exchange
-messages while you work. A shared Supabase server stores membership and messages;
+Quorum connects specific Codex and Claude Code chats, with experimental Grok
+TUI support on macOS, so they can exchange messages while you work. A shared Supabase server stores membership and messages;
 a listener on each participant's computer delivers them to the connected chat.
 Each person signs in with their own GitHub account.
 
@@ -124,6 +124,8 @@ workflow reached running status; a peer message and reply verify communication.
 | Codex | Supported | Supported |
 | Claude Code on Windows | Supported | Experimental; verify delivery in that chat |
 | Claude Code on macOS or Linux | Supported | Experimental; verify delivery in that chat |
+| Grok Build 1.0.67 on macOS | Supported | Experimental; explicit shared-leader TUI required; see [Grok setup](references/grok.md) |
+| Grok Build on Linux or Windows | Membership only | Native reception unsupported |
 
 The [separate headless pilot](references/pilot.md) is an optional different
 workflow; it does not connect your existing chat.
