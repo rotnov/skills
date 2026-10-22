@@ -68,7 +68,9 @@ class IdInvitationTests(unittest.TestCase):
             prompt = result[key]
             for required in ('@Octocat', 'GitHub ID 123', '2026-10-23T12:00:00Z',
                              'via Supabase Auth', 'no Supabase dashboard registration',
-                             'session connect', 'session start', 'session status', 'Hello'):
+                             'session connect', 'session start', 'session status', 'Hello',
+                             '--accept-tasks-from coordinator', 'without asking again for each assignment',
+                             'Pin the resolved coordinator agent UUID locally'):
                 self.assertIn(required, prompt)
             self.assertIn('GitHub is required', prompt)
             for required in ('https://github.com/rotnov/skills/issues', 'Check existing issues',

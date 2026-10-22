@@ -25,8 +25,9 @@ class RealtimeWait:
     No message body or delivery acknowledgement is carried by this transport.
     """
     def __init__(self, api, record, ledger, *, connect=None, clock=time.monotonic,
-                 sleep=time.sleep):
+                 sleep=time.sleep, keepalive=None):
         self.api, self.ledger, self.clock, self.sleep = api, ledger, clock, sleep
+        self.keepalive = keepalive
         self.topic = 'realtime:quorum:agent:' + str(uuid.UUID(record['agent_id']))
         self.connect = connect
         self.socket, self.jwt, self.ref = None, None, 0
@@ -95,6 +96,7 @@ class RealtimeWait:
                 self.backoff = 10
                 self._status(mode='realtime', poll_seconds=60, code=None,
                              last_connected_at=time.time(), last_wake='subscribed')
+                if self.keepalive: self.keepalive.connected()
                 return
         raise ValueError('realtime_unavailable')
 
@@ -103,16 +105,21 @@ class RealtimeWait:
         if stopping(): return
         try: self._join(stopping)
         except QuorumError as error:
-            if str(error) == 'auth_required':
+            if str(error) in ('auth_required', 'coordination_unavailable', 'skill_update_required', 'release_manifest_invalid'):
                 self._close_socket()
                 raise
             self._fallback()
         except Exception:
             self._fallback()
 
+    def pulse(self):
+        """Keep health fresh during an active inbox drain as well as idle waits."""
+        if self.keepalive: self.keepalive.tick()
+
     def _poll(self, stopping):
         for _ in range(10):
             if stopping(): return
+            if self.keepalive: self.keepalive.tick()
             self.sleep(1)
         self._status(last_wake='fallback_poll')
 
@@ -128,6 +135,7 @@ class RealtimeWait:
         try:
             while not stopping() and self.clock() < deadline:
                 now = self.clock()
+                if self.keepalive: self.keepalive.tick()
                 if self.pending_heartbeat and now >= self.pending_heartbeat[1]:
                     raise ValueError('realtime_unavailable')
                 if now >= self.heartbeat_at:
@@ -155,7 +163,7 @@ class RealtimeWait:
                     return
             if not stopping(): self._status(last_wake='safety_poll')
         except QuorumError as error:
-            if str(error) == 'auth_required':
+            if str(error) in ('auth_required', 'coordination_unavailable', 'skill_update_required', 'release_manifest_invalid'):
                 self._close_socket()
                 raise
             self._fallback()

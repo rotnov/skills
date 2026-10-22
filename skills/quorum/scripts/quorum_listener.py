@@ -1,4 +1,5 @@
 """Explicit continuous Claude listener; no automatic service or login installation."""
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -7,6 +8,7 @@ import threading
 import time
 import uuid
 from quorum_os import FileLock, open_private, protect
+from quorum_release import ReleaseGuard, ReleaseMismatch, installed_release
 
 
 def locked(path):
@@ -43,16 +45,26 @@ class Control:
             for key in ('last_signal_at', 'last_connected_at', 'last_fallback_at', 'last_wake'):
                 if key in waiting: result[key] = waiting[key]
             if waiting.get('code'): result['notification_code'] = waiting['code']
+        presence = self.ledger.setting('presence')
+        if presence: result['presence'] = presence if result['listener'] == 'running' else {'state':'offline'}
+        release = self.ledger.setting('release')
+        if release: result['release'] = release
         result['stop_requested'] = bool(record.get('run_id') and self.stopping(record['run_id']))
         return result
 
-    def update(self, run_id, state, handled, *, timeout=60, code=None):
+    def update(self, run_id, state, handled, *, timeout=60, code=None, release=None):
         old = self.ledger.setting('listener') or {}
         record = {'run_id': run_id, 'pid': os.getpid(), 'state': state, 'handled': handled,
                   'timeout': timeout, 'updated_at': time.time(),
                   'started_at': old.get('started_at', time.time()) if old.get('run_id') == run_id else time.time()}
         if code is not None: record['code'] = code
-        self.ledger.setting('listener', record)
+        records = {'listener':record}
+        if release is not None: records['listener-release'] = {**release, 'run_id':run_id}
+        # Publish a winning run and its marker together; readers must never see
+        # a marker from one generation paired with another run's control record.
+        with self.ledger.db:
+            self.ledger.db.executemany('insert into settings values (?,?) on conflict(key) do update set data=excluded.data',
+                                      [(key,json.dumps(value)) for key,value in records.items()])
 
     def stopping(self, run_id):
         return self.ledger.setting('listener-stop') == {'run_id': run_id}
@@ -70,7 +82,7 @@ def error_code(error):
                'dedicated_pilot_profile_required', 'scratch_directory_required',
                'pilot_agent_required', 'worker_already_running', 'session_delivery_unknown',
                'session_binding_denied', 'session_not_connected', 'claude_pipe_unavailable',
-               'grok_transport_unavailable'}
+               'grok_transport_unavailable', 'coordination_unavailable', 'skill_update_required', 'release_manifest_invalid'}
     return str(error) if str(error) in allowed else 'listener_failed'
 
 
@@ -81,7 +93,7 @@ def run_listener(ledger, make_worker, run_id, *, sleep=time.sleep, stop_event=No
     def stopping(): return stop_event.is_set() or control.stopping(run_id)
     # The shared lock also excludes the original one-message pilot worker.
     with LocalSupervisorLock(ledger.root), FileLock(ledger.root / 'listener.lock'):
-        control.update(run_id, 'starting', handled, timeout=timeout)
+        control.update(run_id, 'starting', handled, timeout=timeout, release=installed_release())
         try:
             uncertain = ledger.db.execute("select 1 from attempts where state in ('unknown','launch_intent','running') limit 1").fetchone()
             if stopping():
@@ -94,6 +106,7 @@ def run_listener(ledger, make_worker, run_id, *, sleep=time.sleep, stop_event=No
                 worker.reconcile()
                 control.update(run_id, 'waiting', handled, timeout=timeout)
                 while not stopping():
+                    if waiter and hasattr(waiter, 'pulse'): waiter.pulse()
                     control.update(run_id, 'checking', handled, timeout=timeout)
                     outcome = worker.run_once()
                     if outcome == 'unknown':
@@ -130,6 +143,11 @@ def start_listener(ledger, toolchain, timeout, approved):
     ExecutionPolicy(1, timeout, 'subscription', True, approved).validate()
     control = Control(ledger)
     with FileLock(ledger.root / 'listener-control.lock'):
+        from quorum_live import api_for
+        api, _, _ = api_for(ledger)
+        release = ReleaseGuard(api, ledger)
+        release.check()
+        release.running()
         if locked(ledger.root / 'listener.lock'): return control.status()
         if supervisor_running(ledger.root): raise ValueError('worker_already_running')
         run_id = str(uuid.uuid4())
@@ -162,6 +180,10 @@ def start_listener(ledger, toolchain, timeout, approved):
             if process.poll() is not None: break
             time.sleep(.1)
         control.request_stop(run_id)
+        diagnostic = ledger.setting('release') or {}
+        if diagnostic.get('update_required'):
+            control.update(run_id, 'error', 0, timeout=timeout, code='skill_update_required')
+            raise ReleaseMismatch(diagnostic)
         raise QuorumError('listener_start_failed')
 
 
@@ -206,8 +228,13 @@ def dispatch(args, ledger):
         stop_event = threading.Event()
         for name in ('SIGTERM', 'SIGINT', 'SIGBREAK'):
             if hasattr(signal, name): signal.signal(getattr(signal, name), lambda *_: stop_event.set())
+        from quorum_acp import ExecutionPolicy
+        ExecutionPolicy(1, args.timeout, 'subscription', True, args.approve_subscription).validate()
+        api, _, _ = api_for(ledger)
+        release = ReleaseGuard(api, ledger)
+        release.check()
+        release.running()
         def make_worker():
-            api, _, _ = api_for(ledger)
             return prepare_worker(ledger, api, args.toolchain, args.timeout, args.approve_subscription)
         return run_listener(ledger, make_worker, args.run_id, stop_event=stop_event, timeout=args.timeout)
     raise ValueError('unknown_operation')

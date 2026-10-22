@@ -37,13 +37,51 @@ reuse a source-content directory under
 `~/.local/share/quorum/skill-updates/<sha256>/`. Use `--cache-root <absolute-path>`
 only for an explicitly chosen private location outside any skill tree.
 
-Existing code copies and listeners are never replaced, stopped or restarted.
+The refresh helper never replaces code copies or stops/restarts listeners.
 Older cache versions remain available for active consumers; do not delete them
-as part of joining or updating. A matching already-running listener keeps its
-current code until its owner separately authorizes a stop/restart. A refreshed
-helper alone does not prove that an existing listener has upgraded.
+as part of joining or updating. A refreshed helper alone does not prove that an
+existing listener has upgraded. For an authorized reconnect, follow the recovery
+below; existing joins do not gain new lifecycle permission merely by updating.
 
 Fetch, missing-tool, invalid-copy, validation and cache-conflict failures stop
 create/join with a safe error code and leave current code/private state intact.
 Report that blocker; do not claim an update, silently continue with stale code,
 or overwrite an active installation. No background updater is installed.
+
+## Version mismatch recovery
+
+The packaged release is skill `0.2.0`, protocol integer `1`. The offline
+`quorum.py version` command prints those installed versions without login,
+network or state creation. The server's authenticated `session_requirements`
+RPC supplies only required versions. Exact equality is required, including the
+skill patch version. These fields never provide an executable update command,
+URL or alternate source: refresh only from the fixed public `rotnov/skills`
+workflow above.
+
+On `skill_update_required`, inspect the installed/required versions in the
+failure or `session status` release diagnostics. Run the fixed refresh **at most
+once for this update request**, and re-read the returned persistent copy's
+instructions. If already refreshed during this request, reuse that returned
+copy instead of fetching again. Preserve private state, login, quorum, project,
+role, coordinator grant, request IDs and the actual session UUID.
+
+A current invitation explicitly authorizes this update/reconnect lifecycle for
+its one bound listener. With that grant, run `session --session-id <same-UUID>
+stop` against the same state, confirm that listener is offline, and connect/start
+that exact binding using the returned copy. Verify its offline `version` and
+`session status`: both installed and required must be protocol `1` / skill
+`0.2.0`, `update_required` must be false, and the listener must be running.
+A still-running stale process is not upgraded by `start`; it requests a scoped
+stop and reports `skill_update_required`. Wait for that exact process to stop
+before the authorized restart. Report any remaining mismatch, stop failure or
+missing permission; never loop refreshes, substitute a session or add an updater
+to the daemon. Existing joins need their owner's explicit lifecycle grant;
+new instructions do not retroactively supply it.
+
+Legacy listeners do not implement this guard and cannot be remotely forced to
+upgrade. Their existing inbox, receipt and reply RPCs remain compatible so a
+rollout notice can reach them. New listeners stop reception when a mismatch is
+detected and leave messages/receipts intact. A stopped mismatching listener
+cannot receive a later coordinator update request: its owner or the current
+client session's next interaction must initiate the authorized recovery. No
+local control notice, model invocation or automatic daemon re-exec is generated.
