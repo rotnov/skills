@@ -5,7 +5,7 @@ declare
  a quorum_private.agents%rowtype; b quorum_private.agents%rowtype;
  target uuid:=gen_random_uuid(); sid text:=gen_random_uuid()::text;
  c uuid:=gen_random_uuid(); older jsonb; newer jsonb; urgent jsonb; replayed jsonb;
- head jsonb; reply jsonb; direct jsonb; refused boolean;
+ head jsonb; reply jsonb; direct jsonb; refused boolean; replay_priority text; replay_body text;
  greeter uuid:=gen_random_uuid(); listener uuid:=gen_random_uuid();
  gsid text:=gen_random_uuid()::text; lsid text:=gen_random_uuid()::text;
 begin
@@ -91,6 +91,52 @@ begin
  if not exists(select 1 from quorum_private.deliveries
                where message_id=(newer->>'message_id')::uuid and state='answered') then
   raise exception 'not_answered'; end if;
+
+ -- A reply replay must agree on body and priority; NULL and the default are
+ -- both normal. A disagreeing replay cannot report the stored answer as sent.
+ if public.session_reply(target,sid,(newer->>'message_id')::uuid,'urgent answer',p_priority=>'urgent')
+   ->>'reply_message_id'<>reply->>'reply_message_id' then raise exception 'urgent_reply_replay_changed'; end if;
+ foreach replay_priority in array array['normal',null] loop
+  refused:=false;
+  begin
+   perform public.session_reply(target,sid,(newer->>'message_id')::uuid,'urgent answer',p_priority=>replay_priority);
+  exception when raise_exception then
+   if sqlerrm<>'reply_already_sent' then raise; end if;
+   refused:=true;
+  end;
+  if not refused then raise exception 'urgent_reply_replayed_as_normal: %', replay_priority; end if;
+ end loop;
+ refused:=false;
+ begin
+  perform public.session_reply(target,sid,(newer->>'message_id')::uuid,'urgent answer');
+ exception when raise_exception then
+  if sqlerrm<>'reply_already_sent' then raise; end if;
+  refused:=true;
+ end;
+ if not refused then raise exception 'urgent_reply_replayed_as_default'; end if;
+ if (select count(*) from quorum_private.messages where reply_to=(newer->>'message_id')::uuid)<>1
+   or (select priority||':'||body from quorum_private.messages where id=(reply->>'reply_message_id')::uuid)
+     <>'urgent:urgent answer' then raise exception 'urgent_reply_mutated'; end if;
+
+ reply:=public.session_reply(target,sid,(older->>'message_id')::uuid,'normal answer');
+ if public.session_reply(target,sid,(older->>'message_id')::uuid,'normal answer',p_priority=>null)
+     ->>'reply_message_id'<>reply->>'reply_message_id'
+   or public.session_reply(target,sid,(older->>'message_id')::uuid,'normal answer',p_priority=>'normal')
+     ->>'reply_message_id'<>reply->>'reply_message_id' then raise exception 'normal_reply_replay_changed'; end if;
+ foreach replay_body in array array['normal answer','other answer'] loop
+  refused:=false;
+  begin
+   perform public.session_reply(target,sid,(older->>'message_id')::uuid,replay_body,
+    p_priority=>case when replay_body='normal answer' then 'urgent' else 'normal' end);
+  exception when raise_exception then
+   if sqlerrm<>'reply_already_sent' then raise; end if;
+   refused:=true;
+  end;
+  if not refused then raise exception 'normal_reply_replay_accepted: %', replay_body; end if;
+ end loop;
+ if (select count(*) from quorum_private.messages where reply_to=(older->>'message_id')::uuid)<>1
+   or (select priority||':'||body from quorum_private.messages where id=(reply->>'reply_message_id')::uuid)
+     <>'normal:normal answer' then raise exception 'normal_reply_mutated'; end if;
  refused:=false;
  begin
   perform public.session_reply(target,sid,(older->>'message_id')::uuid,'bad',p_priority=>'critical');

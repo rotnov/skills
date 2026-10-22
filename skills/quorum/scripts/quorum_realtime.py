@@ -6,6 +6,9 @@ from urllib.parse import urlencode
 import uuid
 from quorum_api import QuorumError
 
+# Frames inspected for an overdue heartbeat reply; exceeds the socket's max_queue.
+DRAIN_LIMIT = 32
+
 
 def connect_socket(uri, **options):
     from websockets.sync.client import reconnect
@@ -32,7 +35,7 @@ class RealtimeWait:
         self.connect = connect
         self.socket, self.jwt, self.ref = None, None, 0
         self.retry_at, self.backoff = 0, 10
-        self.heartbeat_at, self.pending_heartbeat = 0, None
+        self.heartbeat_at, self.pending_heartbeat, self.drain_left = 0, None, 0
         self.diagnostics = {'mode': 'polling_fallback', 'poll_seconds': 10, 'signals': 0}
 
     def _status(self, **data):
@@ -136,18 +139,29 @@ class RealtimeWait:
             while not stopping() and self.clock() < deadline:
                 now = self.clock()
                 if self.keepalive: self.keepalive.tick()
-                if self.pending_heartbeat and now >= self.pending_heartbeat[1]:
-                    raise ValueError('realtime_unavailable')
-                if now >= self.heartbeat_at:
+                if now >= self.heartbeat_at and not self.pending_heartbeat:
                     token = self.api.token()  # Existing private store refreshes an expiring JWT.
                     if token != self.jwt:
                         self._send('access_token', {'access_token': token})
                         self.jwt = token
                     ref = self._send('heartbeat', {}, topic='phoenix')
-                    self.pending_heartbeat = (ref, now + 10)
+                    self.pending_heartbeat = (ref, now, now + 10)
+                    self.drain_left = DRAIN_LIMIT
                     self.heartbeat_at = now + 20
-                try: frame = self._receive(min(1, deadline - self.clock()))
-                except TimeoutError: continue
+                pending = self.pending_heartbeat
+                if pending and not pending[1] <= now < pending[2]:
+                    # Overdue (or the clock is inconsistent): only a reply already
+                    # buffered, e.g. while a delivery ran outside wait(), may still
+                    # count, and only within a fixed frame budget so a busy channel
+                    # cannot defer the absolute deadline.
+                    if self.drain_left <= 0: raise ValueError('realtime_unavailable')
+                    self.drain_left -= 1
+                    try: frame = self._receive(0)
+                    except TimeoutError: raise ValueError('realtime_unavailable') from None
+                else:
+                    until = min(deadline, pending[2]) if pending else deadline
+                    try: frame = self._receive(max(0, min(1, until - self.clock())))
+                    except TimeoutError: continue
                 topic, event = frame.get('topic'), frame.get('event')
                 if (self.pending_heartbeat and topic == 'phoenix' and event == 'phx_reply'
                         and frame.get('ref') == self.pending_heartbeat[0]

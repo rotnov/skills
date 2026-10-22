@@ -86,7 +86,10 @@ def child_environment(stage):
     allowed = ('PATH', 'SystemRoot', 'SYSTEMROOT', 'COMSPEC', 'PATHEXT',
                'TEMP', 'TMP', 'TMPDIR', 'HTTPS_PROXY', 'HTTP_PROXY', 'NO_PROXY',
                'https_proxy', 'http_proxy', 'no_proxy', 'SSL_CERT_FILE', 'SSL_CERT_DIR',
-               'NODE_EXTRA_CA_CERTS', 'GIT_SSL_CAINFO', 'UV_CACHE_DIR', 'UV_PYTHON_INSTALL_DIR')
+               # CA file paths only: TLS-inspecting proxies are trusted through these by
+               # Node (which ignores SSL_CERT_FILE) and Git's libcurl.
+               'NODE_EXTRA_CA_CERTS', 'GIT_SSL_CAINFO',
+               'UV_CACHE_DIR', 'UV_PYTHON_INSTALL_DIR')
     env = {key: os.environ[key] for key in allowed if key in os.environ}
     home = stage / 'tool-home'
     home.mkdir(mode=0o700)

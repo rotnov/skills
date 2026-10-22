@@ -179,6 +179,119 @@ class RealtimeTests(unittest.TestCase):
             self.assertLessEqual(clock.now, 40)
             wait.close()
 
+    def test_heartbeat_reply_buffered_during_a_slow_drain_is_not_a_disconnect(self):
+        from quorum_realtime import RealtimeWait
+        clock, connects = Clock(), []
+        class SignalFirst(Socket):
+            # The wake hint precedes our heartbeat reply on the wire.
+            def send(self, raw):
+                if json.loads(raw)['event'] == 'heartbeat':
+                    self.incoming.append(json.dumps({'topic': TOPIC, 'event': 'broadcast',
+                        'payload': {'event': 'inbox_changed', 'payload': {}}}))
+                super().send(raw)
+        def connect(*args, **kwargs):
+            connects.append(SignalFirst(clock))
+            return connects[-1]
+        with ledger() as state:
+            wait = RealtimeWait(api(), {'agent_id': AGENT}, state, connect=connect,
+                                clock=clock, sleep=clock.sleep)
+            try:
+                wait.prepare(lambda: False)
+                wait.wait(lambda: False)
+                self.assertEqual(state.setting('listener-wait')['last_wake'], 'signal')
+                clock.sleep(30)  # e.g. a slow `codex queue` delivery outside wait()
+                wait.wait(lambda: clock.now >= 60)
+                self.assertEqual(len(connects), 1)
+                self.assertFalse(connects[0].closed)
+                self.assertEqual(state.setting('listener-wait')['mode'], 'realtime')
+            finally: wait.close()
+
+    def test_continuous_unrelated_frames_cannot_keep_an_expired_heartbeat_alive(self):
+        from quorum_realtime import RealtimeWait
+        clock = Clock()
+        class Chatty(Socket):
+            # A valid but irrelevant frame is always ready; time keeps moving.
+            def recv(self, timeout):
+                if self.incoming: return self.incoming.popleft()
+                self.clock.sleep(.25)
+                return json.dumps({'topic': TOPIC, 'event': 'presence_diff', 'payload': {}})
+        socket = Chatty(clock, heartbeat=False)
+        with ledger() as state:
+            wait = RealtimeWait(api(), {'agent_id': AGENT}, state, connect=lambda *a, **k: socket,
+                                clock=clock, sleep=clock.sleep)
+            wait.prepare(lambda: False)
+            wait.wait(lambda: False)
+            self.assertTrue(socket.closed)
+            self.assertEqual(state.setting('listener-wait')['mode'], 'polling_fallback')
+            self.assertLess(clock.now, 60)
+            wait.close()
+
+    def test_buffered_reply_behind_unrelated_frames_clears_an_overdue_heartbeat(self):
+        from quorum_realtime import RealtimeWait
+        clock = Clock()
+        class Buffered(Socket):
+            def send(self, raw):
+                if json.loads(raw)['event'] == 'heartbeat':
+                    for _ in range(6):
+                        self.incoming.append(json.dumps({'topic': 'realtime:other', 'event': 'broadcast',
+                                                         'payload': {}}))
+                super().send(raw)
+        socket = Buffered(clock)
+        sent = lambda: any(x['event'] == 'heartbeat' for x in socket.frames)
+        with ledger() as state:
+            wait = RealtimeWait(api(), {'agent_id': AGENT}, state, connect=lambda *a, **k: socket,
+                                clock=clock, sleep=clock.sleep)
+            try:
+                wait.prepare(lambda: False)
+                wait.wait(sent)  # Leave the reply buffered while the caller works.
+                clock.sleep(40)
+                wait.wait(lambda: clock.now >= 90)
+                self.assertFalse(socket.closed)
+                self.assertEqual(state.setting('listener-wait')['mode'], 'realtime')
+            finally: wait.close()
+
+    def test_overdue_heartbeat_drain_is_bounded_even_if_the_reply_is_buried(self):
+        from quorum_realtime import RealtimeWait, DRAIN_LIMIT
+        clock = Clock()
+        class Buried(Socket):
+            def send(self, raw):
+                if json.loads(raw)['event'] == 'heartbeat':
+                    for _ in range(DRAIN_LIMIT + 1):
+                        self.incoming.append(json.dumps({'topic': TOPIC, 'event': 'other', 'payload': {}}))
+                super().send(raw)
+        socket = Buried(clock)
+        sent = lambda: any(x['event'] == 'heartbeat' for x in socket.frames)
+        with ledger() as state:
+            wait = RealtimeWait(api(), {'agent_id': AGENT}, state, connect=lambda *a, **k: socket,
+                                clock=clock, sleep=clock.sleep)
+            wait.prepare(lambda: False)
+            wait.wait(sent)
+            clock.sleep(40)
+            wait.wait(lambda: False)
+            self.assertTrue(socket.closed)
+            self.assertEqual(state.setting('listener-wait')['mode'], 'polling_fallback')
+            wait.close()
+
+    def test_heartbeat_deadline_at_zero_or_inconsistent_clock_fails_without_blocking(self):
+        from quorum_realtime import RealtimeWait
+        for resume_at in (30, 5):  # Exactly at the deadline; clock earlier than send.
+            clock = Clock()
+            socket = Socket(clock, heartbeat=False)
+            sent = lambda: any(x['event'] == 'heartbeat' for x in socket.frames)
+            with ledger() as state:
+                wait = RealtimeWait(api(), {'agent_id': AGENT}, state, connect=lambda *a, **k: socket,
+                                    clock=clock, sleep=clock.sleep)
+                wait.prepare(lambda: False)
+                wait.wait(sent)
+                clock.now = resume_at
+                timeouts = []
+                socket.recv = lambda timeout, recv=socket.recv: timeouts.append(timeout) or recv(timeout)
+                wait.wait(lambda: False)
+                self.assertTrue(socket.closed, resume_at)
+                self.assertEqual(timeouts, [0], resume_at)
+                self.assertEqual(state.setting('listener-wait')['mode'], 'polling_fallback')
+                wait.close()
+
     def test_reconnect_returns_immediately_for_catchup_instead_of_waiting_for_new_signal(self):
         from quorum_realtime import RealtimeWait
         clock, calls = Clock(), []

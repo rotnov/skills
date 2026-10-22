@@ -92,11 +92,15 @@ class MandatoryReleaseTests(Gate):
         self.assertEqual(manifest, CURRENT)
         self.assertIn('version = "0.3.0"', (ROOT / 'skills/quorum/pyproject.toml').read_text(encoding='utf-8'))
         # Owner-facing guidance and the invitation grant name the same exact tuple.
-        for name in ('README.md', 'references/update.md', 'references/sessions.md',
-                     'scripts/quorum_invitations.py'):
+        for name in ('README.md', 'references/update.md', 'references/sessions.md'):
             text = (ROOT / 'skills/quorum' / name).read_text(encoding='utf-8')
             self.assertIn('0.3.0', text, name)
             self.assertNotIn('0.2.0', text, name)
+        # Invitation grants derive the tuple from the installed release manifest.
+        from quorum_invitations import completion
+        self.assertIn('required protocol 2 and skill 0.3.0 plus running status', completion('coordinator'))
+        source = (ROOT / 'skills/quorum/scripts/quorum_invitations.py').read_text(encoding='utf-8')
+        self.assertNotIn('0.2.0', source)
 
     @isolated_profiles
     def test_a_coordination_only_server_is_refused_before_any_send_or_reply_write(self):

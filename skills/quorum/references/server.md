@@ -34,23 +34,44 @@ Review and apply the following in one administrator-controlled transaction:
 3. Apply [native Realtime wakeups](../supabase/migrations/20261022084959_native_realtime_wakeups.sql).
    This adds receive-only private-channel authorization and empty inbox hints.
    Read [Realtime setup](realtime.md) for prerequisites, policy review and recovery.
-4. Apply [native coordination](../supabase/migrations/20261022152603_native_session_coordination.sql)
-   for private listener heartbeats, same-project availability and idempotent Hello
-   notices. It adds no client table access and never revokes users on timeout.
-5. After native coordination, apply the mandatory
+4. Apply [the native Grok engine extension](../supabase/migrations/20261022094041_native_grok_session.sql).
+   It adds the engine to the existing exact-session and private-notification
+   checks; it grants no new creation, membership or table rights.
+5. Apply [open access](../supabase/migrations/20261022150000_open_access_quorums.sql),
+   [native coordination](../supabase/migrations/20261022152603_native_session_coordination.sql)
+   and [open session requirements](../supabase/migrations/20261022160000_open_session_requirements.sql),
+   in that order. Native coordination adds private listener heartbeats,
+   same-project availability and idempotent Hello notices; it adds no client
+   table access and never revokes users on timeout. A server that already
+   deployed native coordination applies open access next, then open session
+   requirements; that file refuses to run before open access.
+   Then apply the mandatory
    [urgent message priority](../supabase/migrations/20261022170000_urgent_message_priority.sql).
-   It refuses to run before coordination so the inbox keeps Hello notice markers.
+   It pins the exact reviewed dispatcher, session authorization, inbox and
+   requirements bodies from these files, and fails closed before any change on
+   any other body, a missing step or a second application.
    In the same transaction it advances the required release from skill `0.2.0` /
    protocol `1` to skill `0.3.0` / protocol `2`. Without it, every `0.3.0`
    client stops with `skill_update_required` before any send or reply.
+   Finally apply the mandatory
+   [open access close serialization](../supabase/migrations/20261022180000_open_access_close_serialization.sql).
+   It makes closing a quorum wait for, or be waited on by, any in-flight open
+   invitation issue or acceptance, so no anonymous member or unused open
+   invitation survives a close. It pins the priority release's bodies and fails
+   closed the same way; it changes no grant or release requirement.
+   Open access changes, open invite creation and open invite acceptance require
+   PostgreSQL `READ COMMITTED` and fail closed with
+   `open_access_requires_read_committed` at any other isolation level.
 6. Explicitly grant creation to the intended instance owner's verified immutable
    numeric GitHub ID. Look up `https://api.github.com/users/<login>`, check the
    returned `login` matches, and use the positive integer `id`.
    Never use an editable profile field.
 
-For Grok sessions only, also apply [the native Grok engine extension](../supabase/migrations/20261022094041_native_grok_session.sql) after Realtime.
-It adds the engine to the existing exact-session and private-notification checks;
-it grants no new creation, membership or table rights.
+Open access keeps every existing quorum GitHub-only. To allow open quorums,
+enable **Allow anonymous sign-ins** in the project's Auth settings. Leave CAPTCHA
+for anonymous sign-ins off: the helper cannot solve it and reports
+`anonymous_login_unavailable`. Supabase's sign-in rate limits still apply;
+anonymous users get no access without an open invitation.
 
 After loading the bootstrap and required migrations within `BEGIN`, substitute the verified ID:
 
@@ -66,7 +87,8 @@ administrator manages this list; revocation sets the row's `revoked=true`.
 The server checks current identity and permission before creation, including
 cached retries.
 
-Existing servers apply only the missing reviewed migrations, with a separate
+Existing servers apply only the missing reviewed migrations in the order above,
+with a separate
 explicit administrator creator grant when needed. Skill installation never runs cloud DDL or grants.
 
 ## Check readiness

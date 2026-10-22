@@ -8,11 +8,32 @@ import subprocess
 import sys
 import time
 import uuid
-from quorum_listener import Control, locked, run_listener, stop_listener
-from quorum_os import FileLock, open_private, protect
+from quorum_listener import Control, abandon_start, locked, run_listener, spawn_background, stop_listener
+from quorum_os import FileLock
 from quorum_state import LocalLedger
 from quorum_delegation import grant, instruction
 from quorum_release import ReleaseGuard, ReleaseMismatch, diagnostic
+
+
+SUPPORTED_TRANSPORTS = (
+    {'client':'codex', 'requires':'Local Codex chat exporting CODEX_THREAD_ID, with the codex CLI on PATH for codex queue'},
+    {'client':'claude', 'requires':'Local Claude Code chat exporting CLAUDE_CODE_SESSION_ID and its private messaging socket/token'},
+    {'client':'grok', 'requires':'Grok TUI on macOS started with --leader in this chat (GROK_SESSION_ID); '
+                                 'hosted or cloud Grok has no native Quorum transport'})
+
+
+class UnsupportedClient(ValueError):
+    """Only fixed local diagnostics may cross the JSON CLI boundary."""
+    def __init__(self, reason, detected=None):
+        super().__init__('unsupported_client')
+        self.reason, self.detected = reason, detected
+
+    def diagnostic(self):
+        return {'reason':self.reason, 'detected_client':self.detected, 'platform':sys.platform,
+                'supported_transports':[dict(row) for row in SUPPORTED_TRANSPORTS],
+                'next_step':'The invitation was not accepted and no listener was started. Run this request '
+                            'from a supported local client chat. Do not start a headless model or substitute '
+                            'another session; report this blocker if no supported client is available.'}
 
 
 def current_engine():
@@ -26,9 +47,34 @@ def current_engine():
 def current_session():
     value = (os.environ.get('CODEX_THREAD_ID') or os.environ.get('CLAUDE_CODE_SESSION_ID')
              or os.environ.get('GROK_SESSION_ID'))
-    if not value: raise ValueError('current_codex_session_required')
+    if not value: raise UnsupportedClient('no_client_session')
     current_engine()
     return str(uuid.UUID(value))
+
+
+def client_preflight():
+    """Check this chat can carry a native listener before membership is consumed."""
+    sid = current_session()
+    engine = current_engine()
+    if engine == 'grok' and sys.platform != 'darwin':
+        raise UnsupportedClient('grok_leader_platform_unsupported', engine)
+    if engine == 'grok':
+        # Verify this chat's private leader socket, registry and TUI process
+        # identity, then the bounded read-only protocol/version/resident-session
+        # handshake connect uses. Never start a TUI/model or send a prompt.
+        from quorum_grok_leader import binding
+        try: binding(sid, str(Path.cwd().resolve()))
+        except (ValueError, OSError, KeyError, TypeError, subprocess.SubprocessError):
+            raise UnsupportedClient('grok_leader_unavailable', engine) from None
+    if engine == 'codex' and not shutil.which('codex'):
+        raise UnsupportedClient('codex_cli_missing', engine)
+    if engine == 'claude':
+        from quorum_claude_pipe import binding
+        try: binding(sid)
+        except ValueError as error:
+            if str(error) != 'claude_pipe_unavailable': raise
+            raise UnsupportedClient('claude_inbox_unavailable', engine) from None
+    return engine
 
 
 def require_caller(session_id, engine=None):
@@ -111,8 +157,10 @@ def enqueue(record, message, auth_state):
         try:
             if steer(record, message['id'], lambda: prompt_for('steered')) == 'submitted':
                 return 'submitted'
-        except SteerUnavailable:
-            pass
+        except SteerUnavailable as unavailable:
+            # A fixed reason code, never peer text; stderr is the private listener log.
+            print('quorum: urgent steering unavailable (' + unavailable.reason + '); queueing once',
+                  file=sys.stderr, flush=True)
         # Both a rejection and an unavailable route prove that nothing reached
         # the chat, so this message is queued exactly once below instead.
     result = subprocess.run([executable, 'queue', '--thread', record['session_ref'],
@@ -178,6 +226,12 @@ class Relay:
         return 'delivered'
 
 
+def sequence(value):
+    number = int(value)
+    if not 0 <= number < 2**63: raise ValueError('invalid_sequence')
+    return number
+
+
 def add_commands(commands):
     command = commands.add_parser('session', help='Connect an existing client session, without headless models')
     command.add_argument('--session-id', type=lambda x: str(uuid.UUID(x)))
@@ -196,6 +250,10 @@ def add_commands(commands):
     delegation.add_argument('--dispatch-mode', choices=('inline', 'native-subagent'), default='inline',
                             help='Receiving-owner task execution policy for this scoped coordinator grant')
     actions.add_parser('peers')
+    thread = actions.add_parser('thread', help="Read a conversation as this bound session's agent")
+    thread.add_argument('conversation_id', type=lambda x: str(uuid.UUID(x)))
+    thread.add_argument('--after-sequence', type=sequence, default=0,
+                        help='Page after this sequence; the service returns at most 16 messages')
     actions.add_parser('start')
     actions.add_parser('status')
     actions.add_parser('stop')
@@ -216,42 +274,64 @@ def add_commands(commands):
     recover.add_argument('--confirmed-queued', required=True, action='store_true')
 
 
-def start(auth_state, ledger, sid, *, api):
+def rebind(ledger, control, sid, endpoint, *, stop_seconds=60):
+    """Move this same Claude chat to its rotated, already validated endpoint.
+
+    The caller has proven the session identity and endpoint from its own
+    current exports. Only the endpoint changes; the old listener (whose
+    environment holds the stale endpoint/token) must stop first.
+    """
+    record = ledger.setting('session-agent')
+    if not record or record.get('session_ref') != sid or record.get('engine') != 'claude':
+        raise ValueError('session_binding_denied')
+    # An uncertain write stays for the owner to reconcile; never rebind past it.
+    for (raw,) in ledger.db.execute("select data from settings where key like 'delivery:%'"):
+        if json.loads(raw)['state'] == 'intent': raise ValueError('session_delivery_unknown')
+    lock = ledger.root/'listener.lock'
+    if locked(lock):
+        run_id = (ledger.setting('listener') or {}).get('run_id')
+        if not run_id: raise ValueError('listener_stop_pending')
+        control.request_stop(run_id)
+        deadline = time.monotonic()+stop_seconds
+        while locked(lock):
+            # The stop request stays; retry start once status shows offline.
+            if time.monotonic() >= deadline: raise ValueError('listener_stop_pending')
+            time.sleep(.2)
+    ledger.setting('session-agent', {**record, 'messaging_socket': endpoint})
+
+
+def start(auth_state, ledger, sid, *, api, endpoint=None):
     from quorum_api import QuorumError
     with FileLock(ledger.root / 'listener-control.lock'):
         control = Control(ledger)
         release = ReleaseGuard(api, ledger)
         release.check()
         release.running()
+        record = ledger.setting('session-agent')
+        rebound = bool(record and endpoint is not None and endpoint != record.get('messaging_socket'))
+        if rebound: rebind(ledger, Control(ledger, holding_control=True), sid, endpoint)
         if locked(ledger.root/'listener.lock'): return control.status()
-        if ledger.setting('session-agent') is None: raise ValueError('session_not_connected')
+        if record is None: raise ValueError('session_not_connected')
         run_id = str(uuid.uuid4())
         control.begin(run_id, 0)
         command=[sys.executable,str(Path(__file__).with_name('quorum.py')),'--state',str(auth_state),
                  'session','--session-id',sid,'run','--run-id',run_id]
-        fd = None
         try:
-            path=ledger.root/'listener.log'
-            fd=open_private(path,os.O_CREAT|os.O_WRONLY|os.O_APPEND)
-            protect(path)
-            flags={'creationflags':subprocess.DETACHED_PROCESS|subprocess.CREATE_NEW_PROCESS_GROUP} if os.name=='nt' else {'start_new_session':True}
-            child=subprocess.Popen(command,stdin=subprocess.DEVNULL,stdout=fd,stderr=fd,
-                                   cwd=str(ledger.root),close_fds=True,**flags)
+            # The child inherits this caller's current exports, never stored secrets.
+            child=spawn_background(command, ledger)
         except Exception:
             control.update(run_id,'error',0,timeout=0,code='session_start_failed')
             raise QuorumError('listener_start_failed') from None
-        finally:
-            if fd is not None: os.close(fd)
         deadline=time.monotonic()+90
         while time.monotonic()<deadline:
             status=control.status()
             if status.get('run_id')==run_id:
                 if status['listener']=='running' and status['state'] in ('waiting','checking') and not status['stop_requested']:
-                    return status
+                    return {**status,'messaging_rebound':True} if rebound else status
                 if status['state'] in ('error','unknown','stopped'): break
             if child.poll() is not None: break
             time.sleep(.1)
-        control.request_stop(run_id)
+        abandon_start(control, run_id, child)
         if (ledger.setting('release') or {}).get('update_required'):
             control.update(run_id,'error',0,timeout=0,code='skill_update_required')
             raise ReleaseMismatch(ledger.setting('release'))
@@ -325,14 +405,21 @@ def dispatch(args, auth_ledger, register_agent):
             return {'delegation':record.get('delegation')}
         if args.action == 'peers':
             return api.call('session_peers', {'agent_id':record['agent_id'], 'session_ref':sid})
+        if args.action == 'thread':
+            # Only this native binding's agent; the backend checks conversation membership.
+            return api.call('conversation_read', {'quorum_id':record['quorum_id'], 'agent_id':record['agent_id'],
+                            'conversation_id':args.conversation_id, 'after_sequence':args.after_sequence})
+        endpoint = None
         if engine == 'claude' and args.action in ('start','run'):
             from quorum_claude_pipe import binding
-            if binding(sid) != record['messaging_socket']: raise ValueError('session_binding_denied')
+            endpoint = binding(sid)
+            # Only the bound chat's own start may adopt a rotated endpoint.
+            if args.action == 'run' and endpoint != record['messaging_socket']: raise ValueError('session_binding_denied')
         if engine == 'grok' and args.action in ('start','run'):
             from quorum_grok_leader import binding
             if binding(sid, record['cwd']) != record['grok_transport']:
                 raise ValueError('session_binding_denied')
-        if args.action=='start': return {**start(auth_ledger.root,ledger,sid,api=api),'session_id':sid}
+        if args.action=='start': return {**start(auth_ledger.root,ledger,sid,api=api,endpoint=endpoint),'session_id':sid}
         scope={'agent_id':record['agent_id'],'session_ref':sid}
         # Every mutating send/reply requires the exact current server release
         # first; an older server lacks the priority RPCs this client calls.

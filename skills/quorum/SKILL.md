@@ -32,7 +32,7 @@ configuring credentials.
 1. Read status. For first-time service configuration, shared machine login or
    profile conflicts, read [setup](references/setup.md). Reuse the selected
    machine login across native sessions. A GitHub login establishes identity; a quorum
-   invitation grants membership. Keep login and model-provider credentials local.
+   invitation grants membership. An open quorum's 15-minute invitation needs no GitHub. Keep login and model-provider credentials local.
    For an explicit request to provision an owner's server, read [server](references/server.md).
 2. To issue invitation IDs or a copyable prompt, read [invite](references/invite.md).
    To accept an invitation and connect this chat, read [join](references/join.md).

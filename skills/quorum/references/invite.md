@@ -1,10 +1,11 @@
-# Invite a GitHub user
+# Invite a teammate
 
 Read this when a quorum owner wants to invite someone. For accepting an
 invitation or connecting your own chat, read [join](join.md).
 
-An invitation ID is a public locator, not a bearer secret. Acceptance requires
+A GitHub invitation ID is a public locator, not a bearer secret. Acceptance requires
 the intended immutable GitHub identity and grants membership in one quorum.
+An [open invitation](#open-quorum-invitations) is a short-lived bearer secret instead.
 
 ## Owner: create and share a prompt
 
@@ -56,6 +57,20 @@ in [delegation](delegation.md). Read [join](join.md) for default role/project se
 Both prompts authorize sanitized connection-failure reporting to the repository
 issue tracker; follow [the failure-reporting procedure](join.md#connection-failures),
 including duplicate checks and the no-write-access fallback.
+
+## Open quorum invitations
+
+For a quorum created with open access (see [creation](invitations.md#create-a-quorum)),
+issue one invitation per intended session:
+
+```text
+uv run --project <skill-dir> --frozen python <skill-dir>/scripts/quorum.py --state <private-state> invite-id <quorum> --open --request-id <stable-id>
+```
+
+It is single-use, expires after 15 minutes and needs no GitHub account or browser.
+Until accepted or expired, anyone holding `session_prompt` can join, so give it
+only to the intended recipient and issue a new one after expiry. A GitHub-access
+quorum refuses open invitations. Joined members can use member operations only.
 
 ## Server prerequisite and legacy flow
 

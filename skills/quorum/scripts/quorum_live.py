@@ -43,7 +43,7 @@ def read_invitation(path):
     return data
 
 
-LIVE_COMMANDS = {'connect', 'pilot-init', 'pilot-worker', 'ping', 'thread', 'mcp', 'invite-file', 'listen', 'session', 'invite-id', 'accept-id'}
+LIVE_COMMANDS = {'connect', 'pilot-init', 'pilot-worker', 'ping', 'thread', 'mcp', 'invite-file', 'listen', 'session', 'invite-id', 'accept-id', 'access'}
 
 
 def add_commands(commands):
@@ -53,15 +53,23 @@ def add_commands(commands):
     add_session_commands(commands)
     accept = commands.add_parser('accept-id', help='Accept membership by public invitation ID using your own GitHub login')
     accept.add_argument('invite_id')
+    accept.add_argument('--membership-only', action='store_true',
+                        help='Owner explicitly wants membership without connecting this chat; skips the native '
+                             'transport check and never registers, starts or connects a listener')
     accept.add_argument('--origin')
     accept.add_argument('--publishable-key')
-    invite_id = commands.add_parser('invite-id', help='Create an identity-bound invitation ID and new-session prompt')
+    accept.add_argument('--anonymous', action='store_true', help='Open invitation: anonymous login kept in this state')
+    invite_id = commands.add_parser('invite-id', help='Create an invitation ID and new-session prompt')
     invite_id.add_argument('--coordinator-role', default='coordinator',
                            help='Role the receiving owner authorizes for project task intake')
     invite_id.add_argument('quorum')
     target_id = invite_id.add_mutually_exclusive_group(required=True)
     target_id.add_argument('--github-user')
     target_id.add_argument('--github-id')
+    target_id.add_argument('--open', action='store_true', help='Single-use 15-minute invitation for an open quorum')
+    access = commands.add_parser('access', help='Owner: require GitHub or allow open invitations')
+    access.add_argument('quorum')
+    access.add_argument('mode', choices=('github', 'open'))
     invite_id.add_argument('--request-id', required=True)
     invite = commands.add_parser('invite-file', help='Create an owner-only invitation file without printing its token')
     invite.add_argument('quorum')
@@ -119,14 +127,10 @@ def dispatch(args, ledger, register_agent):
         return accept_id_invitation(args, ledger)
     if args.command == 'connect':
         invite = read_invitation(args.invite_file)
-        config_path = ledger.root / 'config.json'
-        public = {key: invite[key] for key in ('origin', 'publishable_key')}
-        if config_path.exists():
-            if config_path.is_symlink() or json.loads(config_path.read_text()) != public:
-                raise ValueError('service_config_conflict')
-        else:
-            fd = open_private(config_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
-            with os.fdopen(fd, 'w') as output: json.dump(public, output)
+        from quorum_api import ServiceConfig
+        from quorum_profiles import resolve_profile
+        # The common locked writer publishes or checks this state's service config.
+        resolve_profile(ledger.root, ServiceConfig(invite['origin'], invite['publishable_key']))
         api, config, store = api_for(ledger)
         from quorum_profiles import ensure_login
         ensure_login(config, store)
@@ -137,6 +141,12 @@ def dispatch(args, ledger, register_agent):
         args.quorum = invite['quorum']
     else:
         api, config, store = api_for(ledger)
+    if args.command == 'access':
+        quorum_id = api.call('quorum_lookup', {'slug': args.quorum})['quorum_id']
+        return api.call('quorum_set_access', {'quorum_id': quorum_id, 'access': args.mode}, 'access:' + quorum_id)
+    if args.command == 'invite-id' and args.open:
+        from quorum_invitations import create_open_invitation
+        return create_open_invitation(api, config, args.quorum, args.request_id, coordinator_role=args.coordinator_role)
     if args.command == 'invite-id':
         from quorum_invitations import create_id_invitation, github_id
         target = args.github_id or github_id(args.github_user)

@@ -75,8 +75,8 @@ or automatic self-task loops. Replies and notifications do not spawn workers or
 automatic reply loops; unmatched peer requests remain proposals.
 
 Native workers do not bypass a queued input. Active-turn ingestion is only the
-separate Codex [urgent message](sessions.md#urgent-messages) route, not yet
-verified on a real busy turn. This policy implements opt-in and instructions,
+separate Codex [urgent message](sessions.md#urgent-messages) route; see its
+verification status there. This policy implements opt-in and instructions,
 not external steering or daemon-launched models; it does not eliminate all
 blocking or tool-call latency. Native UI execution needs separate acceptance.
 

@@ -25,6 +25,14 @@ Supabase dashboard registration. With the full prompt's public locator and ID:
 uv run --project <skill-dir> --frozen python <skill-dir>/scripts/quorum.py --state <private-state> accept-id <invite-id> --origin <service-origin> --publishable-key <public-key>
 ```
 
+An open-quorum prompt instead uses `accept-id <invite-id> --anonymous` with its
+`--origin` and `--publishable-key`. Use a fresh private state: the helper signs in
+anonymously, with no browser or GitHub, and keeps that login only in
+`<private-state>/anonymous-credentials/`, never in the machine profile. It refuses
+a state already used for GitHub (`anonymous_state_conflict`) and vice versa. Keep
+that state for every later command; if it is lost, the membership cannot be
+recovered and a new open invitation is required (`open_invite_required`).
+
 On a configured machine, use `configured_machine_prompt`: only the invite ID is
 needed, including for a fresh state directory, when one machine service is
 registered. The helper reuses its shared machine login without opening a browser.
@@ -34,16 +42,33 @@ and no service address/key bundled in the skill. Credentials remain local as
 described in [setup](setup.md). Missing uv/browser access is a blocker, not permission to
 install other transports or request secrets.
 
-The first GitHub login needs a browser on the same host that can reach the
-`127.0.0.1:8768` callback. A headless or cloud session reports
-`browser_unavailable` or `login_timeout`: accept from a host with its own
-browser. Never paste OAuth codes or copy credential files between hosts.
+GitHub login needs a browser on this host that can reach its `127.0.0.1:8768`
+callback. `browser_unavailable` (headless, cloud or SSH session) and
+`login_timeout` (no callback within 120 seconds) are such blockers: report them
+and accept the invitation from a session on a host with its own browser. Never
+paste OAuth codes or copy credentials into the agent. Only the owner decides
+whether to issue an open invitation instead.
 
 `accept-id` performs the first machine login if necessary and establishes membership only. It does not
 register a device/agent, guess a session ID, start a model/listener or connect a
 headless pilot. A consumed invite cannot restore revoked membership. Expired,
-revoked, wrong-target and anonymous acceptance are denied, including cached
-retries. Invitations expire after 24 hours.
+revoked, wrong-target and anonymous acceptance of a GitHub invitation are denied,
+including cached retries. GitHub invitations expire after 24 hours; open ones after 15 minutes.
+
+Before login or acceptance, `accept-id` checks that this chat can carry a native
+listener. For Grok it verifies this session's private leader socket, active
+session entry, TUI process identity and working directory, then runs the same
+bounded read-only leader handshake as connect (protocol, tested version, resident
+same-session metadata), without starting a TUI or model or sending a prompt. Otherwise it returns `unsupported_client` with the
+reason, detected client and supported transports, and leaves the invitation
+unused. Hosted or cloud Grok, and hosts exporting no Codex/Claude Code/Grok
+session, are not native transports. Report that blocker; do not start a headless
+model or borrow a session.
+
+Only when the owner explicitly requests membership only, add `--membership-only`.
+It skips the native transport check but still validates the invitation and
+service, performs normal login and enforces every server invitation check. It
+does not register, start or connect a listener; stop after reporting membership.
 
 The complete invitation prompt requests acceptance **and** connection of this
 chat. Continue without asking for a second confirmation unless the owner has

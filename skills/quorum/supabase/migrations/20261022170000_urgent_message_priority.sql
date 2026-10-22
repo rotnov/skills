@@ -11,24 +11,45 @@
 -- client's delivery route, never membership, device, owner authority or any
 -- permission check. Senders cannot reorder another recipient's inbox.
 --
--- Before applying, confirm the reviewed dispatcher is the one you reviewed:
---   select encode(sha256(convert_to(pg_get_functiondef(
---     'quorum_private.call(text,jsonb,text)'::regprocedure),'UTF8')),'hex');
--- The structural gate below fails closed on the drift this file can detect.
+-- Requires, in this order: open access (150000), native coordination (152603)
+-- and open session requirements (160000). The reviewed dispatcher chain
+-- call -> call_invite_core -> call_legacy_core, verified_actor, the native
+-- session authorization chain native_session -> owned_agent -> member, the open-member
+-- release gate and the coordination inbox are pinned by body below; any other
+-- body fails closed before a change is made.
 do $migration$
+declare
+ reviewed constant jsonb:=jsonb_build_object(
+  -- Open-access wrapper: open invitations and access mode, otherwise delegates.
+  'quorum_private.call(text,jsonb,text)','01f0fb843a904ff3b615e432ab054c25e44d3c0494e5213526ddb232e04b512c',
+  -- Invite-ID dispatcher with its GitHub gate replaced by verified_actor.
+  'quorum_private.call_invite_core(text,jsonb,text)','f6a10b1b7f476328eaa21e34bff6336bd734a1dd1205684bdd6f0d5ea814aadc',
+  -- Original core: instance creators, ownership and membership checks.
+  'quorum_private.call_legacy_core(text,jsonb,text)','1aa452947be35e79c190d3f59baa8a3ffc8da8ffdb5eb36d07bb2fea23a4bebe',
+  'quorum_private.verified_actor(uuid)','f20291c082af61a232754c29480b65877d7994c177c06ce079b655af6b0f832b',
+  -- Session RPCs below authorize through native_session -> owned_agent -> member.
+  'quorum_private.native_session(uuid,text)','60778eaf4fde7ce50980d5bf328f21c85d9db23f0947ed1554e0052a8654615c',
+  'quorum_private.owned_agent(uuid,uuid)','9129479e881a5c3c2e2e6519ebdae2a15bece805444791ba12aedc1b750a3479',
+  'quorum_private.member(uuid,uuid)','155cf2dcc2b2d61c5ff55a7533b13eae931b9e077420f3aaf2408b7a22ca7435',
+  -- session_inbox below keeps the coordination migration's notification marker.
+  'public.session_inbox(uuid,text)','2eb1c36a0c3459140e8c938b7cbc0c00614f884f5231a5b23cf4cde6808d069d');
+ f text;
 begin
- if to_regprocedure('quorum_private.call(text,jsonb,text)') is null
-   or to_regclass('quorum_private.id_invitations') is null
-   -- session_inbox below keeps the coordination migration's notification marker.
-   or to_regclass('quorum_private.session_notices') is null
-   or position('call_legacy_core' in
-     pg_get_functiondef('quorum_private.call(text,jsonb,text)'::regprocedure)) = 0 then
+ for f in select jsonb_object_keys(reviewed) loop
+  if to_regprocedure(f) is null or encode(sha256(convert_to((select prosrc from pg_proc
+     where oid=to_regprocedure(f)),'UTF8')),'hex')<>reviewed->>f then
+   raise exception 'reviewed_dispatcher_changed: %', f; end if;
+ end loop;
+ if to_regclass('quorum_private.id_invitations') is null
+   or to_regclass('quorum_private.session_notices') is null then
   raise exception 'reviewed_dispatcher_changed'; end if;
  if to_regprocedure('quorum_private.call_priority_core(text,jsonb,text)') is not null then
   raise exception 'priority_core_present'; end if;
- -- Upgrade only the release this file was reviewed against.
- if position($release$jsonb_build_object('protocol_version',1,'skill_version','0.2.0')$release$ in
-   pg_get_functiondef('public.session_requirements()'::regprocedure)) = 0 then
+ -- Upgrade only the open-member 0.2.0/1 release this file was reviewed against.
+ if to_regprocedure('public.session_requirements()') is null
+   or encode(sha256(convert_to((select prosrc from pg_proc
+     where oid='public.session_requirements()'::regprocedure),'UTF8')),'hex')
+     <>'40091d75997af695dca508b77c30f6000cb8a0fd1fade5a92261945fe461b01c' then
   raise exception 'reviewed_release_changed'; end if;
  alter function quorum_private.call(text,jsonb,text) rename to call_priority_core;
 end $migration$;
@@ -124,7 +145,8 @@ begin
  if not found then raise insufficient_privilege using message='message_denied'; end if;
  select * into answer from quorum_private.messages where reply_to=p_message_id and sender_id=p_agent_id order by sequence limit 1;
  if found then
-  if answer.body<>p_body then raise exception 'reply_already_sent'; end if;
+  if answer.body<>p_body or answer.priority<>coalesce(p_priority,'normal') then
+   raise exception 'reply_already_sent'; end if;
   return jsonb_build_object('reply_message_id',answer.id,'conversation_id',answer.conversation_id);
  end if;
  if exists(select 1 from quorum_private.deliveries where message_id=p_message_id and state not in ('queued','answered')) then
@@ -143,12 +165,14 @@ grant execute on function public.session_reply(uuid,text,uuid,text,text) to auth
 
 -- The exact release gate. Heartbeats and peers read this same function, so an
 -- older listener is told skill_update_required instead of being counted online.
+-- Same audience as open session requirements: GitHub users, or live members of
+-- a currently open quorum. Closing a quorum revokes the latter.
 create or replace function public.session_requirements()
 returns jsonb language plpgsql security definer set search_path=pg_catalog as $function$
 begin
- if auth.uid() is null or not exists(select 1 from auth.identities where user_id=auth.uid() and provider='github') then
+ if not quorum_private.verified_actor(auth.uid()) then
   raise insufficient_privilege using message='github_identity_required'; end if;
  return jsonb_build_object('protocol_version',2,'skill_version','0.3.0');
 end $function$;
-revoke all on function public.session_requirements() from public,anon;
+revoke all on function public.session_requirements() from public,anon,authenticated;
 grant execute on function public.session_requirements() to authenticated;

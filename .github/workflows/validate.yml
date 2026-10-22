@@ -42,6 +42,13 @@ jobs:
           npm ci --prefix tests/quorum-backend --no-audit --no-fund
           npm test --prefix tests/quorum-backend
 
+      - name: Verify concurrent open-quorum closure in isolated PostgreSQL
+        env:
+          QUORUM_RACE_DOCKER: "1"
+        run: |
+          docker pull postgres:17-alpine
+          uv run --frozen python -m unittest discover -s tests -p test_quorum_close_race.py -v
+
       - name: Validate the official Agent Skills format
         run: ./scripts/check-agent-skills-spec.sh
 
@@ -71,8 +78,8 @@ jobs:
       - name: Verify native Realtime wakeups without a provider
         run: uv run --project skills/quorum --frozen python -m unittest discover -s tests -p test_quorum_realtime.py -v
 
-      - name: Verify urgent Codex steering without a daemon or a model
-        run: uv run --no-project --python 3.12 python -m unittest discover -s tests -p test_quorum_codex_steer.py -v
+      - name: Verify urgent Codex Unix WebSocket steering without Codex or a model
+        run: uv run --project skills/quorum --frozen python -m unittest discover -s tests -p test_quorum_codex_steer.py -v
 
       - name: Verify message priority routing without model providers
         run: uv run --no-project --python 3.12 python -m unittest discover -s tests -p test_quorum_priority.py -v
@@ -98,14 +105,17 @@ jobs:
       - name: Verify copy-installed native session transport without providers
         run: uv run --no-project --python 3.12 python -m unittest discover -s tests -p test_quorum_session.py -v
 
-      - name: Verify urgent Codex steering without a daemon or a model
-        run: uv run --no-project --python 3.12 python -m unittest discover -s tests -p test_quorum_codex_steer.py -v
+      - name: Verify urgent Codex Unix WebSocket steering without Codex or a model
+        run: uv run --project skills/quorum --frozen python -m unittest discover -s tests -p test_quorum_codex_steer.py -v
 
       - name: Verify message priority routing without model providers
         run: uv run --no-project --python 3.12 python -m unittest discover -s tests -p test_quorum_priority.py -v
 
       - name: Verify native Claude named-pipe transport without a model
         run: uv run --no-project --python 3.12 python -m unittest discover -s tests -p test_quorum_claude_pipe.py -v
+
+      - name: Verify windowless background launches through the uv venv launcher
+        run: uv run --project skills/quorum --frozen python -m unittest discover -s tests -p test_quorum_windows_windowless.py -v
 
       - name: Verify standalone ID onboarding without model providers
         run: uv run --no-project --python 3.12 python -m unittest discover -s tests -p test_quorum_invite_id.py -v

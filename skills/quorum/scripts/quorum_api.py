@@ -10,7 +10,8 @@ OPERATIONS = frozenset(('quorum_create invite_create invite_accept device_regist
     'message_send inbox_claim attempt_update delivery_complete context_read member_revoke '
     'work_register work_admit work_transition agent_status agent_leave conversation_read '
     'quorum_lookup quorum_check_owner resolve_role session_inbox session_ack session_reply '
-    'invite_create_id invite_accept_id invite_revoke_id session_heartbeat session_peers session_requirements').split())
+    'invite_create_id invite_accept_id invite_revoke_id invite_create_open quorum_set_access '
+    'session_heartbeat session_peers session_requirements').split())
 
 
 class QuorumError(ValueError):
@@ -37,7 +38,14 @@ class NoRedirect(HTTPRedirectHandler):
 
 
 def request_json(url, headers, body):
-    request = Request(url, data=body, headers=headers, method='POST')
+    return _open(Request(url, data=body, headers=headers, method='POST'))
+
+
+def get_json(url, headers):
+    return _open(Request(url, headers=headers, method='GET'))
+
+
+def _open(request):
     try:
         with build_opener(NoRedirect).open(request, timeout=20) as response:
             raw = response.read(262145)

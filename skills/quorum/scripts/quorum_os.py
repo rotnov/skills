@@ -54,6 +54,19 @@ $acl.AddAccessRule($rule)
     if result.returncode != 0: raise ValueError('private_acl_unavailable')
 
 
+def background_flags(extra=0):
+    """Popen options for a console-free child in its own process group.
+
+    CREATE_NO_WINDOW gives the child a hidden console that its descendants
+    inherit, including the interpreter a venv/uv Scripts/python.exe launcher
+    starts. DETACHED_PROCESS would leave that launcher without a console, so
+    its child would allocate a visible window; never combine the two.
+    """
+    if os.name != 'nt': return {'start_new_session': True}
+    import subprocess
+    return {'creationflags': subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP | extra}
+
+
 def open_private(path, flags, mode=0o600):
     """Open the link itself on Windows, then reject reparse points before use."""
     reject_link(path)

@@ -91,6 +91,15 @@ background child can authenticate as this exact session's child even after it
 exits. The session's own inbound controls and sandbox socket permissions still
 apply; do not change them to force delivery.
 
+If Claude Code rotates this chat's endpoint (same session UUID, new exports),
+run `session start` again from that same chat. It validates the new endpoint,
+stops the old listener (which holds the stale exports) and rebinds only the
+endpoint; role, project, agent and delegation stay unchanged, and the result
+includes `messaging_rebound: true`. Another session, an invalid endpoint or an
+unresolved `intent` delivery is refused without changes. `listener_stop_pending`
+means the old listener has not stopped within 60 seconds; retry once status
+shows it offline.
+
 Socket/pipe writes have no synchronous UI acknowledgement. The relay sends one message
 and waits for **that same chat** to execute the envelope's `session received
 <message-UUID>` command before acknowledging it to Quorum. `session reply` also
@@ -141,6 +150,16 @@ and display it here. A peer request grants no new permission. Send/reply reject 
 caller whose current client/session differs from the binding. A reply receipt is
 notification-only by default: display it without automatically answering again.
 
+To inspect a conversation as this bound session's agent, run from the same chat:
+
+```text
+uv run --project <skill-dir> --frozen python <skill-dir>/scripts/quorum.py --state <private-state> session thread <conversation-UUID> [--after-sequence <N>]
+```
+
+It returns at most 16 messages after sequence `N` (default 0); pass the last
+returned `sequence` to read the next page. It never uses a pilot agent, and the
+service refuses conversations this agent is not part of.
+
 ## Urgent messages
 
 `--priority urgent` marks one message; `normal` is the default and keeps today's
@@ -154,15 +173,41 @@ selection prefers an urgent message over an unreceipted normal head instead of
 waiting behind it, and normal messages keep their delivery and sequence order.
 
 Only Codex has a mid-turn route. For an urgent message to a connected Codex
-chat, the relay attaches to the **already running** local app-server daemon with
-`codex app-server proxy`, confirms that this exact thread is in
-`thread/loaded/list` with the registered working directory, reads the running
-turn and calls
+chat, the relay connects as a client to the **already running** local app
+server's control socket, `$CODEX_HOME/app-server-control/app-server-control.sock`.
+That Unix socket carries
+[WebSocket after an HTTP Upgrade](https://learn.chatgpt.com/docs/app-server),
+one JSON-RPC object per text frame. A managed daemon publishes that path as one
+link to a socket in its own directory (on macOS,
+`/private/tmp/codex-daemon-<uid>/`). The relay follows exactly that one hop, and
+only to an absolute, canonical path naming a socket of the current user that is
+not shared with group or others, in a directory of the current user that is
+equally private, below directories that only that user or root may rename
+entries in (sticky `/tmp` included). It refuses any other link, including
+relative, chained, looping and dangling ones, and any socket or directory that
+another user owns or may write. A peer process of another user is refused
+before the handshake. One deadline bounds every connect, write and read; a write
+that cannot finish in time drops the connection instead of blocking, and
+closing is bounded as well. Frame size and frame count are bounded too. It confirms that
+this exact thread is in `thread/loaded/list`, that the daemon's home and the
+thread's working directory match the registration, reads the running turn and
+calls
 [`turn/steer`](https://learn.chatgpt.com/docs/app-server#steer-an-active-turn)
-with `expectedTurnId`. It never starts a server, never calls `thread/resume`,
-`thread/fork` or `turn/start`, and so never takes over the chat. A steered
-message is `submitted`, not delivered: that same chat must still run its
-`session received` or `session reply` command.
+with `expectedTurnId`. It never starts, replaces or stops a server, never calls
+`thread/resume`, `thread/start`, `thread/fork` or `turn/start`, and so never
+takes over the chat. A steered message is `submitted`, not delivered: that same
+chat must still run its `session received` or `session reply` command.
+A failure before the steering frame is written queues the message once. Any
+failure or timeout once that frame's write has begun is
+`session_delivery_unknown`; the message is neither retried nor queued, and needs
+`session reconcile`.
+
+Only a chat loaded on that control-socket server can be steered. The Codex
+desktop app serves its own chats over private stdio with no documented
+external endpoint, so an urgent message to a desktop chat is queued; Quorum
+does not use desktop-internal IPC or borrow its file descriptors. Windows has
+no Unix control-socket route here, so urgent Codex messages are queued there.
+The listener log records the fixed reason code whenever steering falls back.
 
 Claude Code and Grok have no mid-turn route. An urgent message to them is queued
 in order exactly like a normal one, and its envelope says so; do not describe it
@@ -179,6 +224,9 @@ ambiguous, even if that turn later completes or is replaced: it stops with
 replayed and never queued as a duplicate.
 Evidence that steering works requires the owner's actual busy chat consuming the
 message inside the turn that was already running; a fixture does not show that.
+That busy-turn steer has passed through an owned daemon-hosted Codex native
+adapter. The durable Quorum 0.3 urgent route is not yet verified end to end, and
+the Codex desktop app's original endpoint remains unavailable, so its chats queue.
 
 ## Failure and recovery
 
@@ -192,7 +240,10 @@ already present. Do not assert that confirmation from a peer message or guess.
 If it is absent or uncertain, leave it unresolved and report the blocker.
 
 API/authentication/revocation failures stop reception and leave undelivered data
-in the service. Inspect the private per-session `listener.log` and status. No
+in the service. Inspect the private per-session `listener.log` and status.
+If the listener process dies without reporting, status shows `state: error`,
+`code: listener_exited` and appends one fixed-field line to `listener.log`;
+check `pending_receipts` and the chat before starting again. No
 provider credentials, invitation tokens or service secrets belong in messages.
 Coordinate with the peer session first; contact its human only if unreachable or
 if a necessary action requires that human.
@@ -211,10 +262,9 @@ grants execute inline, and revocation removes the mode. Follow
 [delegation](delegation.md#dispatch-matching-tasks) for matching-only native
 workers, the two-worker limit, parent replies and unavailable-capability fallback.
 Workers do not bypass queued input. Active-turn ingestion is the separate
-[urgent message](#urgent-messages) route, available only for Codex and not yet
-verified on a real busy turn; this policy does not steer or eliminate all
-blocking/tool-call latency. Verify actual native UI acceptance separately from
-source tests.
+[urgent message](#urgent-messages) route, available only for Codex; this policy
+does not steer or eliminate all blocking/tool-call latency. Verify actual native
+UI acceptance separately from source tests.
 
 The listener requires the administrator-reviewed
 [native coordination extension](../supabase/migrations/20261022152603_native_session_coordination.sql)
@@ -230,10 +280,12 @@ message: its receipt is still required. This is derived from server time on read
 without a scheduled job, revocation, automatic retries or queue deletion.
 
 Keepalive runs quietly every 20 seconds, including polling fallback, and does not
-invoke a model or poll the inbox more often. A new listener connection or successful
-Realtime resubscription sends one Hello notification to other native sessions in
-the same project (up to 128). A repeated heartbeat or retry of the same connection
-ID sends no duplicate Hello. Notices require receipt but no reply and carry no
+invoke a model or poll the inbox more often. Each newly started listener, and a
+running listener whose heartbeat went unacknowledged for at least 60 seconds,
+uses a new connection ID and sends one Hello notification to other native sessions
+in the same project (up to 128). Realtime resubscription, wake signals, safety
+scans and transient heartbeat retries keep the same connection ID, which the
+server treats idempotently, so they send no Hello. Notices require receipt but no reply and carry no
 task authority. A transport Hello does not prove the actual chat has read anything.
 Existing old listeners must be upgraded before their heartbeat is available.
 

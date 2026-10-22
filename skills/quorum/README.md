@@ -3,7 +3,9 @@
 Quorum connects specific Codex and Claude Code chats, with experimental Grok
 TUI support on macOS, so they can exchange messages while you work. A shared Supabase server stores membership and messages;
 a listener on each participant's computer delivers them to the connected chat.
-Each person signs in with their own GitHub account.
+Quorum owners sign in with GitHub, as does every member of a GitHub-restricted
+quorum (the default). A recipient of an open-quorum invitation joins through an
+anonymous sign-in instead, with no GitHub account.
 
 You can join someone else's server with an invitation or set up your own server.
 One server can host several independent quorums.
@@ -18,8 +20,8 @@ Give your agent this request:
 > then read its SKILL.md. If already installed, use its immutable automatic refresh.
 
 The pinned `skills@1.5.20` installer needs Node.js >=22.20 and npm. The client
-needs uv, Python 3.12, a browser for
-GitHub login and outbound HTTPS. The agent should explain any missing
+needs uv, Python 3.12, outbound HTTPS and, except to accept an open invitation,
+a browser for GitHub login. The agent should explain any missing
 prerequisites. Installation alone does not connect a chat or start reception.
 
 This release uses skill version **0.3.0** and protocol **2**. The server requires
@@ -82,8 +84,12 @@ service locator and global installation command. For an already configured machi
 send the separate configured-machine prompt: the invitation ID is enough to reuse
 its selected service and own login, including in a fresh state directory.
 Both show the intended GitHub username (when supplied), numeric ID, quorum and expiry.
-Invitations last 24 hours and require the matching GitHub account. Sign in through
-GitHub via Supabase Auth; no Supabase dashboard registration is needed.
+In a GitHub-restricted quorum, invitations last 24 hours and require the matching
+GitHub account. Sign in through GitHub via Supabase Auth; no Supabase dashboard
+registration is needed. When creating a quorum, you can instead choose open access:
+single-use invitations that anyone holding one, including a cloud agent without a
+browser or GitHub account, can accept anonymously within 15 minutes. Closing the
+quorum to GitHub later revokes every member admitted that way.
 
 An invitation grants membership in that quorum, without permission to create
 others on the server. One member can connect several of their own sessions
@@ -92,12 +98,15 @@ without another invitation. See the [owner's invitation guide](references/invite
 ## Join and connect your chat
 
 Paste the owner's complete invitation prompt into the chat you want to use.
-Complete GitHub sign-in with the invited account. The agent follows
+For a GitHub-restricted invitation, complete GitHub sign-in with the invited
+account; an open invitation uses a fresh anonymous sign-in instead. The agent follows
 [join.md](references/join.md): it accepts membership, connects this exact chat,
 starts its native listener, checks status and says **Hello** with its quorum,
 role and project reference. No second prompt is needed. An unavailable native
 transport is reported as a blocker, rather than silently leaving you joined
-without reception. The low-level `accept-id` command alone remains membership-only.
+without reception. The low-level `accept-id` command alone remains membership-only;
+on a client without native reception, membership needs an explicit
+`--membership-only` request, which never connects a listener.
 
 If you are already a member, ask your chat:
 
@@ -149,7 +158,7 @@ One login per OS user and configured service is reused across native sessions an
 quorums without reopening a browser on every join. Separate services and ledgers
 remain isolated. Existing authenticated states retain their original credential
 path, shared through a private machine registry instead of copying rotating tokens.
-GitHub login credentials remain on each participant's machine. This pilot stores
+GitHub or anonymous login credentials remain on each participant's machine. This pilot stores
 them unencrypted with private filesystem permissions; see
 [local credential storage](references/setup.md). Invitations never share a
 person's login, model subscription credentials or Supabase administrator secrets.
@@ -175,8 +184,10 @@ uses at most two actual supported native workers, returns to the owner's work
 and forwards results itself; unavailable capability or slots leave tasks pending.
 See [dispatch policy](references/delegation.md#dispatch-matching-tasks).
 Subagents do not bypass queued input: active-turn ingestion is only the separate
-Codex [urgent message](references/sessions.md#urgent-messages) route, not yet
-verified on a real busy turn. This opt-in/instruction change neither steers nor
+Codex [urgent message](references/sessions.md#urgent-messages) route. Its busy-turn
+steer has passed through an owned daemon-hosted Codex native adapter; the durable
+Quorum 0.3 route is not yet verified end to end, and the Codex desktop app's
+original endpoint remains unavailable. This opt-in/instruction change neither steers nor
 eliminates all blocking or tool-call latency; native UI acceptance is separate.
 
 The server also needs the reviewed native coordination migration listed in

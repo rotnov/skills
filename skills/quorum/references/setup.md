@@ -33,7 +33,8 @@ repository, such as `~/.local/share/quorum/my-instance` on macOS/Linux or
 path and pass `--state` before the command. It holds an authoritative service
 config and independent ledgers/session bindings. New state directories can reuse
 the machine's selected service and login; another service needs its own state.
-Credentials use the shared machine profile described below.
+Credentials use the shared machine profile described below, except an
+[open-invitation state](join.md#join-this-chat), which keeps its own anonymous login.
 
 `<stable-id>` is a chosen request identifier, for example `create-my-team-1` or
 `invite-my-team-teammate-1`. Keep it for an identical retry after an uncertain
@@ -118,9 +119,28 @@ On first use of an existing authenticated state, the registry adopts that state'
 `<state>/credentials/` **in place**. This retained legacy directory remains the
 credential location for old listeners and new helpers; do not move/delete it or
 copy its rotating tokens into the registry. No other state or owner's files are
-scanned. A distinct legacy credential path is a conflict even for the same GitHub
-user; select the established state rather than replacing either token family.
-New installations store credentials inside their machine profile directory.
+scanned. New installations store credentials inside their machine profile directory.
+
+An older state whose own `<state>/credentials/` differs from the established
+machine login keeps that token family untouched. New helpers then use the machine
+login without a browser only after the service's Auth server verifies both access
+tokens as one user with the pinned GitHub ID. Local token or profile claims can
+block this, never prove it. The helper refreshes the machine login under its
+normal lock. It never refreshes the older login implicitly, because that state's
+old listener may still rotate it. The proof is recorded in a private
+`<state>/auth-binding.json`, so later helpers need no network check; ledgers,
+sessions and grants stay in place. If the older access token has expired, stop
+that state's old listener and run `login` once with that `--state`; only this
+explicit command refreshes the older family for verification. The binding pins
+the verified Auth user ID as well as the GitHub ID; it is published complete
+(private, fsynced, never over another binding), so an interrupted write leaves no
+partial file. If the machine login is later replaced by another Auth user, even
+with the same GitHub ID, that state is re-verified at the Auth server and is
+never routed through the new user; other states can use the new login. Other
+outcomes remain `auth_profile_conflict`, and the token-free `data` gives a
+`reason` (`different_principal`, `legacy_login_unverified`,
+`machine_login_missing`, `machine_principal_changed` or `binding_mismatch`), an
+`action` and both credential paths. Neither login is copied, replaced or deleted.
 
 Missing/deleted credential directories, ambiguous services, identity/key conflicts
 and expired/revoked authentication are explicit blockers. A selected dead profile
