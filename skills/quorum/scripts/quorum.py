@@ -60,6 +60,7 @@ def main(argv=None):
     from quorum_live import add_commands
     add_commands(commands)
     args = parser.parse_args(argv)
+    ledger = None
     try:
         ledger = LocalLedger(args.state)
         config_path = ledger.root / 'config.json'
@@ -135,6 +136,10 @@ def main(argv=None):
         # Never serialize exception text: it may contain remote bodies or secrets.
         print(json.dumps({'ok': False, 'code': 'operation_failed', 'data': {}}))
         return 3
+    finally:
+        # main owns this connection; dispatchers finish before its lifetime ends.
+        if ledger is not None:
+            ledger.db.close()
 
 
 if __name__ == '__main__':

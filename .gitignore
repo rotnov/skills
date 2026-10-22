@@ -3,3 +3,5 @@ __pycache__/
 *.py[cod]
 .venv/
 .ievo/hooks/
+tests/quorum-backend/node_modules/
+/skills/quorum/supabase/.temp/

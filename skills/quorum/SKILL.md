@@ -21,12 +21,12 @@ configuring credentials.
 
 ## Workflow
 
-1. Read status. For first-time service configuration, login or invitations, read
+1. Read status. For first-time service configuration or login, read
    [setup](references/setup.md). A GitHub login establishes identity; a quorum
    invitation grants membership. Keep login and model-provider credentials local.
-2. For quorum creation or inviting a person, read
-   [invitations](references/invitations.md). Use owner operations and a private
-   invitation file; do not print its token.
+2. For ordinary invitation IDs, acceptance or a copyable new-session prompt, read
+   [invite](references/invite.md). For quorum creation or legacy token files, read
+   [invitations](references/invitations.md). Membership grants no global creator right.
 3. To connect this existing chat and show peer messages/replies here, read
    [sessions](references/sessions.md). Bind the actual current session ID; a separate
    headless handler is not a substitute.

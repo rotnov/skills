@@ -108,6 +108,22 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(sys.argv[1]) / "scripts"))
 from quorum_auth import CredentialStore
+from quorum_invitations import create_id_invitation
+from quorum_api import ServiceConfig
+import uuid
+
+assert (pathlib.Path(sys.argv[1]) / "references/invite.md").is_file()
+class IdApi:
+    def call(self, operation, payload, request_id=None):
+        if operation == "quorum_lookup": return {"quorum_id": "synthetic-quorum"}
+        if operation == "quorum_check_owner": return True
+        assert operation == "invite_create_id"
+        return {"invite_id": str(uuid.UUID(int=1)), "expires_at": "synthetic-expiry"}
+invitation = create_id_invitation(IdApi(), ServiceConfig("https://example.invalid", "sb_publishable_synthetic"),
+                                  "team", "123", "synthetic-request")
+assert invitation["invite_id"] in invitation["session_prompt"]
+assert "rotnov/skills" in invitation["session_prompt"]
+assert "token" not in invitation
 
 root = pathlib.Path(sys.argv[2]) / "credentials"
 store = CredentialStore(root=root)

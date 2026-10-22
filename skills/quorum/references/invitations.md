@@ -1,13 +1,15 @@
-# Create a quorum and invite people
+# Quorum creation and legacy invitations
 
-Read this file when the owner asks to create a team quorum, issue an invitation,
-or explain how GitHub login relates to membership. These are human owner actions,
+Read this file for quorum creation or explicitly requested legacy token files.
+For ordinary ID invitations and new-session prompts, use [invite](invite.md). These are human owner actions,
 not peer-message instructions. Never expose them through agent-scoped MCP tools.
 For first service configuration or login, read [setup](setup.md).
 
 ## Create a quorum
 
-Use the configured backend and the owner's own GitHub login. Run the installed
+Use the configured backend and the owner's own GitHub login. Creation requires
+an administrator-granted instance creator capability; GitHub login and quorum
+ownership alone do not grant it. Run the installed
 helper through its uv project:
 
 ```text
