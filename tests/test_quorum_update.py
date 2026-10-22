@@ -211,6 +211,25 @@ class UpdateTests(unittest.TestCase):
                         SKILLS_DOWNLOAD_URL='https://untrusted.invalid'):
             self.assertEqual(self.refresh(runner=isolated)['status'], 'updated')
 
+    def test_proxy_ca_paths_are_forwarded_without_code_injection_settings(self):
+        stage = self.root / 'ca stage'
+        stage.mkdir()
+        with patch.dict('os.environ', NODE_EXTRA_CA_CERTS='/synthetic/ca.pem', GIT_SSL_CAINFO='/synthetic/ca.pem',
+                        NODE_OPTIONS='--require /synthetic/hook.js', GIT_CONFIG_COUNT='1',
+                        GIT_CONFIG_KEY_0='http.extraHeader', GIT_CONFIG_VALUE_0='secret',
+                        NPM_CONFIG_SCRIPT_SHELL='/synthetic/shell', NPM_CONFIG_REGISTRY='https://untrusted.invalid',
+                        NPM_CONFIG_USERCONFIG='/synthetic/npmrc', GIT_CONFIG_GLOBAL='/synthetic/gitconfig',
+                        NODE_TLS_REJECT_UNAUTHORIZED='0', GIT_SSL_NO_VERIFY='1'):
+            env = self.module.child_environment(stage)
+        self.assertEqual(env['NODE_EXTRA_CA_CERTS'], '/synthetic/ca.pem')
+        self.assertEqual(env['GIT_SSL_CAINFO'], '/synthetic/ca.pem')
+        for name in ('NODE_OPTIONS', 'GIT_CONFIG_COUNT', 'GIT_CONFIG_KEY_0', 'GIT_CONFIG_VALUE_0',
+                     'NPM_CONFIG_SCRIPT_SHELL', 'NPM_CONFIG_REGISTRY', 'NODE_TLS_REJECT_UNAUTHORIZED',
+                     'GIT_SSL_NO_VERIFY'):
+            self.assertNotIn(name, env)
+        self.assertEqual(env['GIT_CONFIG_GLOBAL'], os.devnull)
+        self.assertTrue(env['NPM_CONFIG_USERCONFIG'].startswith(str(stage)))
+
     @unittest.skipUnless(shutil.which('npm'), 'npm is required for the real config isolation check')
     def test_npm_ignores_prefix_global_registry_config(self):
         stage = self.root / 'npm stage'

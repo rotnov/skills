@@ -17,7 +17,8 @@ Give your agent this request:
 > globally for Claude Code and Codex with the pinned skills@1.5.20 CLI,
 > then read its SKILL.md. If already installed, use its immutable automatic refresh.
 
-The installer needs Node/npm. The client needs uv, Python 3.12, a browser for
+The pinned `skills@1.5.20` installer needs Node.js >=22.20 and npm. The client
+needs uv, Python 3.12, a browser for
 GitHub login and outbound HTTPS. The agent should explain any missing
 prerequisites. Installation alone does not connect a chat or start reception.
 
