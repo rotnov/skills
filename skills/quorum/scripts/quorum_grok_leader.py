@@ -27,7 +27,8 @@ class GrokBindingError(ValueError):
         if self.reason == 'leader_socket_missing':
             return {'reason': 'leader_socket_missing', 'next_step':
                     'No leader socket is available for this chat. An already-running standalone '
-                    'Grok TUI cannot attach in place; keep the chat open and read references/grok.md.'}
+                    'Grok TUI cannot attach in place. Keep the chat open; its owner may later exit '
+                    'it and relaunch the same session with --resume as described in references/grok.md.'}
         return {}
 
 
@@ -69,11 +70,14 @@ def verify_process(pid, start, endpoint, sid, cwd):
         args = iter(current['argv'][1:])
         flags = {}
         for arg in args:
-            if not arg.startswith('-'): raise ValueError  # No positional prompt/subcommand route.
+            if not arg.startswith('-') or arg in flags: raise ValueError  # No prompt, subcommand or repeat.
             if arg == '--leader': flags[arg] = True
-            elif arg in ('--leader-socket','--session-id','--cwd'): flags[arg] = next(args)
-            else: raise ValueError  # Headless/agent/permission flags are outside this route.
-        if (flags.get('--leader') is not True or flags.get('--session-id') != sid
+            elif arg in ('--leader-socket','--session-id','--resume','--cwd'): flags[arg] = next(args)
+            else: raise ValueError  # Headless/agent/permission/fork flags are outside this route.
+        # A new conversation (--session-id) or the owner's relaunch of this exact
+        # one (--resume): never both, and never a title or another session.
+        session = [flags[name] for name in ('--session-id','--resume') if name in flags]
+        if (flags.get('--leader') is not True or session != [sid]
                 or flags.get('--leader-socket') != endpoint
                 or ('--cwd' in flags and str(Path(flags['--cwd']).resolve()) != cwd)):
             raise ValueError
@@ -87,7 +91,11 @@ def local_binding(session_id, cwd):
     if sys.platform != 'darwin' or not hasattr(socket, 'AF_UNIX'):
         raise ValueError('grok_transport_unavailable')
     home = Path(os.environ.get('GROK_HOME') or Path.home()/'.grok')
-    endpoint = os.environ.get('GROK_LEADER_SOCKET') or str(home/'leader.sock')
+    # --leader-socket exports GROK_LEADER_SOCKET and the process guard requires
+    # that flag, so without the export this chat has no usable leader socket.
+    # A stale or foreign default ~/.grok/leader.sock must not be probed.
+    endpoint = os.environ.get('GROK_LEADER_SOCKET')
+    if not endpoint: raise GrokBindingError('leader_socket_missing')
     from quorum_claude_pipe import unix_endpoint
     try:
         Path(endpoint).lstat()

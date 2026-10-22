@@ -7,50 +7,67 @@ is unchanged. Grok discovers the shared `.agents/skills` directory, including
 the portable copy returned by the [automatic refresh](update.md).
 
 An already-running standalone chat started as plain `grok`, with no leader
-socket, cannot connect through this transport. Build 1.0.67 has no verified
-in-place attach or promotion command. A `GROK_SESSION_ID` export proves which
-chat invoked the tool; it does not create a leader socket. Keep that chat open
-and report the limitation. Membership acceptance can succeed while the native
-session remains unregistered and its listener stays offline.
+socket, cannot connect through this transport. Build 1.0.67 has no in-place
+attach or promotion command: leader mode is chosen at startup. A
+`GROK_SESSION_ID` export proves which chat invoked the tool; it does not create
+a leader socket. Keep that chat open and report the limitation. Its owner may
+later reconnect the same conversation only by the relaunch below. Membership
+acceptance can succeed while the native session remains unregistered.
 
-`session connect` now reports `grok_transport_unavailable` with
-`data.reason: leader_socket_missing` when the selected socket is absent.
-An existing endpoint that fails validation reports `grok_transport_unavailable`;
-an identity mismatch reports `session_binding_denied`. These refusals do not
-register an agent. Do not select another TUI's socket, manufacture exports,
-change permissions or confinement, or start a headless/new session to work
-around the refusal.
+`session connect` reports `grok_transport_unavailable` with
+`data.reason: leader_socket_missing` when the chat exports no
+`GROK_LEADER_SOCKET` or that socket is absent. It never probes the default
+`~/.grok/leader.sock`, which may be stale or belong to another TUI. An existing
+endpoint that fails validation reports `grok_transport_unavailable`; an identity
+mismatch reports `session_binding_denied`. These refusals do not register an
+agent. Do not select another TUI's socket, manufacture exports, change
+permissions or confinement, or start a headless/new session to work around them.
+
+## Owner-started leader TUI
 
 The intended TUI must already have been started by its owner with explicit
-process-local flags, before asking that chat to join. This example creates a
-**new conversation**; it does not resume an existing chat:
+process-local flags, before asking that chat to join. Either start a **new
+conversation**:
 
 ```text
 grok --leader --leader-socket <private-dir>/leader.sock --cwd <project-dir> --session-id <new-UUID>
 ```
 
-Use absolute paths without spaces for this experimental command. Supply no
+or relaunch an **existing conversation** by its exact ID. `--resume` reopens that
+history; `--session-id` would create a new conversation instead
+([session guide](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-grok-pager/docs/user-guide/17-sessions.md)):
+
+1. In the plain chat, note its `GROK_SESSION_ID` and working directory. Then
+   quit it completely: Grok removes its active-session row on a clean exit, and
+   the same session must never be open in two processes. An agent never quits
+   or relaunches the chat for its owner, including during diagnosis.
+2. From a terminal in that directory, with the same saved sandbox and permission
+   settings:
+
+   ```text
+   mkdir -p <private-dir> && chmod 700 <private-dir>
+   grok --leader --leader-socket <private-dir>/leader.sock --cwd <original-cwd> --resume <exact-session-UUID>
+   ```
+
+3. From the resumed TUI's shell tool, run `session connect`, `start` and
+   `status` with the same private state, then confirm a peer message and reply
+   in that chat.
+
+The process guard accepts exactly one of `--session-id` or `--resume`, and its
+value must be the exported session UUID. Titles, `-r`, `--resume=…`,
+`--continue`, `--fork-session`, `--restore-code`, `--worktree`, repeated flags
+and any other session are refused.
+
+Use absolute paths without spaces for these experimental commands. Supply no
 initial prompt or positional subcommand; enter prompts after the TUI opens. The socket's
 parent must be owned by the current OS user and private (0700); the native socket
-may be 0755 but cannot be group/other writable. Set `GROK_LEADER_SOCKET` to that
-same endpoint for this process and its tools. Keep normal subscription login,
+may be 0755 but cannot be group/other writable. Grok's default `~/.grok` parent
+is usually 0755, so use an explicit private directory. `--leader-socket` exports
+`GROK_LEADER_SOCKET` for this process and its tools. Keep normal subscription login,
 permission prompts and sandbox settings. If confinement refuses shared-leader
 mode, report the blocker; do not disable confinement or switch to headless mode.
-Starting this TUI is a separate owner action, never an automatic join fallback.
-
-Grok's supported existing-history startup option is `--resume <exact-session-UUID>`.
-Installed 1.0.67 help and the official
-[session guide](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-grok-pager/docs/user-guide/17-sessions.md)
-distinguish it from `--session-id`, which creates a new conversation. An
-owner-run future verification candidate is `grok --leader --leader-socket
-<private-dir>/leader.sock --cwd <original-cwd> --resume <exact-session-UUID>`.
-**This is not a supported Quorum recovery command yet:** the current process
-guard rejects `--resume`, and no native UI receipt has verified this relaunch.
-It would require a separate owner-authorized stop/relaunch, unchanged saved
-sandbox and permission settings, the same session/cwd export, a private socket,
-matching process birth/UID/executable/TTY, exact resident leader metadata and
-receipt in that resumed TUI. Do not restart the chat during diagnosis or replace
-the resume flag with `--session-id`, `--continue`, a title or `--fork-session`.
+Starting or relaunching this TUI is a separate owner action, never an automatic
+join fallback.
 
 From the actual TUI's shell tool, follow [join](join.md) and
 [connect/start](sessions.md) with its own exported `GROK_SESSION_ID`. Do not
@@ -60,8 +77,8 @@ Registration, invitation acceptance and listener start never apply SQL.
 
 Before registration and each submission the adapter checks the current-user
 active-session entry, exact session/cwd, OS process birth time, UID, installed
-Grok executable, controlling terminal, explicit leader/socket/session flags and
-the leader's resident roster. A stale registry, closed/reused process, foreign
+Grok executable, controlling terminal, explicit leader/socket and session or
+resume flags and the leader's resident roster. A stale registry, closed/reused process, foreign
 session, unsupported binary/protocol or headless command fails closed. It reads
 process arguments privately for these checks, never process environment or
 provider credentials. The Python listener itself runs no model.
@@ -75,9 +92,10 @@ or reply before delivery is confirmed. Close-between-check-and-send remains
 uncertain; inspect the actual chat and ledger rather than blindly replaying.
 Replies with `reply_to` are displayed and acknowledged without an answer loop.
 
-Verification: real framed local IPC fixtures cover binding, queue admission,
-stale/foreign/headless refusal and uncertain delivery; they do not prove a user's
-UI received a message. Confirm actual idle and busy chat delivery separately.
+Verification: real framed local IPC fixtures cover binding, exact-session
+`--resume` relaunch, queue admission, stale/foreign/headless refusal and
+uncertain delivery; they do not prove a user's UI received a message. Confirm
+actual idle and busy chat delivery separately.
 The protocol was checked against installed 1.0.67 and the
 [official source](https://github.com/xai-org/grok-build). Ordinary-launch research
 checked installed 1.0.67 help against upstream snapshot
@@ -86,4 +104,6 @@ checked installed 1.0.67 help against upstream snapshot
 `--leader` is hidden, and leader management exposes no in-place attach command.
 That source snapshot is not the installed binary's build commit; neither this
 comparison nor local IPC fixtures prove ordinary-launch delivery in a real TUI.
+Before reporting a resumed chat as connected, confirm a peer message and reply
+in that exact resumed TUI.
 Unsupported versions require renewed validation.
