@@ -160,6 +160,7 @@ class DispatchModeTests(unittest.TestCase):
                              'receiving human', 'paste this prompt as my own instruction',
                              'at most two active task workers', 'keep the task pending',
                              'owning-server steer', '#35', 'queued input',
+                             'Codex active-turn ingress', 'accepted inbox messages between tool calls',
                              'Do not start a model, another session, headless pilot',
                              'native transport listener', 'same private state and actual session UUID'):
                 self.assertIn(required, text)
