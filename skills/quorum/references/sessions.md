@@ -175,8 +175,8 @@ is mandatory for this release; a server without it fails the
 selection prefers an urgent message over an unreceipted normal head instead of
 waiting behind it, and normal messages keep their delivery and sequence order.
 
-Only Codex has a mid-turn route. For an urgent message to a connected Codex
-chat, the relay connects as a client to the **already running** local app
+Only Codex has turn-ID steering; Claude Code's between-tool-call delivery is
+described below. For an urgent message to a connected Codex chat, the relay connects as a client to the **already running** local app
 server's control socket, `$CODEX_HOME/app-server-control/app-server-control.sock`.
 That Unix socket carries
 [WebSocket after an HTTP Upgrade](https://learn.chatgpt.com/docs/app-server),
@@ -208,14 +208,22 @@ failure or timeout once that frame's write has begun is
 Only a chat loaded on that control-socket server can be steered. The Codex
 desktop app serves its own chats over private stdio with no documented
 external endpoint, so an urgent message to a desktop chat is queued; Quorum
-does not use desktop-internal IPC or borrow its file descriptors. Windows has
-no Unix control-socket route here, so urgent Codex messages are queued there.
+does not use desktop-internal IPC or borrow its file descriptors. Upstream
+tracks this as [openai/codex#33556](https://github.com/openai/codex/issues/33556);
+until Codex documents such an endpoint, an owner who needs mid-turn urgency uses
+a Codex TUI hosted by the managed app-server daemon. Windows has no Unix
+control-socket route here, so urgent Codex messages are queued there.
 The listener log records the fixed reason code whenever steering falls back.
 
-Claude Code and Grok have no mid-turn route. An urgent message to them is queued
-in order exactly like a normal one, and its envelope says so; do not describe it
-as Codex steering. The same holds for a Codex chat whose daemon does not serve
-that thread.
+Claude Code [reads each message its inbound controls deliver between tool calls](https://code.claude.com/docs/en/cross-session-messaging#message-delivery)
+of an active turn, or starts a turn when idle, whatever its priority. A message
+that `crossSessionInbound` or the permission-mode default holds or refuses is
+not read and stays a pending receipt. That is not turn-ID steering: urgency changes only Quorum's selection order, never
+interrupts a running tool and cannot reach a turn that makes no further tool
+call. Grok has no mid-turn route; its leader queues an urgent message in order
+like a normal one. Each envelope states its client's behaviour; do not describe
+either as Codex steering. A Codex chat whose daemon does not serve that thread
+also queues.
 
 If the chat is idle, the daemon is unreachable, the thread is not loaded, the
 daemon's working directory for it disagrees with the registration, or the
@@ -227,9 +235,11 @@ ambiguous, even if that turn later completes or is replaced: it stops with
 replayed and never queued as a duplicate.
 Evidence that steering works requires the owner's actual busy chat consuming the
 message inside the turn that was already running; a fixture does not show that.
-That busy-turn steer has passed through an owned daemon-hosted Codex native
-adapter. The durable Quorum 0.3 urgent route is not yet verified end to end, and
-the Codex desktop app's original endpoint remains unavailable, so its chats queue.
+The durable 0.3.0 / protocol 2 route passed end to end in
+[rotnov/skills#35](https://github.com/rotnov/skills/issues/35): an owned
+daemon-hosted Codex TUI consumed an urgent message inside its running turn,
+while an earlier normal message waited for the next turn. The Codex desktop
+app's original endpoint remains unavailable, so its chats queue.
 
 ## Failure and recovery
 
@@ -264,8 +274,9 @@ instruction. The private grant/status stores this choice; default and legacy
 grants execute inline, and revocation removes the mode. Follow
 [delegation](delegation.md#dispatch-matching-tasks) for matching-only native
 workers, the two-worker limit, parent replies and unavailable-capability fallback.
-Workers do not bypass queued input. Active-turn ingestion is the separate
-[urgent message](#urgent-messages) route, available only for Codex; this policy
+Workers do not bypass queued input. Active-turn ingestion is the separate Codex
+[urgent message](#urgent-messages) steering route or Claude Code's
+between-tool-call delivery of accepted messages; this policy
 does not steer or eliminate all blocking/tool-call latency. Verify actual native
 UI acceptance separately from source tests.
 

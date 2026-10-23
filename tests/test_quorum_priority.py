@@ -150,8 +150,27 @@ class PriorityTests(unittest.TestCase):
              patch.dict(os.environ, {'CLAUDE_CODE_SESSION_ID': SID,
                                      'CLAUDE_CODE_MESSAGING_SOCKET': '/tmp/quorum.sock'}):
             self.assertEqual(enqueue(record, message, Path('/private/state')), 'submitted')
-        self.assertIn('no mid-turn steering route', prompts[0])
+        # Claude Code reads inbox messages between tool calls of an active turn;
+        # the envelope must say so instead of claiming it waits in a queue.
+        self.assertIn('between tool calls of an active turn', prompts[0])
+        self.assertIn('is not Codex turn steering', prompts[0])
+        self.assertNotIn('queued in order', prompts[0])
         self.assertNotIn('steered into the turn', prompts[0])
+
+    @isolated_profiles
+    def test_claude_normal_message_carries_no_urgency_wording(self):
+        from quorum_session import enqueue
+        record = {'engine': 'claude', 'session_ref': SID, 'quorum': 'test-local',
+                  'messaging_socket': '/tmp/quorum.sock'}
+        message = {'id': MID, 'body': 'peer text', 'sender_role': 'claude-test', 'reply_to': None,
+                   'priority': 'normal'}
+        prompts = []
+        with patch('quorum_claude_pipe.submit', side_effect=lambda sid, mid, text: prompts.append(text)), \
+             patch.dict(os.environ, {'CLAUDE_CODE_SESSION_ID': SID,
+                                     'CLAUDE_CODE_MESSAGING_SOCKET': '/tmp/quorum.sock'}):
+            self.assertEqual(enqueue(record, message, Path('/private/state')), 'submitted')
+        self.assertNotIn('marked this message urgent', prompts[0])
+        self.assertNotIn('between tool calls', prompts[0])
 
     @isolated_profiles
     def test_grok_urgency_is_explicitly_not_codex_steering(self):
