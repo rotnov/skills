@@ -3,7 +3,8 @@
 Identity is this process's CURSOR_CONVERSATION_ID. The metadata socket is read
 only to confirm that id; the prompt and API key never go there. A follow-up is
 POST /v1/agents/<id>/runs on the fixed Cloud Agents host, which continues this
-same agent. A busy run is deferred and retried. The key stays in the environment.
+same agent. A busy run or a rate-limited key is deferred and retried. The key
+stays in the environment.
 """
 import json
 import os
@@ -20,10 +21,27 @@ import uuid
 
 _BC = re.compile(r'^bc-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
 _API = 'https://api.cursor.com/v1/agents/'
+# Retry-After is honored as delta-seconds up to an hour. A 429 without a usable
+# value (absent, or an HTTP-date) waits this long rather than hammering the key.
+_RATE_LIMIT_WAIT = 30
+_MAX_WAIT = 3600
 
 
 class DeliveryDeferred(Exception):
-    """The same agent is still running; the message was not submitted."""
+    """Cursor refused before creating a run (busy or rate-limited); nothing was submitted."""
+    def __init__(self, retry_after=0):
+        super().__init__()
+        self.retry_after = retry_after
+
+
+def _seconds(value, default):
+    text = value.strip() if isinstance(value, str) else ''
+    return min(int(text), _MAX_WAIT) if re.fullmatch('[0-9]{1,7}', text) else default
+
+
+def _retry_after(headers, default):
+    get = getattr(headers, 'get', None)
+    return _seconds(get('Retry-After') if get else None, default)
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -123,6 +141,7 @@ def post_followup(session_id, content, key, *, urlopen=_urlopen):
         _API + sid + '/runs', data=payload, method='POST',
         headers={'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json',
                  'Accept': 'application/json'})
+    headers = None
     try:
         # A refused redirect returns no response, so the key stays on this host.
         response = urlopen(request, timeout=10)
@@ -130,15 +149,19 @@ def post_followup(session_id, content, key, *, urlopen=_urlopen):
             raise ValueError('session_delivery_unknown')
         with response:
             status = getattr(response, 'status', None)
+            headers = getattr(response, 'headers', None)
             response.read(256)
     except urllib.error.HTTPError as error:
-        status = error.code
+        status, headers = error.code, error.headers
         try: error.read(256)
         except Exception: pass
     except (OSError, urllib.error.URLError, TimeoutError):
         raise ValueError('session_delivery_unknown') from None
+    # Both refusals come before a run exists, so the message never reached the agent.
     if status == 409:
-        raise DeliveryDeferred()
+        raise DeliveryDeferred(_retry_after(headers, 0))
+    if status == 429:
+        raise DeliveryDeferred(_retry_after(headers, _RATE_LIMIT_WAIT))
     if status not in (200, 201, 202):
         raise ValueError('session_delivery_unknown')
     return 'submitted'
@@ -157,7 +180,7 @@ def submit(record, message_id, content):
     except (OSError, subprocess.TimeoutExpired):
         raise ValueError('session_delivery_unknown') from None
     if result.returncode == 2:
-        raise DeliveryDeferred()
+        raise DeliveryDeferred(_seconds(result.stdout, 0))
     if result.returncode:
         raise ValueError('session_delivery_unknown')
 
@@ -173,7 +196,9 @@ def main():
             raise ValueError('session_binding_denied')
         post_followup(confirmed['session_ref'], data['content'], _api_key())
         return 0
-    except DeliveryDeferred:
+    except DeliveryDeferred as deferred:
+        # Only the bounded wait crosses back to the listener.
+        print(int(deferred.retry_after), flush=True)
         return 2
     except Exception:
         return 1

@@ -215,6 +215,7 @@ class Relay:
         self.api, self.ledger, self.record, self.queue = api, ledger, record, queue
         self.awaiting = []
         self.release = ReleaseGuard(api, ledger)
+        self.retry_at, self.clock = 0.0, time.monotonic
 
     def scope(self):
         return {'agent_id': self.record['agent_id'], 'session_ref': self.record['session_ref']}
@@ -244,6 +245,8 @@ class Relay:
         previous = self.ledger.setting(key)
         if previous and previous['state'] == 'intent': raise ValueError('session_delivery_unknown')
         if not previous:
+            # A deferred refusal asked us to wait; nothing was submitted meanwhile.
+            if self.clock() < self.retry_at: return 'idle'
             self.release.check()
             self.ledger.setting(key, {'state':'intent'})
             try: result = self.queue(message)
@@ -251,7 +254,9 @@ class Relay:
                 from quorum_cursor import DeliveryDeferred
                 if not isinstance(error, DeliveryDeferred):
                     raise ValueError('session_delivery_unknown') from None
-                # The agent was busy. Drop only this intent so the next poll retries once.
+                # The agent was busy or the key rate-limited. Drop only this intent
+                # so a later poll retries once, after any Retry-After.
+                self.retry_at = self.clock() + error.retry_after
                 with self.ledger.db:
                     self.ledger.db.execute('delete from settings where key=? and data=?',
                                            (key, json.dumps({'state':'intent'})))

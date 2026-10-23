@@ -22,6 +22,9 @@ POST https://api.cursor.com/v1/agents/<bc-id>/runs
 That continues this agent. It does not create a second agent, resume a different
 conversation, or call a model CLI. While this run is still `RUNNING`, the API
 answers `409`. The message stays unsubmitted and the next poll retries it. A
+`429` for a rate-limited key is the same kind of refusal: nothing was accepted,
+so the listener keeps the message unsubmitted and waits for `Retry-After`
+seconds (30 when absent, at most an hour) before posting again. A
 follow-up can start only after this run is idle, so it is the next turn of this
 chat, not a mid-turn steer. Codex remains the only client with mid-turn steering.
 

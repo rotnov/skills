@@ -1,4 +1,7 @@
 """Cursor Cloud identity and follow-up tests. They never start an agent or call api.cursor.com."""
+import contextlib
+import http.client
+import io
 import json
 import os
 from pathlib import Path
@@ -184,6 +187,64 @@ class CursorTests(unittest.TestCase):
                 outcomes.append(relay.run_once())
                 outcomes.append(relay.run_once())
                 self.assertEqual(outcomes, ['idle', 'idle'])
+                self.assertEqual(ledger.setting('delivery:' + MID)['state'], 'submitted')
+            finally:
+                ledger.db.close()
+
+    def test_rate_limit_defers_for_retry_after_instead_of_freezing_the_ledger(self):
+        from quorum_cursor import DeliveryDeferred, post_followup, submit
+        from quorum_session import Relay
+        from quorum_state import LocalLedger
+        def limited(retry_after):
+            def urlopen(request, timeout):
+                headers = http.client.HTTPMessage()
+                if retry_after is not None: headers['Retry-After'] = retry_after
+                raise urllib.error.HTTPError(request.full_url, 429, 'limited', hdrs=headers, fp=None)
+            return urlopen
+        # A 429 accepted no run, so it is a refusal to retry, never an uncertain write.
+        for header, wait in (('7', 7), (None, 30), ('Wed, 21 Oct 2026 07:28:00 GMT', 30), ('99999', 3600)):
+            with self.assertRaises(DeliveryDeferred) as caught:
+                post_followup(BC, 'hello', KEY, urlopen=limited(header))
+            self.assertEqual(caught.exception.retry_after, wait)
+        out = io.StringIO()
+        with patch('quorum_cursor.post_followup', side_effect=DeliveryDeferred(7)), \
+                patch('quorum_cursor.binding', return_value={'session_ref': BC}), \
+                patch.dict(os.environ, {'CURSOR_API_KEY': KEY}, clear=True), \
+                contextlib.redirect_stdout(out):
+            self.assertEqual(main_with({'session_ref': BC, 'content': 'hello'}), 2)
+        self.assertEqual(out.getvalue(), '7\n')
+        with patch('quorum_cursor.subprocess.run',
+                   return_value=subprocess.CompletedProcess([], 2, '7\n', '')):
+            with self.assertRaises(DeliveryDeferred) as caught:
+                submit({'session_ref': BC}, MID, 'hello')
+        self.assertEqual(caught.exception.retry_after, 7)
+        message = {'id': MID, 'recipient_id': 'agent', 'sender_role': 'peer', 'body': 'ping'}
+        class Api:
+            def call(self, operation, payload, request_id=None):
+                if operation == 'session_requirements':
+                    return {'protocol_version': 2, 'skill_version': '0.3.0'}
+                if operation == 'session_inbox':
+                    return [message]
+                raise AssertionError(operation)
+        with tempfile.TemporaryDirectory() as root:
+            ledger = LocalLedger(Path(root))
+            try:
+                now, posts = [100.0], []
+                def queue(item):
+                    posts.append(now[0])
+                    if len(posts) == 1: raise DeliveryDeferred(30)
+                    return 'submitted'
+                relay = Relay(Api(), ledger, {'agent_id': 'agent', 'session_ref': BC}, queue)
+                relay.clock = lambda: now[0]
+                self.assertEqual(relay.run_once(), 'idle')
+                self.assertIsNone(ledger.setting('delivery:' + MID))
+                relay.reconcile()
+                now[0] = 129.0
+                self.assertEqual(relay.run_once(), 'idle')
+                self.assertEqual(posts, [100.0])
+                now[0] = 130.0
+                self.assertEqual(relay.run_once(), 'idle')
+                self.assertEqual(posts, [100.0, 130.0])
                 self.assertEqual(ledger.setting('delivery:' + MID)['state'], 'submitted')
             finally:
                 ledger.db.close()
