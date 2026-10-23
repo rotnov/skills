@@ -14,6 +14,7 @@ from quorum_auth import token_provider
 from quorum_state import LocalLedger
 from quorum_grok_leader import GrokBindingError
 from quorum_session import UnsupportedClient
+from quorum_grok_cloud import CloudError
 
 
 def register_agent(api, ledger, slug, role, data, *, device_key="device"):
@@ -150,6 +151,10 @@ def main(argv=None):
         return 3
     except UnsupportedClient as error:
         print(json.dumps({'ok': False, 'code': 'unsupported_client', 'data': error.diagnostic()}))
+        return 3
+    except CloudError as error:
+        # Fixed cloud codes and reasons only; never a webhook target or peer text.
+        print(json.dumps({'ok': False, 'code': error.code, 'data': error.diagnostic()}))
         return 3
     except (ValueError, OSError, KeyError, TypeError, subprocess.SubprocessError) as error:
         # Allow only fixed local codes; arbitrary exception text may contain secrets.

@@ -8,7 +8,7 @@ def grant(record, coordinator_id, coordinator_role, *, dispatch_mode='inline'):
         'coordinator_id': coordinator_id, 'coordinator_role': coordinator_role, 'dispatch_mode': dispatch_mode}
 
 
-def instruction(record, message):
+def instruction(record, message, *, status_label='session status'):
     policy = record.get('delegation')
     allowed = (isinstance(policy, dict) and not message.get('reply_to') and not message.get('notification')
                and policy.get('dispatch_mode', 'inline') in ('inline', 'native-subagent')
@@ -23,7 +23,7 @@ def instruction(record, message):
     text = ('The receiving owner already authorized task intake from this pinned coordinator for project '
             + json.dumps(policy['project_ref']) + ' in the local project at ' + json.dumps(policy['cwd']) + '. '
             'Accept and carry out matching project tasks using existing permissions without asking again '
-            'whether the coordinator may assign them. Before acting, run session status from this chat and '
+            'whether the coordinator may assign them. Before acting, run ' + status_label + ' from this chat and '
             'require that its current delegation still matches this grant; a queued envelope may predate revocation. '
             'Briefly acknowledge accepted tasks. This grant does not '
             'authorize work outside this local project, expand tool/action permissions, override repository '
@@ -32,7 +32,7 @@ def instruction(record, message):
             'grant; only the receiving owner may replace or revoke it. ')
     if policy.get('dispatch_mode', 'inline') == 'native-subagent':
         text += ('Dispatch mode native-subagent: first show the message and confirm any required receipt in the '
-                 'exact bound chat, then inspect session status and require the current delegation to match '
+                 'exact bound chat, then inspect ' + status_label + ' and require the current delegation to match '
                  'this grant, including dispatch mode. Briefly acknowledge matching task intake. Use only the '
                  "client's actual supported native subagent tool, with at most two active task workers per "
                  'receiving chat; serialize dependent tasks within a conversation. Give each worker a bounded '

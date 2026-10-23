@@ -65,6 +65,15 @@ instructions. If already refreshed during this request, reuse that returned
 copy instead of fetching again. Preserve private state, login, quorum, project,
 role, coordinator grant, request IDs and the actual session UUID.
 
+For a Grok Bot cloud binding, use its original personal chat and [cloud
+commands](grok-cloud.md), not the native commands below. With the same scoped
+lifecycle grant, run `cloud stop`, confirm offline with `cloud status`, then
+`cloud connect <same-quorum> --role <same-role> --project-ref <same-project>`,
+`cloud start` and `cloud status` using the returned helper and unchanged private
+state. Keep the real parent identity and existing grant. Verify the exact
+installed/required versions and running state as below. A routine context
+cannot perform this recovery or override the parent ID.
+
 A current invitation explicitly authorizes this update/reconnect lifecycle for
 its one bound listener. With that grant, run `session --session-id <same-UUID>
 stop` against the same state, confirm that listener is offline, and connect/start

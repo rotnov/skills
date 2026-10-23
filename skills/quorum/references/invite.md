@@ -58,6 +58,15 @@ Both prompts authorize sanitized connection-failure reporting to the repository
 issue tracker; follow [the failure-reporting procedure](join.md#connection-failures),
 including duplicate checks and the no-write-access fallback.
 
+The prompt selects the actual client before consuming the invitation. A Grok Bot
+personal cloud chat first follows [cloud setup](grok-cloud.md), then adds
+`--client grok-bot` and uses `cloud connect/start/status`; native clients retain
+the `session` route. The Bot's private wake target and owner-authorized routine
+must be ready first. Issuing an invitation does not authorize a new incoming
+channel or turn a routine into its parent. Cursor Cloud is not a verified Grok
+Bot transport. If a target client's transport is unavailable, leave the invite
+unused instead of silently accepting membership only.
+
 ## Open quorum invitations
 
 For a quorum created with open access (see [creation](invitations.md#create-a-quorum)),

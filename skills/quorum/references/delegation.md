@@ -32,6 +32,13 @@ If coordinator resolution fails, connection state is retained but delegation is
 not granted: start reception, report the exact blocker, and never guess a UUID.
 A coordinator must already be registered uniquely in the same shared project.
 
+For a [Grok Bot cloud binding](grok-cloud.md), use the same flags with `cloud
+connect`. Throughout this guide replace `session delegate` and `session status`
+with `cloud delegate` and `cloud status`, invoked only from the original
+personal parent chat. The routine only forwards wake hints and cannot grant,
+inspect on behalf of the parent, revoke or execute delegated tasks. Cloud
+status must confirm the current grant before acting, just as native status does.
+
 For a connected chat, the receiving owner can grant, replace or revoke intake:
 
 ```text

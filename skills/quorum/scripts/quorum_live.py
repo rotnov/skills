@@ -43,7 +43,7 @@ def read_invitation(path):
     return data
 
 
-LIVE_COMMANDS = {'connect', 'pilot-init', 'pilot-worker', 'ping', 'thread', 'mcp', 'invite-file', 'listen', 'session', 'invite-id', 'accept-id', 'access'}
+LIVE_COMMANDS = {'connect', 'pilot-init', 'pilot-worker', 'ping', 'thread', 'mcp', 'invite-file', 'listen', 'session', 'invite-id', 'accept-id', 'access', 'cloud'}
 
 
 def add_commands(commands):
@@ -51,8 +51,13 @@ def add_commands(commands):
     add_listener_commands(commands)
     from quorum_session import add_commands as add_session_commands
     add_session_commands(commands)
+    from quorum_grok_cloud import add_commands as add_cloud_commands
+    add_cloud_commands(commands)
     accept = commands.add_parser('accept-id', help='Accept membership by public invitation ID using your own GitHub login')
     accept.add_argument('invite_id')
+    accept.add_argument('--client', choices=('grok-bot',),
+                        help='grok-bot: check this actual Grok Bot parent chat and its private webhook target '
+                             'instead of a native transport, before login or consuming the invitation')
     accept.add_argument('--membership-only', action='store_true',
                         help='Owner explicitly wants membership without connecting this chat; skips the native '
                              'transport check and never registers, starts or connects a listener')
@@ -122,6 +127,9 @@ def dispatch(args, ledger, register_agent):
     if args.command == 'listen':
         from quorum_listener import dispatch as listener_dispatch
         return listener_dispatch(args, ledger)
+    if args.command == 'cloud':
+        from quorum_grok_cloud import dispatch as cloud_dispatch
+        return cloud_dispatch(args, ledger, register_agent)
     if args.command == 'accept-id':
         from quorum_invitations import accept_id_invitation
         return accept_id_invitation(args, ledger)

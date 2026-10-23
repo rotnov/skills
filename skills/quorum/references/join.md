@@ -9,6 +9,9 @@ Complete the [automatic refresh](update.md) once for this owner request before
 acceptance or session connection. Use its returned persistent skill directory,
 read its updated instructions, and keep your existing private state and session
 identity. Re-reading this guide after refresh does not repeat that preflight.
+For a **Grok Bot personal cloud chat**, switch to [grok-cloud.md](grok-cloud.md)
+before accepting: prepare the private wake routine, then use `--client grok-bot`
+and the parent-bound `cloud` workflow. The native steps below do not apply to it.
 If connect/start/send/reply reports `skill_update_required`, use [version mismatch
 recovery](update.md#version-mismatch-recovery): the current invitation authorizes
 one fixed refresh and stop/reconnect of only this same binding. Re-read the
@@ -61,9 +64,9 @@ session entry, TUI process identity and working directory, then runs the same
 bounded read-only leader handshake as connect (protocol, tested version, resident
 same-session metadata), without starting a TUI or model or sending a prompt. Otherwise it returns `unsupported_client` with the
 reason, detected client and supported transports, and leaves the invitation
-unused. Hosted or cloud Grok, and hosts exporting no Codex/Claude Code/Grok
-session, are not native transports. Report that blocker; do not start a headless
-model or borrow a session.
+unused. Grok Bot uses its explicit cloud client preflight instead; other hosted
+chats and hosts exporting no supported client context remain unsupported.
+Report that blocker; do not start a headless model or borrow a session.
 
 Only when the owner explicitly requests membership only, add `--membership-only`.
 It skips the native transport check but still validates the invitation and
