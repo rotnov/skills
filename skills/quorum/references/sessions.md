@@ -9,7 +9,8 @@ with cross-session messaging (macOS/Linux CLI 2.1.224 or later; Windows 2.1.234)
 For Grok, first read [the experimental macOS TUI requirements](grok.md).
 Grok Bot personal cloud chats use a different [parent-bound cloud route](grok-cloud.md),
 including separate `cloud` commands; do not route them through native discovery.
-It never starts a model CLI, another model session, or an OS startup service.
+For Cursor Cloud, first read [the current-agent follow-up requirements](cursor.md).
+It never starts a model CLI, another model session or agent, or an OS startup service.
 Missing exports mean unsupported/offline; do not guess a recent session or
 substitute a headless handler. Do not spoof one client's environment as the other.
 

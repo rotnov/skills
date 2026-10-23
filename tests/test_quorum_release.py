@@ -78,7 +78,8 @@ class ReleaseTests(unittest.TestCase):
             with self.subTest(required=required), tempfile.TemporaryDirectory() as root:
                 ledger=LocalLedger(Path(root)); api=Backend(required)
                 clean={k:v for k,v in os.environ.items() if k not in
-                       ('CODEX_THREAD_ID','CLAUDE_CODE_SESSION_ID','GROK_SESSION_ID')}
+                       ('CODEX_THREAD_ID','CLAUDE_CODE_SESSION_ID','GROK_SESSION_ID',
+                        'CURSOR_AGENT','CURSOR_CONVERSATION_ID','CURSOR_AGENT_SOCKET','CURSOR_API_KEY')}
                 clean['CODEX_THREAD_ID']=SID
                 try:
                     args=SimpleNamespace(session_id=SID, action='connect', role='worker', quorum='team',
@@ -105,7 +106,8 @@ class ReleaseTests(unittest.TestCase):
         from quorum_state import LocalLedger
         from quorum_api import QuorumError
         clean={k:v for k,v in os.environ.items() if k not in
-               ('CODEX_THREAD_ID','CLAUDE_CODE_SESSION_ID','GROK_SESSION_ID')}
+               ('CODEX_THREAD_ID','CLAUDE_CODE_SESSION_ID','GROK_SESSION_ID',
+                        'CURSOR_AGENT','CURSOR_CONVERSATION_ID','CURSOR_AGENT_SOCKET','CURSOR_API_KEY')}
         clean['CODEX_THREAD_ID']=SID
         for action in ('start','run'):
             with self.subTest(action=action), tempfile.TemporaryDirectory() as root:
@@ -324,7 +326,8 @@ class RunningReleaseTests(unittest.TestCase):
         from quorum_state import LocalLedger
         from quorum_api import QuorumError
         clean={k:v for k,v in os.environ.items() if k not in
-               ('CODEX_THREAD_ID','CLAUDE_CODE_SESSION_ID','GROK_SESSION_ID')}
+               ('CODEX_THREAD_ID','CLAUDE_CODE_SESSION_ID','GROK_SESSION_ID',
+                        'CURSOR_AGENT','CURSOR_CONVERSATION_ID','CURSOR_AGENT_SOCKET','CURSOR_API_KEY')}
         clean['CLAUDE_CODE_SESSION_ID']=SID
         for action in ('received','reconcile','reply'):
             with self.subTest(action=action), tempfile.TemporaryDirectory() as root:

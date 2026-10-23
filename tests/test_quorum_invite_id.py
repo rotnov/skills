@@ -274,7 +274,9 @@ class IdInvitationTests(unittest.TestCase):
     def test_unsupported_client_stops_before_login_or_consuming_invitation(self):
         import quorum
         clean = {key: value for key, value in __import__('os').environ.items()
-                 if key not in ('CODEX_THREAD_ID', 'CLAUDE_CODE_SESSION_ID', 'GROK_SESSION_ID')}
+                 if key not in ('CODEX_THREAD_ID', 'CLAUDE_CODE_SESSION_ID', 'GROK_SESSION_ID',
+                               'CURSOR_AGENT', 'CURSOR_CONVERSATION_ID', 'CURSOR_AGENT_SOCKET',
+                               'CURSOR_API_KEY')}
         with tempfile.TemporaryDirectory() as root:
             with patch.dict('os.environ', clean, clear=True), \
                     patch('quorum_auth.login_pkce', side_effect=AssertionError('must not login')), \
@@ -313,7 +315,9 @@ class IdInvitationTests(unittest.TestCase):
                 calls.append((op, payload, request_id))
                 return {'quorum_id': 'q', 'membership_id': 'm'}
         clean = {key: value for key, value in __import__('os').environ.items()
-                 if key not in ('CODEX_THREAD_ID', 'CLAUDE_CODE_SESSION_ID', 'GROK_SESSION_ID')}
+                 if key not in ('CODEX_THREAD_ID', 'CLAUDE_CODE_SESSION_ID', 'GROK_SESSION_ID',
+                               'CURSOR_AGENT', 'CURSOR_CONVERSATION_ID', 'CURSOR_AGENT_SOCKET',
+                               'CURSOR_API_KEY')}
         with tempfile.TemporaryDirectory() as root:
             with patch.dict('os.environ', clean, clear=True), \
                     patch('quorum_live.api_for', return_value=(Api(), __import__('quorum_api').ServiceConfig('https://example.com','sb_publishable_synthetic'), Store())), \
@@ -375,7 +379,8 @@ class IdInvitationTests(unittest.TestCase):
         from quorum_session import current_session
         native = ('CODEX_THREAD_ID', 'CLAUDE_CODE_SESSION_ID', 'CLAUDE_CODE_HOST_SESSION_ID',
                   'CLAUDE_CODE_MESSAGING_SOCKET', 'CLAUDE_CODE_MESSAGING_TOKEN', 'GROK_SESSION_ID',
-                  'GROK_LEADER_SOCKET')
+                  'GROK_LEADER_SOCKET', 'CURSOR_AGENT', 'CURSOR_CONVERSATION_ID',
+                  'CURSOR_AGENT_SOCKET', 'CURSOR_API_KEY')
         flags = ['--membership-only', '--origin', 'https://example.com', '--publishable-key', 'sb_publishable_synthetic']
         requests = []
         def request(url, headers, body):

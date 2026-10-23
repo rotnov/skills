@@ -64,7 +64,10 @@ Before login or acceptance, `accept-id` checks that this chat can carry a native
 listener. For Grok it verifies this session's private leader socket, active
 session entry, TUI process identity and working directory, then runs the same
 bounded read-only leader handshake as connect (protocol, tested version, resident
-same-session metadata), without starting a TUI or model or sending a prompt. Otherwise it returns `unsupported_client` with the
+same-session metadata), without starting a TUI or model or sending a prompt.
+For Cursor Cloud it reads [Cursor](cursor.md): this process's `bc-` id must
+match the metadata socket, and `CURSOR_API_KEY` must already be in the
+environment. The key is not sent to Quorum. Otherwise it returns `unsupported_client` with the
 reason, detected client and supported transports, and leaves the invitation
 unused. Grok Bot uses its explicit cloud client preflight instead; other hosted
 chats and hosts exporting no supported client context remain unsupported.

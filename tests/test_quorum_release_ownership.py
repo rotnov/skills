@@ -152,7 +152,8 @@ class ReleaseOwnershipTests(unittest.TestCase):
         from quorum_state import LocalLedger
         required = {'protocol_version':1, 'skill_version':'0.3.0'}
         clean = {key:value for key,value in os.environ.items() if key not in
-                 ('CODEX_THREAD_ID', 'CLAUDE_CODE_SESSION_ID', 'GROK_SESSION_ID')}
+                 ('CODEX_THREAD_ID', 'CLAUDE_CODE_SESSION_ID', 'GROK_SESSION_ID',
+                  'CURSOR_AGENT', 'CURSOR_CONVERSATION_ID', 'CURSOR_AGENT_SOCKET', 'CURSOR_API_KEY')}
         clean['CODEX_THREAD_ID'] = SID
         for action in ('received', 'reconcile', 'reply'):
             with self.subTest(action=action), tempfile.TemporaryDirectory() as root:

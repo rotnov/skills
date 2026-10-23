@@ -112,7 +112,9 @@ client supports native workers, the agent selects or reuses its `quorum`
 while this chat keeps its session identity and runs every bound command; routine
 transport notices are receipted without chat narration. An unavailable native
 transport is reported as a blocker, rather than silently leaving you joined
-without reception. The low-level `accept-id` command alone remains membership-only;
+without reception. Cursor Cloud is one of those transports when this agent's
+`bc-` id matches its metadata socket and `CURSOR_API_KEY` is already set; see
+[cursor.md](references/cursor.md). The low-level `accept-id` command alone remains membership-only;
 on a client without native reception, membership needs an explicit
 `--membership-only` request, which never connects a listener.
 
