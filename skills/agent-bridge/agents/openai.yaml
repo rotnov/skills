@@ -1,0 +1,4 @@
+interface:
+  display_name: "Agent Bridge"
+  short_description: "Talk directly with a paired Claude Code session"
+  default_prompt: "Use $agent-bridge to answer the bridge message from the paired Claude Code session or to write to it on this topic."

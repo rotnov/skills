@@ -44,6 +44,20 @@ Use it without installing:
 npx skills use rotnov/skills@i-have-an-issue
 ```
 
+### `agent-bridge`
+
+Connect a Claude Code session and a Codex thread on the same machine so they can
+exchange tasks, questions and answers directly, one pair per topic. Codex is
+reached through its app-server daemon, `codex exec resume`, or the desktop
+thread queue; answers return to the Claude session automatically. Standard
+library only; messages stay local except what each agent sends to its vendor.
+
+Install it with the [skills CLI](https://skills.sh/):
+
+```bash
+npx skills add rotnov/skills --skill agent-bridge
+```
+
 ### `propose-skill`
 
 Extract a demonstrated practice from the current session, decide whether it is
