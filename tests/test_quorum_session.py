@@ -21,7 +21,8 @@ SID = '11111111-1111-4111-8111-111111111111'
 MID = '22222222-2222-4222-8222-222222222222'
 # The suite may run inside a Codex or Claude Code chat; never inherit that caller's session.
 CLIENT_SESSION_VARIABLES = ('CODEX_THREAD_ID', 'GROK_SESSION_ID', 'GROK_LEADER_SOCKET', 'CLAUDE_CODE_SESSION_ID',
-                            'CLAUDE_CODE_MESSAGING_SOCKET', 'CLAUDE_CODE_MESSAGING_TOKEN')
+                            'CLAUDE_CODE_MESSAGING_SOCKET', 'CLAUDE_CODE_MESSAGING_TOKEN',
+                            'CURSOR_AGENT', 'CURSOR_CONVERSATION_ID', 'CURSOR_AGENT_SOCKET', 'CURSOR_API_KEY')
 
 
 def without_client_session():
@@ -365,7 +366,8 @@ class SessionTests(unittest.TestCase):
                 data = caught.exception.diagnostic()
                 self.assertEqual(str(caught.exception), 'unsupported_client')
                 self.assertEqual((data['reason'], data['detected_client']), (reason, detected))
-                self.assertEqual({row['client'] for row in data['supported_transports']}, {'codex', 'claude', 'grok'})
+                self.assertEqual({row['client'] for row in data['supported_transports']},
+                                 {'codex', 'claude', 'grok', 'cursor'})
                 self.assertIn('not accepted', data['next_step'])
                 self.assertNotIn(SID, json.dumps(data))
                 self.assertNotIn('secret', json.dumps(data))

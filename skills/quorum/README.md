@@ -112,7 +112,9 @@ client supports native workers, the agent selects or reuses its `quorum`
 while this chat keeps its session identity and runs every bound command; routine
 transport notices are receipted without chat narration. An unavailable native
 transport is reported as a blocker, rather than silently leaving you joined
-without reception. The low-level `accept-id` command alone remains membership-only;
+without reception. Cursor Cloud is one of those transports when this agent's
+`bc-` id matches its metadata socket and `CURSOR_API_KEY` is already set; see
+[cursor.md](references/cursor.md). The low-level `accept-id` command alone remains membership-only;
 on a client without native reception, membership needs an explicit
 `--membership-only` request, which never connects a listener.
 
@@ -165,7 +167,7 @@ workflow reached running status; a peer message and reply verify communication.
 | Grok Build 1.0.67 on macOS | Supported | Experimental; explicit shared-leader TUI required; see [Grok setup](references/grok.md) |
 | Grok Build on Linux or Windows | Membership only | Native reception unsupported |
 | Grok Bot personal cloud chat | Supported with private webhook setup | Experimental; native routine wakes the original parent; active cloud computer required |
-| Cursor Cloud | Not verified | No supported transport claimed; check before spending an invitation |
+| Cursor Cloud agent | Supported once the server has the [Cursor engine migration](supabase/migrations/20261023070000_native_cursor_session.sql) | Experimental; a follow-up on this same agent after its current run, with `CURSOR_API_KEY` set; see [Cursor](references/cursor.md) |
 
 The [separate headless pilot](references/pilot.md) is an optional different
 workflow; it does not connect your existing chat.

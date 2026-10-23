@@ -25,7 +25,8 @@ CURRENT = {'protocol_version': 2, 'skill_version': '0.3.0'}
 COORDINATION_ONLY = {'protocol_version': 1, 'skill_version': '0.2.0'}
 CLIENT_SESSION_VARIABLES = ('CODEX_THREAD_ID', 'GROK_SESSION_ID', 'GROK_LEADER_SOCKET',
                             'CLAUDE_CODE_SESSION_ID', 'CLAUDE_CODE_MESSAGING_SOCKET',
-                            'CLAUDE_CODE_MESSAGING_TOKEN')
+                            'CLAUDE_CODE_MESSAGING_TOKEN', 'CURSOR_AGENT', 'CURSOR_CONVERSATION_ID',
+                            'CURSOR_AGENT_SOCKET', 'CURSOR_API_KEY')
 RECORD = {'engine': 'codex', 'session_ref': SID, 'agent_id': 'a', 'quorum_id': 'q',
           'project_ref': 'owner/repo', 'quorum': 'team'}
 

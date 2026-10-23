@@ -53,12 +53,19 @@ Review and apply the following in one administrator-controlled transaction:
    In the same transaction it advances the required release from skill `0.2.0` /
    protocol `1` to skill `0.3.0` / protocol `2`. Without it, every `0.3.0`
    client stops with `skill_update_required` before any send or reply.
-   Finally apply the mandatory
+   Apply the mandatory
    [open access close serialization](../supabase/migrations/20261022180000_open_access_close_serialization.sql).
    It makes closing a quorum wait for, or be waited on by, any in-flight open
    invitation issue or acceptance, so no anonymous member or unused open
    invitation survives a close. It pins the priority release's bodies and fails
    closed the same way; it changes no grant or release requirement.
+   Then apply the
+   [Cursor Cloud engine extension](../supabase/migrations/20261023070000_native_cursor_session.sql).
+   It adds `cursor` to the existing exact-session, heartbeat, peer and private
+   notification checks. It grants no new creation, membership or table rights
+   and does not replace the dispatcher. It fails closed with
+   `reviewed_dispatcher_changed` before the close serialization, when reapplied,
+   or when a body it replaces differs from the reviewed one.
    Open access changes, open invite creation and open invite acceptance require
    PostgreSQL `READ COMMITTED` and fail closed with
    `open_access_requires_read_committed` at any other isolation level.

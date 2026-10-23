@@ -19,7 +19,9 @@ SUPPORTED_TRANSPORTS = (
     {'client':'codex', 'requires':'Local Codex chat exporting CODEX_THREAD_ID, with the codex CLI on PATH for codex queue'},
     {'client':'claude', 'requires':'Local Claude Code chat exporting CLAUDE_CODE_SESSION_ID and its private messaging socket/token'},
     {'client':'grok', 'requires':'Grok TUI on macOS started with --leader in this chat (GROK_SESSION_ID); '
-                                 'hosted or cloud Grok has no native Quorum transport'})
+                                 'hosted or cloud Grok has no native Quorum transport'},
+    {'client':'cursor', 'requires':'This Cursor Cloud agent: CURSOR_AGENT=1, its own bc- conversation id, '
+                                   'a matching metadata socket, and CURSOR_API_KEY for a follow-up on that same agent'})
 
 
 class UnsupportedClient(ValueError):
@@ -36,19 +38,33 @@ class UnsupportedClient(ValueError):
                             'another session; report this blocker if no supported client is available.'}
 
 
+_CLIENTS = (('codex','CODEX_THREAD_ID'), ('claude','CLAUDE_CODE_SESSION_ID'),
+             ('grok','GROK_SESSION_ID'), ('cursor','CURSOR_CONVERSATION_ID'))
+
+
+def session_argument(value):
+    text = str(value).strip()
+    if text.lower().startswith('bc-'):
+        from quorum_cursor import canonical_id
+        return canonical_id(text)
+    return str(uuid.UUID(text))
+
+
 def current_engine():
-    engines = [engine for engine, key in (('codex','CODEX_THREAD_ID'), ('claude','CLAUDE_CODE_SESSION_ID'),
-                                        ('grok','GROK_SESSION_ID'))
-               if os.environ.get(key)]
+    engines = [engine for engine, key in _CLIENTS if os.environ.get(key)]
     if len(engines) > 1: raise ValueError('ambiguous_current_session')
     return engines[0] if engines else 'codex'
 
 
 def current_session():
-    value = (os.environ.get('CODEX_THREAD_ID') or os.environ.get('CLAUDE_CODE_SESSION_ID')
-             or os.environ.get('GROK_SESSION_ID'))
-    if not value: raise UnsupportedClient('no_client_session')
-    current_engine()
+    present = [(engine, os.environ.get(key)) for engine, key in _CLIENTS if os.environ.get(key)]
+    if len(present) > 1: raise ValueError('ambiguous_current_session')
+    if not present: raise UnsupportedClient('no_client_session')
+    engine, value = present[0]
+    if engine == 'cursor':
+        from quorum_cursor import canonical_id
+        try: return canonical_id(value)
+        except ValueError: raise UnsupportedClient('cursor_session_invalid', engine) from None
     return str(uuid.UUID(value))
 
 
@@ -74,6 +90,13 @@ def client_preflight():
         except ValueError as error:
             if str(error) != 'claude_pipe_unavailable': raise
             raise UnsupportedClient('claude_inbox_unavailable', engine) from None
+    if engine == 'cursor':
+        from quorum_cursor import binding
+        try: binding(sid)
+        except ValueError as error:
+            if str(error) not in ('cursor_identity_unavailable', 'cursor_ingress_unavailable'):
+                raise UnsupportedClient('cursor_identity_unavailable', engine) from None
+            raise UnsupportedClient(str(error), engine) from None
     return engine
 
 
@@ -160,6 +183,12 @@ def enqueue(record, message, auth_state):
         # turn for every priority; it is not turn-ID steering.
         submit(record['session_ref'], message['id'], prompt_for('piped'))
         return 'submitted'
+    if engine == 'cursor':
+        from quorum_cursor import submit
+        require_caller(record['session_ref'], 'cursor')
+        # A follow-up continues this agent after the run is idle. It is not steering.
+        submit(record, message['id'], prompt_for('piped'))
+        return 'submitted'
     executable = shutil.which('codex')
     if not executable: raise ValueError('engine_missing')
     if priority == 'urgent':
@@ -186,6 +215,7 @@ class Relay:
         self.api, self.ledger, self.record, self.queue = api, ledger, record, queue
         self.awaiting = []
         self.release = ReleaseGuard(api, ledger)
+        self.retry_at, self.clock = 0.0, time.monotonic
 
     def scope(self):
         return {'agent_id': self.record['agent_id'], 'session_ref': self.record['session_ref']}
@@ -215,10 +245,22 @@ class Relay:
         previous = self.ledger.setting(key)
         if previous and previous['state'] == 'intent': raise ValueError('session_delivery_unknown')
         if not previous:
+            # A deferred refusal asked us to wait; nothing was submitted meanwhile.
+            if self.clock() < self.retry_at: return 'idle'
             self.release.check()
             self.ledger.setting(key, {'state':'intent'})
             try: result = self.queue(message)
-            except Exception: raise ValueError('session_delivery_unknown') from None
+            except Exception as error:
+                from quorum_cursor import DeliveryDeferred
+                if not isinstance(error, DeliveryDeferred):
+                    raise ValueError('session_delivery_unknown') from None
+                # The agent was busy or the key rate-limited. Drop only this intent
+                # so a later poll retries once, after any Retry-After.
+                self.retry_at = self.clock() + error.retry_after
+                with self.ledger.db:
+                    self.ledger.db.execute('delete from settings where key=? and data=?',
+                                           (key, json.dumps({'state':'intent'})))
+                return 'idle'
             # Claude's pipe has no synchronous delivery acknowledgement. Only
             # the receiving chat's `received`/`reply` command can confirm it.
             state={'state':'submitted' if result == 'submitted' else 'queued'}
@@ -245,7 +287,7 @@ def sequence(value):
 
 def add_commands(commands):
     command = commands.add_parser('session', help='Connect an existing client session, without headless models')
-    command.add_argument('--session-id', type=lambda x: str(uuid.UUID(x)))
+    command.add_argument('--session-id', type=session_argument)
     actions = command.add_subparsers(dest='action', required=True)
     connect = actions.add_parser('connect')
     connect.add_argument('quorum')
@@ -387,13 +429,17 @@ def dispatch(args, auth_ledger, register_agent):
             if engine == 'grok':
                 from quorum_grok_leader import binding
                 transport = binding(sid, data['cwd'])
+            if engine == 'cursor':
+                from quorum_cursor import binding
+                transport = binding(sid)
             old=ledger.setting('session-agent')
             if old and (old['registration']!=data or old['role']!=args.role or old['quorum']!=args.quorum):
                 raise ValueError('binding_conflict')
             result=register_agent(api,auth_ledger,args.quorum,args.role,data,device_key='session-device:'+sid)
             record={**result,**data,'registration':data,'role':args.role,'quorum':args.quorum}
             if endpoint is not None: record['messaging_socket']=endpoint
-            if transport is not None: record['grok_transport']=transport
+            if engine == 'grok' and transport is not None: record['grok_transport']=transport
+            if engine == 'cursor' and transport is not None: record['cursor_transport']=transport
             if old and old.get('delegation'): record['delegation'] = old['delegation']
             coordinator = getattr(args, 'accept_tasks_from', None)
             ledger.setting('session-agent',record)
@@ -429,6 +475,10 @@ def dispatch(args, auth_ledger, register_agent):
         if engine == 'grok' and args.action in ('start','run'):
             from quorum_grok_leader import binding
             if binding(sid, record['cwd']) != record['grok_transport']:
+                raise ValueError('session_binding_denied')
+        if engine == 'cursor' and args.action in ('start','run'):
+            from quorum_cursor import binding
+            if binding(sid) != record.get('cursor_transport'):
                 raise ValueError('session_binding_denied')
         if args.action=='start': return {**start(auth_ledger.root,ledger,sid,api=api,endpoint=endpoint),'session_id':sid}
         scope={'agent_id':record['agent_id'],'session_ref':sid}

@@ -19,7 +19,7 @@ from quorum_grok_cloud import CloudError
 
 def register_agent(api, ledger, slug, role, data, *, device_key="device"):
     required = {'engine', 'project_ref', 'session_ref', 'cwd'}
-    if set(data) != required or data['engine'] not in ('claude', 'codex', 'grok') or not Path(data['cwd']).is_absolute():
+    if set(data) != required or data['engine'] not in ('claude', 'codex', 'grok', 'cursor') or not Path(data['cwd']).is_absolute():
         raise ValueError('invalid_registration')
     from quorum_release import ReleaseGuard
     # Registration is not permission to stop a different binding's listener.
@@ -164,7 +164,8 @@ def main(argv=None):
         if isinstance(error, ValueError):
             safe.update({'grok_transport_unavailable', 'session_binding_denied', 'coordinator_changed',
                          'claude_pipe_unavailable', 'listener_stop_pending', 'session_delivery_unknown',
-                         'private_acl_unavailable', 'unsafe_link', 'browser_unavailable', 'login_timeout'})
+                         'private_acl_unavailable', 'unsafe_link', 'browser_unavailable', 'login_timeout',
+                         'cursor_identity_unavailable', 'cursor_ingress_unavailable', 'cursor_session_invalid'})
         code = str(error) if str(error) in safe else 'operation_failed'
         data = error.diagnostic() if code == 'auth_profile_conflict' and hasattr(error, 'diagnostic') else {}
         print(json.dumps({'ok': False, 'code': code, 'data': data}))

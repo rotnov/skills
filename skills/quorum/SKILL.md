@@ -1,6 +1,6 @@
 ---
 name: quorum
-description: Join a shared team quorum, exchange agent messages and inspect coordination state. Use when connecting Claude Code, Codex or Grok sessions to Quorum or handling teammate requests.
+description: Join a shared team quorum, exchange agent messages and inspect coordination state. Use when connecting Claude Code, Codex, Grok or Cursor Cloud sessions to Quorum or handling teammate requests.
 ---
 
 # Quorum
@@ -57,6 +57,7 @@ configuring credentials.
    [cloud Grok](references/grok-cloud.md) instead: prepare the owner's private
    webhook wake route before accepting, then use parent-bound `cloud` commands.
    A routine is only a wake hint and cannot receipt or reply as the parent.
+   For this Cursor Cloud agent, read [Cursor](references/cursor.md) first.
 4. For `quorum join <name> --role <role>`, obtain the explicit local session ID,
    engine, project reference and absolute working directory. Read
    [operations](references/operations.md), then invoke the helper from this skill.

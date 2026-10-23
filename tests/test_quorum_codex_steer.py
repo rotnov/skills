@@ -34,7 +34,8 @@ UNIX = os.name != 'nt' and hasattr(socket, 'AF_UNIX')
 #: The suite may run inside another client's chat; never inherit that binding.
 CLIENT_SESSION_VARIABLES = ('CLAUDE_CODE_SESSION_ID', 'CLAUDE_CODE_MESSAGING_SOCKET',
                             'CLAUDE_CODE_MESSAGING_TOKEN', 'GROK_SESSION_ID', 'GROK_LEADER_SOCKET',
-                            'CODEX_HOME')
+                            'CODEX_HOME', 'CURSOR_AGENT', 'CURSOR_CONVERSATION_ID',
+                            'CURSOR_AGENT_SOCKET', 'CURSOR_API_KEY')
 
 
 def short_root(stack):

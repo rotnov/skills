@@ -20,7 +20,8 @@ OTHER = '33333333-3333-4333-8333-333333333333'
 #: The suite may run inside a client chat; never inherit that caller's session.
 CLIENT_SESSION_VARIABLES = ('CODEX_THREAD_ID', 'GROK_SESSION_ID', 'GROK_LEADER_SOCKET',
                             'CLAUDE_CODE_SESSION_ID', 'CLAUDE_CODE_MESSAGING_SOCKET',
-                            'CLAUDE_CODE_MESSAGING_TOKEN')
+                            'CLAUDE_CODE_MESSAGING_TOKEN', 'CURSOR_AGENT', 'CURSOR_CONVERSATION_ID',
+                            'CURSOR_AGENT_SOCKET', 'CURSOR_API_KEY')
 
 
 def without_client_session():
