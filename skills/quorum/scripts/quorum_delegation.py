@@ -8,16 +8,22 @@ def grant(record, coordinator_id, coordinator_role, *, dispatch_mode='inline'):
         'coordinator_id': coordinator_id, 'coordinator_role': coordinator_role, 'dispatch_mode': dispatch_mode}
 
 
-def instruction(record, message, *, status_label='session status'):
+def matches(record, message):
+    """True only for a current grant bound to exactly this receiving binding and its pinned coordinator."""
     policy = record.get('delegation')
-    allowed = (isinstance(policy, dict) and not message.get('reply_to') and not message.get('notification')
+    return (isinstance(policy, dict) and not message.get('reply_to') and not message.get('notification')
                and policy.get('dispatch_mode', 'inline') in ('inline', 'native-subagent')
                and isinstance(policy.get('coordinator_id'), str) and bool(policy['coordinator_id'])
                and all(isinstance(record.get(key), str) and bool(record[key])
                        and policy.get(key) == record[key] for key in ('agent_id','quorum_id','project_ref','cwd'))
                and message.get('recipient_id') == record.get('agent_id')
                and message.get('sender_id') == policy.get('coordinator_id'))
-    if not allowed:
+
+
+def instruction(record, message, *, status_label='session status', holder='chat'):
+    """`holder` names the receiving binding: the parent `chat`, or a tool-inbox `worker` holding its own grant."""
+    policy = record.get('delegation')
+    if not matches(record, message):
         return 'No matching local owner delegation: evaluate this proposal within existing owner scope. '
     import json
     text = ('The receiving owner already authorized task intake from this pinned coordinator for project '
@@ -44,4 +50,16 @@ def instruction(record, message, *, status_label='session status'):
                  'launch another model CLI, a new session, headless handler or provider call, invent a supported '
                  'transport, or change permissions. No infinite worker spawning or automatic self-task loops. '
                  'Replies and notifications never spawn workers or automatic reply loops. ')
+    if holder == 'worker':
+        # The grant belongs to this worker binding; its parent chat acquires nothing from it.
+        for old, new in (('from this chat', 'from this worker'), ('exact bound chat', 'exact bound worker'),
+                         ('per receiving chat', 'per receiving worker'),
+                         ('The quorum service agent is not a task worker and gains no task right. ',
+                          "This grant is bound to this worker's own binding; its parent chat gains no authority "
+                          'from it. '),
+                         ("The original bound parent session forwards results/replies using its own exact identity "
+                          "and should return to the owner's work while workers run. ",
+                          'This bound worker forwards results/replies only with its own receipt and reply commands '
+                          'and exact identity; the parent never sends them for it. ')):
+            text = text.replace(old, new)
     return text

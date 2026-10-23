@@ -25,7 +25,9 @@ configuring credentials.
 0. Before creating a quorum, issuing an invitation, accepting an invitation or
    joining/connecting a session, first read [service agent](references/service-agent.md)
    and select or reuse the native `quorum` worker for that setup when available;
-   keep identity-bound commands in this chat. Only for creating, accepting,
+   keep identity-bound commands in this chat, except that a proven Codex worker
+   may own its separate binding through [native inbox](references/native-inbox.md)
+   (`--transport tool-inbox`); otherwise use the parent fallback. Only for creating, accepting,
    joining or connecting, then read [update](references/update.md) and run its
    automatic refresh once per owner request; issuing an invitation alone does
    not trigger it. Read the returned persistent copy's instructions,

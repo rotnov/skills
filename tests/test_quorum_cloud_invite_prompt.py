@@ -64,5 +64,44 @@ class CloudInvitationPromptTests(unittest.TestCase):
                 self.assertIn('Hello transport notices', prompt)
                 self.assertIsNone(re.search(r'\b[Ss]how/receipt\b|receive, show', prompt))
 
+    def test_all_bootstrap_prompts_route_a_proven_codex_worker_and_keep_the_parent_fallback(self):
+        from quorum_api import ServiceConfig
+        from quorum_invitations import create_id_invitation, create_open_invitation
+
+        class Api:
+            def call(self, op, payload, request_id=None):
+                if op == 'quorum_lookup': return {'quorum_id': 'q'}
+                if op == 'quorum_check_owner': return True
+                return {'invite_id': '11111111-1111-4111-8111-111111111111',
+                        'expires_at': '2026-10-23T12:00:00Z'}
+
+        config = ServiceConfig('https://example.com', 'sb_publishable_synthetic')
+        github = create_id_invitation(Api(), config, 'team', '123', 'github')
+        anonymous = create_open_invitation(Api(), config, 'team', 'open')
+        for name, prompt in [('github', github['session_prompt']),
+                             ('configured', github['configured_machine_prompt']),
+                             ('anonymous', anonymous['session_prompt'])]:
+            with self.subTest(name=name):
+                # The worker route and its exact parent relationship are chosen before the invitation is spent.
+                self.assertLess(prompt.index('references/native-inbox.md'), prompt.index('helper accept-id'))
+                self.assertLess(prompt.index('--transport tool-inbox --parent-thread-id'), prompt.index('helper accept-id'))
+                self.assertIn('native_worker_unavailable, the invitation is still unused', prompt)
+                self.assertIn('session receive', prompt)
+                self.assertIn('never runs session start as a background listener', prompt)
+                self.assertIn('not delivery to this chat', prompt)
+                self.assertIn('--accept-tasks-from coordinator --dispatch-mode native-subagent', prompt)
+                # The supported parent fallback stays intact and truthfully labelled.
+                self.assertIn('then session start and session status', prompt)
+                self.assertIn('Never relabel parent reception as a worker inbox', prompt)
+                self.assertIn('Only the original personal parent', prompt)
+                # Flags belong only to accept/connect, and the worker and parent branches are exclusive.
+                self.assertNotIn('every session command with --transport', prompt)
+                self.assertIn('those two commands only take these flags', prompt)
+                worker = prompt.index('For a proven Codex tool-inbox worker')
+                fallback = prompt.index('Parent-native fallback, only when no tool-inbox worker was proven')
+                self.assertLess(worker, fallback)
+                self.assertIn('the parent fallback below then does not apply', prompt[worker:fallback])
+                self.assertNotIn('session start', prompt[worker:fallback].replace('never runs session start', ''))
+
 
 if __name__ == '__main__': unittest.main()

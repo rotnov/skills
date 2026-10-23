@@ -28,15 +28,33 @@ class RealtimeWait:
     No message body or delivery acknowledgement is carried by this transport.
     """
     def __init__(self, api, record, ledger, *, connect=None, clock=time.monotonic,
-                 sleep=time.sleep, keepalive=None):
+                 sleep=time.sleep, keepalive=None, stop_aware=False):
         self.api, self.ledger, self.clock, self.sleep = api, ledger, clock, sleep
         self.keepalive = keepalive
+        # Opt-in: pass `stopping` into keepalive calls (the legacy listener keeps calling them bare).
+        self.stop_aware = stop_aware
+        # Time spent in nested keepalive, token and reconnect work, so callers can budget idle waits only.
+        self.busy_seconds, self._busy_depth = 0.0, 0
         self.topic = 'realtime:quorum:agent:' + str(uuid.UUID(record['agent_id']))
         self.connect = connect
         self.socket, self.jwt, self.ref = None, None, 0
         self.retry_at, self.backoff = 0, 10
         self.heartbeat_at, self.pending_heartbeat, self.drain_left = 0, None, 0
         self.diagnostics = {'mode': 'polling_fallback', 'poll_seconds': 10, 'signals': 0}
+
+    def _busy(self, operation, *args):
+        """Run a nested service operation, counting its time once even when nested."""
+        self._busy_depth += 1
+        began = self.clock()
+        try: return operation(*args)
+        finally:
+            self._busy_depth -= 1
+            if not self._busy_depth: self.busy_seconds += max(0, self.clock() - began)
+
+    def _keep(self, name, stopping=None):
+        if not self.keepalive: return
+        method = getattr(self.keepalive, name)
+        self._busy(lambda: method(stopping) if self.stop_aware else method())
 
     def _status(self, **data):
         self.diagnostics.update(data)
@@ -99,7 +117,7 @@ class RealtimeWait:
                 self.backoff = 10
                 self._status(mode='realtime', poll_seconds=60, code=None,
                              last_connected_at=time.time(), last_wake='subscribed')
-                if self.keepalive: self.keepalive.connected()
+                self._keep('connected', stopping)
                 return
         raise ValueError('realtime_unavailable')
 
@@ -115,14 +133,15 @@ class RealtimeWait:
         except Exception:
             self._fallback()
 
-    def pulse(self):
+    def pulse(self, stopping=None):
         """Keep health fresh during an active inbox drain as well as idle waits."""
-        if self.keepalive: self.keepalive.tick()
+        self._keep('tick', stopping)
 
     def _poll(self, stopping):
         for _ in range(10):
             if stopping(): return
-            if self.keepalive: self.keepalive.tick()
+            self._keep('tick', stopping)
+            if stopping(): return
             self.sleep(1)
         self._status(last_wake='fallback_poll')
 
@@ -130,7 +149,7 @@ class RealtimeWait:
         """Wake on a scoped signal, reconnect, safety scan, or requested stop."""
         if not self.socket:
             if self.clock() >= self.retry_at:
-                self.prepare(stopping)
+                self._busy(self.prepare, stopping)
                 if self.socket: return  # Catch up even if no new signal arrives.
             self._poll(stopping)
             return
@@ -138,9 +157,10 @@ class RealtimeWait:
         try:
             while not stopping() and self.clock() < deadline:
                 now = self.clock()
-                if self.keepalive: self.keepalive.tick()
+                self._keep('tick', stopping)
+                if stopping(): break
                 if now >= self.heartbeat_at and not self.pending_heartbeat:
-                    token = self.api.token()  # Existing private store refreshes an expiring JWT.
+                    token = self._busy(self.api.token)  # Existing private store refreshes an expiring JWT.
                     if token != self.jwt:
                         self._send('access_token', {'access_token': token})
                         self.jwt = token

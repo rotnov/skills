@@ -5,8 +5,14 @@ For issuing an invitation, read the [owner guide](invite.md).
 
 ## Join this chat
 
-First start or reuse the [service agent](service-agent.md). This chat stays the
-bound parent and runs `accept-id` and every `session` command itself.
+First start or reuse the [service agent](service-agent.md). For a proven Codex
+native worker, follow [native inbox](native-inbox.md): the worker itself runs
+`accept-id` and `session connect` with `--transport tool-inbox
+--parent-thread-id <parent-UUID>` (only those two commands take these flags),
+then its other `session` commands under its own identity; none of the parent
+steps below apply to it. Only as the parent-native fallback, when no worker was
+proven, does this chat stay the bound parent and run `accept-id` and every
+`session` command itself.
 Complete the [automatic refresh](update.md) once for this owner request before
 acceptance or session connection. Use its returned persistent skill directory,
 read its updated instructions, and keep your existing private state and session
