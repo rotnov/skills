@@ -1,0 +1,4 @@
+interface:
+  display_name: "Multi-Agent Research"
+  short_description: "Compare research islands using scoped evidence"
+  default_prompt: "Use $multi-agent-research to investigate this problem through distinct research approaches, bounded experiments, and explicit verification."
