@@ -199,7 +199,7 @@ and forwards results itself; unavailable capability or slots leave tasks pending
 See [dispatch policy](references/delegation.md#dispatch-matching-tasks).
 Subagents do not bypass queued input: active-turn ingestion is the separate
 Codex [urgent message](references/sessions.md#urgent-messages) route or Claude
-Code's between-tool-call inbox delivery. The durable Quorum 0.3 Codex route
+Code's between-tool-call delivery of accepted inbox messages. The durable Quorum 0.3 Codex route
 passed end to end with an owned daemon-hosted TUI; the Codex desktop app's
 original endpoint remains unavailable. This opt-in/instruction change neither steers nor
 eliminates all blocking or tool-call latency; native UI acceptance is separate.

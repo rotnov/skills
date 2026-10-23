@@ -83,7 +83,7 @@ automatic reply loops; unmatched peer requests remain proposals.
 
 Native workers do not bypass a queued input. Active-turn ingestion is the
 separate Codex [urgent message](sessions.md#urgent-messages) route or Claude
-Code's between-tool-call inbox delivery; see their status there. This policy implements opt-in and instructions,
+Code's between-tool-call delivery of accepted inbox messages; see their status there. This policy implements opt-in and instructions,
 not external steering or daemon-launched models; it does not eliminate all
 blocking or tool-call latency. Native UI execution needs separate acceptance.
 

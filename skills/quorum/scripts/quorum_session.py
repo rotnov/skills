@@ -116,9 +116,9 @@ def enqueue(record, message, auth_state):
                        + ('It was steered into the turn already running here, so read it now within the '
                           'current task instead of waiting for that task to finish. '
                           if mode == 'steered' else
-                          # Claude Code reads every inbox message between tool calls of
-                          # an active turn; urgency neither changes that nor steers it.
-                          'Claude Code delivers every inbox message between tool calls of an active turn, '
+                          # This text is read only after Claude Code's inbound controls
+                          # accepted it, between tool calls; urgency does not steer.
+                          'Claude Code delivers each accepted inbox message between tool calls of an active turn, '
                           'or as a new turn when idle; urgency does not change that path, is not Codex turn '
                           'steering and does not interrupt a running tool. '
                           if engine == 'claude' else
@@ -152,8 +152,8 @@ def enqueue(record, message, auth_state):
         require_caller(record['session_ref'], 'claude')
         if os.environ.get('CLAUDE_CODE_MESSAGING_SOCKET') != record['messaging_socket']:
             raise ValueError('session_binding_denied')
-        # Claude's inbox is read between tool calls of an active turn for every
-        # priority; it is not turn-ID steering and has no urgent-specific path.
+        # Claude reads accepted inbox messages between tool calls of an active
+        # turn for every priority; it is not turn-ID steering.
         submit(record['session_ref'], message['id'], prompt_for('piped'))
         return 'submitted'
     executable = shutil.which('codex')
