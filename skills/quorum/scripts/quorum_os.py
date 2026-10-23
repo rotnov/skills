@@ -6,8 +6,33 @@ from pathlib import Path
 PRIVATE_ACL_TIMEOUT = 30
 
 
+class AnchoredPath(type(Path())):
+    """A verified directory whose direct children are reached through its held descriptor.
+
+    Path-based helpers (locks, logs, existence checks) then cannot be redirected by a later rename
+    or link of an ancestor. Deeper paths and other operations keep ordinary path semantics.
+    """
+    def __init__(self, *segments, held=None):
+        super().__init__(*segments)
+        self.held = held  # (verified directory descriptor, its path string)
+
+    def with_segments(self, *segments):
+        return type(self)(*segments, held=self.held)
+
+    def anchored_child(self):
+        """(name, directory descriptor) for a direct child of the anchored directory, else None."""
+        if self.held is None or self.name in ('', '.', '..'): return None
+        directory, base = self.held
+        return (self.name, directory) if str(self.parent) == base else None
+
+    def stat(self, *, follow_symlinks=True):
+        child = self.anchored_child()
+        if child is None: return super().stat(follow_symlinks=follow_symlinks)
+        return os.stat(child[0], dir_fd=child[1], follow_symlinks=follow_symlinks)
+
+
 def reject_link(path):
-    path = Path(path)
+    path = path if isinstance(path, Path) else Path(path)
     try: info = path.lstat()
     except FileNotFoundError: return
     if path.is_symlink() or getattr(info, 'st_file_attributes', 0) & 0x400:
@@ -71,6 +96,8 @@ def open_private(path, flags, mode=0o600):
     """Open the link itself on Windows, then reject reparse points before use."""
     reject_link(path)
     if os.name != 'nt':
+        child = path.anchored_child() if isinstance(path, AnchoredPath) else None
+        if child is not None: return os.open(child[0], flags | os.O_NOFOLLOW, mode, dir_fd=child[1])
         return os.open(path, flags | os.O_NOFOLLOW, mode)
     import ctypes
     import msvcrt
@@ -110,7 +137,7 @@ def open_private(path, flags, mode=0o600):
 
 
 class FileLock:
-    def __init__(self, path): self.path = Path(path)
+    def __init__(self, path): self.path = path if isinstance(path, Path) else Path(path)
     def __enter__(self):
         self.fd = open_private(self.path, os.O_CREAT | os.O_RDWR)
         try:

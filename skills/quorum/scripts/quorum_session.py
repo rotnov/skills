@@ -243,10 +243,46 @@ def sequence(value):
     return number
 
 
+def session_selector(value):
+    """A provider UUID keeps its existing parsing; only the exact logical Claude form is added."""
+    from quorum_claude_worker import PREFIX
+    from quorum_native_inbox import CANONICAL
+    if value.startswith(PREFIX):
+        if not CANONICAL.fullmatch(value[len(PREFIX):]): raise ValueError('invalid_session_selector')
+        return value
+    return str(uuid.UUID(value))
+
+
+def slot_uuid(value):
+    from quorum_native_inbox import CANONICAL
+    if not CANONICAL.fullmatch(value): raise ValueError('invalid_slot')
+    return value
+
+
+def add_worker_commands(actions):
+    """Owner-parent slot lifecycle for a Claude native worker; nothing here spawns a child or model."""
+    worker = actions.add_parser('worker', help='Claude native worker: pending slot, parent attestation, child await')
+    steps = worker.add_subparsers(dest='worker_action', required=True)
+    prepare = steps.add_parser('prepare')
+    prepare.add_argument('--json-stdin', required=True, action='store_true', help='Read the strict scope JSON from stdin')
+    attest = steps.add_parser('attest')
+    attest.add_argument('slot', type=slot_uuid)
+    attest.add_argument('--native-handle', required=True)
+    attest.add_argument('--spawn-tool-use-id')
+    waiting = steps.add_parser('await-binding')
+    waiting.add_argument('slot', type=slot_uuid)
+    waiting.add_argument('--wait-seconds', type=int, choices=range(1, 61), default=60, metavar='1..60')
+    for name in ('status', 'stop'):
+        steps.add_parser(name).add_argument('slot', type=slot_uuid)
+
+
 def add_commands(commands):
     command = commands.add_parser('session', help='Connect an existing client session, without headless models')
-    command.add_argument('--session-id', type=lambda x: str(uuid.UUID(x)))
+    command.add_argument('--session-id', type=session_selector)
+    command.add_argument('--worker-capability', type=Path,
+                         help='Generated Claude worker capability file; the actor comes from it, never a selector')
     actions = command.add_subparsers(dest='action', required=True)
+    add_worker_commands(actions)
     connect = actions.add_parser('connect')
     connect.add_argument('quorum')
     connect.add_argument('--role', required=True)
@@ -363,6 +399,10 @@ def start(auth_state, ledger, sid, *, api, endpoint=None):
 def dispatch(args, auth_ledger, register_agent):
     from quorum_live import api_for
     import quorum_native_inbox as inbox
+    context = getattr(args, 'worker_context', None)
+    if context is not None:
+        from quorum_claude_worker import session_dispatch
+        return session_dispatch(args, auth_ledger, register_agent, context)
     requested = getattr(args, 'transport', None) or 'native'
     proved = None
     if args.action == 'connect':

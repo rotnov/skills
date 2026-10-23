@@ -28,6 +28,15 @@ class SessionBinding:
         return 'quorum-' + hashlib.sha256(json.dumps(asdict(self), sort_keys=True).encode()).hexdigest()[:32]
 
 
+SCHEMA = '''
+    create table if not exists bindings (conversation text primary key, data text not null);
+    create table if not exists capabilities (hash text primary key, agent text, expires real);
+    create table if not exists events (attempt text, event text, details text, created real);
+    create table if not exists attempts (id text primary key, generation integer, state text, reply text);
+    create table if not exists settings (key text primary key, data text not null);
+'''
+
+
 class LocalLedger:
     def __init__(self, root, clock=time.time):
         self.root, self.clock = Path(root), clock
@@ -41,13 +50,15 @@ class LocalLedger:
             raise ValueError('unsafe_state_file')
         self.db = sqlite3.connect(path, timeout=5)
         protect(path)
-        self.db.executescript('''
-            create table if not exists bindings (conversation text primary key, data text not null);
-            create table if not exists capabilities (hash text primary key, agent text, expires real);
-            create table if not exists events (attempt text, event text, details text, created real);
-            create table if not exists attempts (id text primary key, generation integer, state text, reply text);
-            create table if not exists settings (key text primary key, data text not null);
-        ''')
+        self.db.executescript(SCHEMA)
+
+    @classmethod
+    def adopt(cls, root, db, clock=time.time):
+        """Use a connection the caller opened on an already verified private path; no mkdir or chmod."""
+        ledger = cls.__new__(cls)
+        ledger.root, ledger.clock, ledger.db = root if isinstance(root, Path) else Path(root), clock, db
+        db.executescript(SCHEMA)
+        return ledger
 
     def setting(self, key, value=None):
         if value is not None:
