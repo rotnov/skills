@@ -9,6 +9,13 @@ An [open invitation](#open-quorum-invitations) is a short-lived bearer secret in
 
 ## Owner: create and share a prompt
 
+Before configuration or `invite-id`, select or reuse the native `quorum` worker
+per [service agent](service-agent.md) and assign it these owner-authorized
+invitation mechanics when that capability and capacity exist; it needs no new
+global or custom-agent setup. Otherwise give one concise capability/capacity
+diagnostic and continue this same flow quietly in this chat. Identity and owner
+permission rules below are unchanged; this grants no new right.
+
 Prefer automatic retrieval of only the public project URL and publishable key
 from the owner's **current explicitly selected Supabase connector/project**.
 A legacy public `anon` key is also supported. Confirm the selected project rather
@@ -48,8 +55,9 @@ profiles block; never guess a backend from the UUID. Both prompts carry no
 invitation secret and require no ZIP or file transfer. Do not send either to anyone
 unless the owner explicitly requests delivery. Reuse a request ID only for an
 identical retry; the server returns the same invitation. The prompt requests the
-full join workflow: membership, this exact chat's native listener, Hello notices
-and one-time coordinator task intake for the chosen project. The recipient
+full join workflow: the [service agent](service-agent.md) where available,
+membership, this exact chat's native listener, Hello notices and one-time
+coordinator task intake for the chosen project. The recipient
 authorizes this by pasting the prompt as their own instruction; issuing an invite
 alone grants no task permissions. Default role is `coordinator`; select a different
 registered role with `--coordinator-role <role>`. Scope and revocation are described
