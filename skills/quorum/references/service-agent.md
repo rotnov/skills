@@ -33,7 +33,11 @@ every `session` or `cloud` command, including connect, start, status, delegate,
 received, send and reply; the worker prepares. Exception: a proven Codex native
 worker follows [native inbox](native-inbox.md) and, with `--transport tool-inbox`,
 runs `accept-id`, connect, receive, receipt and reply as **its own** separate
-binding; the parent only inspects or stops it by exact UUID. Never spoof or
+binding; the parent only inspects or stops it by exact UUID. A Claude Code
+background worker bound by the parent's attestation follows
+[Claude worker](claude-worker.md) and runs its scoped create or `accept-id`,
+connect, receive, receipt and reply with its capability file; the parent only
+prepares, attests, inspects or stops it. Never spoof or
 override the current session exports to impersonate the parent or the worker. Keep messaging
 tokens and exports private and never forward credentials. A session ID may
 appear as diagnostic data; it confers no execution right. A Grok Bot routine
@@ -76,6 +80,8 @@ blocker rules in [delegation](delegation.md#dispatch-matching-tasks).
 On parent routes these are orchestration instructions, not a transport:
 envelopes arrive in the parent chat. Only the proven Codex
 [tool inbox](native-inbox.md) gives the worker its own bounded foreground
-reception; it is offline between calls, can pause when the parent's turn ends
-and is never a perpetual service. Claude and other clients have no worker inbox
-yet. Verify native behavior in the actual client before claiming it.
+reception, and an attested [Claude worker](claude-worker.md) gets the same
+bounded reception under a same-user capability; each is offline between calls,
+can pause when the parent's turn ends and is never a perpetual service. Other
+clients have no worker inbox yet. Verify native behavior in the actual client
+before claiming it.

@@ -27,7 +27,9 @@ configuring credentials.
    and select or reuse the native `quorum` worker for that setup when available;
    keep identity-bound commands in this chat, except that a proven Codex worker
    may own its separate binding through [native inbox](references/native-inbox.md)
-   (`--transport tool-inbox`); otherwise use the parent fallback. Only for creating, accepting,
+   (`--transport tool-inbox`), and an owner-attested Claude Code background worker
+   may own a scoped logical binding through [Claude worker](references/claude-worker.md);
+   otherwise use the parent fallback. Only for creating, accepting,
    joining or connecting, then read [update](references/update.md) and run its
    automatic refresh once per owner request; issuing an invitation alone does
    not trigger it. Read the returned persistent copy's instructions,
