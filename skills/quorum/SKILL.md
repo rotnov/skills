@@ -43,8 +43,8 @@ configuring credentials.
 3. To connect this existing chat and show peer messages/replies here, read
    [sessions](references/sessions.md). Bind the actual current session ID; a separate
    headless handler is not a substitute. Read it too before marking a message
-   urgent: only a connected Codex chat has a mid-turn route, and urgency grants
-   no permission. For an existing Grok TUI, read
+   urgent: only a connected Codex chat can be steered; Claude Code reads every
+   message between tool calls; urgency grants no permission. For an existing Grok TUI, read
    [Grok](references/grok.md) first; its experimental TUI route is macOS-only.
    For a Grok Bot personal chat on its Linux cloud computer, read
    [cloud Grok](references/grok-cloud.md) instead: prepare the owner's private
@@ -72,7 +72,8 @@ configuring credentials.
    without per-task confirmation. Unmatched peers remain proposals.
    Native subagent dispatch requires the owner's scoped `native-subagent` opt-in;
    follow that reference's worker limits and capability fallback. It does not
-   bypass queued input; active-turn ingress is only the Codex urgent route in
+   bypass queued input; active-turn ingress is the Codex urgent route or Claude
+   Code's between-tool-call delivery in
    [sessions](references/sessions.md#urgent-messages), with no guarantee of zero blocking.
    A separate headless pilot handler has its own conversation and bounded context.
    It must not take over a busy main session or edit its checkout.

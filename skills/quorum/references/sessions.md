@@ -207,14 +207,21 @@ failure or timeout once that frame's write has begun is
 Only a chat loaded on that control-socket server can be steered. The Codex
 desktop app serves its own chats over private stdio with no documented
 external endpoint, so an urgent message to a desktop chat is queued; Quorum
-does not use desktop-internal IPC or borrow its file descriptors. Windows has
-no Unix control-socket route here, so urgent Codex messages are queued there.
+does not use desktop-internal IPC or borrow its file descriptors. Upstream
+tracks this as [openai/codex#33556](https://github.com/openai/codex/issues/33556);
+until Codex documents such an endpoint, an owner who needs mid-turn urgency uses
+a Codex TUI hosted by the managed app-server daemon. Windows has no Unix
+control-socket route here, so urgent Codex messages are queued there.
 The listener log records the fixed reason code whenever steering falls back.
 
-Claude Code and Grok have no mid-turn route. An urgent message to them is queued
-in order exactly like a normal one, and its envelope says so; do not describe it
-as Codex steering. The same holds for a Codex chat whose daemon does not serve
-that thread.
+Claude Code [reads every inbox message between tool calls](https://code.claude.com/docs/en/cross-session-messaging#message-delivery)
+of an active turn, or starts a turn when idle, whatever its priority. That is
+not turn-ID steering: urgency changes only Quorum's selection order, never
+interrupts a running tool and cannot reach a turn that makes no further tool
+call. Grok has no mid-turn route; its leader queues an urgent message in order
+like a normal one. Each envelope states its client's behaviour; do not describe
+either as Codex steering. A Codex chat whose daemon does not serve that thread
+also queues.
 
 If the chat is idle, the daemon is unreachable, the thread is not loaded, the
 daemon's working directory for it disagrees with the registration, or the
@@ -226,9 +233,11 @@ ambiguous, even if that turn later completes or is replaced: it stops with
 replayed and never queued as a duplicate.
 Evidence that steering works requires the owner's actual busy chat consuming the
 message inside the turn that was already running; a fixture does not show that.
-That busy-turn steer has passed through an owned daemon-hosted Codex native
-adapter. The durable Quorum 0.3 urgent route is not yet verified end to end, and
-the Codex desktop app's original endpoint remains unavailable, so its chats queue.
+The durable 0.3.0 / protocol 2 route passed end to end in
+[rotnov/skills#35](https://github.com/rotnov/skills/issues/35): an owned
+daemon-hosted Codex TUI consumed an urgent message inside its running turn,
+while an earlier normal message waited for the next turn. The Codex desktop
+app's original endpoint remains unavailable, so its chats queue.
 
 ## Failure and recovery
 
