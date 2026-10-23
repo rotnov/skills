@@ -1,10 +1,25 @@
 -- Owner-applied engine extension. No new table, policy, grant or dispatcher.
--- Run after open access, native coordination and close serialization.
+-- Run in one transaction, after the close serialization (180000).
 -- Installation, invitation acceptance and the listener never apply this file.
+-- Each body below is its reviewed predecessor with only engine 'cursor' added.
 do $migration$
+declare
+ reviewed constant jsonb:=jsonb_build_object(
+  -- Close serialization (180000) and the mandatory 0.3.0/2 release are applied.
+  'quorum_private.call(text,jsonb,text)','ca718afbcda8682ade19ea6b246ccc2f1bfd5523eb7d1076cf4e9583e24f3ab7',
+  'public.session_requirements()','6e9752bcaedbbdfc4b2b8197cb44598306ee8d79044d654836017aab86031eef',
+  -- The bodies this file replaces; a drifted or already extended one fails closed.
+  'quorum_private.native_session(uuid,text)','60778eaf4fde7ce50980d5bf328f21c85d9db23f0947ed1554e0052a8654615c',
+  'quorum_private.receive_wakeup(text)','2f82e7bad7cedc81609fab91f8b4d680fe40a71216ce89c90fa66317ac24eb64',
+  'public.session_heartbeat(uuid,text,uuid,integer,text)','944211db94640dca91d75e007a4c5de8a1ee28511ea6c78a5b3fb2f7d96768c5',
+  'public.session_peers(uuid,text)','e6bef8353f48cb6322f76dcb024eeb4972d2881eeb65b28c62023e2d2f8b31cd');
+ f text;
 begin
- if to_regprocedure('quorum_private.verified_actor(uuid)') is null then
-  raise exception 'open_access_required'; end if;
+ for f in select jsonb_object_keys(reviewed) loop
+  if to_regprocedure(f) is null or encode(sha256(convert_to((select prosrc from pg_proc
+     where oid=to_regprocedure(f)),'UTF8')),'hex')<>reviewed->>f then
+   raise exception 'reviewed_dispatcher_changed: %', f; end if;
+ end loop;
 end $migration$;
 
 alter table quorum_private.agents drop constraint agents_engine_check;

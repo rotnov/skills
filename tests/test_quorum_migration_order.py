@@ -24,6 +24,17 @@ SERIALIZATION_PINS = {
     'public.session_requirements()': '6e9752bcaedbbdfc4b2b8197cb44598306ee8d79044d654836017aab86031eef',
 }
 
+# prosrc hashes after 180000: the serialized dispatcher, the release gate and the
+# four bodies the Cursor engine extension replaces. The disposable harness recomputes them.
+CURSOR_PINS = {
+    'quorum_private.call(text,jsonb,text)': 'ca718afbcda8682ade19ea6b246ccc2f1bfd5523eb7d1076cf4e9583e24f3ab7',
+    'public.session_requirements()': SERIALIZATION_PINS['public.session_requirements()'],
+    'quorum_private.native_session(uuid,text)': '60778eaf4fde7ce50980d5bf328f21c85d9db23f0947ed1554e0052a8654615c',
+    'quorum_private.receive_wakeup(text)': '2f82e7bad7cedc81609fab91f8b4d680fe40a71216ce89c90fa66317ac24eb64',
+    'public.session_heartbeat(uuid,text,uuid,integer,text)': '944211db94640dca91d75e007a4c5de8a1ee28511ea6c78a5b3fb2f7d96768c5',
+    'public.session_peers(uuid,text)': 'e6bef8353f48cb6322f76dcb024eeb4972d2881eeb65b28c62023e2d2f8b31cd',
+}
+
 
 def migration(suffix):
     return next(path for path in MIGRATIONS if path.name.endswith(suffix))
@@ -110,6 +121,13 @@ class MigrationOrderTests(unittest.TestCase):
         self.assertLess(names.index(serial.name), len(names) - 1)
         body = MIGRATIONS[-1].read_text(encoding='utf-8')
         self.assertIn("engine in ('claude','codex','grok','cursor')", body)
+        # It runs only on the serialized chain and refuses drifted or already extended bodies.
+        pins = dict(re.findall(r"'([a-z_.]+\([a-z,]*\))','([0-9a-f]{64})'", body))
+        self.assertEqual(pins, CURSOR_PINS)
+        self.assertNotEqual(pins['quorum_private.call(text,jsonb,text)'],
+                            SERIALIZATION_PINS['quorum_private.call(text,jsonb,text)'])
+        self.assertIn("raise exception 'reviewed_dispatcher_changed: %', f;", body)
+        self.assertLess(body.index('end $migration$;'), body.index('alter table'))
         self.assertIn('quorum_private.verified_actor(auth.uid())', body)
         lowered = body.lower()
         self.assertNotIn('create function quorum_private.call(', lowered)

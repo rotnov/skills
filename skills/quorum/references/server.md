@@ -63,7 +63,9 @@ Review and apply the following in one administrator-controlled transaction:
    [Cursor Cloud engine extension](../supabase/migrations/20261023070000_native_cursor_session.sql).
    It adds `cursor` to the existing exact-session, heartbeat, peer and private
    notification checks. It grants no new creation, membership or table rights
-   and does not replace the dispatcher.
+   and does not replace the dispatcher. It fails closed with
+   `reviewed_dispatcher_changed` before the close serialization, when reapplied,
+   or when a body it replaces differs from the reviewed one.
    Open access changes, open invite creation and open invite acceptance require
    PostgreSQL `READ COMMITTED` and fail closed with
    `open_access_requires_read_committed` at any other isolation level.
