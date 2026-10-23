@@ -698,6 +698,82 @@ class DeliveryTests(Harness):
         self.assertEqual(ledger.setting('delivery:' + M3), {'state': 'intent'})
 
     @isolated_profiles
+    def test_completed_receipt_only_closes_the_answer_path(self):
+        api = Api(inbox=[message(M1)])
+        self.offer(api)
+        with caller(self.home):
+            self.assertEqual(self.cli(api, 'session', 'received', M1)[1]['data']['state'], 'acked')
+            self.assertEqual(self.cli(api, 'session', 'received', M1)[1]['data']['state'], 'acked')
+            acked = self.ledger().setting('delivery:' + M1)
+            code, result, _ = self.cli(api, 'session', 'reply', M1, '--text-stdin', stdin=b'late answer')
+        self.assertEqual((code, result['code']), (3, 'native_inbox_reply_loop_denied'))
+        self.assertNotIn('session_reply', api.ops())
+        self.assertEqual(self.ledger().setting('delivery:' + M1), acked)
+        self.assertNotIn('reply_digest', acked)
+
+    @isolated_profiles
+    def test_receipt_winning_between_reply_read_and_intent_cas_denies_the_answer(self):
+        from quorum_native_inbox import NativeInboxError, confirm, reply
+        api = Api(inbox=[message(M1)])
+        self.offer(api)
+        ledger = self.ledger()
+        record = ledger.setting('session-agent')
+        real = ledger.db
+        class Interleave:
+            """The reply already read the offered row; a receipt commits before its intent CAS runs."""
+            fired = False
+            def __getattr__(self, name): return getattr(real, name)
+            def __enter__(self): return real.__enter__()
+            def __exit__(self, *exc): return real.__exit__(*exc)
+            def execute(inner, sql, *params):
+                if sql.startswith('update settings set data=? where key=? and data=?') and not Interleave.fired:
+                    Interleave.fired = True
+                    with OtherConnection(ledger.root) as other:
+                        self.assertEqual(confirm(api, other, record, M1)['state'], 'acked')
+                return real.execute(sql, *params)
+        ledger.db = Interleave()
+        try:
+            with caller(self.home), self.assertRaises(NativeInboxError) as raised:
+                reply(api, ledger, record, M1, 'answer', 'normal')
+        finally: ledger.db = real
+        self.assertTrue(Interleave.fired)
+        self.assertEqual(raised.exception.code, 'native_inbox_reply_loop_denied')
+        self.assertNotIn('session_reply', api.ops())
+        stored = ledger.setting('delivery:' + M1)
+        self.assertEqual(stored['state'], 'acked')
+        self.assertNotIn('reply_digest', stored)
+
+    @isolated_profiles
+    def test_persisted_intent_survives_receipt_and_lost_reply_response(self):
+        from quorum_api import QuorumError
+        from quorum_native_inbox import confirm, reply
+        api = Api(inbox=[message(M1)])
+        self.offer(api)
+        ledger = self.ledger()
+        record = ledger.setting('session-agent')
+        def receipt():
+            with OtherConnection(ledger.root) as other, caller(self.home):
+                self.assertEqual(confirm(api, other, record, M1)['state'], 'acked')
+        api.hooks['session_reply'] = receipt
+        api.lost.append('session_reply')  # The service stored the answer; its response never arrived.
+        with caller(self.home), self.assertRaises(QuorumError):
+            reply(api, ledger, record, M1, 'answer', 'normal')
+        stored = ledger.setting('delivery:' + M1)
+        self.assertEqual(stored['state'], 'acked')
+        self.assertEqual(len(stored['reply_digest']), 64)
+        with caller(self.home):
+            replay = reply(api, ledger, record, M1, 'answer', 'normal')
+            for stdin, extra in ((b'changed', ()), (b'answer', ('--priority', 'urgent'))):
+                code, result, _ = self.cli(api, 'session', 'reply', M1, '--text-stdin', *extra, stdin=stdin)
+                self.assertEqual((code, result['code']), (3, 'native_inbox_reply_loop_denied'))
+        self.assertEqual(replay['reply_message_id'], api.replies[M1])
+        replies = [payload for operation, payload, _ in api.calls if operation == 'session_reply']
+        self.assertEqual(len(replies), 2)
+        self.assertTrue(all(payload == replies[0] for payload in replies))
+        self.assertEqual(ledger.setting('delivery:' + M1), stored)
+        self.assertEqual(api.acked, [M1])
+
+    @isolated_profiles
     def test_matched_revoked_and_absent_worker_grants(self):
         api = Api(inbox=[message(M1), message(M2, sender_id=OTHER)])
         with caller(self.home):

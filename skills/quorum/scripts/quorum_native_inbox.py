@@ -493,7 +493,11 @@ def reply(api, ledger, record, message_id, body, priority):
         delivery = json.loads(raw)
         if delivery['reply_to'] or delivery['notification']: raise NativeInboxError('native_inbox_reply_loop_denied')
         if delivery.get('reply_digest') == digest: break
-        if delivery.get('reply_digest') is not None: raise NativeInboxError('native_inbox_reply_loop_denied')
+        # Checked on every iteration's fresh read: a completed receipt-only action (acked without an
+        # intent) or a different persisted answer closes the answer path. Only an offered row with no
+        # intent may acquire one; a matching persisted intent (above) may still be replayed after ACK.
+        if delivery.get('reply_digest') is not None or delivery['state'] == 'acked':
+            raise NativeInboxError('native_inbox_reply_loop_denied')
         # Record the one intended answer before sending it (compare-and-set; a concurrent receipt keeps its state).
         with ledger.db:
             ledger.db.execute('update settings set data=? where key=? and data=?',

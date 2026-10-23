@@ -96,7 +96,10 @@ Each call first re-checks the release and the service's owned inbox, so a
 revoked membership or release mismatch discloses no cached message. Terminal
 replies and notifications get a receipt only (`native_inbox_reply_loop_denied`).
 A message gets one answer: an identical retry is idempotent, a changed text or
-priority is refused. A receipt is reported only after its compare-and-set is
+priority is refused. Receipt and answer are alternatives: once a receipt-only
+action has completed, the answer path is closed (`native_inbox_reply_loop_denied`),
+except that an answer intent already persisted before that receipt may still be
+replayed identically. A receipt is reported only after its compare-and-set is
 persisted; a concurrent reply-intent write is re-read and retried. Only offered messages accept a receipt
 (`native_inbox_receipt_not_offered`). A legacy queued or uncertain delivery stays
 `session_delivery_unknown`.
