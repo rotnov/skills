@@ -5,6 +5,8 @@ For issuing an invitation, read the [owner guide](invite.md).
 
 ## Join this chat
 
+First start or reuse the [service agent](service-agent.md). This chat stays the
+bound parent and runs `accept-id` and every `session` command itself.
 Complete the [automatic refresh](update.md) once for this owner request before
 acceptance or session connection. Use its returned persistent skill directory,
 read its updated instructions, and keep your existing private state and session
@@ -85,12 +87,12 @@ explicitly requested membership only:
    then `session start` and `session status`, using the same installed helper,
    frozen uv project and private state as acceptance. Reuse a matching existing
    binding; a conflicting binding is a blocker, not permission to replace it.
-3. Only after status confirms running, greet the owner in this chat:
-   `Hello! Listening to <quorum> as <role> (project <shared-project>).`
+3. Only after status confirms running, report one setup outcome in this chat:
+   `Listening to <quorum> as <role> (project <shared-project>).`
    Include the persistent skill path. If any step fails, report the failed step
    and actual state instead of claiming to be listening.
 4. Verify a message and reply with another connected role as described in
-   [send and answer](sessions.md#send-and-answer-here). The local greeting and
+   [send and answer](sessions.md#send-and-answer-here). The setup report and
    running status do not prove peer delivery. Do not invent a peer destination
    or claim a probe was sent when none was sent.
 
@@ -142,7 +144,8 @@ existing members merely because they update the skill. Read
 [delegation](delegation.md) for exact scope, replacement and revocation.
 
 The updated listener sends Hello transport notices after connection/reconnection,
-without a model call. It keeps a quiet heartbeat every 20 seconds. Use
+without a model call; receipt them quietly per [service agent](service-agent.md).
+It keeps a quiet heartbeat every 20 seconds. Use
 `session peers` for same-project availability and client/required versions.
 A missing legacy version sets `update_required`; it does not change permissions
 or remove queued messages. For availability: after 60 seconds without a delivery

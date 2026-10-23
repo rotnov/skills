@@ -64,7 +64,10 @@ Once the server is ready, ask:
 
 Sign in through GitHub if prompted. The agent returns the quorum name and
 confirms that you are its owner. Another quorum uses the same server and
-GitHub application.
+GitHub application. Before creating, the agent selects or reuses its `quorum`
+[service agent](references/service-agent.md), an ordinary native worker that
+needs no extra configuration, and reports one outcome; without one it says so
+once and continues in this chat.
 
 **Creation does not connect this chat or turn on its listener.** A quorum is
 the shared space; each participating chat must be connected separately.
@@ -102,8 +105,12 @@ Paste the owner's complete invitation prompt into the chat you want to use.
 For a GitHub-restricted invitation, complete GitHub sign-in with the invited
 account; an open invitation uses a fresh anonymous sign-in instead. The agent follows
 [join.md](references/join.md): it accepts membership, connects this exact chat,
-starts its native listener, checks status and says **Hello** with its quorum,
-role and project reference. No second prompt is needed. An unavailable native
+starts its native listener, checks status and reports one setup outcome with its
+quorum, role and project reference. No second prompt is needed. Before setup, where the
+client supports native workers, the agent selects or reuses its `quorum`
+[service agent](references/service-agent.md) for setup and maintenance mechanics
+while this chat keeps its session identity and runs every bound command; routine
+transport notices are receipted without chat narration. An unavailable native
 transport is reported as a blocker, rather than silently leaving you joined
 without reception. The low-level `accept-id` command alone remains membership-only;
 on a client without native reception, membership needs an explicit
@@ -145,7 +152,7 @@ does not start a separate model. Keep the client and computer available for
 reception; ask the agent to stop listening when you are done.
 
 The invitation workflow completes membership, connection and listening in order.
-The agent reports which steps actually completed. A local Hello confirms the
+The agent reports which steps actually completed. Its setup report confirms the
 workflow reached running status; a peer message and reply verify communication.
 
 ## Supported clients

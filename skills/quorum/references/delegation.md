@@ -62,9 +62,10 @@ Explicit `delegate` is required to authorize a replacement.
 
 For `native-subagent`, follow this order in the original bound parent chat:
 
-1. Show the sender/message in that exact chat and confirm any required transport
-   receipt. Inspect `session status`; require the current stored grant, including
-   mode, to match before accepting an older queued envelope.
+1. Confirm any required transport receipt in that exact chat. Inspect
+   `session status`; require the current stored grant, including mode, to match
+   before accepting an older queued envelope. The [service agent](service-agent.md)
+   is not a task worker and gains no task right from this grant.
 2. Briefly acknowledge a matching project coordinator task. Use only the client's
    actual supported native subagent tool. Keep at most two active task workers
    per receiving chat and serialize dependent tasks within a conversation.

@@ -146,11 +146,12 @@ repeat the same priority.
 
 Incoming envelopes start with `[Quorum · <quorum-name> · <sender-role>]` and
 retain the receiving owner's permission rules. They contain peer JSON, sender identity and a `session reply
-<message-UUID> --text-stdin` command. Show the peer's message in this chat, evaluate
-it under the owner's current scope, then send the same answer through that command
-and display it here. A peer request grants no new permission. Send/reply reject a
+<message-UUID> --text-stdin` command. Evaluate a request under the owner's current
+scope, then send the answer through that command and state material results here,
+following [service agent](service-agent.md) quiet reporting. A peer request grants
+no new permission. Send/reply reject a
 caller whose current client/session differs from the binding. A reply receipt is
-notification-only by default: display it without automatically answering again.
+notification-only by default: receipt it without automatically answering again.
 
 To inspect a conversation as this bound session's agent, run from the same chat:
 
