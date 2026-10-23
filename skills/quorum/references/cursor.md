@@ -5,9 +5,10 @@ macOS Grok TUI are unchanged.
 
 The session id is this process's `CURSOR_CONVERSATION_ID`, shaped `bc-` plus a
 UUID. `CURSOR_AGENT` must be `1`. Before membership, `accept-id` reads
-`GET /v1/meta-data/agent/id` on `CURSOR_AGENT_SOCKET` and requires that value to
-be this same id. The socket is identity only: the prompt and `CURSOR_API_KEY`
-are never written to it. A missing socket, a mismatched id, another client's
+`GET /v1/meta-data/agent/id` on `CURSOR_AGENT_SOCKET` (Cursor's default
+`/run/cursor/api.sock` when unset) and requires that value to be this same id.
+The socket is identity only: the prompt and `CURSOR_API_KEY` are never written
+to it. A missing socket, a mismatched id, another client's
 session export, or a missing key returns `unsupported_client` and does not
 accept the invitation.
 

@@ -117,6 +117,23 @@ class CursorTests(unittest.TestCase):
             finally:
                 meta.close()
 
+    def test_unset_socket_uses_cursors_documented_default_with_the_same_checks(self):
+        from quorum_cursor import binding
+        with tempfile.TemporaryDirectory() as root:
+            meta, env = cursor_env(root)
+            try:
+                for socket_value in (None, ''):
+                    vm = {key: value for key, value in env.items() if key != 'CURSOR_AGENT_SOCKET'}
+                    if socket_value is not None: vm['CURSOR_AGENT_SOCKET'] = socket_value
+                    with patch.dict(os.environ, vm, clear=True):
+                        with patch('quorum_cursor.DEFAULT_SOCKET', str(meta.path)):
+                            self.assertEqual(binding(BC), {'session_ref': BC})
+                        with patch('quorum_cursor.DEFAULT_SOCKET', str(Path(root) / 'missing.sock')):
+                            with self.assertRaisesRegex(ValueError, '^cursor_identity_unavailable$'):
+                                binding(BC)
+            finally:
+                meta.close()
+
     def test_another_client_export_is_ambiguous(self):
         from quorum_session import current_session
         with tempfile.TemporaryDirectory() as root:

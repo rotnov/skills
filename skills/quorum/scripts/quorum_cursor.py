@@ -21,6 +21,9 @@ import uuid
 
 _BC = re.compile(r'^bc-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
 _API = 'https://api.cursor.com/v1/agents/'
+# Cursor-managed VMs serve metadata here when CURSOR_AGENT_SOCKET is unset or empty:
+# https://cursor.com/docs/cloud-agent/metadata
+DEFAULT_SOCKET = '/run/cursor/api.sock'
 # Retry-After is honored as delta-seconds up to an hour. A 429 without a usable
 # value (absent, or an HTTP-date) waits this long rather than hammering the key.
 _RATE_LIMIT_WAIT = 30
@@ -120,7 +123,7 @@ def binding(session_id):
         raise ValueError('cursor_identity_unavailable') from None
     if exported != sid:
         raise ValueError('session_binding_denied')
-    if read_agent_id(os.environ.get('CURSOR_AGENT_SOCKET', '')) != sid:
+    if read_agent_id(os.environ.get('CURSOR_AGENT_SOCKET') or DEFAULT_SOCKET) != sid:
         raise ValueError('cursor_identity_unavailable')
     _api_key()
     return {'session_ref': sid}
