@@ -141,6 +141,51 @@ class DispatchModeTests(unittest.TestCase):
         for command in delivered[1:]:
             self.assertNotIn('native subagent tool', command[-1])
 
+    def test_routine_envelopes_need_receipt_but_no_owner_facing_echo(self):
+        import json
+        import re
+        import subprocess
+        from quorum_delegation import grant, instruction
+        from quorum_grok_cloud import notice
+        from quorum_session import enqueue
+        echo = re.compile(r'\b[Ss]how (?:it|the|this)\b|show/receipt')
+        no_auto_answer = re.compile(r'do not (?:automatically )?answer')
+        sid = '11111111-1111-4111-8111-111111111111'
+        message_id = '22222222-2222-4222-8222-222222222222'
+        record = dict(agent_id='receiver', quorum_id='q', project_ref='project', cwd='/project',
+                      session_ref=sid, quorum='team', engine='claude', messaging_socket='/synthetic.sock')
+        record['delegation'] = grant(record, 'coordinator', 'lead', dispatch_mode='native-subagent')
+        message = dict(id=message_id, sender_id='coordinator', recipient_id='receiver', body='Task')
+        piped = []
+        env = {'CLAUDE_CODE_SESSION_ID': sid, 'CLAUDE_CODE_MESSAGING_SOCKET': '/synthetic.sock'}
+        with patch.dict(os.environ, env, clear=True), \
+                patch('quorum_claude_pipe.submit', side_effect=lambda *args: piped.append(args[2])):
+            for changed in ({}, {'notification': True}, {'reply_to': 'previous'}):
+                enqueue(record, {**message, **changed}, Path('/private/synthetic-state'))
+        queued = []
+        def run(command, **kwargs):
+            queued.append(command[-1])
+            return subprocess.CompletedProcess(command, 0, 'queued', '')
+        with patch('quorum_session.subprocess.run', side_effect=run), \
+                patch('quorum_session.shutil.which', return_value='/synthetic/codex'):
+            enqueue({**record, 'engine': 'codex'}, {**message, 'notification': True},
+                    Path('/private/synthetic-state'))
+        cloud = [notice(record, {**message, **changed}, 'normal')
+                 for changed in ({}, {'notification': True}, {'reply_to': 'previous'})]
+        for prompt in piped + queued + cloud:
+            self.assertIsNone(echo.search(prompt), echo.search(prompt) and prompt)
+            self.assertIn('references/service-agent.md', prompt)
+            self.assertRegex(prompt, no_auto_answer)
+        for prompt in piped:
+            # The exact chat's real receipt and the parent-only reply route stay required.
+            receipt = json.loads(prompt.split('(argument array): ', 1)[1].split('\n', 1)[0])
+            self.assertEqual(receipt[-2:], ['received', message_id])
+            self.assertIn('Only the original bound parent session may run the reply command', prompt)
+        for prompt in cloud:
+            self.assertIn('Only this original parent chat may run these commands', prompt)
+        self.assertIsNone(echo.search(instruction(record, message)))
+        self.assertIn('exact bound chat', instruction(record, message))
+
     def test_generated_invite_requires_receiving_owner_paste_and_native_flags(self):
         from quorum_invitations import create_id_invitation
         from quorum_api import ServiceConfig

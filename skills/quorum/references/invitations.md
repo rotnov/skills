@@ -7,6 +7,11 @@ For first service configuration or login, read [setup](setup.md).
 
 ## Create a quorum
 
+Before creation, select or reuse the [service agent](service-agent.md). With a
+supported native worker and free capacity, assign it the refresh and creation
+below, using the owner's existing login and the access the owner chose; the
+parent reports one outcome. Without them, report that once and continue the
+same steps quietly in this chat.
 Complete the [automatic refresh](update.md) once for this owner request and use
 the returned persistent skill directory before creation. Read its updated
 instructions and retain the same private state, login and request ID. Re-reading

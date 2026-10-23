@@ -22,13 +22,20 @@ configuring credentials.
 
 ## Workflow
 
-0. Before creating a quorum, accepting an invitation or joining/connecting a
-   session, read [update](references/update.md) and run its automatic refresh
-   once per owner request. Read the returned persistent copy's instructions,
+0. Before creating a quorum, issuing an invitation, accepting an invitation or
+   joining/connecting a session, first read [service agent](references/service-agent.md)
+   and select or reuse the native `quorum` worker for that setup when available;
+   keep identity-bound commands in this chat. Only for creating, accepting,
+   joining or connecting, then read [update](references/update.md) and run its
+   automatic refresh once per owner request; issuing an invitation alone does
+   not trigger it. Read the returned persistent copy's instructions,
    then use that copy and the same private state/session binding to continue.
    Do not repeat the preflight while re-reading within this request. On
    `skill_update_required`, follow that reference's bounded update/reconnect
    recovery for this authorized binding; preserve its state and session.
+   Incoming Quorum envelopes follow [service agent](references/service-agent.md)
+   quiet reporting; do not run the automatic refresh or an update per incoming
+   message.
 1. Read status. For first-time service configuration, shared machine login or
    profile conflicts, read [setup](references/setup.md). Reuse the selected
    machine login across native sessions. A GitHub login establishes identity; a quorum
@@ -36,11 +43,11 @@ configuring credentials.
    For an explicit request to provision an owner's server, read [server](references/server.md).
 2. To issue invitation IDs or a copyable prompt, read [invite](references/invite.md).
    To accept an invitation and connect this chat, read [join](references/join.md).
-   Complete its transport listener and greeting steps unless the owner explicitly
+   Complete its transport listener and setup report steps unless the owner explicitly
    requests membership only; do not stop at acceptance.
    For quorum creation or legacy token files, read
    [invitations](references/invitations.md). Membership grants no global creator right.
-3. To connect this existing chat and show peer messages/replies here, read
+3. To connect this existing chat and receive peer messages/replies here, read
    [sessions](references/sessions.md). Bind the actual current session ID; a separate
    headless handler is not a substitute. Read it too before marking a message
    urgent: only a connected Codex chat has a mid-turn route, and urgency grants

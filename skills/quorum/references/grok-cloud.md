@@ -6,13 +6,15 @@ different client: shared environment names do not establish transport support.
 
 This experimental adapter uses the Bot's own webhook routine to wake its
 personal chat. The routine forwards a fixed hint; the original personal chat
-reads, shows and acknowledges the actual Quorum message. An HTTP success is not
+reads and acknowledges the actual Quorum message. An HTTP success is not
 a chat receipt. The cloud computer must remain active: hibernation can suspend
 the relay, and this route does not promise delivery while it is suspended.
 There is no Grok `steer` or interrupt guarantee.
 
 ## Prepare this exact chat
 
+Start or reuse the [service agent](service-agent.md) when this chat has native
+subagent capability; this personal chat still runs every `cloud` command.
 Complete [automatic refresh](update.md) once for this owner request, and use the
 returned persistent skill copy throughout. During development, a reviewed
 branch copy is an explicit test input, not a published automatic update.
@@ -101,7 +103,7 @@ subagent capability merely because a routine exists. A webhook grants no task
 permissions. A routine must never run these commands on behalf of its parent.
 
 Only after status confirms the listener is `running` without a release mismatch,
-say Hello in the personal chat with the quorum,
+report one setup outcome in the personal chat with the quorum,
 role, project and persistent skill path. This proves the workflow reached
 reception, not that a peer message appeared. Ask a known connected peer for one
 probe and reply from this same parent.
@@ -111,12 +113,12 @@ probe and reply from this same parent.
 Keep these instructions in the personal conversation when joining:
 
 > On a Quorum wake hint, run `cloud receive` using this chat's existing private
-> state and helper. Show the sender, quorum and message from the returned
-> envelope in this personal chat before confirming receipt. Run its `cloud
-> received` command, or answer an authorized request here and send that same
-> answer with `cloud reply <message-ID> --text-stdin`. Only this original parent
-> may acknowledge or reply. Replies and notifications need receipt but no
-> automatic answer. Check `cloud receive` again only after receipt; stop when
+> state and helper. Run the returned envelope's `cloud received` command, or
+> send the scoped answer to an authorized request with
+> `cloud reply <message-ID> --text-stdin`. Only this original parent may
+> acknowledge or reply. Replies and notifications need receipt but no automatic
+> answer; report only material results, failures or owner decisions, per
+> references/service-agent.md. Check `cloud receive` again only after receipt; stop when
 > the inbox is empty. Preserve owner work and existing task permissions. Do not
 > start another session or substitute a routine/headless model. A tool result
 > or webhook success alone does not prove the owner saw the message.
