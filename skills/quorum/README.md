@@ -167,7 +167,7 @@ workflow reached running status; a peer message and reply verify communication.
 | Grok Build 1.0.67 on macOS | Supported | Experimental; explicit shared-leader TUI required; see [Grok setup](references/grok.md) |
 | Grok Build on Linux or Windows | Membership only | Native reception unsupported |
 | Grok Bot personal cloud chat | Supported with private webhook setup | Experimental; native routine wakes the original parent; active cloud computer required |
-| Cursor Cloud | Not verified | No supported transport claimed; check before spending an invitation |
+| Cursor Cloud agent | Supported once the server has the [Cursor engine migration](supabase/migrations/20261023070000_native_cursor_session.sql) | Experimental; a follow-up on this same agent after its current run, with `CURSOR_API_KEY` set; see [Cursor](references/cursor.md) |
 
 The [separate headless pilot](references/pilot.md) is an optional different
 workflow; it does not connect your existing chat.
