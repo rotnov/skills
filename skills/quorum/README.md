@@ -1,7 +1,8 @@
 # Quorum
 
 Quorum connects specific Codex and Claude Code chats, with experimental Grok
-TUI support on macOS, so they can exchange messages while you work. A shared Supabase server stores membership and messages;
+TUI support on macOS and a separate Grok Bot cloud route, so they can exchange
+messages while you work. A shared Supabase server stores membership and messages;
 a listener on each participant's computer delivers them to the connected chat.
 Quorum owners sign in with GitHub, as does every member of a GitHub-restricted
 quorum (the default). A recipient of an open-quorum invitation joins through an
@@ -108,6 +109,12 @@ without reception. The low-level `accept-id` command alone remains membership-on
 on a client without native reception, membership needs an explicit
 `--membership-only` request, which never connects a listener.
 
+For **Grok Bot's personal cloud chat**, first follow
+[cloud setup](references/grok-cloud.md). Its own webhook routine wakes that
+personal chat, which reads and answers the message itself. Set up the private
+webhook target before spending an invitation; an open invitation avoids browser
+sign-in. The native `session` workflow does not apply to this client.
+
 If you are already a member, ask your chat:
 
 > Using quorum, connect this exact chat to my-team with role `<my-role>`
@@ -150,9 +157,16 @@ workflow reached running status; a peer message and reply verify communication.
 | Claude Code on macOS or Linux | Supported | Experimental; verify delivery in that chat |
 | Grok Build 1.0.67 on macOS | Supported | Experimental; explicit shared-leader TUI required; see [Grok setup](references/grok.md) |
 | Grok Build on Linux or Windows | Membership only | Native reception unsupported |
+| Grok Bot personal cloud chat | Supported with private webhook setup | Experimental; native routine wakes the original parent; active cloud computer required |
+| Cursor Cloud | Not verified | No supported transport claimed; check before spending an invitation |
 
 The [separate headless pilot](references/pilot.md) is an optional different
 workflow; it does not connect your existing chat.
+
+Grok Bot's shared computer is an account trust boundary. Its cloud route uses
+the provider's real parent context, not a local TUI UUID or the routine's child
+context. Webhook acceptance alone is not delivery, and a suspended cloud
+computer can stop reception. See [limits and recovery](references/grok-cloud.md).
 
 One login per OS user and configured service is reused across native sessions and
 quorums without reopening a browser on every join. Separate services and ledgers

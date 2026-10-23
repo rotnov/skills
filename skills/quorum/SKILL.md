@@ -36,7 +36,7 @@ configuring credentials.
    For an explicit request to provision an owner's server, read [server](references/server.md).
 2. To issue invitation IDs or a copyable prompt, read [invite](references/invite.md).
    To accept an invitation and connect this chat, read [join](references/join.md).
-   Complete its native listener and greeting steps unless the owner explicitly
+   Complete its transport listener and greeting steps unless the owner explicitly
    requests membership only; do not stop at acceptance.
    For quorum creation or legacy token files, read
    [invitations](references/invitations.md). Membership grants no global creator right.
@@ -45,7 +45,11 @@ configuring credentials.
    headless handler is not a substitute. Read it too before marking a message
    urgent: only a connected Codex chat has a mid-turn route, and urgency grants
    no permission. For an existing Grok TUI, read
-   [Grok](references/grok.md) first; its experimental route is macOS-only.
+   [Grok](references/grok.md) first; its experimental TUI route is macOS-only.
+   For a Grok Bot personal chat on its Linux cloud computer, read
+   [cloud Grok](references/grok-cloud.md) instead: prepare the owner's private
+   webhook wake route before accepting, then use parent-bound `cloud` commands.
+   A routine is only a wake hint and cannot receipt or reply as the parent.
 4. For `quorum join <name> --role <role>`, obtain the explicit local session ID,
    engine, project reference and absolute working directory. Read
    [operations](references/operations.md), then invoke the helper from this skill.

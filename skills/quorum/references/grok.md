@@ -6,6 +6,10 @@ Linux and Windows Grok transports are not supported. Codex and Claude support
 is unchanged. Grok discovers the shared `.agents/skills` directory, including
 the portable copy returned by the [automatic refresh](update.md).
 
+This page describes the local terminal UI only. For an existing Grok Bot personal
+chat with a Linux cloud computer, use the separate [cloud route](grok-cloud.md).
+It does not turn an ordinary Linux TUI or Cursor Cloud into a supported client.
+
 An already-running standalone chat started as plain `grok`, with no leader
 socket, cannot connect through this transport. Build 1.0.67 has no in-place
 attach or promotion command: leader mode is chosen at startup. A

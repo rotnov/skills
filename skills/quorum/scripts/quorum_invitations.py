@@ -84,7 +84,13 @@ def public_service(config):
 
 REFRESH = ('Read the installed SKILL.md and references/join.md. Resolve the installed skill directory, '
            'perform references/update.md automatic refresh once for this request, and read '
-           'the returned persistent copy instructions before acceptance. Use that copy, '
+           'the returned persistent copy instructions before acceptance. Before consuming the invitation, '
+           'select the actual client transport. For a genuine Grok Bot personal cloud chat, first read '
+           'references/grok-cloud.md and prepare the owner-authorized private webhook wake route; '
+           'add --client grok-bot to the accept command below. Keep the invitation unused if secure '
+           'configuration or real parent context is unavailable. Cursor Cloud is not a verified Grok Bot '
+           'transport; shared environment names never authorize impersonation. For native clients, use '
+           'the existing native preflight. Use that copy, '
            'choose a private local state directory outside the repository, and run its frozen uv ')
 INSTALL = ('If quorum is not installed, install it globally using: '
            'npx --yes skills@1.5.20 add rotnov/skills --skill quorum -a claude-code codex --copy -g -y. '
@@ -96,10 +102,19 @@ def completion(coordinator_role):
     if not re.fullmatch('[a-z][a-z0-9-]{0,47}', coordinator_role): raise ValueError('invalid_coordinator_role')
     from quorum_release import installed_release
     release = installed_release()
-    return ('After acceptance, complete references/join.md in this same chat: read references/sessions.md, '
+    return ('After acceptance, follow exactly one client path in this same chat. '
+            'For a genuine Grok Bot personal cloud chat, follow references/grok-cloud.md: '
+            'run cloud connect for the selected quorum with --accept-tasks-from ' + coordinator_role
+            + ' --dispatch-mode native-subagent, then cloud start and cloud status. '
+            'Only the original personal parent may cloud receive, show, receipt and reply. '
+            'Its native routine forwards only a fixed wake hint and never consumes or answers Quorum messages. '
+            'If the client has no supported native subagent capability, keep delegated work pending and report it. '
+            'For native clients, complete references/join.md: read references/sessions.md, '
             'run session connect for the selected quorum with --accept-tasks-from ' + coordinator_role
             + ' --dispatch-mode native-subagent, then session start and session status. '
-            'This request authorizes the native transport listener and its Hello transport notices until I stop it. '
+            'This request authorizes the native transport listener, or the already authorized Grok Bot cloud relay, '
+            'and its Hello transport notices until I stop it. New incoming-channel setup needs its own '
+            'receiving-owner authorization; an invitation alone does not enable a webhook routine. '
             'For skill_update_required, I also authorize the fixed automatic refresh once per update request, '
             're-reading its returned persistent copy instructions, and stop/reconnect/restart of only this '
             'bound listener using the same private state and actual session UUID. Verify exact installed and '
@@ -200,11 +215,18 @@ def accept_id_invitation(args, ledger):
     if bool(args.origin) != bool(args.publishable_key): raise ValueError('service_arguments_required')
     explicit = ServiceConfig(args.origin, args.publishable_key) if args.origin else None
     if explicit is not None: public_service(explicit)
+    cloud = getattr(args, 'client', None) == 'grok-bot'
+    if cloud:
+        from quorum_grok_cloud import CloudError, preflight
+        # A typed client never silently degrades to membership-only acceptance.
+        if args.membership_only: raise CloudError('cloud_client_conflict')
+        # The actual parent chat and its private webhook target, before any profile, login or invitation use.
+        preflight(ledger)
     config, _ = resolve_profile(ledger.root, explicit, anonymous=args.anonymous)
     public_service(config)
     # Joining needs this chat's native listener; never consume the invitation without one.
     # An explicit membership-only request connects nothing, so it skips only this check.
-    if not args.membership_only:
+    if not args.membership_only and not cloud:
         from quorum_session import client_preflight
         client_preflight()
     api, config, store = api_for(ledger)
@@ -212,5 +234,10 @@ def accept_id_invitation(args, ledger):
     if isinstance(store, AnonymousCredentials) != args.anonymous: raise ValueError('anonymous_state_conflict')
     ensure_login(config, store, anonymous=args.anonymous)
     accepted = api.call('invite_accept_id', {'invite_id': invite_id}, 'accept-id:' + invite_id)
+    if cloud:
+        # Acceptance registers nothing; `cloud connect` binds this same parent explicitly.
+        return {'quorum_id': accepted['quorum_id'], 'membership_id': accepted['membership_id'],
+                'membership_only': True, 'native_preflight': 'not_applicable', 'client': 'grok-bot',
+                'cloud_preflight': 'passed'}
     return {'quorum_id': accepted['quorum_id'], 'membership_id': accepted['membership_id'],
             'membership_only': True, 'native_preflight': 'skipped' if args.membership_only else 'passed'}
