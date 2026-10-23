@@ -84,8 +84,14 @@ def public_service(config):
 
 REFRESH = ('Read the installed SKILL.md, references/service-agent.md and references/join.md. Before setup, '
            'start or reuse the native quorum service subagent when this client has that capability and capacity; '
-           'otherwise report that once and continue quietly here. This chat keeps accept-id and every session or '
-           'cloud command. Resolve the installed skill directory, '
+           'otherwise report that once and continue quietly here. For a Codex native worker, follow '
+           'references/native-inbox.md: brief it with this owner authorization, this invitation and this '
+           "chat's exact parent thread UUID; that worker itself runs accept-id and session connect with "
+           '--transport tool-inbox --parent-thread-id <parent-UUID> (those two commands only take these flags) and '
+           'its other session commands under its own identity. If its preflight '
+           'reports native_worker_unavailable, the invitation is still unused: this chat keeps accept-id and every '
+           'session or cloud command as the parent fallback. Never relabel parent reception as a worker inbox. '
+           'Resolve the installed skill directory, '
            'perform references/update.md automatic refresh once for this request, and read '
            'the returned persistent copy instructions before acceptance. Before consuming the invitation, '
            'select the actual client transport. For a genuine Grok Bot personal cloud chat, first read '
@@ -112,7 +118,14 @@ def completion(coordinator_role):
             'Only the original personal parent may cloud receive, receipt and reply. '
             'Its native routine forwards only a fixed wake hint and never consumes or answers Quorum messages. '
             'If the client has no supported native subagent capability, keep delegated work pending and report it. '
-            'For native clients, complete references/join.md: read references/sessions.md, '
+            'For a proven Codex tool-inbox worker, follow references/native-inbox.md: the worker runs session connect '
+            'for the selected quorum with --transport tool-inbox --parent-thread-id <parent-UUID> --accept-tasks-from '
+            + coordinator_role + ' --dispatch-mode native-subagent, then session status and bounded session receive '
+            '--wait-seconds 30 calls within its finite brief. It never runs session start as a background listener, '
+            'receipts or answers each envelope itself, and returns only material results to this parent; its '
+            'receipt means worker consumption, not delivery to this chat; the parent fallback below then does not '
+            'apply. Parent-native fallback, only when no tool-inbox worker was proven (including a Codex parent '
+            'chat): For native clients, this chat completes references/join.md: read references/sessions.md, '
             'run session connect for the selected quorum with --accept-tasks-from ' + coordinator_role
             + ' --dispatch-mode native-subagent, then session start and session status. '
             'This request authorizes the native transport listener, or the already authorized Grok Bot cloud relay, '
@@ -149,8 +162,10 @@ def completion(coordinator_role):
             '<engine>-<first-eight-characters-of-this-session-UUID> as the role and the quorum slug '
             'as the project reference. Use only this actual current session identity. '
             'Reuse a matching existing binding; stop on a conflicting one instead of replacing it. '
-            'Once status confirms the listener is running, report one setup outcome in this chat with the '
-            'quorum, role, project reference and persistent installed skill path. '
+            'Once status confirms the listener is running (for the tool-inbox worker: transport tool-inbox with '
+            'reception enabled; it is offline between bounded receive calls, not perpetually listening), report '
+            'one setup outcome in this chat with the quorum, role, project reference, transport and persistent '
+            'installed skill path. '
             'That report is not a peer delivery receipt; verify a peer message and reply separately. '
             'Afterwards run every required receipt but do not narrate routine notices, ordinary replies or raw '
             'envelopes, per references/service-agent.md. '
@@ -222,6 +237,14 @@ def accept_id_invitation(args, ledger):
     explicit = ServiceConfig(args.origin, args.publishable_key) if args.origin else None
     if explicit is not None: public_service(explicit)
     cloud = getattr(args, 'client', None) == 'grok-bot'
+    tool = getattr(args, 'transport', None) == 'tool-inbox'
+    worker = None
+    if tool or getattr(args, 'parent_thread_id', None) is not None:
+        from quorum_native_inbox import check_arguments, prove_worker
+        check_arguments(getattr(args, 'transport', None), args.parent_thread_id,
+                        membership_only=args.membership_only, client=getattr(args, 'client', None))
+        # The actual distinct worker, before any profile, login or invitation use.
+        worker = prove_worker(args.parent_thread_id)
     if cloud:
         from quorum_grok_cloud import CloudError, preflight
         # A typed client never silently degrades to membership-only acceptance.
@@ -232,7 +255,7 @@ def accept_id_invitation(args, ledger):
     public_service(config)
     # Joining needs this chat's native listener; never consume the invitation without one.
     # An explicit membership-only request connects nothing, so it skips only this check.
-    if not args.membership_only and not cloud:
+    if not args.membership_only and not cloud and not tool:
         from quorum_session import client_preflight
         client_preflight()
     api, config, store = api_for(ledger)
@@ -245,5 +268,10 @@ def accept_id_invitation(args, ledger):
         return {'quorum_id': accepted['quorum_id'], 'membership_id': accepted['membership_id'],
                 'membership_only': True, 'native_preflight': 'not_applicable', 'client': 'grok-bot',
                 'cloud_preflight': 'passed'}
+    if tool:
+        # Acceptance registers nothing; the same worker's `session connect --transport tool-inbox` binds itself.
+        return {'quorum_id': accepted['quorum_id'], 'membership_id': accepted['membership_id'],
+                'membership_only': True, 'native_preflight': 'not_applicable', 'transport': 'tool-inbox',
+                'worker_preflight': 'passed', 'session_ref': worker['session_ref']}
     return {'quorum_id': accepted['quorum_id'], 'membership_id': accepted['membership_id'],
             'membership_only': True, 'native_preflight': 'skipped' if args.membership_only else 'passed'}

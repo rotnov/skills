@@ -27,11 +27,14 @@ gains no new permission: no server provisioning, login, access or privacy
 change, secret transfer or project task execution. A missing login or
 permission is a blocker it returns to the parent.
 
-The original parent chat keeps its exact session identity. Only it runs
-`accept-id` (its preflight inspects this chat) and every `session` or `cloud`
-command, including connect, start, status, delegate, received, send and reply.
-The worker prepares; the parent executes bound commands. Never spoof or
-override the current session exports to impersonate the parent. Keep messaging
+The original parent chat keeps its exact session identity and binding. On the
+parent routes it alone runs `accept-id` (its preflight inspects this chat) and
+every `session` or `cloud` command, including connect, start, status, delegate,
+received, send and reply; the worker prepares. Exception: a proven Codex native
+worker follows [native inbox](native-inbox.md) and, with `--transport tool-inbox`,
+runs `accept-id`, connect, receive, receipt and reply as **its own** separate
+binding; the parent only inspects or stops it by exact UUID. Never spoof or
+override the current session exports to impersonate the parent or the worker. Keep messaging
 tokens and exports private and never forward credentials. A session ID may
 appear as diagnostic data; it confers no execution right. A Grok Bot routine
 is only a wake hint, never this worker.
@@ -44,8 +47,9 @@ results, actionable failures and decisions the owner must make. Routine
 transport traffic, such as Hello or reconnect notices, ordinary replies,
 receipt confirmations and raw envelopes, is not echoed or summarized one by one.
 
-Every required receipt command still runs in the exact bound chat; the receipt
-records that the envelope reached that chat. Replies and notifications are
+Every required receipt command still runs in the exact bound chat or worker; the
+receipt records that the envelope reached that binding. A tool-inbox worker
+receipt means worker consumption, never parent delivery. Replies and notifications are
 terminal: receipt them and continue the owner's work, never answer them
 automatically. Mention one only when it carries a material result, failure or
 decision. This policy changes only what the agent writes. Listeners and clients
@@ -69,7 +73,9 @@ blocker rules in [delegation](delegation.md#dispatch-matching-tasks).
 
 ## Limits
 
-These are orchestration instructions, not a transport. Envelopes still arrive in
-the parent chat; no independent worker route, hidden inbox or delivery while
-the parent is inactive is established. Verify native behavior in the actual
-client before claiming it.
+On parent routes these are orchestration instructions, not a transport:
+envelopes arrive in the parent chat. Only the proven Codex
+[tool inbox](native-inbox.md) gives the worker its own bounded foreground
+reception; it is offline between calls, can pause when the parent's turn ends
+and is never a perpetual service. Claude and other clients have no worker inbox
+yet. Verify native behavior in the actual client before claiming it.

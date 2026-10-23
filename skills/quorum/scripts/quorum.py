@@ -15,6 +15,7 @@ from quorum_state import LocalLedger
 from quorum_grok_leader import GrokBindingError
 from quorum_session import UnsupportedClient
 from quorum_grok_cloud import CloudError
+from quorum_native_inbox import NativeInboxError
 
 
 def register_agent(api, ledger, slug, role, data, *, device_key="device"):
@@ -156,6 +157,10 @@ def main(argv=None):
         # Fixed cloud codes and reasons only; never a webhook target or peer text.
         print(json.dumps({'ok': False, 'code': error.code, 'data': error.diagnostic()}))
         return 3
+    except NativeInboxError as error:
+        # Fixed worker codes and reasons only; never a rollout path, transcript or peer text.
+        print(json.dumps({'ok': False, 'code': error.code, 'data': error.diagnostic()}))
+        return 3
     except (ValueError, OSError, KeyError, TypeError, subprocess.SubprocessError) as error:
         # Allow only fixed local codes; arbitrary exception text may contain secrets.
         safe = {'machine_profile_unavailable', 'service_profile_ambiguous', 'auth_profile_conflict',
@@ -164,7 +169,8 @@ def main(argv=None):
         if isinstance(error, ValueError):
             safe.update({'grok_transport_unavailable', 'session_binding_denied', 'coordinator_changed',
                          'claude_pipe_unavailable', 'listener_stop_pending', 'session_delivery_unknown',
-                         'private_acl_unavailable', 'unsafe_link', 'browser_unavailable', 'login_timeout'})
+                         'private_acl_unavailable', 'unsafe_link', 'browser_unavailable', 'login_timeout',
+                         'worker_already_running'})
         code = str(error) if str(error) in safe else 'operation_failed'
         data = error.diagnostic() if code == 'auth_profile_conflict' and hasattr(error, 'diagnostic') else {}
         print(json.dumps({'ok': False, 'code': code, 'data': data}))

@@ -61,6 +61,8 @@ def add_commands(commands):
     accept.add_argument('--membership-only', action='store_true',
                         help='Owner explicitly wants membership without connecting this chat; skips the native '
                              'transport check and never registers, starts or connects a listener')
+    from quorum_session import add_transport_arguments
+    add_transport_arguments(accept)
     accept.add_argument('--origin')
     accept.add_argument('--publishable-key')
     accept.add_argument('--anonymous', action='store_true', help='Open invitation: anonymous login kept in this state')

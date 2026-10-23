@@ -254,6 +254,7 @@ def add_commands(commands):
     connect.add_argument('--accept-tasks-from', help='Owner opt-in: pin this project coordinator role to its agent UUID')
     connect.add_argument('--dispatch-mode', choices=('inline', 'native-subagent'), default='inline',
                          help='Receiving-owner task execution policy; native-subagent requires coordinator intake opt-in')
+    add_transport_arguments(connect)
     delegation = actions.add_parser('delegate', help='Receiving-owner task intake permission for this exact binding')
     choice = delegation.add_mutually_exclusive_group(required=True)
     choice.add_argument('--coordinator-role')
@@ -267,6 +268,8 @@ def add_commands(commands):
                         help='Page after this sequence; the service returns at most 16 messages')
     actions.add_parser('start')
     actions.add_parser('status')
+    receive = actions.add_parser('receive', help='Tool-inbox worker: one bounded foreground receive in its own tool result')
+    receive.add_argument('--wait-seconds', type=int, choices=range(0, 61), default=30, metavar='0..60')
     actions.add_parser('stop')
     received = actions.add_parser('received')
     received.add_argument('message_id', type=lambda x: str(uuid.UUID(x)))
@@ -283,6 +286,14 @@ def add_commands(commands):
     recover = actions.add_parser('reconcile')
     recover.add_argument('message_id', type=lambda x: str(uuid.UUID(x)))
     recover.add_argument('--confirmed-queued', required=True, action='store_true')
+
+
+def add_transport_arguments(parser):
+    parser.add_argument('--transport', choices=('native', 'tool-inbox'),
+                        help='tool-inbox: this proven Codex native service worker receives in its own tool result; '
+                             'omitted or native keeps the existing parent-chat transport')
+    parser.add_argument('--parent-thread-id', type=lambda x: str(uuid.UUID(x)),
+                        help='Expected parent thread UUID of the tool-inbox worker; a relationship, not authority')
 
 
 def rebind(ledger, control, sid, endpoint, *, stop_seconds=60):
@@ -351,19 +362,43 @@ def start(auth_state, ledger, sid, *, api, endpoint=None):
 
 def dispatch(args, auth_ledger, register_agent):
     from quorum_live import api_for
+    import quorum_native_inbox as inbox
+    requested = getattr(args, 'transport', None) or 'native'
+    proved = None
+    if args.action == 'connect':
+        inbox.check_arguments(requested, getattr(args, 'parent_thread_id', None))
+        # Prove the distinct worker before any ledger, profile, auth or registration side effect.
+        if requested == inbox.TRANSPORT:
+            proved = inbox.prove_worker(args.parent_thread_id)
+            if args.session_id not in (None, proved['session_ref']): raise ValueError('session_binding_denied')
     sid = args.session_id or current_session()
     ledger = LocalLedger(auth_ledger.root/'sessions'/sid)
     try:
         record=ledger.setting('session-agent')
         engine=record.get('engine','codex') if record else current_engine()
-        ledger.setting('listener-mode','native_'+engine+'_session')
+        bound=record.get('transport','native') if record else requested
+        tool=bound==inbox.TRANSPORT
+        ledger.setting('listener-mode','codex_tool_inbox' if tool else 'native_'+engine+'_session')
         if args.action=='status':
+            if tool: return {**inbox.status(ledger,record),'session_id':sid,
+                             'delegation':record.get('delegation'),'release':diagnostic(ledger)}
             pending=sum(json.loads(row[0])['state']=='submitted' for row in
                         ledger.db.execute("select data from settings where key like 'delivery:%'"))
             return {**Control(ledger).status(),'session_id':sid,'pending_receipts':pending,
                     'delegation':record.get('delegation') if record else None, 'release':diagnostic(ledger)}
-        if args.action=='stop': return {**stop_listener(ledger),'session_id':sid}
+        if args.action=='stop':
+            # Exact-SID supervision: a parent may stop its worker but never act as it.
+            if tool: return {**inbox.stop(ledger,record),'session_id':sid}
+            return {**stop_listener(ledger),'session_id':sid}
         if args.action not in ('run',): require_caller(sid,engine)
+        # An existing binding keeps its transport; no implicit change or ownership transfer.
+        if args.action=='connect' and record and bound!=requested:
+            raise inbox.NativeInboxError('native_inbox_transport_conflict')
+        if (tool and args.action in ('run','reconcile')) or (not tool and args.action=='receive' and record):
+            raise inbox.NativeInboxError('native_inbox_transport_conflict')
+        if tool and record:
+            binding = inbox.require_worker(record)
+            if proved is not None and proved != binding: raise inbox.NativeInboxError('native_worker_binding_denied')
         if args.action in ('connect', 'delegate'):
             dispatch_mode = getattr(args, 'dispatch_mode', 'inline')
             if dispatch_mode not in ('inline', 'native-subagent'): raise ValueError('invalid_dispatch_mode')
@@ -371,13 +406,13 @@ def dispatch(args, auth_ledger, register_agent):
             if dispatch_mode == 'native-subagent' and (not coordinator or getattr(args, 'revoke', False)):
                 raise ValueError('dispatch_mode_requires_coordinator')
         api, _, _ = api_for(auth_ledger)
-        if args.action in ('connect','start','run'):
+        if args.action in ('connect','start','run','receive'):
             release = ReleaseGuard(api, ledger)
             release.check()
             release.running()
         if args.action=='connect':
             if not re.fullmatch('[a-z][a-z0-9-]{0,47}',args.role): raise ValueError('invalid_role')
-            if engine == 'codex' and not shutil.which('codex'): raise ValueError('engine_missing')
+            if engine == 'codex' and not tool and not shutil.which('codex'): raise ValueError('engine_missing')
             endpoint = None
             if engine == 'claude':
                 from quorum_claude_pipe import binding
@@ -394,6 +429,7 @@ def dispatch(args, auth_ledger, register_agent):
             record={**result,**data,'registration':data,'role':args.role,'quorum':args.quorum}
             if endpoint is not None: record['messaging_socket']=endpoint
             if transport is not None: record['grok_transport']=transport
+            if tool: record.update(transport=inbox.TRANSPORT, worker_binding=proved)
             if old and old.get('delegation'): record['delegation'] = old['delegation']
             coordinator = getattr(args, 'accept_tasks_from', None)
             ledger.setting('session-agent',record)
@@ -404,6 +440,12 @@ def dispatch(args, auth_ledger, register_agent):
                     raise ValueError('coordinator_changed')
                 record['delegation'] = grant(record, peer['agent_id'], coordinator, dispatch_mode=dispatch_mode)
             ledger.setting('session-agent',record)
+            if tool:
+                # Only a genuinely new binding initializes reception; a reconnect never re-arms a stopped
+                # worker (explicit same-worker start is the sole re-arm). Short local transition, no RPC.
+                reception = inbox.initialize_control(ledger, new_binding=old is None)
+                return {**result,'session_ref':sid,'transport':inbox.TRANSPORT,'reception':reception,
+                        'listener':'offline','worker_binding':proved,'delegation':record.get('delegation')}
             return {**result,'session_ref':sid,'transport':'offline','delegation':record.get('delegation')}
         if not record or record['session_ref']!=sid: raise ValueError('session_not_connected')
         if args.action == 'delegate':
@@ -430,12 +472,16 @@ def dispatch(args, auth_ledger, register_agent):
             from quorum_grok_leader import binding
             if binding(sid, record['cwd']) != record['grok_transport']:
                 raise ValueError('session_binding_denied')
-        if args.action=='start': return {**start(auth_ledger.root,ledger,sid,api=api,endpoint=endpoint),'session_id':sid}
+        if args.action=='start':
+            if tool: return {**inbox.arm(ledger,record),'session_id':sid}
+            return {**start(auth_ledger.root,ledger,sid,api=api,endpoint=endpoint),'session_id':sid}
+        if args.action=='receive': return inbox.receive(api,auth_ledger,ledger,record,args.wait_seconds)
         scope={'agent_id':record['agent_id'],'session_ref':sid}
         # Every mutating send/reply requires the exact current server release
         # first; an older server lacks the priority RPCs this client calls.
         if args.action in ('received','reconcile','reply','send'):
             ReleaseGuard(api, ledger).check()
+        if tool and args.action=='received': return inbox.confirm(api,ledger,record,args.message_id)
         if args.action in ('reconcile','received'):
             if args.action == 'received' and not ledger.setting('delivery:'+args.message_id):
                 raise ValueError('receipt_not_submitted')
@@ -449,6 +495,7 @@ def dispatch(args, auth_ledger, register_agent):
             # A direct caller without this option sends an ordinary message.
             priority=getattr(args,'priority','normal') or 'normal'
             if priority not in PRIORITIES: raise ValueError('invalid_priority')
+            if tool and args.action=='reply': return inbox.reply(api,ledger,record,args.message_id,text,priority)
             if args.action=='reply':
                 result=api.call('session_reply',{**scope,'message_id':args.message_id,'body':text,
                                                  'priority':priority})
