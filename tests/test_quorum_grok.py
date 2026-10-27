@@ -231,12 +231,47 @@ class GrokTests(unittest.TestCase):
             finally: exposed.close()
 
     @isolated_profiles
+    def test_qualified_170_resume_keeps_exact_session_and_queue_contract(self):
+        from quorum_grok_leader import binding, submit
+        with own_session() as (root, _, peer):
+            peer.version = '1.0.70'
+            resumed = {'pid_start':12345, 'uid':os.geteuid(), 'tty':True, 'executable':'/fixture/grok',
+                       'argv':['/fixture/grok', '--leader', '--leader-socket', str(peer.path),
+                               '--cwd', str(root), '--resume', SID]}
+            with patch('quorum_grok_leader.process_identity', return_value=resumed):
+                transport = binding(SID, str(root))
+                record = {'engine':'grok', 'session_ref':SID, 'cwd':str(root), 'grok_transport':transport}
+                submit(record, MID, 'bounded native QA message')
+            self.assertEqual(transport, {'leader_socket':str(peer.path), 'tui_pid':os.getpid(),
+                                         'tui_start':12345, 'cwd':str(root.resolve())})
+            self.assertEqual(peer.methods, ['_x.ai/session/info', '_x.ai/sessions/list',
+                                           '_x.ai/session/info', '_x.ai/sessions/list', 'session/prompt'])
+            self.assertEqual(len(peer.prompts), 1)
+            self.assertEqual(peer.prompts[0]['params'], {'sessionId':SID,
+                'prompt':[{'type':'text', 'text':'bounded native QA message'}],
+                '_meta':{'promptId':'quorum:'+MID}})
+
+    @isolated_profiles
+    def test_qualified_170_still_refuses_wrong_session_or_nonresident_metadata(self):
+        from quorum_grok_leader import binding
+        with own_session() as (root, _, peer):
+            peer.version = '1.0.70'
+            for sid, resident in ((MID, True), (SID, False)):
+                peer.sid, peer.resident = sid, resident
+                with self.subTest(sid=sid, resident=resident):
+                    with self.assertRaisesRegex(ValueError, 'session_binding_denied'):
+                        binding(SID, str(root))
+            self.assertEqual(peer.prompts, [])
+
+    @isolated_profiles
     def test_untested_binary_version_is_refused(self):
         from quorum_grok_leader import binding
         with own_session() as (root, _, peer):
-            peer.version = '1.0.68'
-            with self.assertRaisesRegex(ValueError, 'grok_transport_unavailable'):
-                binding(SID, str(root))
+            for version in ('1.0.68', '1.0.69', '1.0.71', '1.0.70-preview', '2.0.0', None):
+                peer.version = version
+                with self.subTest(version=version):
+                    with self.assertRaisesRegex(ValueError, 'grok_transport_unavailable'):
+                        binding(SID, str(root))
             self.assertEqual(peer.methods, [])
 
     @isolated_profiles
