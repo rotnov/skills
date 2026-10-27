@@ -22,7 +22,7 @@ import unicodedata
 from urllib.parse import quote
 import uuid
 from quorum_native_inbox import CANONICAL, TRANSPORT, NativeInboxError, Guarded
-from quorum_api import QuorumError
+from quorum_api import QuorumError, guarded_call
 
 PROVIDER = 'claude'
 PREFIX = 'claude-worker:'
@@ -1139,8 +1139,15 @@ def accept_worker(args, ledger, context):
     ensure_login(config, store)
     invite_id = context['scope']['invite_id']
     guard(context)
-    try: accepted = api.call('invite_accept_id', {'invite_id': invite_id}, 'accept-id:' + invite_id)
+    sent = False
+    def dispatched():
+        nonlocal sent
+        sent = True
+    try:
+        accepted = guarded_call(api, 'invite_accept_id', {'invite_id': invite_id}, 'accept-id:' + invite_id,
+                                before_request=lambda: guard(context), on_dispatch=dispatched)
     except Exception:
+        if not sent: raise
         # No response observed: a local refusal now cannot promise an unused invitation.
         try: guard(context)
         except NativeInboxError as error:
@@ -1223,8 +1230,17 @@ def _send(context, api, operation, payload, request_id, step):
         except NativeInboxError:
             _restore_unsent_create(context, previous, attempt)
             raise
-        try: return api.call(operation, payload, request_id)
+        sent = False
+        def dispatched():
+            nonlocal sent
+            sent = True
+        try:
+            return guarded_call(api, operation, payload, request_id,
+                                before_request=lambda: guard(context), on_dispatch=dispatched)
         except Exception:
+            if not sent:
+                _restore_unsent_create(context, previous, attempt)
+                raise
             try: guard(context)
             except NativeInboxError:
                 raise NativeInboxError('native_worker_create_ambiguous', 'create_unresolved',

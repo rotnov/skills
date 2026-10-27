@@ -14,7 +14,7 @@ import stat
 import sys
 import time
 import uuid
-from quorum_api import QuorumError
+from quorum_api import QuorumError, guarded_call
 from quorum_os import FileLock
 from quorum_presence import Presence
 from quorum_realtime import RealtimeWait
@@ -146,11 +146,27 @@ class Guarded:
             raise error.dispatched(effect) from None
 
     def call(self, operation, *args, **kwargs):
+        return self.call_guarded(operation, *args, before_request=lambda: None, **kwargs)
+
+    def call_guarded(self, operation, *args, before_request, on_dispatch=None, **kwargs):
+        """Forward the transport seam through every tracker/authority layer without discarding one."""
         self.check()
-        try: result = self.api.call(operation, *args, **kwargs)
-        except Exception:
+        sent = False
+        def check():
+            self.check()
+            before_request()
+        def dispatched():
+            nonlocal sent
+            if on_dispatch is not None: on_dispatch()
+            sent = True
+        try:
+            result = guarded_call(self.api, operation, *args, before_request=check, on_dispatch=dispatched, **kwargs)
+        except Exception as error:
             # No response observed: a state-changing request may already have been applied.
-            if operation not in NativeInboxError.READS: self.changed = ('uncertain', operation)
+            if sent and operation not in NativeInboxError.READS:
+                effect = error.remote_effect if isinstance(error, NativeInboxError) else None
+                state = effect['state'] if effect and effect.get('operation') == operation else 'uncertain'
+                self.changed = (state, operation)
             raise
         if operation in NativeInboxError.READS: self.read = operation
         else: self.changed = ('completed', operation)
