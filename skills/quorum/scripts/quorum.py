@@ -18,7 +18,7 @@ from quorum_grok_cloud import CloudError
 from quorum_native_inbox import NativeInboxError
 
 
-def register_agent(api, ledger, slug, role, data, *, device_key="device"):
+def register_agent(api, ledger, slug, role, data, *, device_key="device", expected_quorum_id=None):
     required = {'engine', 'project_ref', 'session_ref', 'cwd'}
     if set(data) != required or data['engine'] not in ('claude', 'codex', 'grok') or not Path(data['cwd']).is_absolute():
         raise ValueError('invalid_registration')
@@ -26,6 +26,9 @@ def register_agent(api, ledger, slug, role, data, *, device_key="device"):
     # Registration is not permission to stop a different binding's listener.
     ReleaseGuard(api, ledger, stop_on_mismatch=False).check()
     quorum = api.call('quorum_lookup', {'slug': slug})['quorum_id']
+    # A pinned worker target is compared before any device or agent side effect.
+    if expected_quorum_id is not None and quorum != expected_quorum_id:
+        raise NativeInboxError('native_worker_binding_denied', 'target_mismatch')
     binding_key = [quorum, role, data] + ([] if device_key == 'device' else [device_key])
     identity = hashlib.sha256(json.dumps(binding_key, sort_keys=True).encode()).hexdigest()
     saved = ledger.setting('agent:' + identity)
@@ -65,6 +68,8 @@ def main(argv=None):
         if name == 'create':
             sub.add_argument('--access', choices=('github', 'open'), default='github',
                              help='open: also allow single-use 15-minute invitations without GitHub')
+            sub.add_argument('--worker-capability', type=Path,
+                             help='Generated Claude worker capability file; slug, access and request ID come from its scope')
     from quorum_live import add_commands
     add_commands(commands)
     args = parser.parse_args(argv)
@@ -74,7 +79,24 @@ def main(argv=None):
             from quorum_release import installed_release
             print(json.dumps({'ok':True, 'code':'ok', 'data':installed_release()}))
             return 0
-        ledger = LocalLedger(args.state)
+        if getattr(args, 'worker_capability', None) is not None or args.command == 'session':
+            import quorum_claude_worker as claude_worker
+            # A Claude worker route validates its capability and arguments before the root ledger exists.
+            if claude_worker.selected(args):
+                value = claude_worker.manage(args)
+                if value is not None:
+                    print(json.dumps({'ok': True, 'code': 'ok', 'data': value}))
+                    return 0
+                args.worker_context = claude_worker.preflight(args)
+                # Capability metadata and stop use the verified slot only, never the root ledger.
+                if args.command == 'session' and args.action in ('status', 'stop'):
+                    value = claude_worker.session_dispatch(args, None, register_agent, args.worker_context)
+                    print(json.dumps({'ok': True, 'code': 'ok', 'data': value}))
+                    return 0
+        if getattr(args, 'worker_context', None) is not None:
+            from quorum_claude_worker import root_ledger
+            ledger = root_ledger(args.state)
+        else: ledger = LocalLedger(args.state)
         config_path = ledger.root / 'config.json'
         from quorum_live import dispatch, LIVE_COMMANDS
         if args.command in LIVE_COMMANDS:
@@ -94,6 +116,11 @@ def main(argv=None):
                      'configured': config_path.exists()}
         elif args.command == 'worker':
             raise QuorumError('live_agents_disabled')
+        elif args.command == 'create' and getattr(args, 'worker_context', None) is not None:
+            from quorum_claude_worker import create_worker
+            from quorum_profiles import resolve_profile
+            value = create_worker(args, args.worker_context, resolve_profile,
+                                  lambda config, store: QuorumApi(config, token_provider(config, store)))
         elif args.command == 'doctor':
             from quorum_acp import validate_manifest
             manifest = json.loads((Path(__file__).resolve().parents[1] / 'assets/engines.lock.json').read_text())

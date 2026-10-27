@@ -66,6 +66,18 @@ class QuorumApi:
     def __init__(self, config, token, request=request_json):
         self.config, self.token, self.request = config, token, request
 
+    def call_guarded(self, operation, payload, request_id=None, *, before_request, on_dispatch=None):
+        """Opt-in local guard after credentials, immediately before transport; never mutate this API.
+
+        `on_dispatch` is an optional non-throwing local marker, not a guard or I/O callback.
+        The ordinary call performs the same validation, encoding and token resolution on a scoped clone.
+        """
+        def request(url, headers, body):
+            before_request()
+            if on_dispatch is not None: on_dispatch()
+            return self.request(url, headers, body)
+        return QuorumApi(self.config, self.token, request).call(operation, payload, request_id)
+
     def call(self, operation, payload, request_id=None):
         if operation not in OPERATIONS or not isinstance(payload, dict):
             raise ValueError('invalid_operation')
@@ -81,3 +93,13 @@ class QuorumApi:
                             {'Authorization': 'Bearer ' + self.token(),
                              'apikey': self.config.publishable_key,
                              'Content-Type': 'application/json'}, body)
+
+
+def guarded_call(api, operation, payload, request_id=None, *, before_request, on_dispatch):
+    """Use the optional real transport seam; other trusted adapters retain conservative call-entry tracking."""
+    scoped = getattr(api, 'call_guarded', None)
+    if callable(scoped):
+        return scoped(operation, payload, request_id, before_request=before_request, on_dispatch=on_dispatch)
+    before_request()
+    on_dispatch()
+    return api.call(operation, payload, request_id)

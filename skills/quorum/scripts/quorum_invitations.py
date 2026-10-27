@@ -90,7 +90,12 @@ REFRESH = ('Read the installed SKILL.md, references/service-agent.md and referen
            '--transport tool-inbox --parent-thread-id <parent-UUID> (those two commands only take these flags) and '
            'its other session commands under its own identity. If its preflight '
            'reports native_worker_unavailable, the invitation is still unused: this chat keeps accept-id and every '
-           'session or cloud command as the parent fallback. Never relabel parent reception as a worker inbox. '
+           'session or cloud command as the parent fallback. For a Claude Code parent with a native background worker, '
+           'follow references/claude-worker.md instead: this chat runs session worker prepare, starts exactly one actual '
+           'native background worker with the returned bootstrap command and attests its exact returned handle; that '
+           'worker itself runs accept-id --transport tool-inbox --worker-capability <capability-file> and its other '
+           'capability commands. If background support or attestation is unavailable, report that once; the invitation '
+           'is still unused and this chat keeps the parent fallback. Never relabel parent reception as a worker inbox. '
            'Resolve the installed skill directory, '
            'perform references/update.md automatic refresh once for this request, and read '
            'the returned persistent copy instructions before acceptance. Before consuming the invitation, '
@@ -124,7 +129,11 @@ def completion(coordinator_role):
             '--wait-seconds 30 calls within its finite brief. It never runs session start as a background listener, '
             'receipts or answers each envelope itself, and returns only material results to this parent; its '
             'receipt means worker consumption, not delivery to this chat; the parent fallback below then does not '
-            'apply. Parent-native fallback, only when no tool-inbox worker was proven (including a Codex parent '
+            'apply. For a bound Claude worker, follow references/claude-worker.md: the worker runs session '
+            '--worker-capability <capability-file> connect for the selected quorum with --role, --project-ref and '
+            '--transport tool-inbox exactly as its approved scope, then bounded receive calls; its receipt means '
+            'worker consumption, not delivery to this chat; the parent fallback below then does not apply. '
+            'Parent-native fallback, only when no tool-inbox worker was proven or bound (including a Codex parent '
             'chat): For native clients, this chat completes references/join.md: read references/sessions.md, '
             'run session connect for the selected quorum with --accept-tasks-from ' + coordinator_role
             + ' --dispatch-mode native-subagent, then session start and session status. '
@@ -232,6 +241,9 @@ def accept_id_invitation(args, ledger):
     from quorum_live import api_for
     from quorum_profiles import resolve_profile, ensure_login, AnonymousCredentials
     from quorum_api import ServiceConfig
+    if getattr(args, 'worker_context', None) is not None:
+        from quorum_claude_worker import accept_worker
+        return accept_worker(args, ledger, args.worker_context)
     invite_id = str(uuid.UUID(args.invite_id))
     if bool(args.origin) != bool(args.publishable_key): raise ValueError('service_arguments_required')
     explicit = ServiceConfig(args.origin, args.publishable_key) if args.origin else None

@@ -2,8 +2,10 @@
 
 Read this when a Codex parent chat assigns Quorum setup or reception to its
 native `quorum` service worker (see [service agent](service-agent.md)), or when
-that worker handles an incoming envelope. This first milestone supports only a
-genuine Codex native worker. Claude Code, Grok, Grok Bot and hosted chats keep
+that worker handles an incoming envelope. This identity proof covers only a
+genuine Codex native worker. A Claude Code background worker uses the
+owner-attested route in [Claude worker](claude-worker.md), which reuses the
+receive, receipt and reply contract below. Grok, Grok Bot and hosted chats keep
 their existing parent routes in [sessions](sessions.md) and [cloud Grok](grok-cloud.md).
 
 ## Identity

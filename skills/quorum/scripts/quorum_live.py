@@ -66,6 +66,8 @@ def add_commands(commands):
     accept.add_argument('--origin')
     accept.add_argument('--publishable-key')
     accept.add_argument('--anonymous', action='store_true', help='Open invitation: anonymous login kept in this state')
+    accept.add_argument('--worker-capability', type=Path,
+                        help='Generated Claude worker capability file; requires --transport tool-inbox')
     invite_id = commands.add_parser('invite-id', help='Create an invitation ID and new-session prompt')
     invite_id.add_argument('--coordinator-role', default='coordinator',
                            help='Role the receiving owner authorizes for project task intake')
