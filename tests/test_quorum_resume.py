@@ -116,6 +116,13 @@ class ResumeTests(unittest.TestCase):
             with self.subTest(change=change):
                 self.ledger.setting('session-reception', {**grant, **change})
                 with self.assertRaisesRegex(ValueError, 'session_recovery_denied'): self.dispatch('recover')
+        self.ledger.setting('session-reception', grant)
+        record = self.ledger.setting('session-agent')
+        for key in ('agent_id', 'device_id', 'quorum_id', 'role', 'project_ref'):
+            with self.subTest(key=key):
+                self.ledger.setting('session-agent', {**record, key:'changed'})
+                with self.assertRaisesRegex(ValueError, 'session_recovery_denied'): self.dispatch('recover')
+        self.ledger.setting('session-agent', record)
         self.assertEqual(len(self.children), 1)
 
     @isolated_profiles

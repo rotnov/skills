@@ -8,7 +8,7 @@ import uuid
 
 def binding(record):
     return {key:record.get(key) for key in
-            ('engine', 'session_ref', 'agent_id', 'quorum_id', 'project_ref', 'cwd', 'role', 'quorum')}
+            ('engine', 'session_ref', 'agent_id', 'device_id', 'quorum_id', 'project_ref', 'cwd', 'role', 'quorum')}
 
 
 def enable(ledger, record):

@@ -76,3 +76,12 @@ provider build emits its hook after every restart. If a hook is absent, skipped,
 late or lacks exports, report that capability limit and use the same-chat
 recovery command. Confirm the actual hook plus post-resume message/receipt once
 in the owner's exact provider version before reporting automatic UI recovery.
+
+A bounded native Codex **0.162.1** probe confirmed one specific limit: `/quit`
+disconnected the frontend while leaving its thread resident in the app server;
+`codex resume <same-UUID>` reattached without another `SessionStart` event.
+A surviving UUID-bound listener can continue on this path. If that listener
+died while the frontend was detached, use the recovery command; a startup hook
+cannot guarantee an automatic wake on this reattach. Do not restart a shared
+daemon or disturb another chat to manufacture a startup event. This probe
+verified lifecycle behavior only, without Quorum registration or delivery.
