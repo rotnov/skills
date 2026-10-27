@@ -17,6 +17,10 @@ def enable(ledger, record):
 
 def require_enabled(ledger, record):
     grant = ledger.setting('session-reception') or {}
+    current = ledger.setting('session-agent')
+    if (not isinstance(grant, dict) or not isinstance(record, dict) or not isinstance(current, dict)
+            or binding(current) != binding(record)):
+        raise ValueError('session_recovery_denied')
     expires = grant.get('expires_at')
     valid_expiry = (expires is None or (type(expires) in (int, float) and math.isfinite(expires)
                                         and expires > time.time()))

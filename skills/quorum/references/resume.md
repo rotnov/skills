@@ -24,7 +24,9 @@ recovery never infers authority from an old process or registration. `session st
 revokes recovery atomically even when the listener is already dead. A stopped,
 expired, changed or service-revoked binding cannot recover. Only a fresh explicit
 owner-authorized start can enable reception again. Recovery never extends a
-grant's lifetime or creates another grant.
+grant's lifetime or creates another grant. It rechecks authority after blocking
+startup work and inside the recovered relay before submitting or acknowledging
+messages; an expired unconfirmed child is stopped without changing the grant.
 
 An uncertain `intent` remains `session_delivery_unknown`: inspect the actual chat
 before existing manual reconciliation. Pending `submitted` messages retain their

@@ -5,6 +5,8 @@ from pathlib import Path
 import sys
 import subprocess
 import tempfile
+import threading
+import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -49,14 +51,14 @@ class ResumeTests(unittest.TestCase):
         self.children.append([child.thread.is_alive() for child in self.live])
         return self.generation(command[command.index('--run-id') + 1])
 
-    def dispatch(self, action, *, engine='codex', session=SID, transport=None):
+    def dispatch(self, action, *, engine='codex', session=SID, transport=None, **extra):
         from quorum_session import dispatch
         env = {('GROK_SESSION_ID' if engine == 'grok' else 'CODEX_THREAD_ID'):session}
         with patch.dict(os.environ, env), patch('pathlib.Path.cwd', return_value=self.root), \
              patch('quorum_live.api_for', return_value=(self.api, None, None)), \
              patch('quorum_grok_leader.binding', return_value=transport or self.new), \
              patch('quorum_session.spawn_background', side_effect=self.spawn):
-            return dispatch(SimpleNamespace(action=action, session_id=SID), SimpleNamespace(root=self.root), None)
+            return dispatch(SimpleNamespace(action=action, session_id=SID, **extra), SimpleNamespace(root=self.root), None)
 
     @isolated_profiles
     def test_grok_same_conversation_start_adopts_new_process_then_recovery_is_idempotent(self):
@@ -172,6 +174,177 @@ class ResumeTests(unittest.TestCase):
                 self.dispatch('recover', engine='grok')
         self.assertEqual(self.ledger.setting('session-agent'), original)
         self.assertEqual(len(self.children), 1)
+
+    def finite_grant(self):
+        grant = {**self.ledger.setting('session-reception'), 'expires_at':1}
+        self.ledger.setting('session-reception', grant)
+        return grant
+
+    def offline_generation(self):
+        from quorum_listener import Control
+        old = self.generations[-1]
+        Control(self.ledger).request_stop(old.run_id)
+        old.thread.join(timeout=10)
+        self.assertFalse(old.thread.is_alive())
+
+    @isolated_profiles
+    def test_expiry_during_service_preflight_never_spawns_a_new_listener(self):
+        self.record('codex')
+        self.dispatch('start')
+        self.offline_generation()
+        grant, clock = self.finite_grant(), [0]
+        call = self.api.call
+        def expire(operation, payload):
+            if operation == 'session_inbox': clock[0] = 2
+            return call(operation, payload)
+        self.api.call = expire
+        with patch('quorum_resume.time.time', side_effect=lambda:clock[0]):
+            with self.assertRaisesRegex(ValueError, 'session_recovery_denied'): self.dispatch('recover')
+        self.assertEqual(len(self.children), 1)
+        self.assertEqual(self.ledger.setting('session-reception'), grant)
+
+    @isolated_profiles
+    def test_expiry_during_grok_shutdown_does_not_publish_new_transport(self):
+        from quorum_listener import Control
+        original = self.record('grok')
+        self.dispatch('start', engine='grok', transport=self.old)
+        grant, clock = self.finite_grant(), [0]
+        request_stop = Control.request_stop
+        def expire(control, run_id=None):
+            clock[0] = 2
+            return request_stop(control, run_id)
+        with patch('quorum_resume.time.time', side_effect=lambda:clock[0]), \
+             patch.object(Control, 'request_stop', expire):
+            with self.assertRaisesRegex(ValueError, 'session_recovery_denied'):
+                self.dispatch('recover', engine='grok')
+        self.assertEqual(self.ledger.setting('session-agent'), original)
+        self.assertEqual(len(self.children), 1)
+        self.assertEqual(self.ledger.setting('session-reception'), grant)
+
+    @isolated_profiles
+    def test_expiry_during_child_startup_stops_only_the_unconfirmed_owned_child(self):
+        self.record('codex')
+        self.dispatch('start')
+        self.offline_generation()
+        grant, clock = self.finite_grant(), [0]
+        spawn = self.spawn
+        def expire(command, ledger):
+            child = spawn(command, ledger)
+            clock[0] = 2
+            return child
+        self.spawn = expire
+        with patch('quorum_resume.time.time', side_effect=lambda:clock[0]):
+            with self.assertRaisesRegex(ValueError, 'session_recovery_denied'): self.dispatch('recover')
+        self.assertEqual(len(self.children), 2)
+        self.assertFalse(self.generations[-1].thread.is_alive())
+        self.assertEqual(self.ledger.setting('session-reception'), grant)
+
+    @isolated_profiles
+    def test_real_recovery_child_cannot_submit_after_expiry_in_startup_io(self):
+        from quorum_listener import Control, run_listener
+        from quorum_resume import require_enabled
+        from quorum_session import Relay
+        from quorum_state import LocalLedger
+        record = self.record('codex')
+        self.dispatch('start')
+        self.offline_generation()
+        grant, clock, submitted = self.finite_grant(), [0], []
+        class Api:
+            def call(self, operation, payload):
+                if operation == 'session_requirements': return {'protocol_version':2, 'skill_version':'0.3.0'}
+                if operation == 'session_inbox':
+                    clock[0] = 2
+                    return [{'id':MID, 'recipient_id':'agent'}]
+                raise AssertionError(operation)
+        def spawn(command, ledger):
+            run_id = command[command.index('--run-id') + 1]
+            ready = threading.Event()
+            def queue(message):
+                submitted.append(message['id'])
+                ready.set()
+                return 'submitted'
+            def run():
+                own = LocalLedger(ledger.root)
+                def make():
+                    relay = Relay(Api(), own, record, queue)
+                    if '--recovering' in command:
+                        relay.authorize = lambda:require_enabled(own, record)
+                    return relay
+                try: run_listener(own, make, run_id, timeout=0, sleep=lambda _:time.sleep(.01))
+                finally:
+                    own.db.close()
+                    ready.set()
+            thread = threading.Thread(target=run, daemon=True)
+            thread.start()
+            def close():
+                if thread.is_alive(): Control(ledger).request_stop(run_id)
+                thread.join(timeout=5)
+            self.addCleanup(close)
+            self.assertTrue(ready.wait(5))
+            return SimpleNamespace(poll=lambda:None if thread.is_alive() else 0,
+                                   terminate=close, kill=close, wait=lambda **_:close())
+        self.spawn = spawn
+        with patch('quorum_resume.time.time', side_effect=lambda:clock[0]):
+            with self.assertRaisesRegex(ValueError, 'session_recovery_denied'): self.dispatch('recover')
+        self.assertEqual(submitted, [])
+        self.assertIsNone(self.ledger.setting('delivery:' + MID))
+        self.assertEqual(self.ledger.setting('session-reception'), grant)
+
+    @isolated_profiles
+    def test_recovery_relay_pins_its_original_binding_against_current_ledger(self):
+        from quorum_resume import require_enabled
+        from quorum_session import Relay
+        record = self.record('codex')
+        self.dispatch('start')
+        self.ledger.setting('session-agent', {**record, 'agent_id':'changed'})
+        relay = Relay(self.api, self.ledger, record, lambda _:self.fail('must not submit'))
+        relay.authorize = lambda:require_enabled(self.ledger, record)
+        with self.assertRaisesRegex(ValueError, 'session_recovery_denied'): relay.run_once()
+
+    @isolated_profiles
+    def test_internal_recovery_run_wires_current_grant_guard_into_real_relay(self):
+        self.record('codex')
+        self.dispatch('start')
+        self.offline_generation()
+        self.finite_grant()
+        clock, call = [0], self.api.call
+        def expire(operation, payload):
+            if operation == 'session_inbox': clock[0] = 2
+            return call(operation, payload)
+        self.api.call = expire
+        def run(ledger, make, run_id, **kwargs):
+            make().reconcile()
+            self.fail('expired recovery must fail inside the child relay')
+        with patch('quorum_resume.time.time', side_effect=lambda:clock[0]), \
+             patch('signal.signal'), patch('quorum_realtime.RealtimeWait'), patch('quorum_presence.Presence'), \
+             patch('quorum_session.run_listener', side_effect=run):
+            with self.assertRaisesRegex(ValueError, 'session_recovery_denied'):
+                self.dispatch('run', run_id=SID, recovering=True)
+
+    @isolated_profiles
+    def test_expiry_while_persisting_intent_removes_only_this_known_unsent_intent(self):
+        from quorum_resume import require_enabled
+        from quorum_session import Relay
+        record = self.record('codex')
+        self.dispatch('start')
+        self.finite_grant()
+        clock, submitted, call = [0], [], self.api.call
+        def inbox(operation, payload):
+            if operation == 'session_inbox': return [{'id':MID, 'recipient_id':'agent'}]
+            return call(operation, payload)
+        self.api.call = inbox
+        setting = self.ledger.setting
+        def persist(key, value=None):
+            result = setting(key, value)
+            if key == 'delivery:' + MID and value == {'state':'intent'}: clock[0] = 2
+            return result
+        relay = Relay(self.api, self.ledger, record, lambda message:submitted.append(message) or 'submitted')
+        relay.authorize = lambda:require_enabled(self.ledger, record)
+        with patch('quorum_resume.time.time', side_effect=lambda:clock[0]), \
+             patch.object(self.ledger, 'setting', side_effect=persist):
+            with self.assertRaisesRegex(ValueError, 'session_recovery_denied'): relay.run_once()
+        self.assertEqual(submitted, [])
+        self.assertIsNone(self.ledger.setting('delivery:' + MID))
 
 
 class HookTests(unittest.TestCase):

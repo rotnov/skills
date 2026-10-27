@@ -182,8 +182,9 @@ def enqueue(record, message, auth_state):
 
 
 class Relay:
-    def __init__(self, api, ledger, record, queue):
+    def __init__(self, api, ledger, record, queue, *, authorize=None):
         self.api, self.ledger, self.record, self.queue = api, ledger, record, queue
+        self.authorize = authorize or (lambda:None)
         self.awaiting = []
         self.release = ReleaseGuard(api, ledger)
 
@@ -192,12 +193,15 @@ class Relay:
 
     def reconcile(self):
         self.release.check()
+        self.authorize()
         for key, raw in self.ledger.db.execute("select key,data from settings where key like 'delivery:%'"):
             if json.loads(raw)['state'] == 'intent': raise ValueError('session_delivery_unknown')
         self.api.call('session_inbox', self.scope())
+        self.authorize()
 
     def run_once(self):
         self.release.check()
+        self.authorize()
         # The chat's `received`/`reply` acknowledges submitted messages itself,
         # so count each confirmation here once; a bare pipe write is never counted.
         for pending in self.awaiting:
@@ -205,6 +209,7 @@ class Relay:
                 self.awaiting.remove(pending)
                 return 'delivered'
         messages = self.api.call('session_inbox', self.scope())
+        self.authorize()
         if not messages: return 'idle'
         # Durable selection already prefers an urgent message over an
         # unreceipted normal head; reject an unknown priority before any write.
@@ -216,7 +221,16 @@ class Relay:
         if previous and previous['state'] == 'intent': raise ValueError('session_delivery_unknown')
         if not previous:
             self.release.check()
+            self.authorize()
             self.ledger.setting(key, {'state':'intent'})
+            try: self.authorize()  # Persisting the intent may itself have blocked.
+            except ValueError:
+                # No queue/IPC call began in this attempt. Remove only its own
+                # still-unsubmitted intent; preserve any concurrent receipt.
+                with self.ledger.db:
+                    self.ledger.db.execute('delete from settings where key=? and data=?',
+                                           (key, json.dumps({'state':'intent'})))
+                raise
             try: result = self.queue(message)
             except Exception: raise ValueError('session_delivery_unknown') from None
             # Claude's pipe has no synchronous delivery acknowledgement. Only
@@ -228,6 +242,7 @@ class Relay:
                 self.ledger.db.execute('update settings set data=? where key=? and data=?',
                                        (json.dumps(state),key,json.dumps({'state':'intent'})))
         self.release.check()
+        self.authorize()
         if self.ledger.setting(key)['state'] == 'submitted':
             if key not in self.awaiting: self.awaiting.append(key)
             return 'idle'
@@ -312,6 +327,7 @@ def add_commands(commands):
     received.add_argument('message_id', type=lambda x: str(uuid.UUID(x)))
     run = actions.add_parser('run')
     run.add_argument('--run-id', required=True, type=lambda x: str(uuid.UUID(x)))
+    run.add_argument('--recovering', action='store_true', help='Internal: keep the existing recovery grant authoritative')
     for action in ('send', 'reply'):
         sub = actions.add_parser(action)
         if action == 'reply': sub.add_argument('message_id', type=lambda x: str(uuid.UUID(x)))
@@ -333,7 +349,7 @@ def add_transport_arguments(parser):
                         help='Expected parent thread UUID of the tool-inbox worker; a relationship, not authority')
 
 
-def rebind(ledger, control, sid, endpoint, *, stop_seconds=60, engine='claude'):
+def rebind(ledger, control, sid, endpoint, *, stop_seconds=60, engine='claude', authorize=None):
     """Move this same chat to its current, already validated native transport.
 
     The caller has proven the session identity and endpoint from its own
@@ -361,6 +377,7 @@ def rebind(ledger, control, sid, endpoint, *, stop_seconds=60, engine='claude'):
     # was exiting. It now holds no lock and cannot add another write intent.
     for (raw,) in ledger.db.execute("select data from settings where key like 'delivery:%'"):
         if json.loads(raw)['state'] == 'intent': raise ValueError('session_delivery_unknown')
+    if authorize: authorize()
     key = 'messaging_socket' if engine == 'claude' else 'grok_transport'
     ledger.setting('session-agent', {**record, key:endpoint})
 
@@ -373,8 +390,10 @@ def start(auth_state, ledger, sid, *, api, endpoint=None, grok_transport=None, r
         record = ledger.setting('session-agent')
         if record is None: raise ValueError('session_not_connected')
         if record.get('session_ref') != sid: raise ValueError('session_binding_denied')
+        def authorize():
+            if recovery: require_enabled(ledger, record)
         if recovery:
-            require_enabled(ledger, record)
+            authorize()
             # Validate current server membership/device/session without consuming
             # or acknowledging any queued message, before disturbing a live run.
             api.call('session_inbox', {'agent_id':record['agent_id'], 'session_ref':sid})
@@ -383,11 +402,14 @@ def start(auth_state, ledger, sid, *, api, endpoint=None, grok_transport=None, r
         release = ReleaseGuard(api, ledger)
         release.check()
         release.running()
+        authorize()  # Service/release checks may outlive a finite grant.
         rebound = bool(record and endpoint is not None and endpoint != record.get('messaging_socket'))
         if rebound: rebind(ledger, Control(ledger, holding_control=True), sid, endpoint)
         grok_rebound = grok_transport is not None and grok_transport != record.get('grok_transport')
         if grok_rebound:
-            rebind(ledger, Control(ledger, holding_control=True), sid, grok_transport, engine='grok')
+            rebind(ledger, Control(ledger, holding_control=True), sid, grok_transport, engine='grok',
+                   authorize=authorize)
+        authorize()  # Recheck the latest grant after any old listener shutdown.
         if locked(ledger.root/'listener.lock'):
             if not recovery: enable(ledger, ledger.setting('session-agent'))
             return control.status()
@@ -395,6 +417,7 @@ def start(auth_state, ledger, sid, *, api, endpoint=None, grok_transport=None, r
         control.begin(run_id, 0)
         command=[sys.executable,str(Path(__file__).with_name('quorum.py')),'--state',str(auth_state),
                  'session','--session-id',sid,'run','--run-id',run_id]
+        if recovery: command.append('--recovering')
         try:
             # The child inherits this caller's current exports, never stored secrets.
             child=spawn_background(command, ledger)
@@ -403,9 +426,19 @@ def start(auth_state, ledger, sid, *, api, endpoint=None, grok_transport=None, r
             raise QuorumError('listener_start_failed') from None
         deadline=time.monotonic()+90
         while time.monotonic()<deadline:
+            try: authorize()
+            except ValueError:
+                abandon_start(control, run_id, child)
+                raise
             status=control.status()
             if status.get('run_id')==run_id:
                 if status['listener']=='running' and status['state'] in ('waiting','checking') and not status['stop_requested']:
+                    try: authorize()
+                    except ValueError:
+                        # Only this unconfirmed owned child is stopped. The old
+                        # grant stays expired/revoked; no rearm or extension.
+                        abandon_start(control, run_id, child)
+                        raise
                     if not recovery: enable(ledger, ledger.setting('session-agent'))
                     if rebound: status['messaging_rebound'] = True
                     if grok_rebound: status['transport_rebound'] = True
@@ -467,6 +500,11 @@ def dispatch(args, auth_ledger, register_agent):
             if tool or engine not in ('codex', 'grok'): raise ValueError('session_recovery_denied')
             if not record or str(Path.cwd().resolve()) != record.get('cwd'):
                 raise ValueError('session_binding_denied')
+            from quorum_resume import require_enabled
+            require_enabled(ledger, record)
+        if args.action == 'run' and getattr(args, 'recovering', False):
+            require_caller(sid, engine)
+            if tool or engine not in ('codex', 'grok'): raise ValueError('session_recovery_denied')
             from quorum_resume import require_enabled
             require_enabled(ledger, record)
         if args.action in ('connect', 'delegate'):
@@ -596,9 +634,14 @@ def dispatch(args, auth_ledger, register_agent):
             event=threading.Event()
             for name in ('SIGTERM','SIGINT','SIGBREAK'):
                 if hasattr(signal,name): signal.signal(getattr(signal,name),lambda *_:event.set())
+            authorize = None
+            if getattr(args, 'recovering', False):
+                from quorum_resume import require_enabled
+                authorize = lambda:require_enabled(ledger, record)
+            relay_options = {'authorize':authorize} if authorize is not None else {}
             def make():
                 return Relay(api,ledger,record,lambda message:enqueue({**record, 'delegation':(ledger.setting('session-agent') or {}).get('delegation')},
-                                                                   message,auth_ledger.root))
+                                                                   message,auth_ledger.root), **relay_options)
             return run_listener(ledger,make,args.run_id,stop_event=event,timeout=0,
                                 waiter=RealtimeWait(api,record,ledger,keepalive=Presence(api,record,ledger)))
         raise ValueError('unknown_operation')
