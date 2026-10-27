@@ -28,8 +28,9 @@ class RealtimeWait:
     No message body or delivery acknowledgement is carried by this transport.
     """
     def __init__(self, api, record, ledger, *, connect=None, clock=time.monotonic,
-                 sleep=time.sleep, keepalive=None, stop_aware=False):
+                 sleep=time.sleep, keepalive=None, stop_aware=False, authorize=None):
         self.api, self.ledger, self.clock, self.sleep = api, ledger, clock, sleep
+        self.authorize = authorize or (lambda:None)
         self.keepalive = keepalive
         # Opt-in: pass `stopping` into keepalive calls (the legacy listener keeps calling them bare).
         self.stop_aware = stop_aware
@@ -63,8 +64,10 @@ class RealtimeWait:
     def _send(self, event, payload, *, topic=None):
         self.ref += 1
         ref = str(self.ref)
-        self.socket.send(json.dumps({'topic': topic or self.topic, 'event': event,
-            'payload': payload, 'ref': ref, 'join_ref': None if topic == 'phoenix' else self.join_ref}))
+        frame = json.dumps({'topic': topic or self.topic, 'event': event,
+            'payload': payload, 'ref': ref, 'join_ref': None if topic == 'phoenix' else self.join_ref})
+        self.authorize()  # Connection/token work may have outlived a recovery grant.
+        self.socket.send(frame)
         return ref
 
     def _receive(self, timeout):

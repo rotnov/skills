@@ -514,6 +514,9 @@ def dispatch(args, auth_ledger, register_agent):
             if dispatch_mode == 'native-subagent' and (not coordinator or getattr(args, 'revoke', False)):
                 raise ValueError('dispatch_mode_requires_coordinator')
         api, _, _ = api_for(auth_ledger)
+        if args.action == 'recover' or (args.action == 'run' and getattr(args, 'recovering', False)):
+            from quorum_resume import ReceptionApi
+            api = ReceptionApi(api, ledger, record)
         if args.action in ('connect','start','run','receive','recover'):
             release = ReleaseGuard(api, ledger)
             release.check()
@@ -638,11 +641,11 @@ def dispatch(args, auth_ledger, register_agent):
             if getattr(args, 'recovering', False):
                 from quorum_resume import require_enabled
                 authorize = lambda:require_enabled(ledger, record)
-            relay_options = {'authorize':authorize} if authorize is not None else {}
+            guard_options = {'authorize':authorize} if authorize is not None else {}
             def make():
                 return Relay(api,ledger,record,lambda message:enqueue({**record, 'delegation':(ledger.setting('session-agent') or {}).get('delegation')},
-                                                                   message,auth_ledger.root), **relay_options)
+                                                                   message,auth_ledger.root), **guard_options)
             return run_listener(ledger,make,args.run_id,stop_event=event,timeout=0,
-                                waiter=RealtimeWait(api,record,ledger,keepalive=Presence(api,record,ledger)))
+                                waiter=RealtimeWait(api,record,ledger,keepalive=Presence(api,record,ledger), **guard_options))
         raise ValueError('unknown_operation')
     finally: ledger.db.close()

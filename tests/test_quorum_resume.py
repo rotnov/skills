@@ -141,7 +141,7 @@ class ResumeTests(unittest.TestCase):
     def test_revoked_server_binding_never_restarts_or_stops_listener(self):
         self.record('codex')
         self.dispatch('start')
-        def revoked(operation, payload):
+        def revoked(operation, payload, request_id=None):
             if operation == 'session_requirements': return {'protocol_version':2, 'skill_version':'0.3.0'}
             raise ValueError('session_binding_denied')
         self.api.call = revoked
@@ -194,7 +194,7 @@ class ResumeTests(unittest.TestCase):
         self.offline_generation()
         grant, clock = self.finite_grant(), [0]
         call = self.api.call
-        def expire(operation, payload):
+        def expire(operation, payload, request_id=None):
             if operation == 'session_inbox': clock[0] = 2
             return call(operation, payload)
         self.api.call = expire
@@ -250,7 +250,7 @@ class ResumeTests(unittest.TestCase):
         self.offline_generation()
         grant, clock, submitted = self.finite_grant(), [0], []
         class Api:
-            def call(self, operation, payload):
+            def call(self, operation, payload, request_id=None):
                 if operation == 'session_requirements': return {'protocol_version':2, 'skill_version':'0.3.0'}
                 if operation == 'session_inbox':
                     clock[0] = 2
@@ -308,7 +308,7 @@ class ResumeTests(unittest.TestCase):
         self.offline_generation()
         self.finite_grant()
         clock, call = [0], self.api.call
-        def expire(operation, payload):
+        def expire(operation, payload, request_id=None):
             if operation == 'session_inbox': clock[0] = 2
             return call(operation, payload)
         self.api.call = expire
@@ -329,7 +329,7 @@ class ResumeTests(unittest.TestCase):
         self.dispatch('start')
         self.finite_grant()
         clock, submitted, call = [0], [], self.api.call
-        def inbox(operation, payload):
+        def inbox(operation, payload, request_id=None):
             if operation == 'session_inbox': return [{'id':MID, 'recipient_id':'agent'}]
             return call(operation, payload)
         self.api.call = inbox
@@ -345,6 +345,123 @@ class ResumeTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'session_recovery_denied'): relay.run_once()
         self.assertEqual(submitted, [])
         self.assertIsNone(self.ledger.setting('delivery:' + MID))
+
+    @isolated_profiles
+    def test_recovery_ack_rechecks_expiry_or_stop_after_real_api_token_resolution(self):
+        from quorum_api import QuorumApi, ServiceConfig
+        self.record('codex')
+        self.dispatch('start')
+        self.offline_generation()
+        grant = self.finite_grant()
+        for cancellation in ('expiry', 'stop'):
+            with self.subTest(cancellation=cancellation):
+                clock, requests, denied = [0], [], False
+                self.ledger.setting('session-reception', grant)
+                self.ledger.setting('delivery:' + MID, {'state':'queued'})
+                def token():
+                    if requests[-3:] == ['session_requirements', 'session_inbox', 'session_requirements']:
+                        if cancellation == 'expiry': clock[0] = 2
+                        else: self.ledger.setting('session-reception', {**grant, 'enabled':False})
+                    return 'synthetic-token-only'
+                def request(url, headers, body):
+                    operation = url.rsplit('/', 1)[-1]
+                    requests.append(operation)
+                    if operation == 'session_requirements': return {'protocol_version':2, 'skill_version':'0.3.0'}
+                    if operation == 'session_inbox': return [{'id':MID, 'recipient_id':'agent'}]
+                    self.assertEqual(operation, 'session_ack')
+                    return {'queued':True}
+                self.api = QuorumApi(ServiceConfig('https://example.invalid', 'synthetic-public-key'), token, request)
+                with patch('quorum_resume.time.time', side_effect=lambda:clock[0]), \
+                     patch('signal.signal'), patch('quorum_realtime.RealtimeWait'), patch('quorum_presence.Presence'), \
+                     patch('quorum_session.run_listener', side_effect=lambda ledger, make, *a, **k:make().run_once()):
+                    try: self.dispatch('run', run_id=SID, recovering=True)
+                    except ValueError as error:
+                        self.assertEqual(str(error), 'session_recovery_denied')
+                        denied = True
+                self.assertEqual(requests.count('session_ack'), 0)
+                self.assertTrue(denied)
+                self.assertEqual(self.ledger.setting('delivery:' + MID), {'state':'queued'})
+                expected = grant if cancellation == 'expiry' else {**grant, 'enabled':False}
+                self.assertEqual(self.ledger.setting('session-reception'), expected)
+
+    @isolated_profiles
+    def test_recovery_presence_rechecks_expiry_or_stop_after_real_api_token_resolution(self):
+        from quorum_api import QuorumApi, ServiceConfig
+        from quorum_presence import Presence
+        from quorum_resume import ReceptionApi
+        record = self.record('codex')
+        self.dispatch('start')
+        grant = self.finite_grant()
+        for cancellation in ('expiry', 'stop'):
+            with self.subTest(cancellation=cancellation):
+                clock, requests = [0], []
+                self.ledger.setting('session-reception', grant)
+                def token():
+                    if requests == ['session_requirements']:
+                        if cancellation == 'expiry': clock[0] = 2
+                        else: self.ledger.setting('session-reception', {**grant, 'enabled':False})
+                    return 'synthetic-token-only'
+                def request(url, headers, body):
+                    operation = url.rsplit('/', 1)[-1]
+                    requests.append(operation)
+                    return {'protocol_version':2, 'skill_version':'0.3.0'}
+                raw = QuorumApi(ServiceConfig('https://example.invalid', 'synthetic-public-key'), token, request)
+                guarded = ReceptionApi(raw, self.ledger, record)
+                with patch('quorum_resume.time.time', side_effect=lambda:clock[0]):
+                    with self.assertRaisesRegex(ValueError, 'session_recovery_denied'):
+                        Presence(guarded, record, self.ledger).tick()
+                self.assertEqual(requests, ['session_requirements'])
+                self.assertIsNone(self.ledger.setting('presence'))
+                expected = grant if cancellation == 'expiry' else {**grant, 'enabled':False}
+                self.assertEqual(self.ledger.setting('session-reception'), expected)
+
+    @isolated_profiles
+    def test_recovery_realtime_token_cannot_escape_an_expired_grant(self):
+        from quorum_api import QuorumApi, ServiceConfig
+        from quorum_resume import ReceptionApi
+        record = self.record('codex')
+        self.dispatch('start')
+        self.finite_grant()
+        clock = [0]
+        def token():
+            clock[0] = 2
+            return 'synthetic-token-only'
+        raw = QuorumApi(ServiceConfig('https://example.invalid', 'synthetic-public-key'), token,
+                        lambda *args:self.fail('token resolution must not send HTTP'))
+        guarded = ReceptionApi(raw, self.ledger, record)
+        self.assertIs(guarded.config, raw.config)
+        with patch('quorum_resume.time.time', side_effect=lambda:clock[0]):
+            with self.assertRaisesRegex(ValueError, 'session_recovery_denied'): guarded.token()
+
+    @isolated_profiles
+    def test_recovery_realtime_connect_cannot_send_after_expiry_or_stop(self):
+        from quorum_api import QuorumApi, ServiceConfig
+        from quorum_realtime import RealtimeWait
+        from quorum_resume import ReceptionApi
+        record = {**self.record('codex'), 'agent_id':MID}
+        self.ledger.setting('session-agent', record)
+        self.dispatch('start')
+        grant = self.finite_grant()
+        for cancellation in ('expiry', 'stop'):
+            with self.subTest(cancellation=cancellation):
+                clock, frames, closed = [0], [], []
+                self.ledger.setting('session-reception', grant)
+                socket = SimpleNamespace(send=frames.append, close=lambda:closed.append(True),
+                                         recv=lambda **kwargs:(_ for _ in ()).throw(ValueError('synthetic-frame-end')))
+                def connect(*args, **kwargs):
+                    if cancellation == 'expiry': clock[0] = 2
+                    else: self.ledger.setting('session-reception', {**grant, 'enabled':False})
+                    return socket
+                raw = QuorumApi(ServiceConfig('https://example.invalid', 'synthetic-public-key'),
+                                lambda:'synthetic-token-only', lambda *args:self.fail('no HTTP expected'))
+                guarded = ReceptionApi(raw, self.ledger, record)
+                with patch('quorum_resume.time.time', side_effect=lambda:clock[0]):
+                    waiter = RealtimeWait(guarded, record, self.ledger, connect=connect, authorize=guarded.authorize)
+                    waiter.prepare(lambda:False)
+                self.assertEqual(frames, [])
+                self.assertEqual(closed, [True])
+                expected = grant if cancellation == 'expiry' else {**grant, 'enabled':False}
+                self.assertEqual(self.ledger.setting('session-reception'), expected)
 
 
 class HookTests(unittest.TestCase):

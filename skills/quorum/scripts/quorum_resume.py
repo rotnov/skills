@@ -28,6 +28,33 @@ def require_enabled(ledger, record):
         raise ValueError('session_recovery_denied')
 
 
+class ReceptionApi:
+    """Keep one recovered listener's original grant around every service dispatch."""
+    def __init__(self, api, ledger, record):
+        self.api, self.ledger, self.record = api, ledger, record
+
+    def authorize(self):
+        require_enabled(self.ledger, self.record)
+
+    @property
+    def config(self):
+        return self.api.config
+
+    def token(self):
+        self.authorize()
+        token = self.api.token()
+        self.authorize()
+        return token
+
+    def call(self, operation, payload, request_id=None):
+        from quorum_api import guarded_call
+        self.authorize()
+        # This wrapper owns no RPC attempt state. Queue intent/receipt phases
+        # stay in Relay; refusal after token refresh must precede HTTP dispatch.
+        return guarded_call(self.api, operation, payload, request_id,
+                            before_request=self.authorize, on_dispatch=lambda:None)
+
+
 def hook_environment(event, client, environment):
     """Use only a reviewed provider SessionStart/resume event, never a recent-session guess.
 

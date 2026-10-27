@@ -26,7 +26,9 @@ expired, changed or service-revoked binding cannot recover. Only a fresh explici
 owner-authorized start can enable reception again. Recovery never extends a
 grant's lifetime or creates another grant. It rechecks authority after blocking
 startup work and inside the recovered relay before submitting or acknowledging
-messages; an expired unconfirmed child is stopped without changing the grant.
+messages. Service calls recheck after token resolution and immediately before
+dispatch; Realtime token refresh and heartbeats use the same grant. An expired
+unconfirmed child is stopped without changing the grant.
 
 An uncertain `intent` remains `session_delivery_unknown`: inspect the actual chat
 before existing manual reconciliation. Pending `submitted` messages retain their
