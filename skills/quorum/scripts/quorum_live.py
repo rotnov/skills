@@ -43,7 +43,7 @@ def read_invitation(path):
     return data
 
 
-LIVE_COMMANDS = {'connect', 'pilot-init', 'pilot-worker', 'ping', 'thread', 'mcp', 'invite-file', 'listen', 'session', 'invite-id', 'accept-id', 'access', 'cloud'}
+LIVE_COMMANDS = {'connect', 'pilot-init', 'pilot-worker', 'ping', 'thread', 'mcp', 'invite-file', 'listen', 'session', 'invite-id', 'accept-id', 'access', 'cloud', 'debug'}
 
 
 def add_commands(commands):
@@ -108,6 +108,8 @@ def add_commands(commands):
     thread.add_argument('conversation_id')
     mcp = commands.add_parser('mcp')
     mcp.add_argument('--agent-id', required=True)
+    from quorum_debug import add_commands as add_debug_commands
+    add_debug_commands(commands)
 
 
 def api_for(ledger):
@@ -125,6 +127,9 @@ def dispatch(args, ledger, register_agent):
     import re
     import time
     import uuid
+    if args.command == 'debug':
+        from quorum_debug import dispatch as debug_dispatch
+        return debug_dispatch(args, ledger)
     if args.command == 'session':
         from quorum_session import dispatch as session_dispatch
         return session_dispatch(args, ledger, register_agent)
