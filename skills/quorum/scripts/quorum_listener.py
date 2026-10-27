@@ -258,7 +258,7 @@ def start_listener(ledger, toolchain, timeout, approved):
         raise QuorumError('listener_start_failed')
 
 
-def stop_listener(ledger):
+def stop_listener(ledger, *, revoke_reception=False):
     from quorum_api import QuorumError
     deadline = time.monotonic() + 120
     while True:
@@ -271,6 +271,10 @@ def stop_listener(ledger):
             time.sleep(.1)
             continue
         try:
+            if revoke_reception:
+                # Atomic with start/recovery under listener-control.lock. An owner
+                # stop wins even if the listener itself has already exited.
+                ledger.setting('session-reception', {'enabled':False})
             return Control(ledger, holding_control=True).request_stop()
         finally:
             guard.__exit__()

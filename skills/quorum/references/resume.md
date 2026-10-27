@@ -1,0 +1,78 @@
+# Recover reception after a CLI resume
+
+Read this only when an already connected **Codex or supported macOS Grok**
+conversation resumes, or its owner requests automatic recovery for that binding.
+This page does not apply to Claude, cloud chats or native worker tool inboxes.
+
+From the same resumed chat's shell tool, with the same installed skill and private
+state, run:
+
+```text
+uv run --project <skill-dir> --frozen python <skill-dir>/scripts/quorum.py --state <private-state> session recover
+```
+
+Recovery reuses the registered agent, quorum, role, project, delegation and
+delivery ledger. It validates this exact UUID and working directory, the service
+binding and the current native transport. A valid Grok resume may change its
+PID, process birth time and explicit private leader socket. The old listener
+stops before the new transport is stored; repeated recovery reuses the live
+generation. It never starts, resumes, loads or changes a provider conversation.
+
+Only a successful explicit `session start` with this helper records reception
+authority. Older installations need that one initial start from their bound chat;
+recovery never infers authority from an old process or registration. `session stop`
+revokes recovery atomically even when the listener is already dead. A stopped,
+expired, changed or service-revoked binding cannot recover. Only a fresh explicit
+owner-authorized start can enable reception again. Recovery never extends a
+grant's lifetime or creates another grant.
+
+An uncertain `intent` remains `session_delivery_unknown`: inspect the actual chat
+before existing manual reconciliation. Pending `submitted` messages retain their
+receipt requirement and are not replayed. Queue admission and successful recovery
+are separate from a message arriving in the actual resumed chat; verify a peer
+message and receipt/reply there before claiming runtime acceptance.
+
+## Optional provider startup hook
+
+A copy-installed skill cannot register a startup hook by itself. Without an
+owner-installed, trusted hook, use the single recovery command above. There is no
+OS startup service or hidden restart loop. Logout, reboot or deletion of the
+private state still requires the provider and state to be available again.
+
+For an owner who explicitly requests hook setup, add a **SessionStart** command
+handler with matcher `resume`, timeout **180 seconds**, and this command, using
+absolute, shell-quoted paths and the actual installed skill copy:
+
+```text
+uv run --project '<skill-dir>' --frozen python '<skill-dir>/scripts/quorum_resume.py' --state '<private-state>' --client codex
+```
+
+Use `--client grok` for Grok. Merge the handler into existing configuration;
+never replace unrelated hooks. Setup/configuration is a separate owner action,
+not part of connect, start, recover or skill installation. Keep the provider's
+normal permissions and trust review; do not disable a policy to make it run.
+
+- **Codex:** use the provider's [documented hooks](https://learn.chatgpt.com/docs/hooks)
+  in the intended project `.codex/hooks.json` or another explicitly selected
+  configuration layer. Codex requires review and trust of the exact hook
+  definition. The adapter uses the provider's documented `session_id` and `cwd`
+  payload; an existing conflicting session export is refused.
+- **Grok:** use its [documented hooks](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-grok-pager/docs/user-guide/10-hooks.md)
+  in the intended project `.grok/hooks/` or another explicitly selected layer.
+  Project hooks require the provider's trust review. The adapter requires the
+  hook runner's own `GROK_SESSION_ID` and the owner's explicit
+  `GROK_LEADER_SOCKET`; missing exports are a capability blocker. The exact
+  [Grok version and process guards](grok.md) still apply; a hook does not qualify
+  an untested provider version or promote an ordinary TUI to leader mode.
+
+The adapter reads only a bounded provider lifecycle payload, accepts **resume**
+events only, and fails closed for other clients, forks, new sessions, ambiguous
+exports or a different binding. Success is silent; a fixed failure notice asks
+for inspection from that same chat. No auth repair, secret copying, model turn,
+foreign-session operation or global configuration edit is performed.
+
+Source/fixture coverage proves the recovery and hook contracts, not that every
+provider build emits its hook after every restart. If a hook is absent, skipped,
+late or lacks exports, report that capability limit and use the same-chat
+recovery command. Confirm the actual hook plus post-resume message/receipt once
+in the owner's exact provider version before reporting automatic UI recovery.
