@@ -146,7 +146,7 @@ def _root_fd(root, *, create=False):
         parts = root.parts[1:]
         for index, name in enumerate(parts):
             last = index == len(parts) - 1
-            fd = _open(name, opened[-1], 'private' if last else 'ancestor', create=create and last)
+            fd = _open(name, opened[-1], 'private' if last else 'ancestor', create=create)
             if fd is None: raise _unavailable('path_unsafe')
             opened.append(fd)
         return opened.pop()
@@ -356,8 +356,9 @@ def _view(root, slot_id):
 
 @contextmanager
 def _lock(root, names, name, seconds=10):
-    """Short serialized transitions only; never held through a wait.
+    """Bounded lock acquisition; slot/index locks protect short transitions, never API waits.
 
+    The separate create.lock serializes API attempts without preventing owner stop.
     The lock file opens through the held verified directory; an existing unsafe one refuses unchanged.
     """
     from quorum_os import AnchoredPath, FileLock
@@ -1190,23 +1191,45 @@ def create_body(args, context):
 
 
 def _set_create(context, value):
-    """Persist create progress under the slot lock, also after a stop: it is evidence, never authority."""
+    """Persist progress, also after a stop; return the prior record and this write's private identity."""
     root = _state_root(context['state_root'])
     with _slot(root, context['slot_id'], context['binding']['provider_session_id']) as ledger:
-        ledger.setting(SLOT_KEY, {**ledger.setting(SLOT_KEY), 'create': value})
+        previous = ledger.setting(SLOT_KEY)
+        attempt = str(uuid.uuid4())
+        ledger.setting(SLOT_KEY, {**previous, 'create': value, 'create_attempt_id': attempt})
+        return previous, attempt
+
+
+def _restore_unsent_create(context, previous, attempt):
+    """Undo only this unsubmitted intent; another writer's dispatch or target evidence always wins."""
+    root = _state_root(context['state_root'])
+    with _slot(root, context['slot_id'], context['binding']['provider_session_id']) as ledger:
+        record = ledger.setting(SLOT_KEY)
+        if record.get('create_attempt_id') != attempt or record.get('target') != previous.get('target'): return
+        restored = {**record, 'create': previous.get('create')}
+        if 'create_attempt_id' in previous: restored['create_attempt_id'] = previous['create_attempt_id']
+        else: restored.pop('create_attempt_id', None)
+        ledger.setting(SLOT_KEY, restored)
 
 
 def _send(context, api, operation, payload, request_id, step):
-    """Intent before the request; a failure observed after a stop stays explicitly ambiguous."""
-    _set_create(context, {'state': 'intent', 'step': step})
+    """Serialize intent through dispatch: a predecessor's intent cannot still be awaiting cancellation."""
     guard(context)
-    try: return api.call(operation, payload, request_id)
-    except Exception:
+    root = _state_root(context['state_root'])
+    with _lock(root, ('claude-workers', context['slot_id']), 'create.lock'):
+        guard(context)
+        previous, attempt = _set_create(context, {'state': 'intent', 'step': step})
         try: guard(context)
         except NativeInboxError:
-            raise NativeInboxError('native_worker_create_ambiguous', 'create_unresolved',
-                                   remote_effect={'state': 'uncertain', 'operation': operation}) from None
-        raise
+            _restore_unsent_create(context, previous, attempt)
+            raise
+        try: return api.call(operation, payload, request_id)
+        except Exception:
+            try: guard(context)
+            except NativeInboxError:
+                raise NativeInboxError('native_worker_create_ambiguous', 'create_unresolved',
+                                       remote_effect={'state': 'uncertain', 'operation': operation}) from None
+            raise
 
 
 def _completed(context, step, effect):

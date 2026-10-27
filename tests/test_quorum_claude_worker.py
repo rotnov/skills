@@ -285,6 +285,40 @@ class Harness(unittest.TestCase):
 
 @POSIX_PROOF
 class SlotTests(Harness):
+    def test_prepare_creates_multiple_missing_private_state_ancestors(self):
+        import quorum_claude_worker as worker
+        from quorum_native_inbox import NativeInboxError
+        home = self.base / 'home'
+        home.mkdir(mode=0o755)
+        self.root = home / '.local' / 'share' / 'quorum'
+        with claude():
+            self.denied('native_worker_unavailable', worker.slot_status, self.root, str(uuid.uuid4()))
+        self.assertFalse((home / '.local').exists(), 'read-only status must not bootstrap state')
+        try: prepared = self.prepare()
+        except NativeInboxError as error: self.fail('fresh nested state must prepare: ' + error.code)
+        self.assertEqual(prepared['state'], 'pending')
+        for directory in (home / '.local', home / '.local/share', self.root):
+            self.assertEqual(stat.S_IMODE(directory.stat().st_mode), 0o700)
+            self.assertEqual(directory.stat().st_uid, os.getuid())
+        self.assertEqual(stat.S_IMODE(home.stat().st_mode), 0o755, 'existing ancestors are unchanged')
+
+    def test_prepare_refuses_existing_unsafe_state_ancestors_unchanged(self):
+        for kind in ('symlink', 'writable'):
+            with self.subTest(kind=kind):
+                parent = self.base / kind
+                outside = self.base / (kind + '-outside')
+                outside.mkdir(mode=0o700)
+                if kind == 'symlink': parent.symlink_to(outside, target_is_directory=True)
+                else:
+                    parent.mkdir(mode=0o700)
+                    parent.chmod(0o777)
+                self.root = parent / 'missing' / 'state'
+                self.denied('native_worker_unavailable', self.prepare)
+                self.assertFalse((parent / 'missing').exists())
+                self.assertEqual(list(outside.iterdir()), [])
+                if kind == 'symlink': self.assertTrue(parent.is_symlink())
+                else: self.assertEqual(stat.S_IMODE(parent.stat().st_mode), 0o777)
+
     def test_prepare_is_pending_with_no_profile_auth_or_api(self):
         with patch('quorum_profiles.resolve_profile', side_effect=forbidden('profile')), \
                 patch('quorum_live.api_for', side_effect=forbidden('api')), \
@@ -782,6 +816,72 @@ class CliTests(Harness):
                               'native_inbox_reply_loop_denied'}, NativeInboxError.CODES)
 
 
+CREATE_ATTEMPTS = r"""
+import contextlib, json, sys, time
+from pathlib import Path
+from unittest.mock import patch
+sys.path.insert(0, sys.argv[1])
+import test_quorum_claude_worker as fixture
+import quorum_claude_worker as worker
+
+directory, name, dispatched, reason = Path(sys.argv[2]), sys.argv[3], sys.argv[4] == 'dispatched', sys.argv[5]
+data = json.loads((directory / 'context.json').read_text())
+context = data['context']
+import os
+os.chdir(data['project'])
+
+def wait(path):
+    deadline = time.monotonic() + 5
+    while not path.exists():
+        if time.monotonic() >= deadline: raise RuntimeError('local ordering timeout: ' + path.name)
+        time.sleep(.01)
+
+def terminal_time():
+    return fixture.T0 + 900 if reason == 'permission_expired' and (directory / 'release').exists() else fixture.T0
+
+api = fixture.Api()
+original_set, original_restore, original_lock = worker._set_create, worker._restore_unsent_create, worker._lock
+
+@contextlib.contextmanager
+def lock(root, names, lock_name, **kwargs):
+    # Observe an attempt waiting for serialization; do not replace the real lock.
+    if name == 'B' and lock_name == 'create.lock': (directory / 'B-waiting').touch()
+    with original_lock(root, names, lock_name, **kwargs): yield
+
+def persisted(local, value):
+    result = original_set(local, value)
+    (directory / (name + '-persisted')).touch()
+    if name == 'B' or not dispatched: wait(directory / 'release')
+    return result
+
+def restored(local, previous, attempt):
+    # Force the rejected ordering: A declines cleanup, then B restores its prior A intent.
+    if name == 'B': wait(directory / 'A-finished')
+    return original_restore(local, previous, attempt)
+
+if name == 'A' and dispatched:
+    def blocked():
+        (directory / 'A-dispatched').touch()
+        wait(directory / 'release')
+    api.hooks['quorum_create'] = blocked
+    api.lost.append('quorum_create')
+
+with fixture.claude(), patch.object(worker, 'now', side_effect=terminal_time), \
+        patch.object(worker, '_lock', side_effect=lock), \
+        patch.object(worker, '_set_create', side_effect=persisted), \
+        patch.object(worker, '_restore_unsent_create', side_effect=restored):
+    try:
+        worker._send(context, api, 'quorum_create', {'slug': 'team'}, data['request'], 'create')
+    except Exception as error:
+        result = {'code': getattr(error, 'code', None), 'reason': getattr(error, 'reason', None),
+                  'remote_effect': getattr(error, 'remote_effect', None), 'type': type(error).__name__}
+    else: result = {'unexpected': 'completed'}
+result['api_calls'] = api.calls
+(directory / (name + '-result.json')).write_text(json.dumps(result))
+(directory / (name + '-finished')).touch()
+"""
+
+
 @POSIX_PROOF
 class CreateTests(Harness):
     def create(self, api, cap, *extra, body=b'{"slug": "team"}', access='github', resolve=None):
@@ -875,6 +975,172 @@ class CreateTests(Harness):
         self.assertEqual(self.create(api, cap)[0], 0)
         requests = [request for operation, _, request in api.calls if operation == 'quorum_create']
         self.assertEqual(requests, [self.setting(slot)['create_request_id']] * 2)
+
+    @isolated_profiles
+    def test_fresh_create_terminal_before_dispatch_has_no_ambiguity(self):
+        import quorum_claude_worker as worker
+        from quorum_api import ServiceConfig
+        for boundary in ('profile', 'intent'):
+            for reason in ('stopped', 'permission_expired'):
+                with self.subTest(boundary=boundary, reason=reason):
+                    self.now = T0
+                    api = Api()
+                    slot, cap = self.active(handle=boundary + reason)
+                    self.configure()
+                    def terminate():
+                        if reason == 'stopped':
+                            with claude(): worker.stop_slot(self.root, slot)
+                        else: self.now = T0 + 900
+                    def resolve(*_, **__):
+                        if boundary == 'profile': terminate()
+                        return ServiceConfig(ORIGIN, KEY), Store()
+                    real = worker._set_create
+                    def persisted(context, value):
+                        result = real(context, value)
+                        if boundary == 'intent' and value and value.get('state') == 'intent': terminate()
+                        return result
+                    with patch('quorum_claude_worker._set_create', side_effect=persisted):
+                        code, result, text = self.create(api, cap, resolve=resolve)
+                    self.assertEqual((code, result['code'], result['data']['reason']),
+                                     (3, 'native_worker_slot_terminal', reason), text)
+                    self.assertNotIn('remote_effect', result['data'])
+                    self.assertEqual(api.calls, [])
+                    with claude(): status = worker.slot_status(self.root, slot)
+                    self.assertEqual((status['state'], status['create'], status['target']),
+                                     ('terminal', None, {}), 'no request was dispatched')
+                    self.assertIsNone(self.setting(slot)['create'])
+
+    @isolated_profiles
+    def test_lost_create_intent_survives_terminal_retry_before_dispatch(self):
+        import quorum_claude_worker as worker
+        from quorum_api import ServiceConfig
+        for boundary in ('profile', 'intent'):
+            for reason in ('stopped', 'permission_expired'):
+                with self.subTest(boundary=boundary, reason=reason):
+                    self.now = T0
+                    api = Api()
+                    slot, cap = self.active(handle=boundary + reason)
+                    self.configure()
+                    api.lost.append('quorum_create')
+                    code, result, _ = self.create(api, cap)
+                    self.assertEqual((code, result['code']), (5, 'service_unavailable'))
+                    original = self.setting(slot)
+                    def terminate():
+                        if reason == 'stopped':
+                            with claude(): worker.stop_slot(self.root, slot)
+                        else: self.now = T0 + 900
+                    def resolve(*_, **__):
+                        if boundary == 'profile': terminate()
+                        return ServiceConfig(ORIGIN, KEY), Store()
+                    real = worker._set_create
+                    def persisted(context, value):
+                        result = real(context, value)
+                        if boundary == 'intent' and value and value.get('state') == 'intent': terminate()
+                        return result
+                    with patch('quorum_claude_worker._set_create', side_effect=persisted):
+                        code, result, text = self.create(api, cap, resolve=resolve)
+                    self.assertEqual((code, result['code'], result['data']['reason']),
+                                     (3, 'native_worker_slot_terminal', reason), text)
+                    self.assertEqual(api.calls, [('quorum_create', {'slug': 'team'}, original['create_request_id'])])
+                    with claude(): status = worker.slot_status(self.root, slot)
+                    self.assertEqual((status['create'], status['target']), ('ambiguous', {}))
+                    record = self.setting(slot)
+                    self.assertEqual(record['create'], {'state': 'intent', 'step': 'create'})
+                    self.assertEqual(record['create_request_id'], original['create_request_id'])
+
+    @isolated_profiles
+    def test_unsent_create_cleanup_preserves_newer_completed_evidence(self):
+        import quorum_claude_worker as worker
+        api = Api()
+        slot, cap = self.active()
+        self.configure()
+        real = worker._set_create
+        def completed_elsewhere(context, value):
+            result = real(context, value)
+            if value and value.get('state') == 'intent':
+                worker.pin_target(context, QUORUM)
+                real(context, {'state': 'done', 'quorum_id': QUORUM})
+                with claude(): worker.stop_slot(self.root, slot)
+            return result
+        with patch('quorum_claude_worker._set_create', side_effect=completed_elsewhere):
+            code, result, text = self.create(api, cap)
+        self.assertEqual((code, result['code']), (3, 'native_worker_slot_terminal'), text)
+        self.assertEqual(api.calls, [])
+        with claude(): status = worker.slot_status(self.root, slot)
+        self.assertEqual((status['create'], status['target']), ('done', {'quorum_id': QUORUM}))
+
+    @isolated_profiles
+    def test_unsent_create_cleanup_preserves_concurrent_dispatched_intent(self):
+        import quorum_claude_worker as worker
+        for reason in ('stopped', 'permission_expired'):
+            with self.subTest(reason=reason):
+                slot, results = self.concurrent_creates(dispatched=True, reason=reason)
+                self.assertEqual((results['A']['code'], results['A']['reason']),
+                                 ('native_worker_create_ambiguous', 'create_unresolved'))
+                self.assertEqual(results['A']['remote_effect'],
+                                 {'state': 'uncertain', 'operation': 'quorum_create'})
+                self.assertEqual(results['A']['api_calls'],
+                                 [['quorum_create', {'slug': 'team'}, self.setting(slot)['create_request_id']]])
+                self.assertEqual((results['B']['code'], results['B']['reason'], results['B']['api_calls']),
+                                 ('native_worker_slot_terminal', reason, []))
+                with claude(): status = worker.slot_status(self.root, slot)
+                self.assertEqual((status['create'], status['target']), ('ambiguous', {}))
+                self.assertEqual(self.setting(slot)['create'], {'state': 'intent', 'step': 'create'})
+
+    @isolated_profiles
+    def test_two_unsent_creates_cannot_restore_cancelled_intent(self):
+        import quorum_claude_worker as worker
+        for reason in ('stopped', 'permission_expired'):
+            with self.subTest(reason=reason):
+                slot, results = self.concurrent_creates(reason=reason)
+                for result in results.values():
+                    self.assertEqual((result['code'], result['reason'], result['remote_effect'], result['api_calls']),
+                                     ('native_worker_slot_terminal', reason, None, []))
+                with claude(): status = worker.slot_status(self.root, slot)
+                self.assertEqual((status['state'], status['create'], status['target']), ('terminal', None, {}))
+                self.assertIsNone(self.setting(slot)['create'])
+
+    def concurrent_creates(self, *, dispatched=False, reason='stopped'):
+        """Two real local processes share only private slot state and explicit ordering files."""
+        import subprocess
+        import time
+        import quorum_claude_worker as worker
+        self.now = T0
+        slot, cap = self.active(handle=str(uuid.uuid4()))
+        context = self.authorize(cap, 'create', {'quorum': 'team', 'access': 'github', 'role': None})
+        directory = self.base / ('ordering-' + slot)
+        directory.mkdir(mode=0o700)
+        (directory / 'context.json').write_text(json.dumps({'context': context, 'project': str(self.project),
+                                                          'request': self.setting(slot)['create_request_id']}))
+        (directory / 'context.json').chmod(0o600)
+        processes = []
+        def start(name):
+            command = [sys.executable, '-B', '-c', CREATE_ATTEMPTS, str(Path(__file__).parent), str(directory),
+                       name, 'dispatched' if dispatched else 'unsent', reason]
+            processes.append(subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True))
+        def wait(*names):
+            deadline = time.monotonic() + 5
+            while not any((directory / name).exists() for name in names):
+                if time.monotonic() >= deadline: self.fail('local ordering timeout: ' + repr(names))
+                time.sleep(.01)
+        try:
+            start('A')
+            wait('A-dispatched' if dispatched else 'A-persisted')
+            start('B')
+            # On the old code B writes another intent; with serialization it waits without writing.
+            wait('B-persisted', 'B-waiting')
+            if reason == 'stopped':
+                with claude(): worker.stop_slot(self.root, slot)
+            else: self.now = T0 + 900
+            (directory / 'release').touch()
+            for process in processes:
+                stdout, stderr = process.communicate(timeout=10)
+                self.assertEqual((process.returncode, stdout, stderr), (0, '', ''))
+            return slot, {name: json.loads((directory / (name + '-result.json')).read_text()) for name in ('A', 'B')}
+        finally:
+            for process in processes:
+                if process.poll() is None: process.kill()
+                process.communicate()
 
     @isolated_profiles
     def test_open_access_retry_preserves_target_and_blocks_early_registration(self):
