@@ -53,9 +53,12 @@ history; `--session-id` would create a new conversation instead
    grok --leader --leader-socket <private-dir>/leader.sock --cwd <original-cwd> --resume <exact-session-UUID>
    ```
 
-3. From the resumed TUI's shell tool, run `session connect`, `start` and
-   `status` with the same private state, then confirm a peer message and reply
-   in that chat.
+3. For a previously enabled binding, run [session recover](resume.md) from the
+   resumed TUI's shell tool with the same private state; a trusted optional
+   startup hook can run it automatically. For a first connection, run `session
+   connect`, `start` and `status`. Then confirm a peer message and receipt/reply
+   in that exact chat. Recovery preserves the registered agent and accepts a
+   newly validated process/socket only after the old listener has stopped.
 
 The process guard accepts exactly one of `--session-id` or `--resume`, and its
 value must be the exported session UUID. Titles, `-r`, `--resume=…`,

@@ -127,7 +127,8 @@ def error_code(error):
                'dedicated_pilot_profile_required', 'scratch_directory_required',
                'pilot_agent_required', 'worker_already_running', 'session_delivery_unknown',
                'session_binding_denied', 'session_not_connected', 'claude_pipe_unavailable',
-               'grok_transport_unavailable', 'coordination_unavailable', 'skill_update_required', 'release_manifest_invalid'}
+               'grok_transport_unavailable', 'coordination_unavailable', 'skill_update_required', 'release_manifest_invalid',
+               'session_recovery_denied'}
     return str(error) if str(error) in allowed else 'listener_failed'
 
 
@@ -258,7 +259,7 @@ def start_listener(ledger, toolchain, timeout, approved):
         raise QuorumError('listener_start_failed')
 
 
-def stop_listener(ledger):
+def stop_listener(ledger, *, revoke_reception=False):
     from quorum_api import QuorumError
     deadline = time.monotonic() + 120
     while True:
@@ -271,6 +272,10 @@ def stop_listener(ledger):
             time.sleep(.1)
             continue
         try:
+            if revoke_reception:
+                # Atomic with start/recovery under listener-control.lock. An owner
+                # stop wins even if the listener itself has already exited.
+                ledger.setting('session-reception', {'enabled':False})
             return Control(ledger, holding_control=True).request_stop()
         finally:
             guard.__exit__()

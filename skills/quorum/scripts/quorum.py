@@ -196,6 +196,7 @@ def main(argv=None):
         if isinstance(error, ValueError):
             safe.update({'grok_transport_unavailable', 'session_binding_denied', 'coordinator_changed',
                          'claude_pipe_unavailable', 'listener_stop_pending', 'session_delivery_unknown',
+                         'session_recovery_denied',
                          'private_acl_unavailable', 'unsafe_link', 'browser_unavailable', 'login_timeout',
                          'worker_already_running'})
         code = str(error) if str(error) in safe else 'operation_failed'

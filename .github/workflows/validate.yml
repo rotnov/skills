@@ -87,6 +87,9 @@ jobs:
       - name: Verify experimental Grok existing-TUI IPC without a model
         run: uv run --project skills/quorum --frozen python -m unittest discover -s tests -p test_quorum_grok.py -v
 
+      - name: Verify same-conversation reception recovery without providers
+        run: uv run --project skills/quorum --frozen python -m unittest discover -s tests -p test_quorum_resume.py -v
+
   windows-acl:
     runs-on: windows-latest
     steps:
@@ -104,6 +107,9 @@ jobs:
 
       - name: Verify copy-installed native session transport without providers
         run: uv run --no-project --python 3.12 python -m unittest discover -s tests -p test_quorum_session.py -v
+
+      - name: Verify same-conversation reception recovery without providers
+        run: uv run --no-project --python 3.12 python -m unittest discover -s tests -p test_quorum_resume.py -v
 
       - name: Verify urgent Codex Unix WebSocket steering without Codex or a model
         run: uv run --project skills/quorum --frozen python -m unittest discover -s tests -p test_quorum_codex_steer.py -v
