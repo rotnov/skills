@@ -439,12 +439,11 @@ class DebugService:
         run['watch']['fresh_reply_conversations'] = []
         snapshots = read_local(self.root, run['scope'])
         participants, unavailable, unreadable, engines = [], [], [], []
-        requested = set(run['scope']['bindings'])
-        seen = set()
+        seen, seen_keys = set(), set()
         for snapshot in snapshots:
             binding = snapshot.get('binding')
             if snapshot.get('unreadable'):
-                if binding in requested:
+                if binding not in unreadable:
                     unreadable.append(binding)
                 continue
             if not in_scope(snapshot, run['scope']):
@@ -456,12 +455,63 @@ class DebugService:
                 'transport': snapshot.get('transport'), 'agent_id': snapshot.get('agent_id'),
             })
             self._ingest_snapshot(run, snapshot, now, baseline)
+            for delivery in snapshot.get('deliveries') or []:
+                message_id = delivery.get('message_id')
+                if message_id:
+                    seen_keys.add(binding + ':' + message_id)
         for binding in run['scope']['bindings']:
-            if binding not in seen:
+            if binding not in seen and binding not in unreadable:
                 unavailable.append(binding)
+        self._refresh_source_freshness(run, seen, seen_keys, now)
         run['coverage'].update(participants=participants, unavailable_bindings=unavailable,
                                unreadable=unreadable, engines=sorted(set(engines)))
-        run['collection'].update(state='attached', live_observation=True, last_collected_at=now)
+        if seen:
+            collection_state, live = 'attached', True
+        elif unreadable:
+            collection_state, live = 'unreadable', False
+        else:
+            collection_state, live = 'no_source', False
+        run['collection'].update(state=collection_state, live_observation=live, last_collected_at=now)
+
+    def _refresh_source_freshness(self, run, seen_bindings, seen_keys, now):
+        deliveries = run['watch'].get('deliveries') or {}
+        grouped = {}
+        for key, item in deliveries.items():
+            binding = item.get('binding') or key.split(':', 1)[0]
+            grouped.setdefault(binding, []).append((key, item))
+        for binding, items in grouped.items():
+            if binding in seen_bindings:
+                for key, item in items:
+                    if key in seen_keys and item.get('stale'):
+                        item['since'] = now
+                        item['stale'] = False
+                    elif key not in seen_keys:
+                        item['stale'] = True
+                if any(key in seen_keys for key, _item in items):
+                    self._close_source_gap(run, binding, now)
+                continue
+            started = next((item.get('since') for _key, item in items if item.get('since')), None)
+            for _key, item in items:
+                item['stale'] = True
+            self._open_source_gap(run, binding, started, now)
+
+    def _open_source_gap(self, run, binding, started, now):
+        reason = 'source_not_observed'
+        for gap in run['gaps']:
+            if gap.get('binding') == binding and gap.get('reason') == reason and not gap.get('closed'):
+                gap['to'] = now
+                return
+        if len(run['gaps']) >= 40:
+            return
+        run['gaps'].append({
+            'from': started or now, 'to': now, 'reason': reason, 'binding': binding, 'closed': False,
+        })
+
+    def _close_source_gap(self, run, binding, now):
+        for gap in run['gaps']:
+            if gap.get('binding') == binding and gap.get('reason') == 'source_not_observed' and not gap.get('closed'):
+                gap['to'] = now
+                gap['closed'] = True
 
     def _ingest_snapshot(self, run, snapshot, now, baseline):
         binding = snapshot['binding']
@@ -573,6 +623,8 @@ class DebugService:
     def _apply_rules(self, run):
         now = self.clock()
         for item in run['watch']['deliveries'].values():
+            if item.get('stale'):
+                continue
             started = parse_iso(item['since'])
             age = (now - started).total_seconds() if started else 0
             state = item['state']
@@ -826,50 +878,87 @@ class DebugService:
             if run['state'] != 'active':
                 self._save(run)
                 return 'ended'
+            origin_id = run['run_id']
             repo = run['scope'].get('report_repository')
             if not repo:
                 self._save(run)
                 return 'not_authorized'
+            self._save(run)
         try:
             probed = self.publisher.probe()
         except (OSError, subprocess.SubprocessError):
             probed = {'available': False, 'tool': 'gh', 'blocker': 'gh_auth_unavailable'}
-        with self._lock():
-            run = self._load()
-            self._expire(run)
-            if run['state'] != 'active':
-                self._save(run)
-                return 'ended'
-            run['github'] = probed
-            if not probed.get('available'):
-                for item in self._actionable(run):
-                    self._pending(run, item['finding_id'])
-                self._save(run)
-                return 'delayed'
-            self._save(run)
+        probe_result = self._record_probe(origin_id, repo, probed)
+        if probe_result != 'continue':
+            return probe_result
         seen = set()
         for _step in range(8 * (MAX_FINDINGS + 1)):
             with self._lock():
-                run = self._load()
-                self._touch_host(run)
-                self._expire(run)
-                if run['state'] != 'active':
-                    self._save(run)
+                run, place = self._origin(origin_id)
+                if run is None or not self._origin_can_mutate(run, place, repo):
+                    if run is not None:
+                        self._save_origin(run, place)
                     return 'ended'
                 step = self._next_step(run, seen)
-                self._save(run)
+                self._save_origin(run, place)
                 if step is None:
                     return self._publication_result(run)
+                step['run_id'] = origin_id
             outcome = self._call_external(step)
             with self._lock():
-                run = self._load()
-                self._touch_host(run)
+                run, place = self._origin(origin_id)
+                if run is None or run['scope'].get('report_repository') != repo:
+                    if run is not None:
+                        self._save_origin(run, place)
+                    return 'ended'
+                if place == 'current':
+                    self._touch_host(run)
                 self._expire(run)
                 self._apply_outcome(run, step, outcome)
-                self._save(run)
-                if run['state'] != 'active':
+                self._save_origin(run, place)
+                if not self._origin_can_mutate(run, place, repo):
                     return 'ended'
         return 'uncertain'
+
+    def _record_probe(self, origin_id, repo, probed):
+        with self._lock():
+            run, place = self._origin(origin_id)
+            if run is None or run['scope'].get('report_repository') != repo:
+                if run is not None:
+                    self._save_origin(run, place)
+                return 'ended'
+            if place == 'current':
+                self._touch_host(run)
+            self._expire(run)
+            run['github'] = probed
+            if not self._origin_can_mutate(run, place, repo):
+                self._save_origin(run, place)
+                return 'ended'
+            if not probed.get('available'):
+                for item in self._actionable(run):
+                    self._pending(run, item['finding_id'])
+                self._save_origin(run, place)
+                return 'delayed'
+            self._save_origin(run, place)
+            return 'continue'
+
+    def _origin_can_mutate(self, run, place, repo):
+        return place == 'current' and run.get('state') == 'active' and run['scope'].get('report_repository') == repo
+
+    def _origin(self, run_id):
+        current = self._load()
+        if current and current.get('run_id') == run_id:
+            return current, 'current'
+        archived = self._read_json(self.root / 'debug' / 'runs' / f'{run_id}.json')
+        if archived and archived.get('run_id') == run_id:
+            return archived, 'archive'
+        return None, None
+
+    def _save_origin(self, run, place):
+        if place == 'archive':
+            self._write_json(self.root / 'debug' / 'runs' / f"{run['run_id']}.json", run)
+        else:
+            self._save(run)
 
     def _actionable(self, run):
         return [item for item in run['findings'] if item.get('actionable')]
@@ -903,6 +992,9 @@ class DebugService:
 
     def _step_for(self, run, finding, repo, seen):
         entry = next((item for item in run['publication'] if item['finding_id'] == finding['finding_id']), None)
+        if entry and entry.get('repository') not in (None, repo):
+            self._pending(run, finding['finding_id'])
+            return None
         if entry and entry.get('status') == 'published' and entry.get('issue_number') and entry.get('evidence_hash') == finding['evidence_hash']:
             self._clear_pending(run, finding['finding_id'])
             return None
@@ -971,7 +1063,7 @@ class DebugService:
         elif step['kind'] == 'view':
             self._apply_view(run, finding, entry, result, failure)
         elif step['kind'] == 'create':
-            self._apply_create(run, finding, entry, result, failure)
+            self._apply_create(run, finding, entry, step, result, failure)
         elif step['kind'] == 'comment':
             self._apply_comment(run, finding, entry, step, result, failure)
 
@@ -1033,42 +1125,80 @@ class DebugService:
             entry.update(status='uncertain', failure=failure or 'rejected')
             self._pending(run, finding['finding_id'])
             return
-        bodies = [result.get('body') or '']
+        issue_body = result.get('body') or ''
+        if not marker_in(issue_body, finding['finding_id']):
+            entry.update(status='uncertain', failure='rejected')
+            self._pending(run, finding['finding_id'])
+            return
+        bodies = [issue_body]
         for comment in result.get('comments') or []:
             if isinstance(comment, dict):
                 bodies.append(comment.get('body') or '')
-        if any(marker_in(body, finding['finding_id']) and evidence_in(body, finding['evidence_hash']) for body in bodies):
-            entry.update(status='published', evidence_hash=finding['evidence_hash'], failure=None, reconciled=True)
+        current_hash = finding['evidence_hash']
+        if any(marker_in(body, finding['finding_id']) and evidence_in(body, current_hash) for body in bodies):
+            entry.update(status='published', evidence_hash=current_hash, failure=None, reconciled=True, submitted=False)
             self._clear_pending(run, finding['finding_id'])
             return
-        comment_was_submitted = entry.get('operation') == 'comment' and entry.get('submitted')
-        if comment_was_submitted and entry.get('failure') == 'oserror' and entry.get('retries', 0) < 1:
+        submitted_hash = entry.get('evidence_hash')
+        unresolved = bool(
+            entry.get('operation') == 'comment' and entry.get('submitted') and entry.get('status') != 'published'
+            and submitted_hash)
+        if unresolved and submitted_hash != current_hash:
+            if any(marker_in(body, finding['finding_id']) and evidence_in(body, submitted_hash) for body in bodies):
+                entry.update(status='published', evidence_hash=submitted_hash, submitted=False, failure=None,
+                             reconciled=True, comment_retry=True, operation='comment')
+                self._pending(run, finding['finding_id'])
+                return
+            entry.update(status='uncertain')
+            self._pending(run, finding['finding_id'])
+            return
+        if unresolved and entry.get('failure') == 'oserror' and entry.get('retries', 0) < 1:
             entry.update(comment_retry=True, oserror_retry=True, failure=None, submitted=False, status='intent')
             return
-        if comment_was_submitted:
+        if unresolved:
             entry.update(status='uncertain')
             self._pending(run, finding['finding_id'])
             return
         entry.update(comment_retry=True, status='intent', operation='comment', failure=None)
 
-    def _apply_create(self, run, finding, entry, result, failure):
+    def _outcome_owns_entry(self, entry, step):
+        recorded = entry.get('evidence_hash')
+        dispatched = step.get('evidence_hash')
+        return not dispatched or recorded in (None, dispatched)
+
+    def _settle_submitted(self, run, finding, submitted_hash):
+        if finding['evidence_hash'] == submitted_hash:
+            self._clear_pending(run, finding['finding_id'])
+        else:
+            self._pending(run, finding['finding_id'])
+
+    def _apply_create(self, run, finding, entry, step, result, failure):
+        if not self._outcome_owns_entry(entry, step):
+            self._pending(run, finding['finding_id'])
+            return
+        submitted_hash = step.get('evidence_hash')
         if failure or result.get('status') != 'created' or type(result.get('number')) is not int:
-            entry.update(status='uncertain', failure=failure or 'rejected', operation='create', submitted=True)
+            entry.update(status='uncertain', failure=failure or 'rejected', operation='create', submitted=True,
+                         evidence_hash=submitted_hash)
             self._pending(run, finding['finding_id'])
             return
         entry.update(status='published', operation='create', submitted=True, issue_number=result['number'],
-                     evidence_hash=finding['evidence_hash'], failure=None, reconciled=False)
-        self._clear_pending(run, finding['finding_id'])
+                     evidence_hash=submitted_hash, failure=None, reconciled=False)
+        self._settle_submitted(run, finding, submitted_hash)
 
     def _apply_comment(self, run, finding, entry, step, result, failure):
-        if failure or result.get('status') != 'commented':
-            entry.update(status='uncertain', failure=failure or 'rejected', operation='comment', submitted=True,
-                         evidence_hash=step.get('evidence_hash'))
+        if not self._outcome_owns_entry(entry, step):
             self._pending(run, finding['finding_id'])
             return
-        entry.update(status='published', operation='comment', submitted=True, evidence_hash=finding['evidence_hash'],
+        submitted_hash = step.get('evidence_hash')
+        if failure or result.get('status') != 'commented':
+            entry.update(status='uncertain', failure=failure or 'rejected', operation='comment', submitted=True,
+                         evidence_hash=submitted_hash)
+            self._pending(run, finding['finding_id'])
+            return
+        entry.update(status='published', operation='comment', submitted=False, evidence_hash=submitted_hash,
                      failure=None)
-        self._clear_pending(run, finding['finding_id'])
+        self._settle_submitted(run, finding, submitted_hash)
 
     def _body(self, run, finding):
         lines = ['## Expected', finding['expected'], '', '## Observed', finding['observed'], '', '## Versions',
@@ -1275,11 +1405,17 @@ class DebugService:
 
     def _blockers(self, run):
         blockers = []
+        state = run['collection']['state']
         if 'local-ledger' not in run['scope']['sources']:
             blockers.append('no_local_collector')
-        elif run['collection']['state'] != 'attached':
+        elif state == 'no_source':
+            blockers.append('no_readable_source')
+        elif state == 'unreadable':
+            blockers.append('unreadable_source')
+        elif state != 'attached':
             blockers.append('local_ledger_unreadable')
-        elif not self._host_alive(run):
+        if ('local-ledger' in run['scope']['sources'] and state in ('attached', 'no_source', 'unreadable')
+                and not self._host_alive(run)):
             blockers.append('collector_not_supervising')
         if run['coverage']['unavailable_bindings'] or run['coverage']['unreadable']:
             blockers.append('bindings_not_observed')

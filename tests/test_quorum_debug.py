@@ -44,14 +44,22 @@ class FakeGitHub:
         self.create_number = 4
         self.create_raises = None
         self.comment_raises = None
+        self.before_probe = None
         self.before_search = None
         self.before_create = None
         self.before_view = None
+        self.before_comment = None
+        self.after_comment_retained = None
         self.view_status = 'ok'
         self.issue_body = ''
         self.issue_comments = []
+        self.lose_accepted_comment = False
 
     def probe(self):
+        if self.before_probe:
+            hook = self.before_probe
+            self.before_probe = None
+            hook()
         self.calls.append(('probe',))
         if not self.available:
             return {'available': False, 'tool': 'gh', 'blocker': 'gh_cli_missing'}
@@ -83,15 +91,29 @@ class FakeGitHub:
             raise self.create_raises
         if self.create_status != 'created':
             return {'status': 'uncertain'}
+        self.issue_body = body
         return {'status': 'created', 'number': self.create_number,
                 'url': f'https://github.com/{repo}/issues/{self.create_number}'}
 
     def comment(self, repo, number, body):
         self.calls.append(('comment', repo, number, body))
+        if self.before_comment:
+            hook = self.before_comment
+            self.before_comment = None
+            hook(repo, number, body)
+        if self.lose_accepted_comment:
+            self.lose_accepted_comment = False
+            self.issue_comments.append({'body': body})
+            raise subprocess.TimeoutExpired(['gh', 'issue', 'comment'], 20)
         if self.comment_raises:
             raise self.comment_raises
         if self.comment_status != 'commented':
             return {'status': 'uncertain'}
+        self.issue_comments.append({'body': body})
+        if self.after_comment_retained:
+            hook = self.after_comment_retained
+            self.after_comment_retained = None
+            hook(repo, number, body)
         return {'status': 'commented'}
 
     def creates(self):
@@ -932,6 +954,426 @@ class DebugReviewTests(unittest.TestCase):
         self.assertIn('--json', calls[0])
         self.assertIn('number,body', calls[0])
         self.assertNotIn('--body', calls[0])
+
+
+def evidence_line(body):
+    for line in (body or '').splitlines():
+        if line.startswith('Evidence-Hash: '):
+            return line.split(': ', 1)[1]
+    return None
+
+
+def side_effect_artifact(path, attempt_ids):
+    path.write_text(json.dumps({'events': [
+        {'kind': 'side_effect', 'side_effect_key': 'job-1', 'attempt_id': attempt, 'stage': 'task_completed'}
+        for attempt in attempt_ids
+    ]}), encoding='utf-8')
+
+
+class DebugCorrectionTests(unittest.TestCase):
+    """Expected publication, scope, freshness, and coverage behavior."""
+
+    def test_r1_material_versions_comment_once_and_reconcile_submitted_hash(self):
+        with self.subTest(case='successive'):
+            clock, gh, svc, path = self._importer()
+            stages = [self._import(svc, path, ids)['publication'] for ids in (('a', 'b'), ('c',), ('d',))]
+            self.assertEqual(stages, ['published', 'published', 'published'])
+            self.assertEqual(len(gh.creates()), 1)
+            self.assertEqual(len(gh.comments()), 2)
+            self.assertEqual({call[1] for call in gh.comments()}, {REPO})
+            self.assertEqual({call[2] for call in gh.comments()}, {gh.create_number})
+            hashes = [evidence_line(call[3]) for call in gh.comments()]
+            self.assertEqual(len(hashes), len(set(hashes)))
+            self.assertTrue(all(line.startswith('Debug-Finding: ') for call in gh.comments() for line in call[3].splitlines() if line.startswith('Debug-Finding:')))
+            self.assertEqual(svc.publish()['publication'], 'published')
+            self.assertEqual(len(gh.comments()), 2)
+            self.assertEqual(svc.report()['findings'][0]['evidence_hash'], hashes[-1])
+        with self.subTest(case='accepted-but-lost'):
+            clock, gh, svc, path = self._importer()
+            self.assertEqual(self._import(svc, path, ('a', 'b'))['publication'], 'published')
+            gh.lose_accepted_comment = True
+            lost = self._import(svc, path, ('c',))
+            self.assertEqual(lost['publication'], 'uncertain')
+            self.assertEqual(len(gh.issue_comments), 1)
+            lost_hash = evidence_line(gh.issue_comments[0]['body'])
+            newer = self._import(svc, path, ('d',))
+            self.assertEqual(newer['publication'], 'published')
+            self.assertEqual(len(gh.issue_comments), 2)
+            remote = [evidence_line(item['body']) for item in gh.issue_comments]
+            self.assertEqual(remote[0], lost_hash)
+            self.assertEqual(len(remote), len(set(remote)))
+            self.assertEqual(len(gh.creates()), 1)
+            self.assertEqual(svc.publish()['publication'], 'published')
+            self.assertEqual(len(gh.issue_comments), 2)
+        with self.subTest(case='timeout-absent'):
+            clock, gh, svc, path = self._importer()
+            self._import(svc, path, ('a', 'b'))
+            self._import(svc, path, ('c',))
+            accepted = len(gh.issue_comments)
+            gh.comment_raises = subprocess.TimeoutExpired(['gh', 'issue', 'comment'], 20)
+            blocked = self._import(svc, path, ('d',))
+            self.assertEqual(blocked['publication'], 'uncertain')
+            self.assertEqual(len(gh.issue_comments), accepted)
+            gh.comment_raises = None
+            self._import(svc, path, ('e',))
+            self.assertEqual(svc.publish()['publication'], 'uncertain')
+            self.assertEqual(len(gh.issue_comments), accepted)
+            self.assertTrue(svc.report()['pending_reports'])
+
+    def test_r1_inflight_success_certifies_only_the_submitted_version(self):
+        with self.subTest(case='create-during-newer-evidence'):
+            self._inflight_create_during_newer_evidence()
+        with self.subTest(case='comment-unavailable'):
+            self._inflight_comment_during_newer_evidence('unavailable')
+        with self.subTest(case='comment-uncertain'):
+            self._inflight_comment_during_newer_evidence('uncertain')
+        with self.subTest(case='older-success-preserves-newer-timeout'):
+            self._older_success_preserves_newer_timeout()
+
+    def test_r2_old_run_results_do_not_change_the_replacement_run(self):
+        for boundary in ('probe', 'search', 'view', 'create'):
+            with self.subTest(boundary=boundary):
+                self._old_response_stays_on_origin(boundary)
+        with self.subTest(boundary='same-run'):
+            self._same_run_updates_its_own_issue()
+
+    def test_r3_stale_sources_stay_historical_until_a_fresh_sample(self):
+        with self.subTest(case='fresh-control'):
+            report, gh = self._aged_delivery(lambda root: None)
+            self.assertEqual(report['findings'][0]['rule'], 'stuck_unacknowledged')
+            self.assertTrue(report['findings'][0]['live_observation'])
+            self.assertEqual(len(gh.creates()), 1)
+        for variant in ('out-of-scope', 'vanished', 'unreadable'):
+            with self.subTest(case=variant):
+                report, gh = self._aged_delivery(variant)
+                self.assertFalse(any(item.get('rule') == 'stuck_unacknowledged' for item in report['findings']))
+                self.assertEqual(gh.creates(), [])
+                self.assertTrue(any(event.get('message_id') == MID for event in report['timeline']))
+                self.assertTrue(any(gap.get('reason') == 'source_not_observed' for gap in report['gaps']))
+        with self.subTest(case='returns'):
+            clock, gh, svc, root = self._delivery_service()
+            self._move_out_of_scope(root)
+            clock.advance(901)
+            svc.collect()
+            self.assertEqual(gh.creates(), [])
+            self._restore_scope(root)
+            svc.collect()
+            self.assertEqual(gh.creates(), [])
+            self.assertTrue(any(gap.get('reason') == 'source_not_observed' and gap.get('closed') for gap in svc.report()['gaps']))
+            clock.advance(901)
+            svc.collect()
+            report = svc.report()
+            self.assertEqual(len(gh.creates()), 1)
+            self.assertTrue(report['findings'][0]['live_observation'])
+            self.assertEqual(report['findings'][0]['rule'], 'stuck_unacknowledged')
+
+    def test_r4_watch_without_a_readable_source_stays_partial(self):
+        for case in ('absent', 'out-of-scope', 'unreadable'):
+            with self.subTest(case=case):
+                observed = self._watch_case(case)
+                self.assertTrue(observed['host_alive'])
+                self.assertFalse(observed['complete'])
+                self.assertEqual(observed['activation'], 'partial')
+                self.assertEqual(observed['coverage']['participants'], [])
+                self.assertFalse(observed['collection']['live_observation'])
+                expected = 'unreadable_source' if case == 'unreadable' else 'no_readable_source'
+                self.assertIn(expected, observed['blockers'])
+        with self.subTest(case='readable'):
+            observed = self._watch_case('readable')
+            self.assertTrue(observed['host_alive'])
+            self.assertTrue(observed['complete'])
+            self.assertEqual(observed['activation'], 'ready')
+            self.assertEqual(observed['coverage']['participants'][0]['binding'], SID)
+            self.assertNotIn('no_readable_source', observed['blockers'])
+            self.assertNotIn('unreadable_source', observed['blockers'])
+
+    def _remote_hashes(self, gh):
+        hashes = []
+        if gh.issue_body:
+            hashes.append(evidence_line(gh.issue_body))
+        hashes.extend(evidence_line(item['body']) for item in gh.issue_comments)
+        return hashes
+
+    def _inflight_create_during_newer_evidence(self):
+        clock, gh, svc, path = self._importer()
+        nested = {}
+
+        def change(_repo, _title, _body):
+            gh.before_create = None
+            gh.available = False
+            nested['result'] = self._import(svc, path, ('d',))
+            gh.available = True
+
+        gh.before_create = change
+        result = self._import(svc, path, ('a', 'b'))
+        report = svc.report()
+        created = evidence_line(gh.creates()[0][3])
+        current = report['findings'][0]['evidence_hash']
+        self.assertEqual(nested['result']['publication'], 'delayed')
+        self.assertEqual(created, '74fae6cbc2b5d119')
+        self.assertEqual(current, '738737f5fb6cdaec')
+        self.assertEqual(len(gh.creates()), 1)
+        self.assertEqual(self._remote_hashes(gh), [created, current])
+        self.assertEqual([evidence_line(call[3]) for call in gh.comments()], [current])
+        entry = report['publication']['ledger'][0]
+        self.assertEqual(entry['status'], 'published')
+        self.assertEqual(entry['evidence_hash'], current)
+        self.assertEqual(entry['issue_number'], gh.create_number)
+        self.assertEqual(entry['repository'], REPO)
+        self.assertFalse(report['pending_reports'])
+        self.assertEqual(result['publication'], 'published')
+        repeated = svc.publish()
+        self.assertEqual(repeated['publication'], 'published')
+        self.assertEqual(len(gh.creates()), 1)
+        self.assertEqual(len(gh.comments()), 1)
+        self.assertEqual(self._remote_hashes(gh), [created, current])
+
+    def _inflight_comment_during_newer_evidence(self, nested_mode):
+        clock, gh, svc, path = self._importer()
+        self.assertEqual(self._import(svc, path, ('a', 'b'))['publication'], 'published')
+        nested = {}
+
+        def change(_repo, _number, _body):
+            gh.available = nested_mode == 'uncertain'
+            nested['result'] = self._import(svc, path, ('d',))
+            gh.available = True
+
+        gh.before_comment = change
+        result = self._import(svc, path, ('c',))
+        report = svc.report()
+        current = report['findings'][0]['evidence_hash']
+        submitted = 'a0ef388ac08dc45a'
+        remote = self._remote_hashes(gh)
+        self.assertEqual(nested['result']['publication'], 'delayed' if nested_mode == 'unavailable' else 'uncertain')
+        self.assertEqual(current, 'd6476b98f3bc4a69')
+        self.assertEqual(remote, ['74fae6cbc2b5d119', submitted])
+        self.assertNotIn(current, remote)
+        self.assertEqual(len(gh.creates()), 1)
+        self.assertEqual(len(gh.comments()), 1)
+        entry = report['publication']['ledger'][0]
+        self.assertEqual(entry['evidence_hash'], submitted)
+        self.assertNotEqual(entry['evidence_hash'], current)
+        self.assertTrue(report['pending_reports'])
+        self.assertNotEqual(result['publication'], 'published')
+        followed = svc.publish()
+        self.assertEqual(followed['publication'], 'published')
+        self.assertEqual(self._remote_hashes(gh), ['74fae6cbc2b5d119', submitted, current])
+        self.assertEqual([evidence_line(call[3]) for call in gh.comments()], [submitted, current])
+        published = svc.report()['publication']['ledger'][0]
+        self.assertEqual(published['status'], 'published')
+        self.assertEqual(published['operation'], 'comment')
+        self.assertEqual(published['evidence_hash'], current)
+        self.assertFalse(published['submitted'])
+        self.assertFalse(svc.report()['pending_reports'])
+        self.assertEqual(svc.publish()['publication'], 'published')
+        self.assertEqual(len(gh.comments()), 2)
+        self.assertEqual(len(gh.creates()), 1)
+
+    def _older_success_preserves_newer_timeout(self):
+        clock, gh, svc, path = self._importer()
+        self._import(svc, path, ('a', 'b'))
+        nested = {}
+
+        def after_visible(_repo, _number, _body):
+            gh.comment_raises = subprocess.TimeoutExpired(['gh', 'issue', 'comment'], 20)
+            nested['result'] = self._import(svc, path, ('d',))
+            nested['ledger'] = svc.report()['publication']['ledger'][0]
+            gh.comment_raises = None
+
+        gh.after_comment_retained = after_visible
+        result = self._import(svc, path, ('c',))
+        report = svc.report()
+        current = report['findings'][0]['evidence_hash']
+        before = nested['ledger']
+        after = report['publication']['ledger'][0]
+        self.assertEqual(nested['result']['publication'], 'uncertain')
+        self.assertEqual(before['evidence_hash'], 'd6476b98f3bc4a69')
+        self.assertEqual(before['status'], 'uncertain')
+        self.assertTrue(before['submitted'])
+        self.assertEqual(before['failure'], 'timeout')
+        self.assertEqual(before['operation'], 'comment')
+        self.assertEqual(after['evidence_hash'], current)
+        self.assertEqual(after['status'], 'uncertain')
+        self.assertTrue(after['submitted'])
+        self.assertEqual(after['failure'], 'timeout')
+        self.assertEqual(after['operation'], 'comment')
+        self.assertEqual(current, 'd6476b98f3bc4a69')
+        self.assertEqual(self._remote_hashes(gh), ['74fae6cbc2b5d119', 'a0ef388ac08dc45a'])
+        self.assertNotIn(current, self._remote_hashes(gh))
+        self.assertEqual(len(gh.creates()), 1)
+        self.assertEqual(len(gh.comments()), 2)
+        self.assertEqual(len(gh.issue_comments), 1)
+        self.assertTrue(report['pending_reports'])
+        self.assertEqual(result['publication'], 'uncertain')
+        repeated = svc.publish()
+        self.assertEqual(repeated['publication'], 'uncertain')
+        self.assertEqual(len(gh.comments()), 2)
+        self.assertEqual(len(gh.issue_comments), 1)
+        self.assertEqual(svc.report()['publication']['ledger'][0]['failure'], 'timeout')
+        self.assertTrue(svc.report()['pending_reports'])
+
+    def _importer(self):
+        clock, gh = Clock(), FakeGitHub()
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        return clock, gh, open_service(root, clock, gh), root / 'artifact.json'
+
+    def _import(self, svc, path, attempt_ids):
+        side_effect_artifact(path, attempt_ids)
+        if not getattr(svc, '_correction_activated', False):
+            svc.activate('team', 'proj', REPO, sources=('imported-artifact',))
+            svc._correction_activated = True
+        return svc.import_artifact(path)
+
+    def _old_response_stays_on_origin(self, boundary):
+        clock, gh = Clock(), FakeGitHub()
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        svc = open_service(root, clock, gh)
+        current_path = root / 'current.json'
+        original_path = root / 'original.json'
+        side_effect_artifact(original_path, ('a', 'b'))
+        side_effect_artifact(current_path, ('a', 'b'))
+        started = svc.activate('team', 'proj', 'example/old', sources=('imported-artifact',))
+
+        def switch(*_ignored):
+            gh.before_probe = gh.before_search = gh.before_view = gh.before_create = None
+            gh.available = False
+            switched['stopped'] = svc.stop()['state']
+            clock.advance(1)
+            switched['new'] = svc.activate('team', 'proj', 'example/new', sources=('imported-artifact',))
+            switched['imported'] = svc.import_artifact(original_path)
+            gh.available = True
+
+        switched = {}
+        if boundary == 'view':
+            svc.import_artifact(current_path)
+            side_effect_artifact(current_path, ('c',))
+            gh.before_view = switch
+            svc.import_artifact(current_path)
+        elif boundary == 'create':
+            gh.before_create = switch
+            svc.import_artifact(current_path)
+        elif boundary == 'search':
+            gh.before_search = switch
+            svc.import_artifact(current_path)
+        else:
+            gh.before_probe = switch
+            svc.import_artifact(current_path)
+        current = svc.report()
+        archived = svc.report(started['run_id'])
+        self.assertEqual(switched['stopped'], 'stopped')
+        self.assertEqual(current['run_id'], switched['new']['run_id'])
+        self.assertNotEqual(current['run_id'], archived['run_id'])
+        self.assertEqual(current['scope']['report_repository'], 'example/new')
+        self.assertEqual(archived['scope']['report_repository'], 'example/old')
+        self.assertEqual(current['findings'][0]['finding_id'], archived['findings'][0]['finding_id'])
+        self.assertTrue(current['pending_reports'])
+        self.assertFalse(any(item.get('issue_number') for item in current['publication']['ledger']))
+        self.assertFalse(any(item.get('repository') == 'example/old' for item in current['publication']['ledger']))
+        self.assertFalse(any(call[0] == 'comment' and call[1] == 'example/new' for call in gh.calls))
+        self.assertFalse(any(call[0] == 'view' and call[1] == 'example/new' for call in gh.calls))
+        if boundary == 'create':
+            self.assertEqual([call[1] for call in gh.creates()], ['example/old'])
+            origin = archived['publication']['ledger'][0]
+            self.assertEqual(origin['repository'], 'example/old')
+            self.assertEqual(origin['issue_number'], 4)
+            self.assertEqual(origin['status'], 'published')
+        elif boundary == 'view':
+            self.assertEqual([call[1] for call in gh.creates()], ['example/old'])
+            self.assertEqual(gh.comments(), [])
+        else:
+            self.assertEqual(gh.creates(), [])
+        gh.issue_body = 'An unrelated issue in example/new, without a Debug-Finding marker'
+        gh.issue_comments = []
+        side_effect_artifact(current_path, ('e',))
+        svc.import_artifact(current_path)
+        self.assertFalse(any(call[0] == 'comment' and call[1:][:2] == ['example/new', 4] for call in gh.calls))
+        preserved = svc.report(started['run_id'])
+        self.assertEqual(preserved['scope']['report_repository'], 'example/old')
+        if boundary == 'create':
+            self.assertEqual(preserved['publication']['ledger'][0]['issue_number'], 4)
+            self.assertEqual(preserved['publication']['ledger'][0]['repository'], 'example/old')
+
+    def _same_run_updates_its_own_issue(self):
+        clock, gh, svc, path = self._importer()
+        self.assertEqual(self._import(svc, path, ('a', 'b'))['publication'], 'published')
+        self.assertEqual(self._import(svc, path, ('c',))['publication'], 'published')
+        self.assertEqual(len(gh.creates()), 1)
+        self.assertEqual(len(gh.comments()), 1)
+        self.assertEqual(gh.comments()[0][1], REPO)
+        self.assertIn('Debug-Finding: ', gh.comments()[0][3])
+        self.assertTrue(any(line.startswith('Debug-Finding: ') for line in gh.issue_body.splitlines()))
+        gh.issue_body = 'An unrelated issue with a reused number and no Debug-Finding marker'
+        gh.issue_comments = []
+        blocked = self._import(svc, path, ('d',))
+        self.assertEqual(blocked['publication'], 'uncertain')
+        self.assertEqual(len(gh.comments()), 1)
+        self.assertTrue(svc.report()['pending_reports'])
+
+    def _delivery_service(self):
+        clock, gh = Clock(), FakeGitHub()
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        write_session(root, deliveries=[{'message_id': MID, 'state': 'offered'}])
+        svc = open_service(root, clock, gh)
+        svc.activate('team', 'proj', REPO)
+        return clock, gh, svc, root
+
+    def _aged_delivery(self, variant):
+        clock, gh, svc, root = self._delivery_service()
+        if variant == 'out-of-scope':
+            self._move_out_of_scope(root)
+        elif variant == 'vanished':
+            import shutil
+            shutil.rmtree(root / 'sessions' / SID)
+        elif variant == 'unreadable':
+            (root / 'sessions' / SID / 'ledger.sqlite').write_bytes(b'not a database')
+        clock.advance(901)
+        svc.collect()
+        return svc.report(), gh
+
+    def _move_out_of_scope(self, root):
+        from quorum_state import LocalLedger
+        ledger = LocalLedger(root / 'sessions' / SID)
+        record = ledger.setting('session-agent')
+        record['project_ref'] = 'different-project'
+        ledger.setting('session-agent', record)
+        ledger.db.close()
+
+    def _restore_scope(self, root):
+        from quorum_state import LocalLedger
+        ledger = LocalLedger(root / 'sessions' / SID)
+        record = ledger.setting('session-agent')
+        record['project_ref'] = 'proj'
+        ledger.setting('session-agent', record)
+        ledger.db.close()
+
+    def _watch_case(self, case):
+        clock, gh = Clock(), FakeGitHub()
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        if case == 'out-of-scope':
+            write_session(root, project='different-project')
+        elif case == 'unreadable':
+            target = root / 'sessions' / SID
+            target.mkdir(parents=True)
+            (target / 'ledger.sqlite').write_bytes(b'not a database')
+        elif case == 'readable':
+            write_session(root)
+        svc = open_service(root, clock, gh)
+        svc.activate('team', 'proj', REPO)
+        observed = {}
+
+        def inspect():
+            observed.update(svc.status())
+
+        svc.watch(cycles=1, sleeper=lambda _seconds: None, on_cycle=inspect)
+        return observed
 
 
 def setUpModule():
