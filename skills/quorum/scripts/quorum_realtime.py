@@ -4,10 +4,12 @@ import logging
 import time
 from urllib.parse import urlencode
 import uuid
-from quorum_api import QuorumError
 
 # Frames inspected for an overdue heartbeat reply; exceeds the socket's max_queue.
 DRAIN_LIMIT = 32
+# Fixed denials end reception; reconnecting or polling must never mask them.
+TERMINAL = frozenset(('auth_required', 'coordination_unavailable', 'skill_update_required',
+                      'release_manifest_invalid', 'session_recovery_denied', 'session_binding_denied'))
 
 
 def connect_socket(uri, **options):
@@ -127,13 +129,12 @@ class RealtimeWait:
     def prepare(self, stopping):
         """Subscribe before the listener's initial authoritative inbox drain."""
         if stopping(): return
+        self._close_socket()  # A resubscription after an outage replaces, never leaks, the old socket.
         try: self._join(stopping)
-        except QuorumError as error:
-            if str(error) in ('auth_required', 'coordination_unavailable', 'skill_update_required', 'release_manifest_invalid'):
+        except Exception as error:
+            if str(error) in TERMINAL and isinstance(error, ValueError):
                 self._close_socket()
                 raise
-            self._fallback()
-        except Exception:
             self._fallback()
 
     def pulse(self, stopping=None):
@@ -199,13 +200,10 @@ class RealtimeWait:
                                  last_signal_at=time.time(), last_wake='signal')
                     return
             if not stopping(): self._status(last_wake='safety_poll')
-        except QuorumError as error:
-            if str(error) in ('auth_required', 'coordination_unavailable', 'skill_update_required', 'release_manifest_invalid'):
+        except Exception as error:
+            if str(error) in TERMINAL and isinstance(error, ValueError):
                 self._close_socket()
                 raise
-            self._fallback()
-            self._poll(stopping)
-        except Exception:
             self._fallback()
             self._poll(stopping)
 

@@ -1,7 +1,7 @@
 """Quiet native-listener heartbeat, independent of task acceptance or model turns."""
 import time
 import uuid
-from quorum_api import QuorumError
+from quorum_api import QuorumError, is_transient_service
 from quorum_release import ReleaseGuard
 
 # Peers derive `heartbeat_timeout` after this gap; only then were we really offline.
@@ -68,11 +68,11 @@ class Presence:
                 self.release.accept(result.get('required'))
                 raise QuorumError('skill_update_required')
         except QuorumError as error:
-            if str(error) == 'service_error':
+            if str(error) == 'service_error' and not is_transient_service(error):
                 self.ledger.setting('presence', {'state':'unavailable', 'code':'coordination_unavailable'})
                 raise QuorumError('coordination_unavailable') from None
-            if str(error) != 'service_unavailable': raise
-            self.ledger.setting('presence', {'state':'unreachable', 'code':'service_unavailable'})
+            if not is_transient_service(error): raise
+            self.ledger.setting('presence', {'state':'unreachable', 'code':str(error)})
             return
         self.online_at = (self.clock(), self.wall() if self.persist else time.time())
         if self.persist:

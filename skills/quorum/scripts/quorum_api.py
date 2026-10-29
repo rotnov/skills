@@ -14,8 +14,21 @@ OPERATIONS = frozenset(('quorum_create invite_create invite_accept device_regist
     'session_heartbeat session_peers session_requirements').split())
 
 
+# Gateway/overload statuses only; missing RPCs, denials and client errors stay terminal.
+TRANSIENT_HTTP = frozenset((408, 429, 500, 502, 503, 504))
+
+
 class QuorumError(ValueError):
     """Stable error codes only: never include a response body or credentials."""
+    def __init__(self, code, *, transient=False):
+        super().__init__(code)
+        self.transient = transient
+
+
+def is_transient_service(error):
+    """A typed outage an opted-in native listener may wait out; the RPC itself is never retried here."""
+    return isinstance(error, QuorumError) and (str(error) == 'service_unavailable'
+                                               or (str(error) == 'service_error' and error.transient is True))
 
 
 @dataclass(frozen=True)
@@ -51,9 +64,9 @@ def _open(request):
             raw = response.read(262145)
     except HTTPError as error:
         code = 'auth_required' if error.code in (401, 403) else 'service_error'
-        raise QuorumError(code) from None
+        raise QuorumError(code, transient=error.code in TRANSIENT_HTTP) from None
     except (URLError, OSError):
-        raise QuorumError('service_unavailable') from None
+        raise QuorumError('service_unavailable', transient=True) from None
     if len(raw) > 262144:
         raise QuorumError('response_too_large')
     try:

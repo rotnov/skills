@@ -11,7 +11,10 @@ from quorum_os import FileLock, background_flags, open_private, protect
 from quorum_release import ReleaseGuard, ReleaseMismatch, installed_release
 
 # A run in these states holds listener.lock for as long as its process lives.
-LIVE_STATES = ('starting', 'waiting', 'checking')
+# `degraded`: an opted-in native run waiting out a service outage; live but not ready.
+LIVE_STATES = ('starting', 'waiting', 'checking', 'degraded')
+# Outage backoff in seconds after consecutive failures, capped; the run itself has no deadline.
+RETRY_DELAYS = (10, 20, 40, 60)
 
 
 def locked(path):
@@ -132,7 +135,13 @@ def error_code(error):
     return str(error) if str(error) in allowed else 'listener_failed'
 
 
-def run_listener(ledger, make_worker, run_id, *, sleep=time.sleep, stop_event=None, timeout=60, waiter=None):
+def run_listener(ledger, make_worker, run_id, *, sleep=time.sleep, stop_event=None, timeout=60, waiter=None,
+                 retry=False):
+    """`retry`: native session opt-in to wait out typed service outages with the same worker.
+
+    Each resumption reconciles first; the worker's durable ledger, not this loop, prevents replay.
+    """
+    from quorum_api import is_transient_service
     from quorum_live import LocalSupervisorLock
     control, handled = Control(ledger), 0
     stop_event = stop_event or threading.Event()
@@ -148,13 +157,32 @@ def run_listener(ledger, make_worker, run_id, *, sleep=time.sleep, stop_event=No
                 control.update(run_id, 'unknown', handled, timeout=timeout, code='uncertain_attempt')
             else:
                 worker = make_worker()
-                if waiter: waiter.prepare(stopping)
-                worker.reconcile()
-                control.update(run_id, 'waiting', handled, timeout=timeout)
+                ready, failures = False, 0
                 while not stopping():
-                    if waiter and hasattr(waiter, 'pulse'): waiter.pulse()
-                    control.update(run_id, 'checking', handled, timeout=timeout)
-                    outcome = worker.run_once()
+                    try:
+                        if not ready:
+                            if waiter: waiter.prepare(stopping)
+                            worker.reconcile()
+                            ready = True
+                            control.update(run_id, 'waiting', handled, timeout=timeout)
+                            continue
+                        if waiter and hasattr(waiter, 'pulse'):
+                            # Only an opted-in stop-aware waiter takes `stopping`; legacy pulse() stays bare.
+                            waiter.pulse(stopping) if getattr(waiter, 'stop_aware', False) else waiter.pulse()
+                        control.update(run_id, 'checking', handled, timeout=timeout)
+                        outcome = worker.run_once()
+                        failures = 0  # A completed authoritative drain ends the outage.
+                    except Exception as error:
+                        if not (retry and is_transient_service(error)): raise
+                        # No dispatch is repeated here: reconcile again before any further I/O.
+                        ready = False
+                        control.update(run_id, 'degraded', handled, timeout=timeout, code=str(error))
+                        ledger.setting('presence', {'state':'unreachable', 'code':str(error)})
+                        for _ in range(RETRY_DELAYS[min(failures, len(RETRY_DELAYS) - 1)]):
+                            if stopping(): break
+                            sleep(1)
+                        failures += 1
+                        continue
                     if outcome == 'unknown':
                         control.update(run_id, 'unknown', handled, timeout=timeout, code='uncertain_attempt')
                         break
@@ -167,7 +195,10 @@ def run_listener(ledger, make_worker, run_id, *, sleep=time.sleep, stop_event=No
                         break
                     control.update(run_id, 'waiting', handled, timeout=timeout)
                     if waiter:
-                        waiter.wait(stopping)
+                        try: waiter.wait(stopping)
+                        except Exception as error:
+                            if not (retry and is_transient_service(error)): raise
+                            ready = False  # Realtime keeps its own fallback; resubscribe and reconcile.
                         continue
                     for _ in range(10):
                         if stopping(): break
@@ -176,7 +207,10 @@ def run_listener(ledger, make_worker, run_id, *, sleep=time.sleep, stop_event=No
                     control.update(run_id, 'stopped', handled, timeout=timeout)
         except Exception as error:
             # Do not blindly retry an RPC: even a lost claim response is uncertain.
-            control.update(run_id, 'error', handled, timeout=timeout, code=error_code(error))
+            if str(error) == 'session_recovery_denied' and isinstance(error, ValueError) and stopping():
+                # An owner stop observed by the reception guard ends the run as stopped, not failed.
+                control.update(run_id, 'stopped', handled, timeout=timeout)
+            else: control.update(run_id, 'error', handled, timeout=timeout, code=error_code(error))
         finally:
             if waiter: waiter.close()
     return control.status()
