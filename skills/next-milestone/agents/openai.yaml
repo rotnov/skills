@@ -1,0 +1,4 @@
+interface:
+  display_name: "Next Milestone"
+  short_description: "Pick and drive the next GitHub milestone"
+  default_prompt: "Use $next-milestone to determine the next unmet GitHub milestone, adopt it as the goal, and drive it to an evidence-backed close-out."

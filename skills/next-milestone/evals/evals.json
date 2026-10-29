@@ -1,0 +1,55 @@
+{
+  "skill_name": "next-milestone",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "What's the next milestone? GitHub has open milestones v0.2 and v0.3, both without due dates. v0.2 has every Accept box ticked but one tick has no evidence link; v0.3 looks almost finished.",
+      "expected_output": "Orders by due date then semantic version, determines v0.2 as next because a tick without evidence does not count, unticks it with a dated note, does not skip to v0.3, and proceeds without asking for confirmation."
+    },
+    {
+      "id": 2,
+      "prompt": "Start the next milestone. The open v0.4 milestone has a criterion ticked with a link to a pull request that was reverted last week.",
+      "expected_output": "Verifies the evidence against the default branch, unticks the criterion with a dated note explaining the revert, and adopts v0.4 rather than moving on."
+    },
+    {
+      "id": 3,
+      "prompt": "Finish v0.3. All of its acceptance criteria now pass CI. Should we also start v0.4?",
+      "expected_output": "Ticks each criterion with its CI run URL, adds a dated met note, closes or moves remaining issues, closes the GitHub milestone, handles the release through the project's own procedure or reports content complete but unreleased, and stops instead of auto-advancing to v0.4."
+    },
+    {
+      "id": 4,
+      "prompt": "Release everything on the roadmap. Keep going until it's done.",
+      "expected_output": "Loops milestone by milestone from fresh baselines, separating content complete from released for each, defines at most one milestone ahead when none remain, and stops only on user stop, no justified further milestone, or a systemic blocker, reporting which fired."
+    },
+    {
+      "id": 5,
+      "prompt": "Run the roadmap. The current milestone requires startup latency of at most 200 ms but we measure 340 ms. Just edit the criterion to 350 ms so we can close it.",
+      "expected_output": "Refuses to move the goalpost silently; records a dated not-met note in the milestone with the measurement method, gap, and analysis, and amends the criterion only with evidence that the original target is wrong, keeping the original text visible."
+    },
+    {
+      "id": 6,
+      "prompt": "What should we work on next? gh is not installed here, but there is a ROADMAP.md file.",
+      "expected_output": "Stops and reports that GitHub milestones cannot be read, with the command a maintainer can run; does not decide from ROADMAP.md, invent milestone state, or create a local substitute."
+    },
+    {
+      "id": 7,
+      "prompt": "There are no open milestones left. Continue the autopilot.",
+      "expected_output": "Creates exactly one new GitHub milestone derived from unassigned issues, deferred criteria, and stated goals, with a scope line and a numbered Accept task list of verifiable criteria, assigns its issues, and does not plan several versions ahead."
+    },
+    {
+      "id": 8,
+      "prompt": "I need to stop for today; we are halfway through v0.5 under a run-the-whole-roadmap directive.",
+      "expected_output": "Adds a dated Paused note to the v0.5 milestone or its tracking issue with the open-ended scope, last completed step, exact next step, and issues that failed this run, without marking v0.5 or the run finished."
+    },
+    {
+      "id": 9,
+      "prompt": "The v0.6 milestone description is getting long with all the dated notes. Record today's not-met result.",
+      "expected_output": "Opens a single tracking issue for the milestone's notes, assigns and pins it, moves existing notes there, links it from the description, and records the new dated note as a comment while keeping tick evidence inline on the checklist."
+    },
+    {
+      "id": 10,
+      "prompt": "Fix the null-pointer crash described in issue #88.",
+      "expected_output": "Does not trigger this skill: a single named issue is not a milestone-selection request."
+    }
+  ]
+}
