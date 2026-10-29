@@ -69,9 +69,11 @@ class GhCliPublisher:
         return {'available': True, 'tool': 'gh', 'blocker': None}
 
     def search(self, repo, finding_id):
+        # Keep the custom marker label out of GitHub's query syntax. Search
+        # results still require the exact marker line when classified.
         proc = self.runner([
             'gh', 'issue', 'list', '--repo', repo, '--state', 'all', '--limit', '5',
-            '--json', 'number,body', '--search', f'Debug-Finding:{finding_id} in:body',
+            '--json', 'number,body', '--search', f'{finding_id} in:body',
         ], timeout=20)
         if getattr(proc, 'returncode', 1) != 0:
             return {'status': 'uncertain', 'issues': []}
