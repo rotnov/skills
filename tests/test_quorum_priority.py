@@ -146,9 +146,11 @@ class PriorityTests(unittest.TestCase):
                    'priority': 'urgent'}
         prompts = []
         with patch('quorum_claude_pipe.submit', side_effect=lambda sid, mid, text: prompts.append(text)), \
+             patch('quorum_claude_pipe.binding', return_value='/tmp/quorum.sock'), \
              patch('quorum_codex_steer.submit', side_effect=AssertionError('steered a Claude chat')), \
              patch.dict(os.environ, {'CLAUDE_CODE_SESSION_ID': SID,
-                                     'CLAUDE_CODE_MESSAGING_SOCKET': '/tmp/quorum.sock'}):
+                                     'CLAUDE_CODE_MESSAGING_SOCKET': '/tmp/quorum.sock',
+                                     'CLAUDE_CODE_MESSAGING_TOKEN': 'synthetic-only'}):
             self.assertEqual(enqueue(record, message, Path('/private/state')), 'submitted')
         # Claude Code reads inbox messages between tool calls of an active turn;
         # the envelope must say so instead of claiming it waits in a queue.
@@ -166,8 +168,10 @@ class PriorityTests(unittest.TestCase):
                    'priority': 'normal'}
         prompts = []
         with patch('quorum_claude_pipe.submit', side_effect=lambda sid, mid, text: prompts.append(text)), \
+             patch('quorum_claude_pipe.binding', return_value='/tmp/quorum.sock'), \
              patch.dict(os.environ, {'CLAUDE_CODE_SESSION_ID': SID,
-                                     'CLAUDE_CODE_MESSAGING_SOCKET': '/tmp/quorum.sock'}):
+                                     'CLAUDE_CODE_MESSAGING_SOCKET': '/tmp/quorum.sock',
+                                     'CLAUDE_CODE_MESSAGING_TOKEN': 'synthetic-only'}):
             self.assertEqual(enqueue(record, message, Path('/private/state')), 'submitted')
         self.assertNotIn('marked this message urgent', prompts[0])
         self.assertNotIn('between tool calls', prompts[0])

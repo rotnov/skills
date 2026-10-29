@@ -4,6 +4,12 @@ Read this only when an already connected **Codex, supported macOS Grok or
 Claude Code** conversation resumes or its listener stopped, or its owner requests
 automatic recovery for that binding. This page does not apply to cloud chats or
 native worker tool inboxes.
+For a native Claude chat, reconnecting first preserves the old endpoint until
+start or authorized recovery stops and rebinds its listener.
+See [Claude transport recovery](sessions.md#claude-code--macos-linux-and-windows)
+and [delivery reconciliation](sessions.md#failure-and-recovery) for definite
+no-write outcomes and owner-attested absence of an ambiguous attempt. Do not
+infer absence from a dead socket or replay an unknown intent.
 
 From the same resumed chat's shell tool, with the same installed skill and private
 state, run:

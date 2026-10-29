@@ -1,4 +1,5 @@
 """Native session delivery; synthetic local credentials, never a model process."""
+import errno
 import json
 import os
 import contextlib
@@ -72,6 +73,70 @@ class ClaudeUnixTests(unittest.TestCase):
             self.assertEqual(received,[{'type':'auth','token':'synthetic-only'},
                 {'type':'user','session_id':SID,'from':'quorum','msg_id':MID,
                  'message':{'role':'user','content':'Привет из Unix\nsecond line'}}])
+
+    def assert_unsent(self, error):
+        self.assertEqual(str(error), 'session_delivery_unsent')
+        self.assertEqual(type(error).__name__, 'DeliveryUnsent')
+        self.assertIsInstance(error, ValueError)
+
+    @isolated_profiles
+    def test_missing_socket_before_helper_binding_is_unsent(self):
+        import quorum_claude_pipe
+        from quorum_claude_pipe import submit
+        with self.inbox() as (endpoint, server):
+            server.close()
+            missing = endpoint.with_name('missing.sock')
+            self.assertFalse(missing.exists())
+            payload = json.dumps({'session_id':SID,'message_id':MID,'content':'must not write'}).encode()
+            env = os.environ.copy()
+            env['CLAUDE_CODE_MESSAGING_SOCKET'] = str(missing)
+            with patch.dict(os.environ, {'CLAUDE_CODE_MESSAGING_SOCKET':str(missing)}):
+                with self.assertRaises(ValueError) as caught:
+                    submit(SID, MID, 'must not write')
+            self.assert_unsent(caught.exception)
+            self.assertNotIn(str(missing), str(caught.exception))
+            self.assertFalse(missing.exists())
+            child = subprocess.run([sys.executable, str(Path(quorum_claude_pipe.__file__).resolve())],
+                                   input=payload, capture_output=True, env=env)
+            self.assertEqual(child.returncode, 2)
+            self.assertEqual(child.stdout, b'')
+            self.assertEqual(child.stderr, b'')
+
+    @isolated_profiles
+    def test_stale_socket_without_listener_is_unsent(self):
+        from quorum_claude_pipe import submit
+        with self.inbox() as (endpoint, server):
+            server.close()
+            self.assertTrue(endpoint.exists())
+            with self.assertRaises(ValueError) as caught:
+                submit(SID, MID, 'must not write')
+            self.assert_unsent(caught.exception)
+            self.assertNotIn(str(endpoint), str(caught.exception))
+
+    @isolated_profiles
+    def test_unlink_before_connect_is_unsent_and_started_write_stays_unknown(self):
+        from quorum_claude_pipe import main
+        payload = json.dumps({'session_id':SID,'message_id':MID,'content':'x'}).encode()
+        real = socket.socket
+        # CPython exposes connect and sendall as read-only socket methods.
+        with self.inbox() as (endpoint, server):
+            class UnlinkBeforeConnect(real):
+                def connect(self, path):
+                    os.unlink(path)
+                    return super().connect(path)
+            with patch('quorum_claude_pipe.socket.socket', UnlinkBeforeConnect), \
+                    patch('quorum_claude_pipe.sys.stdin.buffer.read', return_value=payload):
+                self.assertEqual(main(), 2)
+            self.assertFalse(endpoint.exists())
+            server.close()
+        with self.inbox():
+            class BreakAfterOneByte(real):
+                def sendall(self, data):
+                    self.partial = data[:1]
+                    raise BrokenPipeError(errno.EPIPE, 'broken')
+            with patch('quorum_claude_pipe.socket.socket', BreakAfterOneByte), \
+                    patch('quorum_claude_pipe.sys.stdin.buffer.read', return_value=payload):
+                self.assertEqual(main(), 1)
 
     @isolated_profiles
     def test_unsafe_unix_endpoints_and_missing_child_token_are_denied(self):
@@ -223,8 +288,12 @@ class ClaudePipeTests(unittest.TestCase):
         from quorum_session import enqueue
         seen=[]
         endpoint='\\\\.\\pipe\\synthetic-quorum'
-        env={'CLAUDE_CODE_SESSION_ID':SID,'CLAUDE_CODE_MESSAGING_SOCKET':endpoint}
-        with patch.dict(os.environ,env,clear=True), patch('quorum_claude_pipe.submit',side_effect=lambda *args:seen.append(args)):
+        env={'CLAUDE_CODE_SESSION_ID':SID,'CLAUDE_CODE_MESSAGING_SOCKET':endpoint,
+             'CLAUDE_CODE_MESSAGING_TOKEN':'synthetic-only'}
+        # This test inspects the envelope on every platform. Private endpoint
+        # validation has separate real Unix/Windows transport fixtures above.
+        with patch.dict(os.environ,env,clear=True), patch('quorum_claude_pipe.binding',return_value=endpoint), \
+             patch('quorum_claude_pipe.submit',side_effect=lambda *args:seen.append(args)):
             result=enqueue({'engine':'claude','session_ref':SID,'messaging_socket':endpoint,'quorum':'test-local'},
                            {'id':MID,'body':'a peer request','sender_role':'codex-test','reply_to':None},Path('/private/state'))
         self.assertEqual(result,'submitted')
@@ -254,6 +323,49 @@ class ClaudePipeTests(unittest.TestCase):
         self.assertEqual(json.loads(kwargs['input'])['session_id'],SID)
         self.assertNotIn('token',kwargs['input'])
         self.assertNotIn('claude',args)
+
+    @isolated_profiles
+    def test_noisy_helper_exit_and_spawn_failure_stay_ambiguous(self):
+        from quorum_claude_pipe import submit
+        def noisy(command, **kwargs):
+            return subprocess.CompletedProcess(command, 2, stdout='session_delivery_unsent', stderr='')
+        with patch('quorum_claude_pipe.subprocess.run', side_effect=noisy):
+            with self.assertRaisesRegex(ValueError, 'session_delivery_unknown'):
+                submit(SID, MID, 'x')
+        def missing_interpreter(command, **kwargs):
+            raise FileNotFoundError(errno.ENOENT, 'missing interpreter')
+        with patch('quorum_claude_pipe.subprocess.run', side_effect=missing_interpreter):
+            with self.assertRaisesRegex(ValueError, 'session_delivery_unknown'):
+                submit(SID, MID, 'x')
+
+    @isolated_profiles
+    def test_windows_missing_pipe_before_write_is_unsent_and_partial_write_is_unknown(self):
+        # In-process classification only. This macOS run does not open a Windows pipe.
+        from quorum_claude_pipe import main
+        payload = json.dumps({'session_id':SID,'message_id':MID,'content':'x'}).encode()
+        env = {'CLAUDE_CODE_SESSION_ID':SID, 'CLAUDE_CODE_MESSAGING_TOKEN':'synthetic-only',
+               'CLAUDE_CODE_MESSAGING_SOCKET': '\\\\.\\pipe\\synthetic-quorum'}
+        def open_missing(*args, **kwargs):
+            raise FileNotFoundError(errno.ENOENT, 'not found')
+        with patch.dict(os.environ, env, clear=True), patch('quorum_claude_pipe.os.name', 'nt'), \
+                patch('builtins.open', side_effect=open_missing), \
+                patch('quorum_claude_pipe.sys.stdin.buffer.read', return_value=payload):
+            self.assertEqual(main(), 2)
+        class Pipe:
+            def __init__(self):
+                self.started = False
+            def write(self, view):
+                self.started = True
+                raise BrokenPipeError(errno.EPIPE, 'broken')
+            def close(self): pass
+            def __enter__(self): return self
+            def __exit__(self, *args): return False
+        pipe = Pipe()
+        with patch.dict(os.environ, env, clear=True), patch('quorum_claude_pipe.os.name', 'nt'), \
+                patch('builtins.open', return_value=pipe), \
+                patch('quorum_claude_pipe.sys.stdin.buffer.read', return_value=payload):
+            self.assertEqual(main(), 1)
+            self.assertTrue(pipe.started)
 
     @unittest.skipUnless(os.name=='nt','native Windows named-pipe integration')
     @isolated_profiles

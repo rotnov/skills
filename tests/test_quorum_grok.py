@@ -12,6 +12,7 @@ import tempfile
 import subprocess
 import threading
 import unittest
+import uuid
 from quorum_test_support import isolated_profiles
 from unittest.mock import patch
 
@@ -509,8 +510,11 @@ class GrokTests(unittest.TestCase):
             try:
                 relay = Relay(Api(), ledger, record, lambda m: submit(record, m['id'], 'hello'))
                 with self.assertRaisesRegex(ValueError, 'session_delivery_unknown'): relay.run_once()
+                intent = ledger.setting('delivery:'+MID)
+                self.assertEqual(intent['state'], 'intent')
+                self.assertEqual(str(uuid.UUID(intent['attempt_id'])), intent['attempt_id'])
                 with self.assertRaisesRegex(ValueError, 'session_delivery_unknown'): relay.run_once()
-                self.assertEqual(ledger.setting('delivery:'+MID), {'state':'intent'})
+                self.assertEqual(ledger.setting('delivery:'+MID), intent)
                 self.assertEqual(len(peer.prompts), 1)
             finally: ledger.db.close()
 

@@ -472,7 +472,7 @@ class ResumeTests(unittest.TestCase):
         setting = self.ledger.setting
         def persist(key, value=None):
             result = setting(key, value)
-            if key == 'delivery:' + MID and value == {'state':'intent'}: clock[0] = 2
+            if key == 'delivery:' + MID and value and value.get('state') == 'intent': clock[0] = 2
             return result
         relay = Relay(self.api, self.ledger, record, lambda message:submitted.append(message) or 'submitted')
         relay.authorize = lambda:require_enabled(self.ledger, record)

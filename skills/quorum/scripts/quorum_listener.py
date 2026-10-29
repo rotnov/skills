@@ -128,7 +128,7 @@ def error_code(error):
     allowed = {'auth_required', 'service_unavailable', 'service_error', 'invalid_response',
                'subscription_required', 'engine_missing', 'engine_version_mismatch',
                'dedicated_pilot_profile_required', 'scratch_directory_required',
-               'pilot_agent_required', 'worker_already_running', 'session_delivery_unknown',
+               'pilot_agent_required', 'worker_already_running', 'session_delivery_unknown', 'session_delivery_unsent',
                'session_binding_denied', 'session_not_connected', 'claude_pipe_unavailable',
                'grok_transport_unavailable', 'coordination_unavailable', 'skill_update_required', 'release_manifest_invalid',
                'session_recovery_denied'}
