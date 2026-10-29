@@ -2073,6 +2073,202 @@ class DebugListenerEventTests(unittest.TestCase):
             self.assertEqual(github.creates(), [])
 
 
+class _SafeOS:
+    """Record kill calls. A Windows name never reaches the real os.kill."""
+
+    def __init__(self, name):
+        self.name = name
+        self.calls = []
+        self.error = None
+
+    def kill(self, pid, sig):
+        self.calls.append((pid, sig))
+        if self.name == 'nt':
+            return None
+        if self.error is not None:
+            raise self.error
+        return None
+
+
+class _WinCall:
+    """ctypes-style callable. Bound methods reject argtypes."""
+
+    def __init__(self, func):
+        self._func = func
+        self.argtypes = None
+        self.restype = None
+
+    def __call__(self, *args):
+        return self._func(*args)
+
+
+class _WinKernel:
+    def __init__(self):
+        self.handle = 256
+        self.open_result = 256
+        self.exit_code = 259
+        self.query_ok = 1
+        self.opened = None
+        self.closed = []
+        self.OpenProcess = _WinCall(self._open)
+        self.GetExitCodeProcess = _WinCall(self._query)
+        self.CloseHandle = _WinCall(self._close)
+
+    def _open(self, access, inherit, pid):
+        self.opened = (access, inherit, pid)
+        return self.open_result
+
+    def _query(self, handle, out):
+        target = getattr(out, '_obj', None)
+        if target is None:
+            target = out.contents
+        target.value = self.exit_code
+        return self.query_ok
+
+    def _close(self, handle):
+        self.closed.append(handle)
+        return 1
+
+
+class DebugWindowsLivenessTests(unittest.TestCase):
+    """Direct Windows liveness. No ledger, ACL, or real Windows kill."""
+
+    def _bare(self):
+        from quorum_debug import DebugService
+        service = DebugService.__new__(DebugService)
+        service.alive_check = None
+        return service
+
+    def _windows(self, kernel):
+        proxy = _SafeOS('nt')
+        return proxy, patch('quorum_debug.os', proxy), patch('ctypes.WinDLL', return_value=kernel, create=True)
+
+    def test_windows_still_active_is_a_query_and_closes_the_handle(self):
+        import ctypes
+        from ctypes import wintypes
+        service = self._bare()
+        kernel = _WinKernel()
+        proxy, os_patch, dll = self._windows(kernel)
+        with os_patch, dll:
+            alive = service._pid_alive(240)
+        self.assertEqual(proxy.calls, [])
+        self.assertTrue(alive)
+        self.assertEqual(kernel.opened, (0x1000, False, 240))
+        self.assertEqual(kernel.closed, [256])
+        self.assertIs(kernel.OpenProcess.restype, wintypes.HANDLE)
+        self.assertEqual(ctypes.sizeof(kernel.OpenProcess.restype), ctypes.sizeof(ctypes.c_void_p))
+        self.assertEqual(list(kernel.OpenProcess.argtypes), [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD])
+        self.assertIs(kernel.GetExitCodeProcess.restype, wintypes.BOOL)
+        self.assertIs(kernel.GetExitCodeProcess.argtypes[1]._type_, wintypes.DWORD)
+        self.assertIs(kernel.CloseHandle.restype, wintypes.BOOL)
+        self.assertEqual(list(kernel.CloseHandle.argtypes), [wintypes.HANDLE])
+
+    def test_windows_exited_denied_and_failed_query_are_not_alive(self):
+        service = self._bare()
+        cases = (
+            ('exited', {'exit_code': 0, 'query_ok': 1, 'open_result': 256}, [256]),
+            ('open denied', {'exit_code': 259, 'query_ok': 1, 'open_result': 0}, []),
+            ('query failed', {'exit_code': 259, 'query_ok': 0, 'open_result': 256}, [256]),
+        )
+        for label, values, closed in cases:
+            with self.subTest(label):
+                kernel = _WinKernel()
+                kernel.exit_code = values['exit_code']
+                kernel.query_ok = values['query_ok']
+                kernel.open_result = values['open_result']
+                proxy, os_patch, dll = self._windows(kernel)
+                with os_patch, dll:
+                    alive = service._pid_alive(240)
+                self.assertFalse(alive)
+                self.assertEqual(proxy.calls, [])
+                self.assertEqual(kernel.closed, closed)
+
+    def test_windows_unavailable_api_does_not_fall_back_to_kill(self):
+        import builtins
+        service = self._bare()
+        proxy = _SafeOS('nt')
+        real_import = builtins.__import__
+
+        def blocked(name, globals=None, locals=None, fromlist=(), level=0):
+            if name == 'ctypes' or name.startswith('ctypes.'):
+                raise ImportError('ctypes unavailable')
+            return real_import(name, globals, locals, fromlist, level)
+
+        with patch('quorum_debug.os', proxy), patch('builtins.__import__', blocked):
+            imported = service._pid_alive(240)
+        self.assertFalse(imported)
+        self.assertEqual(proxy.calls, [])
+        with patch('quorum_debug.os', proxy), patch('ctypes.WinDLL', side_effect=OSError('kernel32 unavailable'), create=True):
+            missing = service._pid_alive(240)
+        self.assertFalse(missing)
+        self.assertEqual(proxy.calls, [])
+
+    def test_windows_pid_outside_dword_is_not_alive(self):
+        service = self._bare()
+        kernel = _WinKernel()
+        proxy, os_patch, dll = self._windows(kernel)
+        with os_patch, dll:
+            alive = service._pid_alive(2 ** 32)
+        self.assertFalse(alive)
+        self.assertEqual(proxy.calls, [])
+        self.assertIsNone(kernel.opened)
+
+    def test_invalid_pid_and_injected_check_skip_the_platform_probe(self):
+        service = self._bare()
+        proxy = _SafeOS('nt')
+        with patch('quorum_debug.os', proxy):
+            for pid in (None, 0, -1, True, '4'):
+                self.assertFalse(service._pid_alive(pid))
+            service.alive_check = lambda pid: pid == 240
+            self.assertTrue(service._pid_alive(240))
+            self.assertFalse(service._pid_alive(241))
+        self.assertEqual(proxy.calls, [])
+
+    def test_posix_signal_zero_and_oserror_stay_unchanged(self):
+        service = self._bare()
+        proxy = _SafeOS('posix')
+        with patch('quorum_debug.os', proxy):
+            self.assertTrue(service._pid_alive(240))
+            proxy.error = PermissionError('denied')
+            self.assertFalse(service._pid_alive(241))
+            proxy.error = OSError('down')
+            self.assertFalse(service._pid_alive(242))
+        self.assertEqual(proxy.calls, [(240, 0), (241, 0), (242, 0)])
+
+    @unittest.skipUnless(os.name == 'nt', 'native Windows owned-child liveness runs in Windows CI')
+    def test_owned_child_prints_the_after_probe_marker_and_exits(self):
+        scripts = str(Path(__file__).resolve().parents[1] / 'skills' / 'quorum' / 'scripts')
+        child = (
+            'import os, sys\n'
+            'sys.path.insert(0, sys.argv[1])\n'
+            'from quorum_debug import DebugService\n'
+            'service = DebugService.__new__(DebugService)\n'
+            'service.alive_check = None\n'
+            'alive = service._pid_alive(os.getpid())\n'
+            'if alive is not True:\n'
+            '    raise SystemExit(2)\n'
+            'sys.stdout.write("QUORUM_DEBUG_WIN_LIVENESS_AFTER_PROBE\\n")\n'
+            'sys.stdout.flush()\n'
+        )
+        proc = subprocess.Popen(
+            [sys.executable, '-c', child, scripts],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        try:
+            stdout, stderr = proc.communicate(timeout=20)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            stdout, stderr = proc.communicate(timeout=5)
+            self.fail(f'owned child timed out: {stderr}')
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.communicate(timeout=5)
+        self.assertIn('QUORUM_DEBUG_WIN_LIVENESS_AFTER_PROBE', stdout)
+        self.assertEqual(proc.returncode, 0)
+        self.assertNotIn('QUORUM_DEBUG_WIN_LIVENESS_AFTER_PROBE', stderr)
+
+
 def setUpModule():
     def blocked(*_args, **_kwargs):
         raise AssertionError('live subprocess blocked in quorum debug tests')

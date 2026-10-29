@@ -112,6 +112,44 @@ def safe(value):
     return None
 
 
+def _windows_pid_alive(pid):
+    """Query-only liveness. os.kill(pid, 0) terminates a Windows process."""
+    if pid > 0xFFFFFFFF:
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+    except (ImportError, AttributeError, OSError):
+        return False
+    try:
+        kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    except (AttributeError, OSError):
+        return False
+    kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel.OpenProcess.restype = wintypes.HANDLE
+    kernel.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    kernel.GetExitCodeProcess.restype = wintypes.BOOL
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel.CloseHandle.restype = wintypes.BOOL
+    handle = None
+    try:
+        handle = kernel.OpenProcess(0x1000, False, pid)
+        if not handle:
+            return False
+        code = wintypes.DWORD()
+        if not kernel.GetExitCodeProcess(handle, ctypes.byref(code)):
+            return False
+        return code.value == 259
+    except (AttributeError, OSError, TypeError, ValueError):
+        return False
+    finally:
+        if handle:
+            try:
+                kernel.CloseHandle(handle)
+            except (AttributeError, OSError, TypeError, ValueError):
+                pass
+
+
 def digest(payload):
     raw = json.dumps(payload, sort_keys=True, separators=(',', ':')).encode()
     return hashlib.sha256(raw).hexdigest()
@@ -1336,6 +1374,8 @@ class DebugService:
             return False
         if self.alive_check is not None:
             return bool(self.alive_check(pid))
+        if os.name == 'nt':
+            return _windows_pid_alive(pid)
         try:
             os.kill(pid, 0)
         except OSError:
