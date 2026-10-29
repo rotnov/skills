@@ -6,6 +6,8 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -1374,6 +1376,288 @@ class DebugCorrectionTests(unittest.TestCase):
 
         svc.watch(cycles=1, sleeper=lambda _seconds: None, on_cycle=inspect)
         return observed
+
+
+class DebugLockContentionTests(unittest.TestCase):
+    """Real run.lock collisions. The holder is released on the first failed acquisition."""
+
+    USAGE = {
+        'source': 'codex', 'model': 'gpt-test', 'window_start': '2026-10-27T12:00:00Z',
+        'window_end': '2026-10-27T13:00:00Z', 'category': 'project', 'quality': 'actual',
+        'input_tokens': 8, 'output_tokens': 2,
+    }
+
+    def _contend(self, operation, *, until='5m', advance_seconds=0, release_on_collision=True):
+        # Release the holder when the watcher first fails the real flock, before
+        # joining watch. Holding through watch's return deadlocks a bounded retry.
+        from quorum_os import FileLock as RealFileLock
+        clock, github = Clock(), FakeGitHub()
+        tmp = tempfile.TemporaryDirectory(prefix='quorum-debug-lock-')
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        watcher = open_service(root, clock, github)
+        owner = open_service(root, clock, github)
+        watcher.activate('team', 'proj', until=until, sources=('imported-artifact',))
+        entered, release = threading.Event(), threading.Event()
+        collision, holder_done, holder_finished = threading.Event(), threading.Event(), threading.Event()
+        saves, collects, failures, holder_errors, control_errors = [], [], [], [], []
+        outcome = {'hung': False, 'view': None, 'error': None, 'elapsed': 0}
+        worker = {'thread': None}
+
+        original_save = owner._save
+
+        def held_save(run):
+            saves.append(1)
+            if len(saves) == 1:
+                entered.set()
+                if not release.wait(5):
+                    raise RuntimeError('setup: holder was not released')
+            return original_save(run)
+
+        owner._save = held_save
+        original_collect = watcher.collect
+
+        def counting_collect(*args, **kwargs):
+            collects.append(1)
+            return original_collect(*args, **kwargs)
+
+        watcher.collect = counting_collect
+
+        class ObservingLock:
+            def __init__(self, path):
+                self._real = RealFileLock(path)
+
+            def __enter__(self):
+                try:
+                    return self._real.__enter__()
+                except ValueError as error:
+                    if str(error) == 'worker_already_running':
+                        failures.append(1)
+                        first = not collision.is_set()
+                        collision.set()
+                        if first and release_on_collision and not holder_done.wait(5):
+                            raise RuntimeError('setup: holder was not released after the real collision')
+                    raise
+
+            def __exit__(self, *args):
+                return self._real.__exit__(*args)
+
+        def invoke():
+            try:
+                if operation == 'status':
+                    owner.status()
+                elif operation == 'stop':
+                    owner.stop()
+                elif operation == 'usage':
+                    owner.add_usage(dict(self.USAGE))
+                else:
+                    raise RuntimeError('setup: unknown operation')
+            except Exception as exc:
+                holder_errors.append(exc)
+            finally:
+                holder_finished.set()
+
+        def on_cycle():
+            thread = threading.Thread(target=invoke, name='debug-lock-holder', daemon=True)
+            worker['thread'] = thread
+            thread.start()
+            if not entered.wait(3):
+                raise RuntimeError('setup: public command did not hold the real lock')
+
+        def control():
+            try:
+                if not collision.wait(5):
+                    control_errors.append('setup: watcher never failed a real lock acquisition')
+                    return
+                if advance_seconds:
+                    clock.advance(advance_seconds)
+                release.set()
+                if not holder_finished.wait(5):
+                    control_errors.append('setup: holder did not finish after release')
+            finally:
+                release.set()
+                holder_done.set()
+
+        controller = None
+        if release_on_collision:
+            controller = threading.Thread(target=control, name='debug-lock-controller', daemon=True)
+            controller.start()
+
+        def execute():
+            try:
+                with patch('quorum_debug.FileLock', ObservingLock):
+                    outcome['view'] = watcher.watch(
+                        interval=1, cycles=1, sleeper=lambda _seconds: None, on_cycle=on_cycle)
+            except Exception as exc:
+                outcome['error'] = exc
+
+        try:
+            if release_on_collision:
+                execute()
+            else:
+                started = time.monotonic()
+                watch_thread = threading.Thread(target=execute, name='debug-lock-watch', daemon=True)
+                watch_thread.start()
+                watch_thread.join(2)
+                outcome['elapsed'] = time.monotonic() - started
+                outcome['hung'] = watch_thread.is_alive()
+        finally:
+            release.set()
+            holder_done.set()
+            thread = worker['thread']
+            if thread is not None:
+                thread.join(5)
+            if controller is not None:
+                controller.join(5)
+        if control_errors:
+            raise RuntimeError(control_errors[0])
+        if holder_errors:
+            raise RuntimeError('setup: holder failed: %s' % holder_errors[0])
+        error = outcome.get('error')
+        if isinstance(error, RuntimeError) and str(error).startswith('setup:'):
+            raise error
+        raw = json.loads((root / 'debug' / 'current.json').read_text(encoding='utf-8'))
+        outcome.update(
+            collision=collision.is_set(), failures=len(failures), saves=len(saves),
+            collects=len(collects), error=error, state=raw.get('state'),
+            host=raw.get('host') or {}, records=list((raw.get('usage') or {}).get('records') or []),
+            publisher_calls=list(github.calls),
+        )
+        if not release_on_collision and not outcome['hung']:
+            outcome['post_status'] = owner.status()
+        return outcome
+
+    def test_status_contention_lets_the_watch_detach(self):
+        outcome = self._contend('status')
+        self.assertTrue(outcome['collision'])
+        self.assertGreaterEqual(outcome['failures'], 1)
+        self.assertEqual(outcome['saves'], 1)
+        self.assertIsNone(outcome['error'])
+        self.assertEqual(outcome['collects'], 1)
+        self.assertEqual(outcome['view']['cycles_completed'], 1)
+        self.assertFalse(outcome['view']['host_alive'])
+        self.assertEqual(outcome['state'], 'active')
+        self.assertEqual(outcome['host'].get('state'), 'stopped')
+        self.assertEqual(outcome['host'].get('stopped_reason'), 'cycle_limit')
+        self.assertEqual(outcome['publisher_calls'], [])
+
+    def test_usage_contention_records_once_and_detaches(self):
+        outcome = self._contend('usage')
+        self.assertTrue(outcome['collision'])
+        self.assertGreaterEqual(outcome['failures'], 1)
+        self.assertEqual(outcome['saves'], 1)
+        self.assertIsNone(outcome['error'])
+        self.assertEqual(outcome['collects'], 1)
+        self.assertEqual(outcome['view']['cycles_completed'], 1)
+        self.assertFalse(outcome['view']['host_alive'])
+        self.assertEqual(len(outcome['records']), 1)
+        self.assertEqual(outcome['records'][0]['input_tokens'], 8)
+        self.assertEqual(outcome['host'].get('state'), 'stopped')
+        self.assertEqual(outcome['publisher_calls'], [])
+
+    def test_stop_contention_ends_the_watch_without_collecting(self):
+        outcome = self._contend('stop')
+        self.assertTrue(outcome['collision'])
+        self.assertGreaterEqual(outcome['failures'], 1)
+        self.assertEqual(outcome['saves'], 1)
+        self.assertIsNone(outcome['error'])
+        self.assertEqual(outcome['collects'], 0)
+        self.assertEqual(outcome['view']['cycles_completed'], 0)
+        self.assertEqual(outcome['view']['state'], 'stopped')
+        self.assertFalse(outcome['view']['host_alive'])
+        self.assertEqual(outcome['state'], 'stopped')
+        self.assertEqual(outcome['host'].get('state'), 'stopped')
+        self.assertEqual(outcome['host'].get('stopped_reason'), 'stopped')
+        self.assertIsNone(outcome['host'].get('pid'))
+        self.assertEqual(outcome['publisher_calls'], [])
+
+    def test_expiry_during_contention_is_reread_before_further_work(self):
+        outcome = self._contend('status', until='1m', advance_seconds=120)
+        self.assertTrue(outcome['collision'])
+        self.assertGreaterEqual(outcome['failures'], 1)
+        self.assertEqual(outcome['saves'], 1)
+        self.assertIsNone(outcome['error'])
+        self.assertEqual(outcome['collects'], 0)
+        self.assertEqual(outcome['view']['cycles_completed'], 0)
+        self.assertEqual(outcome['view']['state'], 'expired')
+        self.assertFalse(outcome['view']['host_alive'])
+        self.assertEqual(outcome['state'], 'expired')
+        self.assertEqual(outcome['host'].get('state'), 'stopped')
+        self.assertEqual(outcome['host'].get('stopped_reason'), 'expired')
+        self.assertEqual(outcome['publisher_calls'], [])
+
+    def test_prolonged_contention_fails_closed_without_a_false_detach(self):
+        from quorum_debug import DebugService
+        with patch.object(DebugService, '_LOCK_ACQUIRE_SECONDS', 0.05, create=True):
+            outcome = self._contend('status', release_on_collision=False)
+        self.assertFalse(outcome['hung'])
+        self.assertLess(outcome['elapsed'], 2)
+        self.assertTrue(outcome['collision'])
+        self.assertGreaterEqual(outcome['failures'], 1)
+        self.assertIsNone(outcome['view'])
+        self.assertEqual(getattr(outcome['error'], 'code', None), 'debug_busy')
+        self.assertEqual(outcome['collects'], 0)
+        self.assertEqual(outcome['host'].get('state'), 'supervising')
+        self.assertNotEqual(outcome['host'].get('state'), 'stopped')
+        self.assertTrue(outcome['post_status']['host_alive'])
+        self.assertEqual(outcome['post_status']['supervision']['host_state'], 'supervising')
+        self.assertEqual(outcome['publisher_calls'], [])
+
+    def test_body_valueerror_is_not_treated_as_lock_contention(self):
+        from quorum_debug import DebugService
+        clock, github = Clock(), FakeGitHub()
+        tmp = tempfile.TemporaryDirectory(prefix='quorum-debug-lock-body-')
+        self.addCleanup(tmp.cleanup)
+        service = open_service(Path(tmp.name), clock, github)
+        service.activate('team', 'proj', sources=('imported-artifact',))
+        calls = []
+
+        def boom(_run):
+            calls.append('save')
+            raise ValueError('worker_already_running')
+
+        service._save = boom
+        caught = None
+        with patch.object(DebugService, '_LOCK_ACQUIRE_SECONDS', 0.05, create=True):
+            started = time.monotonic()
+            try:
+                service.status()
+            except Exception as exc:
+                caught = exc
+            elapsed = time.monotonic() - started
+        self.assertEqual(calls, ['save'])
+        self.assertIsInstance(caught, ValueError)
+        self.assertEqual(str(caught), 'worker_already_running')
+        self.assertLess(elapsed, 1)
+        self.assertEqual(github.calls, [])
+
+    def test_second_watch_stays_busy_without_waiting_out_the_lock(self):
+        from quorum_debug import iso
+        clock = Clock()
+        tmp = tempfile.TemporaryDirectory(prefix='quorum-debug-lock-second-')
+        self.addCleanup(tmp.cleanup)
+        service = open_service(Path(tmp.name), clock, FakeGitHub())
+        service.activate('team', 'proj', sources=('imported-artifact',))
+        with service._lock():
+            run = service._load()
+            run['host'] = {
+                'pid': os.getpid(), 'token': 'other', 'heartbeat_at': iso(clock()),
+                'interval_seconds': 30, 'state': 'supervising',
+            }
+            service._save(run)
+        box = {}
+
+        def run_watch():
+            try:
+                service.watch(cycles=1, sleeper=lambda _seconds: None)
+            except Exception as exc:
+                box['error'] = exc
+
+        thread = threading.Thread(target=run_watch, daemon=True)
+        thread.start()
+        thread.join(1)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(getattr(box.get('error'), 'code', None), 'debug_busy')
 
 
 def setUpModule():

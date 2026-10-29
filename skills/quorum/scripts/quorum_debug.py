@@ -150,6 +150,8 @@ def target_for(transport):
 
 
 class DebugService:
+    _LOCK_ACQUIRE_SECONDS = 15
+
     def __init__(self, root, *, clock=None, publisher=None, sleeper=None, alive_check=None, pid=None):
         self.root = Path(root)
         self.clock = clock or utcnow
@@ -1571,13 +1573,28 @@ class DebugService:
         directory = self.root / 'debug'
         directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         protect(directory, directory=True)
+        lock = self._acquire_run_lock(directory / 'run.lock')
         try:
-            with FileLock(directory / 'run.lock'):
-                yield
-        except ValueError as error:
-            if str(error) == 'worker_already_running':
-                raise DebugError('debug_busy') from None
-            raise
+            yield
+        finally:
+            lock.__exit__(None, None, None)
+
+    def _acquire_run_lock(self, path):
+        """Wait only for a busy FileLock enter. The body runs once, outside this loop."""
+        deadline = time.monotonic() + self._LOCK_ACQUIRE_SECONDS
+        while True:
+            candidate = FileLock(path)
+            try:
+                candidate.__enter__()
+            except ValueError as error:
+                if str(error) != 'worker_already_running':
+                    raise
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise DebugError('debug_busy') from None
+                time.sleep(min(0.025, remaining))
+                continue
+            return candidate
 
 
 def add_commands(commands):
