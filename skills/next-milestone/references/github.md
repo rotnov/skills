@@ -42,15 +42,26 @@ Read:
 gh api repos/OWNER/REPO/milestones/NUMBER --jq .description
 ```
 
-Edit by writing the full new description to a file and sending it, never by
-interpolating untrusted text into a shell string:
+The update replaces the whole description, and the milestone API offers no
+conditional update (no ETag or `If-Match` precondition), so a maintainer's
+concurrent edit can be overwritten. Guard against it:
+
+1. Keep the exact description text your edit is based on.
+2. Immediately before writing, fetch the description again and compare it with
+   that base text.
+3. If it changed, re-apply your edit on top of the new text and compare again;
+   if your edit conflicts with the new text, stop and report the conflict
+   instead of writing.
+4. Write the full new description from a file, never by interpolating
+   untrusted text into a shell string:
 
 ```bash
 gh api -X PATCH repos/OWNER/REPO/milestones/NUMBER -F description=@desc.md
 ```
 
-Re-read after editing to confirm the update and to avoid overwriting a
-concurrent change.
+Re-read after writing only to verify the update landed; this does not protect
+against a concurrent edit, and a small race window remains between the last
+fetch and the write.
 
 ## Creating
 

@@ -1,11 +1,9 @@
 ---
 name: next-milestone
 description: >-
-  Use when the user asks what milestone is next, to start or release the next
-  version, or to run the whole roadmap autonomously. Plans the roadmap as
-  GitHub milestones, picks the first open milestone whose acceptance criteria
-  are not met with verified evidence, adopts it as the standing goal, drives it
-  through its issues, and closes it out honestly.
+  Plans and drives a project's roadmap as GitHub milestones. Use when the user
+  asks what milestone is next, to start or release the next version, or to run
+  the whole roadmap autonomously.
 ---
 
 # Next Milestone
