@@ -16,6 +16,7 @@ from quorum_grok_leader import GrokBindingError
 from quorum_session import UnsupportedClient
 from quorum_grok_cloud import CloudError
 from quorum_native_inbox import NativeInboxError
+from quorum_debug import DebugError
 
 
 def register_agent(api, ledger, slug, role, data, *, device_key="device", expected_quorum_id=None):
@@ -187,6 +188,10 @@ def main(argv=None):
     except NativeInboxError as error:
         # Fixed worker codes and reasons only; never a rollout path, transcript or peer text.
         print(json.dumps({'ok': False, 'code': error.code, 'data': error.diagnostic()}))
+        return 3
+    except DebugError as error:
+        # Fixed debug codes only; never a path, transcript, token, or peer body.
+        print(json.dumps({'ok': False, 'code': error.code, 'data': error.data}))
         return 3
     except (ValueError, OSError, KeyError, TypeError, subprocess.SubprocessError) as error:
         # Allow only fixed local codes; arbitrary exception text may contain secrets.
