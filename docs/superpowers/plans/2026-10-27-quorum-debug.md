@@ -13,7 +13,9 @@ files actionable findings through the `gh` CLI when that grant is still valid.
   versions, and lifetime. The same scope can be repeated without extending the
   grant. A different scope is refused. Stop and expiry are durable and are not
   re-enabled on the next process start.
-- Collection is a bounded foreground watch of this state's session ledgers.
+- Collection is a bounded foreground watch of this state's session ledgers and
+  owned local `cloud/<conversation UUID>` ledgers. The cloud selector is
+  `grok-bot:<conversation UUID>`.
   `debug watch` and `activate --watch` supervise in the helper process until
   stop, expiry, or the requested cycle limit. Activation without that host is
   a handoff, and `debug collect` does not supervise. `continuous_observation`
@@ -26,12 +28,15 @@ files actionable findings through the `gh` CLI when that grant is still valid.
   presence epoch, and release metadata. They do not load bodies, replies,
   credentials, invitation secrets, nonces, or paths. Missing telemetry is not
   definite loss. Receipt state is not task acceptance or completion. A
-  historical reply count or an empty snapshot is not a model turn or a reply
-  loop.
+  historical reply count, an idle listener sample, or an empty snapshot is not
+  a model turn, a receive invocation, or a reply loop. A reply burst requires
+  one sequence-ordered connected chain.
 - Deterministic rules cover stuck intent, queue, submitted, and offered
-  deliveries; repeated Hello epochs; parent notification bursts; suspected reply
-  bursts; empty waits; a new listener run while reception is disabled; and
-  imported duplicate completed side effects. Realtime fallback and idempotent
+  deliveries; repeated Hello epochs; parent notification bursts; one
+  sequence-ordered connected fresh reply chain; a new listener run while
+  reception is disabled; and imported duplicate completed side effects. Idle
+  listener samples and replies with missing linkage are not actionable defects
+  and are not invocation or model-turn counts. Realtime fallback and idempotent
   retries are timeline facts, not definite defects.
 - Token totals accept only authorized client-reported usage and keep actual,
   estimated, and unavailable values apart. An identical measurement is stored

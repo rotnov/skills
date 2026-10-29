@@ -12,6 +12,7 @@ from pathlib import Path
 
 
 SAFE = re.compile(r'^[A-Za-z0-9_.:@/+-]{1,128}$')
+UUID_RE = re.compile(r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$')
 VERSION_RE = re.compile(r'^[0-9]{1,6}\.[0-9]{1,6}\.[0-9]{1,6}$')
 BINDING_KEYS = ('session-agent', 'cloud-agent', 'pilot-agent')
 IDENTITY_FIELDS = ('quorum', 'quorum_id', 'project_ref', 'role', 'engine', 'agent_id', 'transport')
@@ -119,6 +120,9 @@ def _deliveries(db):
             'reply_to': bool(flag(row[2]) or flag(row[4])),
             'notification': bool(flag(row[3]) or flag(row[5])),
         }
+        target = row[4] if isinstance(row[4], str) and UUID_RE.fullmatch(row[4]) else None
+        if target:
+            delivery['reply_target'] = target
         cursor = 6
         for name, _top, _message in DELIVERY_TEXT:
             chosen = _prefer_text(row[cursor + 1], row[cursor])
@@ -227,20 +231,36 @@ def read_scoped(path, binding, scope):
         db.close()
 
 
-def read_local(root, scope):
-    sessions = []
-    directory = Path(root) / 'sessions'
-    if not directory.is_dir():
-        return sessions
-    for child in sorted(path for path in directory.iterdir() if path.is_dir()):
+def _iter_ledgers(directory, scope, binding_for, refuse_links):
+    found = []
+    if not directory.is_dir() or (refuse_links and directory.is_symlink()):
+        return found
+    children = [path for path in directory.iterdir() if path.is_dir() and not (refuse_links and path.is_symlink())]
+    for child in sorted(children, key=lambda path: path.name):
         database = child / 'ledger.sqlite'
         if not database.is_file() or database.is_symlink():
             continue
-        binding = safe(child.name) or 'unreadable'
+        binding = binding_for(child)
+        if not binding:
+            continue
         try:
             snapshot = read_scoped(database, binding, scope)
         except (OSError, sqlite3.Error, UnicodeError, ValueError):
             snapshot = {'binding': binding, 'unreadable': True} if not scope['bindings'] or binding in scope['bindings'] else None
         if snapshot is not None:
-            sessions.append(snapshot)
+            found.append(snapshot)
+    return found
+
+
+def _cloud_binding(child):
+    name = safe(child.name)
+    if name is None or UUID_RE.fullmatch(name) is None:
+        return None
+    return safe('grok-bot:' + name)
+
+
+def read_local(root, scope):
+    root = Path(root)
+    sessions = _iter_ledgers(root / 'sessions', scope, lambda child: safe(child.name) or 'unreadable', False)
+    sessions.extend(_iter_ledgers(root / 'cloud', scope, _cloud_binding, True))
     return sessions

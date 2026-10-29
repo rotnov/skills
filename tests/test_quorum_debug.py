@@ -342,8 +342,13 @@ class DebugCollectionTests(unittest.TestCase):
             })
             ledger.db.close()
             self.service.collect()
-        self.assertTrue(any(item['rule'] == 'suspected_reply_loop' and item['analysis'] == 'pending'
-                            for item in self.service.report()['findings']))
+        report = self.service.report()
+        # Boolean reply flags without a nested target are not a connected chain.
+        self.assertFalse(any(item['rule'] == 'suspected_reply_loop' for item in report['findings']))
+        historical = [item for item in report['observations'] if item['kind'] == 'historical_reply_count']
+        self.assertTrue(historical)
+        self.assertTrue(all(not item['reply_loop'] and item['model_turns'] == 'unavailable' and not item['actionable']
+                            for item in historical))
         from quorum_state import LocalLedger
         ledger = LocalLedger(self.root / 'sessions' / SID)
         ledger.setting('listener', {'run_id': 'run-a', 'state': 'waiting', 'handled': 0})
@@ -351,8 +356,13 @@ class DebugCollectionTests(unittest.TestCase):
         ledger.db.close()
         for _ in range(8):
             self.service.collect()
-        self.assertTrue(any(item['rule'] == 'excessive_empty_receive' and 'model turns are unavailable' in item['observed']
-                            for item in self.service.report()['findings']))
+        report = self.service.report()
+        self.assertFalse(any(item['rule'] == 'excessive_empty_receive' for item in report['findings']))
+        idle = [item for item in report['observations'] if item['kind'] == 'healthy_idle_samples']
+        self.assertEqual(len(idle), 1)
+        self.assertFalse(idle[0]['actionable'])
+        self.assertEqual(idle[0]['invocations'], 'unavailable')
+        self.assertEqual(idle[0]['model_turns'], 'unavailable')
         from quorum_state import LocalLedger
         ledger = LocalLedger(self.root / 'sessions' / SID)
         ledger.setting('listener', {'run_id': 'run-b', 'state': 'waiting', 'handled': 0})
@@ -1658,6 +1668,322 @@ class DebugLockContentionTests(unittest.TestCase):
         thread.join(1)
         self.assertFalse(thread.is_alive())
         self.assertEqual(getattr(box.get('error'), 'code', None), 'debug_busy')
+
+
+class DebugReviewP2Tests(unittest.TestCase):
+    """Reply linkage, idle samples, and local cloud ledger discovery."""
+
+    CONV = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'
+    AA = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    BB = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+    CC = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
+
+    def _service(self, root):
+        clock, github = Clock(), FakeGitHub()
+        return clock, github, open_service(root, clock, github)
+
+    def _peer(self, root, sid, agent):
+        from quorum_state import LocalLedger
+        ledger = LocalLedger(Path(root) / 'sessions' / sid)
+        ledger.setting('session-agent', {
+            'quorum': 'team', 'quorum_id': 'qid-1', 'project_ref': 'proj', 'role': 'peer',
+            'engine': 'codex', 'agent_id': agent, 'session_ref': sid, 'transport': 'tool-inbox',
+        })
+        self.addCleanup(ledger.db.close)
+        return ledger
+
+    def _mid(self, number):
+        return f'{number:08x}-0000-4000-8000-000000000000'
+
+    def _message(self, ledger, number, sender, recipient, sequence, reply_to=None):
+        message_id = self._mid(number)
+        ledger.setting('delivery:' + message_id, {
+            'state': 'acked', 'reply_to': bool(reply_to), 'notification': False,
+            'message': {
+                'id': message_id, 'conversation_id': self.CONV, 'sender_id': sender,
+                'recipient_id': recipient, 'sequence': sequence, 'reply_to': reply_to,
+                'notification': False, 'body': 'SECRET-BODY-VALUE',
+            },
+        })
+        return message_id
+
+    def _loops(self, report):
+        return [item for item in report['findings'] if item['rule'] == 'suspected_reply_loop']
+
+    def test_independent_tasks_do_not_publish_a_reply_loop(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        left, right = self._peer(root, SID, self.AA), self._peer(root, OTHER, self.BB)
+        clock, github, service = self._service(root)
+        service.activate('team', 'proj', REPO)
+        for index, sender in enumerate((self.AA, self.BB, self.AA, self.BB)):
+            holder, requester, responder = (right, self.BB, self.AA) if sender == self.AA else (left, self.AA, self.BB)
+            task = self._message(holder, 100 + index * 2, requester, responder, 1 + index * 2)
+            service.collect()
+            clock.advance(1)
+            self._message(left if holder is right else right, 101 + index * 2, responder, requester, 2 + index * 2, reply_to=task)
+            service.collect()
+            clock.advance(3600)
+        report = service.report()
+        self.assertFalse(self._loops(report))
+        self.assertEqual(github.creates(), [])
+        assert_redacted(self, root)
+        self.assertNotIn('SECRET-BODY-VALUE', json.dumps(report))
+
+    def test_connected_chain_publishes_once_in_sequence_order(self):
+        from quorum_debug_ledger import read_scoped
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        first, second = self._peer(root, SID, self.AA), self._peer(root, OTHER, self.BB)
+        clock, github, service = self._service(root)
+        service.activate('team', 'proj', REPO)
+        # Later sequences are inserted first and stored on the lexicographically first binding.
+        self._message(second, 1, self.BB, self.AA, 1)
+        for number, ledger, sender, recipient in (
+                (5, first, self.BB, self.AA), (3, first, self.BB, self.AA),
+                (4, second, self.AA, self.BB), (2, second, self.AA, self.BB)):
+            self._message(ledger, number, sender, recipient, number, reply_to=self._mid(number - 1))
+        snap = read_scoped(first.root / 'ledger.sqlite', SID, {'quorum': 'team', 'project_ref': 'proj', 'bindings': []})
+        projected = {item['message_id']: item for item in snap['deliveries']}
+        self.assertIs(projected[self._mid(5)]['reply_to'], True)
+        self.assertEqual(projected[self._mid(5)].get('reply_target'), self._mid(4))
+        self.assertNotIn('body', projected[self._mid(5)])
+        self.assertNotIn('SECRET-BODY-VALUE', json.dumps(snap))
+        service.collect()
+        report = service.report()
+        loops = self._loops(report)
+        self.assertEqual(len(loops), 1)
+        self.assertTrue(loops[0]['actionable'])
+        self.assertEqual(len(loops[0]['evidence']), 4)
+        self.assertEqual(len(github.creates()), 1)
+        self.assertNotIn('SECRET-BODY-VALUE', github.creates()[0][3])
+        service.collect()
+        self.assertEqual(len(self._loops(service.report())), 1)
+        self.assertEqual(len(github.creates()), 1)
+        self.assertEqual(github.comments(), [])
+
+    def test_incremental_linked_chain_still_publishes_once(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        left, right = self._peer(root, SID, self.AA), self._peer(root, OTHER, self.BB)
+        clock, github, service = self._service(root)
+        service.activate('team', 'proj', REPO)
+        prior = self._message(left, 40, self.BB, self.AA, 1)
+        service.collect()
+        for index, sender in enumerate((self.AA, self.BB, self.AA, self.BB)):
+            ledger, recipient = (right, self.BB) if sender == self.AA else (left, self.AA)
+            prior = self._message(ledger, 41 + index, sender, recipient, 2 + index, reply_to=prior)
+            service.collect()
+            clock.advance(1)
+        self.assertEqual(len(self._loops(service.report())), 1)
+        self.assertEqual(len(github.creates()), 1)
+        service.collect()
+        self.assertEqual(len(github.creates()), 1)
+
+    def test_missing_or_disconnected_reply_metadata_is_not_a_loop(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        ledger = self._peer(root, SID, self.AA)
+        _clock, github, service = self._service(root)
+        service.activate('team', 'proj', REPO)
+        for index, sender in enumerate((self.AA, self.BB, self.AA, self.BB)):
+            self._message(ledger, 70 + index, sender, self.BB, None if index % 2 else index + 1, reply_to=True)
+            service.collect()
+        self.assertFalse(self._loops(service.report()))
+        self.assertEqual(github.creates(), [])
+        for index, sender in enumerate((self.AA, self.BB, self.AA, self.BB)):
+            self._message(ledger, 80 + index, sender, self.BB, 10 + index, reply_to=f'{(90 + index):08x}-0000-4000-8000-000000000000')
+            service.collect()
+        self.assertFalse(self._loops(service.report()))
+        self.assertEqual(github.creates(), [])
+        assert_redacted(self, root)
+
+    def test_historical_linked_replies_stay_nonlive(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        ledger = self._peer(root, SID, self.AA)
+        prior = self._message(ledger, 1, self.BB, self.AA, 1)
+        for index, sender in enumerate((self.AA, self.BB, self.AA, self.BB)):
+            prior = self._message(ledger, 2 + index, sender, self.BB, 2 + index, reply_to=prior)
+        _clock, github, service = self._service(root)
+        service.activate('team', 'proj', REPO)
+        service.collect()
+        report = service.report()
+        self.assertFalse(self._loops(report))
+        self.assertEqual(github.creates(), [])
+        historical = [item for item in report['observations'] if item['kind'] == 'historical_reply_count']
+        self.assertTrue(historical)
+        self.assertTrue(all(not item['reply_loop'] and item['model_turns'] == 'unavailable' for item in historical))
+
+    def test_idle_samples_do_not_publish_and_real_work_still_does(self):
+        from quorum_listener import Control
+        from quorum_state import LocalLedger
+        for state in ('waiting', 'checking'):
+            with self.subTest(state=state):
+                tmp = tempfile.TemporaryDirectory()
+                self.addCleanup(tmp.cleanup)
+                root = Path(tmp.name)
+                write_session(root)
+                ledger = LocalLedger(root / 'sessions' / SID)
+                Control(ledger).update('healthy-idle-run', state, 0)
+                self.assertEqual(ledger.setting('listener')['handled'], 0)
+                ledger.db.close()
+                clock, github, service = self._service(root)
+                service.activate('team', 'proj', REPO)
+                for _ in range(8):
+                    clock.advance(30)
+                    service.collect()
+                report = service.report()
+                self.assertFalse(any(item['rule'] == 'excessive_empty_receive' for item in report['findings']))
+                idle = [item for item in report['observations'] if item['kind'] == 'healthy_idle_samples']
+                self.assertEqual(len(idle), 1)
+                self.assertFalse(idle[0]['actionable'])
+                self.assertEqual(idle[0]['invocations'], 'unavailable')
+                self.assertEqual(idle[0]['model_turns'], 'unavailable')
+                self.assertEqual(github.creates(), [])
+                service.collect()
+                self.assertEqual(len([item for item in service.report()['observations'] if item['kind'] == 'healthy_idle_samples']), 1)
+                self.assertEqual(github.creates(), [])
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        write_session(root, deliveries=[{'message_id': MID, 'state': 'submitted'}])
+        clock, github, service = self._service(root)
+        service.activate('team', 'proj', REPO)
+        clock.advance(901)
+        service.collect()
+        self.assertEqual([item['rule'] for item in service.report()['findings']], ['stuck_unacknowledged'])
+        self.assertEqual(len(github.creates()), 1)
+
+    def test_waiting_and_checking_changes_are_not_receive_invocations(self):
+        from quorum_listener import Control
+        from quorum_state import LocalLedger
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        write_session(root)
+        ledger = LocalLedger(root / 'sessions' / SID)
+        control = Control(ledger)
+        control.update('healthy-idle-run', 'waiting', 0)
+        ledger.db.close()
+        clock, github, service = self._service(root)
+        service.activate('team', 'proj', REPO)
+        for index in range(8):
+            if index == 4:
+                ledger = LocalLedger(root / 'sessions' / SID)
+                Control(ledger).update('healthy-idle-run', 'checking', 0)
+                ledger.db.close()
+            clock.advance(30)
+            service.collect()
+        self.assertEqual(github.creates(), [])
+        self.assertFalse(any(item['rule'] == 'excessive_empty_receive' for item in service.report()['findings']))
+
+    def _cloud_record(self, conversation, quorum='team', project='proj'):
+        from quorum_grok_cloud import SESSION_PREFIX, TRANSPORT
+        session_ref = SESSION_PREFIX + conversation
+        registration = {'engine': 'grok', 'session_ref': session_ref, 'project_ref': project, 'cwd': '/synthetic/project'}
+        return {
+            'quorum': quorum, 'quorum_id': 'qid-1', 'project_ref': project, 'role': 'peer', 'engine': 'grok',
+            'agent_id': self.CC, 'session_ref': session_ref, 'registration': registration, 'client': 'grok-bot',
+            'provider_conversation_id': conversation, 'transport': TRANSPORT,
+        }
+
+    def _cloud(self, root, conversation, quorum='team', project='proj'):
+        from quorum_grok_cloud import cloud_ledger, verify_record
+        from quorum_state import LocalLedger
+        auth = LocalLedger(Path(root))
+        cloud = cloud_ledger(auth, conversation)
+        record = self._cloud_record(conversation, quorum, project)
+        verify_record(record, conversation)
+        cloud.setting('cloud-agent', record)
+        self.addCleanup(cloud.db.close)
+        self.addCleanup(auth.db.close)
+        return cloud
+
+    def test_cloud_only_and_mixed_ledgers_keep_native_and_cloud_selectors(self):
+        from quorum_debug_ledger import read_scoped
+        from quorum_grok_cloud import SESSION_PREFIX
+        for mixed in (False, True):
+            with self.subTest(mixed=mixed):
+                tmp = tempfile.TemporaryDirectory()
+                self.addCleanup(tmp.cleanup)
+                root = Path(tmp.name)
+                cloud = self._cloud(root, SID)
+                self._message(cloud, 900, self.AA, self.CC, 1)
+                direct = read_scoped(cloud.root / 'ledger.sqlite', SESSION_PREFIX + SID,
+                                      {'quorum': 'team', 'project_ref': 'proj', 'bindings': []})
+                self.assertEqual(direct['agent_id'], self.CC)
+                self.assertEqual(direct['binding'], 'grok-bot:' + SID)
+                if mixed:
+                    write_session(root)
+                _clock, _github, service = self._service(root)
+                view = service.activate('team', 'proj')
+                participants = service.report()['coverage']['participants']
+                self.assertTrue(any(item['binding'] == 'grok-bot:' + SID and item['agent_id'] == self.CC
+                                     for item in participants))
+                self.assertNotIn('no_readable_source', view['blockers'])
+                self.assertNotIn('SECRET-BODY-VALUE', json.dumps(service.report()))
+                if mixed:
+                    self.assertTrue(any(item['binding'] == SID and item['agent_id'] == AID for item in participants))
+        for selector, expected in (( (SID,), [SID] ), ( ('grok-bot:' + SID,), ['grok-bot:' + SID] )):
+            chosen = tempfile.TemporaryDirectory()
+            self.addCleanup(chosen.cleanup)
+            chosen_root = Path(chosen.name)
+            self._cloud(chosen_root, SID)
+            write_session(chosen_root)
+            _clock, _github, selected = self._service(chosen_root)
+            selected.activate('team', 'proj', bindings=selector)
+            bindings = [item['binding'] for item in selected.report()['coverage']['participants']]
+            self.assertEqual(bindings, expected)
+
+    def test_foreign_cloud_is_excluded_before_delivery_queries(self):
+        from quorum_debug_ledger import read_local
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        cloud = self._cloud(root, SID, quorum='other', project='other')
+        foreign = self._message(cloud, 910, self.AA, self.CC, 1)
+        scope = {'quorum': 'team', 'project_ref': 'proj', 'bindings': []}
+
+        def denied(_db):
+            raise AssertionError('delivery query before scope check')
+
+        with patch('quorum_debug_ledger._deliveries', denied):
+            self.assertEqual(read_local(root, scope), [])
+        _clock, _github, service = self._service(root)
+        service.activate('team', 'proj')
+        report = service.report()
+        self.assertEqual(report['coverage']['participants'], [])
+        self.assertNotIn(foreign, json.dumps(report))
+        self.assertNotIn('SECRET-BODY-VALUE', json.dumps(report))
+        self.assertIn('no_readable_source', service.status()['blockers'])
+
+    def test_unreadable_cloud_ledger_and_cloud_symlink_are_not_followed(self):
+        from quorum_debug_ledger import read_local
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        broken = root / 'cloud' / SID
+        broken.mkdir(parents=True)
+        (broken / 'ledger.sqlite').write_bytes(b'not a database')
+        _clock, _github, service = self._service(root)
+        service.activate('team', 'proj')
+        self.assertIn('grok-bot:' + SID, service.report()['coverage']['unreadable_bindings'])
+        self.assertIn('unreadable_source', service.status()['blockers'])
+        outside = tempfile.TemporaryDirectory()
+        self.addCleanup(outside.cleanup)
+        linked_root = Path(tmp.name) / 'linked'
+        cloud = self._cloud(outside.name, OTHER)
+        self._message(cloud, 920, self.AA, self.CC, 1)
+        linked_root.mkdir()
+        (linked_root / 'cloud').symlink_to(Path(outside.name) / 'cloud', target_is_directory=True)
+        scope = {'quorum': 'team', 'project_ref': 'proj', 'bindings': []}
+        self.assertEqual(read_local(linked_root, scope), [])
 
 
 def setUpModule():

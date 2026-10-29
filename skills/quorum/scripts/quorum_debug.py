@@ -12,7 +12,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from quorum_debug_ledger import in_scope, read_local
+from quorum_debug_ledger import UUID_RE, in_scope, read_local
 from quorum_debug_publish import GH_COMMANDS, GhCliPublisher, evidence_in, line_value, marker_in
 from quorum_os import FileLock, protect, reject_link
 from quorum_release import installed_release
@@ -83,7 +83,7 @@ LIMITATIONS = (
     'No server export or service-role observation is used.',
     'Expected realtime fallback, idempotent retries, and repeated unacknowledged offers are not definite defects.',
     'An uncertain GitHub create or comment is not repeated until reconciliation finds the exact finding marker.',
-    'A historical reply count or an empty snapshot is not a model turn or a reply loop.',
+    'A historical reply count or an empty snapshot is not a model turn or a reply loop. Idle listener samples are not receive invocations or model turns. A reply burst is only one sequence-ordered connected chain; missing linkage is not that defect.',
 )
 HOST_STALE_PADDING = 75
 TOKEN_FIELDS = ('input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_write_tokens')
@@ -438,7 +438,6 @@ class DebugService:
 
     def _observe(self, run, *, baseline):
         now = iso(self.clock())
-        run['watch']['fresh_reply_conversations'] = []
         snapshots = read_local(self.root, run['scope'])
         participants, unavailable, unreadable, engines = [], [], [], []
         seen, seen_keys = set(), set()
@@ -518,7 +517,6 @@ class DebugService:
     def _ingest_snapshot(self, run, snapshot, now, baseline):
         binding = snapshot['binding']
         transport = snapshot.get('transport') or 'native'
-        fresh_replies = {}
         for delivery in snapshot['deliveries']:
             key = binding + ':' + delivery['message_id']
             previous = run['watch']['deliveries'].get(key)
@@ -533,18 +531,8 @@ class DebugService:
                     'state': delivery['state'], 'target': delivery['target'], 'clock': 'collector',
                     'observed_at': now,
                 })
-            noted = self._note_reply(run, delivery)
-            if noted is not None:
-                fresh_replies.setdefault(noted['conversation_id'], []).append(noted)
-        if not baseline:
-            fresh = run['watch'].setdefault('fresh_reply_conversations', [])
-            for conversation, items in fresh_replies.items():
-                if len(items) != 1:
-                    continue
-                observed = run['watch'].setdefault('observed_replies', {}).setdefault(conversation, [])
-                observed.append(items[0])
-                if conversation not in fresh:
-                    fresh.append(conversation)
+            self._note_reply(run, delivery)
+            self._remember_chain_candidate(run, delivery, baseline)
         epoch = snapshot.get('epoch')
         if epoch:
             epochs = run['watch']['epochs'].setdefault(binding, [])
@@ -655,13 +643,11 @@ class DebugService:
                                   {'binding': binding, 'epochs': len(epochs), 'definite': False})
         for binding, listener in run['watch']['listeners'].items():
             if listener.get('empty_collects', 0) >= EMPTY_RECEIVE_COLLECTS:
-                evidence = [{'binding': binding, 'empty_collects': EMPTY_RECEIVE_COLLECTS, 'handled': 0}]
-                self._upsert(run, self._finding(
-                    run, 'excessive_empty_receive', evidence, identity={'binding': binding},
-                    definite=False, confidence='low', actionable=True,
-                    live=True, delivery_stage='unknown', analysis='pending',
-                    expected='Empty waits stay bounded or a delivery appears.',
-                    observed=f"{listener['empty_collects']} collects saw listener waits with handled 0; model turns are unavailable."))
+                # Sample count is internal. The producer has no empty-receive invocation counter.
+                self._observation(run, f'idle:{binding}', 'healthy_idle_samples', {
+                    'binding': binding, 'samples': EMPTY_RECEIVE_COLLECTS, 'definite': False,
+                    'invocations': 'unavailable', 'model_turns': 'unavailable',
+                })
             prior, current = listener.get('prior_run_id'), listener.get('seen_run_id')
             if listener.get('reception') is False and prior and current and prior != current:
                 evidence = [{'binding': binding, 'prior_run_id': prior, 'run_id': current, 'reception_enabled': False}]
@@ -681,22 +667,24 @@ class DebugService:
             elif waiting.get('mode') and waiting.get('mode') != 'polling_fallback':
                 self._observation(run, f'recovered:{binding}', 'realtime_recovered',
                                   {'binding': binding, 'mode': waiting.get('mode'), 'definite': False})
-        fresh = set(run['watch'].get('fresh_reply_conversations') or [])
-        for conversation, replies in run['watch'].get('observed_replies', {}).items():
-            if conversation not in fresh or len(replies) < REPLY_BURST:
+        self._fold_reply_chains(run)
+        for conversation, chain in run['watch'].get('reply_chains', {}).items():
+            replies = chain.get('replies') or []
+            if len(replies) < REPLY_BURST:
                 continue
             last = replies[-REPLY_BURST:]
+            linked = all(last[index]['target'] == last[index - 1]['id'] for index in range(1, REPLY_BURST))
             senders = [item['sender'] for item in last]
-            if senders[0] == senders[2] and senders[1] == senders[3] and senders[0] != senders[1]:
+            if linked and senders[0] == senders[2] and senders[1] == senders[3] and senders[0] != senders[1]:
                 evidence = [{'conversation_id': conversation, 'message_id': item['id']} for item in last]
                 self._upsert(run, self._finding(
                     run, 'suspected_reply_loop', evidence, identity={'conversation_id': conversation},
                     definite=False, confidence='low', actionable=True,
                     live=True, delivery_stage='unknown', analysis='pending',
-                    expected='Replies do not alternate in a closed burst without a new task message.',
-                    observed=f'{REPLY_BURST} reply deliveries alternated in conversation {conversation}.'))
+                    expected='Fresh replies form one connected chain back to the previous message.',
+                    observed=f'{REPLY_BURST} linked replies alternated in conversation {conversation}.'))
         for conversation, identifiers in run['watch'].get('reply_ids', {}).items():
-            observed = run['watch'].get('observed_replies', {}).get(conversation, [])
+            observed = (run['watch'].get('reply_chains', {}).get(conversation) or {}).get('replies') or []
             if len(identifiers) >= REPLY_BURST and len(observed) < REPLY_BURST:
                 self._observation(run, f'historical-replies:{conversation}', 'historical_reply_count', {
                     'conversation_id': conversation, 'replies': len(identifiers), 'definite': False,
@@ -714,6 +702,93 @@ class DebugService:
         identifiers.append(delivery['message_id'])
         return {'id': delivery['message_id'], 'sender': delivery['sender_id'],
                 'recipient': delivery.get('recipient_id'), 'conversation_id': conversation}
+
+    def _remember_chain_candidate(self, run, delivery, baseline):
+        """Keep ids, the boolean reply flag, and a UUID target. Never a body."""
+        message_id = delivery.get('message_id')
+        if not isinstance(message_id, str) or not message_id:
+            return
+        seen = run['watch'].setdefault('seen_delivery_ids', [])
+        if message_id in seen:
+            return
+        seen.append(message_id)
+        if baseline:
+            return
+        conversation = delivery.get('conversation_id')
+        if not isinstance(conversation, str) or not conversation:
+            return
+        sequence = delivery.get('sequence')
+        target = delivery.get('reply_target')
+        sender = delivery.get('sender_id')
+        run['watch'].setdefault('pending_chain', []).append({
+            'id': message_id,
+            'conversation_id': conversation,
+            'sender': sender if isinstance(sender, str) else None,
+            'reply_to': bool(delivery.get('reply_to')),
+            'reply_target': target if isinstance(target, str) and UUID_RE.fullmatch(target) else None,
+            'sequence': sequence if type(sequence) is int else None,
+        })
+
+    def _fold_reply_chains(self, run):
+        pending = run['watch'].pop('pending_chain', [])
+        grouped = {}
+        for item in pending:
+            grouped.setdefault(item['conversation_id'], []).append(item)
+        chains = run['watch'].setdefault('reply_chains', {})
+        for conversation, items in grouped.items():
+            chain = chains.setdefault(conversation, {'head': None, 'sequence': None, 'replies': []})
+            self._extend_reply_chain(chain, items)
+
+    def _extend_reply_chain(self, chain, items):
+        sequenced = [item for item in items if type(item.get('sequence')) is int]
+        unsequenced = [item for item in items if type(item.get('sequence')) is not int]
+        if any(not item.get('reply_to') for item in unsequenced) and sequenced:
+            chain['replies'] = []
+            chain['head'] = None
+            chain['sequence'] = None
+            return
+        groups = {}
+        for item in sequenced:
+            groups.setdefault(item['sequence'], []).append(item)
+        if any(len(group) > 1 for group in groups.values()):
+            tied = [item for group in groups.values() if len(group) > 1 for item in group]
+            if any(not item.get('reply_to') for item in tied):
+                chain['replies'] = []
+                chain['head'] = None
+                chain['sequence'] = None
+            return
+        for item in sorted(sequenced, key=lambda item: item['sequence']):
+            self._apply_chain_item(chain, item)
+        for item in unsequenced:
+            self._apply_chain_item(chain, item)
+        chain['replies'] = chain['replies'][-REPLY_BURST:]
+
+    def _apply_chain_item(self, chain, item):
+        sequence = item.get('sequence') if type(item.get('sequence')) is int else None
+        if not item.get('reply_to'):
+            chain['replies'] = []
+            if sequence is None:
+                chain['head'] = None
+                chain['sequence'] = None
+            else:
+                chain['head'] = item['id']
+                chain['sequence'] = sequence
+            return
+        target = item.get('reply_target')
+        sender = item.get('sender')
+        if not isinstance(target, str) or sequence is None or not sender:
+            return
+        head = chain.get('head')
+        head_sequence = chain.get('sequence')
+        if target == head and type(head_sequence) is int and sequence > head_sequence:
+            chain['replies'].append({'id': item['id'], 'sender': sender, 'target': target})
+            chain['head'] = item['id']
+            chain['sequence'] = sequence
+            return
+        if target != head:
+            chain['replies'] = []
+            chain['head'] = item['id'] if sender else None
+            chain['sequence'] = sequence if sender else None
 
     def _note_parent(self, run, item):
         notes = run['watch'].setdefault('parent_notes', {})

@@ -52,6 +52,11 @@ participant coverage, token coverage, GitHub availability, and lifetime. When
 
 ## Evidence and publication
 
+A native binding id is the session directory name. Select an owned local
+`cloud/<conversation UUID>` ledger with
+`--binding grok-bot:<conversation UUID>`. The same UUID is a different
+participant in each store.
+
 Trust the helper's `definite`, `actionable`, `confidence`, and
 `live_observation` fields. Delivery stages are `intent`, `queued`,
 `transport_submitted`, `worker_offered`, and `receipt_acked`. None of those is
