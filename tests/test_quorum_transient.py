@@ -378,7 +378,9 @@ class OrdinaryRunAuthorityTests(unittest.TestCase):
                     return run_listener(ledger, make, run_id, sleep=sleep, **options)
                 from contextlib import ExitStack
                 with ExitStack() as patches:
-                    for context in (patch.dict(os.environ, {'CLAUDE_CODE_SESSION_ID':SID}, clear=True),
+                    for context in (patch.dict(os.environ, {'CLAUDE_CODE_SESSION_ID':SID,
+                                                           'CLAUDE_CODE_MESSAGING_SOCKET':'/synthetic/inbox',
+                                                           'CLAUDE_CODE_MESSAGING_TOKEN':'synthetic-only'}, clear=True),
                                     patch('quorum_live.api_for', return_value=(api, None, None)),
                                     patch('quorum_claude_pipe.binding', return_value='/synthetic/inbox'),
                                     patch('signal.signal'), patch('quorum_realtime.RealtimeWait', Waiter),
