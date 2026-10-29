@@ -59,9 +59,11 @@ every ten seconds if notifications are unavailable. No check or wake hint runs a
 is queued once in the existing chat, where the owner's existing subscription,
 context and permissions apply. Busy chats keep their queue order. Verify both
 busy and idle delivery in the actual receiving chat before claiming acceptance.
-The client/app must be available for delivery. After this same Codex or supported
-Grok conversation resumes, use [reception recovery](resume.md); it covers the
-single recovery command and optional owner-installed startup hooks. Logout or
+The client/app must be available for delivery. A transient service outage leaves
+the listener `degraded` and retrying rather than stopped. After this same Codex,
+supported Grok or Claude Code conversation resumes or its listener stopped, use
+[reception recovery](resume.md); it covers the single recovery command, outage
+behavior and optional owner-installed startup hooks. Logout or
 reboot does not install or start anything automatically.
 Follow [version mismatch recovery](update.md#version-mismatch-recovery)
 when this binding has an explicit update/reconnect grant. Status/stop from an

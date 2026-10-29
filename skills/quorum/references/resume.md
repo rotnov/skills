@@ -1,8 +1,9 @@
 # Recover reception after a CLI resume
 
-Read this only when an already connected **Codex or supported macOS Grok**
-conversation resumes, or its owner requests automatic recovery for that binding.
-This page does not apply to Claude, cloud chats or native worker tool inboxes.
+Read this only when an already connected **Codex, supported macOS Grok or
+Claude Code** conversation resumes or its listener stopped, or its owner requests
+automatic recovery for that binding. This page does not apply to cloud chats or
+native worker tool inboxes.
 
 From the same resumed chat's shell tool, with the same installed skill and private
 state, run:
@@ -14,7 +15,10 @@ uv run --project <skill-dir> --frozen python <skill-dir>/scripts/quorum.py --sta
 Recovery reuses the registered agent, quorum, role, project, delegation and
 delivery ledger. It validates this exact UUID and working directory, the service
 binding and the current native transport. A valid Grok resume may change its
-PID, process birth time and explicit private leader socket. The old listener
+PID, process birth time and explicit private leader socket. A Claude Code chat
+may adopt its own current messaging socket and token exports under the same
+`CLAUDE_CODE_SESSION_ID`, with the same endpoint guards as `session start`;
+another chat's environment or a stored token is never used. The old listener
 stops before the new transport is stored; repeated recovery reuses the live
 generation. It never starts, resumes, loads or changes a provider conversation.
 
@@ -36,6 +40,24 @@ receipt requirement and are not replayed. Queue admission and successful recover
 are separate from a message arriving in the actual resumed chat; verify a peer
 message and receipt/reply there before claiming runtime acceptance.
 
+## Service outages
+
+A running native listener waits out a network failure or HTTP 408, 429, 500,
+502, 503 or 504 without a command. Status shows `state: degraded` with the code
+and presence `unreachable`; it retries after 10, 20, 40 and then every 60
+seconds, reconciling before any further inbox or receipt call. Authentication or
+permission denial, other HTTP errors, release mismatch, stop and revoked or
+expired authority stay terminal. Every native run, not only a recovered one,
+rechecks its reception authority before token resolution, each service call and
+each chat submission, so a stop, expiry, revocation or binding change during an
+outage ends it without a later dispatch. A new run started by `session start`
+works on that start's authority for at most 90 seconds until the start records
+reception after readiness. A degraded start, including one that finds an
+already running degraded listener, is not reported as started and enables no
+reception (`listener_start_failed` or `listener_not_ready`). Use `session
+recover` only after the listener stopped, for example after `listener_exited` or
+a terminal error.
+
 ## Optional provider startup hook
 
 A copy-installed skill cannot register a startup hook by itself. Without an
@@ -51,7 +73,8 @@ absolute, shell-quoted paths and the actual installed skill copy:
 uv run --project '<skill-dir>' --frozen python '<skill-dir>/scripts/quorum_resume.py' --state '<private-state>' --client codex
 ```
 
-Use `--client grok` for Grok. Merge the handler into existing configuration;
+Use `--client grok` for Grok. Claude Code has no startup hook here; run the
+recovery command from the same Claude chat. Merge the handler into existing configuration;
 never replace unrelated hooks. Setup/configuration is a separate owner action,
 not part of connect, start, recover or skill installation. Keep the provider's
 normal permissions and trust review; do not disable a policy to make it run.

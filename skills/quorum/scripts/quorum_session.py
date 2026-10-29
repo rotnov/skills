@@ -83,6 +83,8 @@ def require_caller(session_id, engine=None):
 
 
 PRIORITIES = ('normal', 'urgent')
+# Parent-chat engines whose exact binding can resume its previously enabled reception.
+RECOVERABLE = ('codex', 'grok', 'claude')
 
 
 def message_priority(message):
@@ -318,7 +320,7 @@ def add_commands(commands):
     thread.add_argument('--after-sequence', type=sequence, default=0,
                         help='Page after this sequence; the service returns at most 16 messages')
     actions.add_parser('start')
-    actions.add_parser('recover', help='Recover previously enabled reception in this same Codex/Grok conversation')
+    actions.add_parser('recover', help='Recover previously enabled reception in this same Codex, Grok or Claude Code conversation')
     actions.add_parser('status')
     receive = actions.add_parser('receive', help='Tool-inbox worker: one bounded foreground receive in its own tool result')
     receive.add_argument('--wait-seconds', type=int, choices=range(0, 61), default=30, metavar='0..60')
@@ -382,6 +384,30 @@ def rebind(ledger, control, sid, endpoint, *, stop_seconds=60, engine='claude', 
     ledger.setting('session-agent', {**record, key:endpoint})
 
 
+# Readiness bound for an explicit start, shared by a new child and a reused running listener.
+READY_SECONDS = 90
+
+
+def ready(status):
+    return status['listener']=='running' and status['state'] in ('waiting','checking') and not status['stop_requested']
+
+
+def await_ready(control, authorize):
+    """Wait within the readiness bound for the already running listener; None if it ended meanwhile."""
+    from quorum_api import QuorumError
+    deadline = time.monotonic()+READY_SECONDS
+    while True:
+        authorize()
+        status = control.status()
+        if ready(status):
+            authorize()
+            return status
+        if status['listener'] != 'running': return None
+        # Not this start's child: never stop it; the owner can inspect status or stop it explicitly.
+        if status['stop_requested'] or time.monotonic() >= deadline: raise QuorumError('listener_not_ready')
+        time.sleep(.1)
+
+
 def start(auth_state, ledger, sid, *, api, endpoint=None, grok_transport=None, recovery=False):
     from quorum_api import QuorumError
     from quorum_resume import enable, require_enabled
@@ -404,15 +430,18 @@ def start(auth_state, ledger, sid, *, api, endpoint=None, grok_transport=None, r
         release.running()
         authorize()  # Service/release checks may outlive a finite grant.
         rebound = bool(record and endpoint is not None and endpoint != record.get('messaging_socket'))
-        if rebound: rebind(ledger, Control(ledger, holding_control=True), sid, endpoint)
+        if rebound: rebind(ledger, Control(ledger, holding_control=True), sid, endpoint, authorize=authorize)
         grok_rebound = grok_transport is not None and grok_transport != record.get('grok_transport')
         if grok_rebound:
             rebind(ledger, Control(ledger, holding_control=True), sid, grok_transport, engine='grok',
                    authorize=authorize)
         authorize()  # Recheck the latest grant after any old listener shutdown.
         if locked(ledger.root/'listener.lock'):
-            if not recovery: enable(ledger, ledger.setting('session-agent'))
-            return control.status()
+            # Reuse only a ready run: a degraded or starting one is neither reported nor granted.
+            status = await_ready(control, authorize)
+            if status is not None:
+                if not recovery: enable(ledger, ledger.setting('session-agent'))
+                return status
         run_id = str(uuid.uuid4())
         control.begin(run_id, 0)
         command=[sys.executable,str(Path(__file__).with_name('quorum.py')),'--state',str(auth_state),
@@ -424,7 +453,7 @@ def start(auth_state, ledger, sid, *, api, endpoint=None, grok_transport=None, r
         except Exception:
             control.update(run_id,'error',0,timeout=0,code='session_start_failed')
             raise QuorumError('listener_start_failed') from None
-        deadline=time.monotonic()+90
+        deadline=time.monotonic()+READY_SECONDS
         while time.monotonic()<deadline:
             try: authorize()
             except ValueError:
@@ -432,7 +461,7 @@ def start(auth_state, ledger, sid, *, api, endpoint=None, grok_transport=None, r
                 raise
             status=control.status()
             if status.get('run_id')==run_id:
-                if status['listener']=='running' and status['state'] in ('waiting','checking') and not status['stop_requested']:
+                if ready(status):
                     try: authorize()
                     except ValueError:
                         # Only this unconfirmed owned child is stopped. The old
@@ -497,14 +526,14 @@ def dispatch(args, auth_ledger, register_agent):
             binding = inbox.require_worker(record)
             if proved is not None and proved != binding: raise inbox.NativeInboxError('native_worker_binding_denied')
         if args.action == 'recover':
-            if tool or engine not in ('codex', 'grok'): raise ValueError('session_recovery_denied')
+            if tool or engine not in RECOVERABLE: raise ValueError('session_recovery_denied')
             if not record or str(Path.cwd().resolve()) != record.get('cwd'):
                 raise ValueError('session_binding_denied')
             from quorum_resume import require_enabled
             require_enabled(ledger, record)
         if args.action == 'run' and getattr(args, 'recovering', False):
             require_caller(sid, engine)
-            if tool or engine not in ('codex', 'grok'): raise ValueError('session_recovery_denied')
+            if tool or engine not in RECOVERABLE: raise ValueError('session_recovery_denied')
             from quorum_resume import require_enabled
             require_enabled(ledger, record)
         if args.action in ('connect', 'delegate'):
@@ -514,9 +543,15 @@ def dispatch(args, auth_ledger, register_agent):
             if dispatch_mode == 'native-subagent' and (not coordinator or getattr(args, 'revoke', False)):
                 raise ValueError('dispatch_mode_requires_coordinator')
         api, _, _ = api_for(auth_ledger)
+        guard = None
         if args.action == 'recover' or (args.action == 'run' and getattr(args, 'recovering', False)):
             from quorum_resume import ReceptionApi
             api = ReceptionApi(api, ledger, record)
+        elif args.action == 'run' and record and not tool:
+            # An explicit-start run also stops dispatching once its authority ends, including across outage retries.
+            from quorum_resume import ReceptionApi, startup_authority
+            guard = startup_authority(ledger, record, args.run_id)
+            api = ReceptionApi(api, ledger, record, authorize=guard)
         if args.action in ('connect','start','run','receive','recover'):
             release = ReleaseGuard(api, ledger)
             release.check()
@@ -574,10 +609,10 @@ def dispatch(args, auth_ledger, register_agent):
             return api.call('conversation_read', {'quorum_id':record['quorum_id'], 'agent_id':record['agent_id'],
                             'conversation_id':args.conversation_id, 'after_sequence':args.after_sequence})
         endpoint = None
-        if engine == 'claude' and args.action in ('start','run'):
+        if engine == 'claude' and args.action in ('start','run','recover'):
             from quorum_claude_pipe import binding
             endpoint = binding(sid)
-            # Only the bound chat's own start may adopt a rotated endpoint.
+            # Only the bound chat's own start/recover may adopt a rotated endpoint.
             if args.action == 'run' and endpoint != record['messaging_socket']: raise ValueError('session_binding_denied')
         transport = None
         if engine == 'grok' and args.action in ('start','run','recover'):
@@ -637,7 +672,7 @@ def dispatch(args, auth_ledger, register_agent):
             event=threading.Event()
             for name in ('SIGTERM','SIGINT','SIGBREAK'):
                 if hasattr(signal,name): signal.signal(getattr(signal,name),lambda *_:event.set())
-            authorize = None
+            authorize = guard
             if getattr(args, 'recovering', False):
                 from quorum_resume import require_enabled
                 authorize = lambda:require_enabled(ledger, record)
@@ -645,7 +680,9 @@ def dispatch(args, auth_ledger, register_agent):
             def make():
                 return Relay(api,ledger,record,lambda message:enqueue({**record, 'delegation':(ledger.setting('session-agent') or {}).get('delegation')},
                                                                    message,auth_ledger.root), **guard_options)
-            return run_listener(ledger,make,args.run_id,stop_event=event,timeout=0,
-                                waiter=RealtimeWait(api,record,ledger,keepalive=Presence(api,record,ledger), **guard_options))
+            # Native reception waits out typed service outages with this same Relay and ledger.
+            return run_listener(ledger,make,args.run_id,stop_event=event,timeout=0,retry=True,
+                                waiter=RealtimeWait(api,record,ledger,keepalive=Presence(api,record,ledger),
+                                                    stop_aware=True, **guard_options))
         raise ValueError('unknown_operation')
     finally: ledger.db.close()

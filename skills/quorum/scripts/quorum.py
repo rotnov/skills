@@ -167,7 +167,7 @@ def main(argv=None):
         codes = {'skill_update_required': 4, 'release_manifest_invalid': 4, 'auth_required': 3, 'service_not_configured': 4, 'live_agents_disabled': 4,
                  'engine_acceptance_pending': 4, 'service_profile_ambiguous': 4, 'machine_profile_unavailable': 4,
                  'auth_profile_conflict': 3, 'service_config_conflict': 4, 'service_unavailable': 5, 'service_error': 5,
-                 'response_too_large': 5, 'invalid_response': 5, 'listener_start_failed': 5, 'listener_stop_failed': 5,
+                 'response_too_large': 5, 'invalid_response': 5, 'listener_start_failed': 5, 'listener_stop_failed': 5, 'listener_not_ready': 5,
                  'anonymous_login_unavailable': 4, 'open_invite_required': 3}
         code = str(error) if str(error) in codes else 'operation_failed'
         from quorum_release import ReleaseMismatch

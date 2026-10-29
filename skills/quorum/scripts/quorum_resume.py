@@ -5,6 +5,9 @@ from pathlib import Path
 import time
 import uuid
 
+# The parent's readiness deadline for an explicit start; a run's unpublished startup authority ends with it.
+STARTUP_SECONDS = 90
+
 
 def binding(record):
     return {key:record.get(key) for key in
@@ -28,12 +31,33 @@ def require_enabled(ledger, record):
         raise ValueError('session_recovery_denied')
 
 
+def startup_authority(ledger, record, run_id, *, clock=time.monotonic):
+    """Guard for an explicit-start run: bounded startup authority, then only the grant its parent publishes.
+
+    Until the parent replaces the grant observed at launch, the run may work for at most
+    STARTUP_SECONDS on that start's own authority. An owner stop of this run, a changed
+    binding, or any later grant change ends it; it never creates or extends a grant.
+    """
+    from quorum_listener import Control
+    launched, deadline = ledger.setting('session-reception'), clock() + STARTUP_SECONDS
+    def authorize():
+        current = ledger.setting('session-agent')
+        if (Control(ledger).stopping(run_id) or not isinstance(current, dict) or not isinstance(record, dict)
+                or binding(current) != binding(record)):
+            raise ValueError('session_recovery_denied')
+        if ledger.setting('session-reception') == launched and clock() < deadline: return
+        require_enabled(ledger, record)
+    return authorize
+
+
 class ReceptionApi:
-    """Keep one recovered listener's original grant around every service dispatch."""
-    def __init__(self, api, ledger, record):
+    """Keep one listener's reception authority around every token resolution and service dispatch."""
+    def __init__(self, api, ledger, record, *, authorize=None):
         self.api, self.ledger, self.record = api, ledger, record
+        self.guard = authorize
 
     def authorize(self):
+        if self.guard is not None: return self.guard()
         require_enabled(self.ledger, self.record)
 
     @property
