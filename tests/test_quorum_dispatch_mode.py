@@ -157,8 +157,10 @@ class DispatchModeTests(unittest.TestCase):
         record['delegation'] = grant(record, 'coordinator', 'lead', dispatch_mode='native-subagent')
         message = dict(id=message_id, sender_id='coordinator', recipient_id='receiver', body='Task')
         piped = []
-        env = {'CLAUDE_CODE_SESSION_ID': sid, 'CLAUDE_CODE_MESSAGING_SOCKET': '/synthetic.sock'}
+        env = {'CLAUDE_CODE_SESSION_ID': sid, 'CLAUDE_CODE_MESSAGING_SOCKET': '/synthetic.sock',
+               'CLAUDE_CODE_MESSAGING_TOKEN': 'synthetic-only'}
         with patch.dict(os.environ, env, clear=True), \
+                patch('quorum_claude_pipe.binding', return_value='/synthetic.sock'), \
                 patch('quorum_claude_pipe.submit', side_effect=lambda *args: piped.append(args[2])):
             for changed in ({}, {'notification': True}, {'reply_to': 'previous'}):
                 enqueue(record, {**message, **changed}, Path('/private/synthetic-state'))

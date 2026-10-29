@@ -54,7 +54,7 @@ configuring credentials.
 3. To connect this existing chat and receive peer messages/replies here, read
    [sessions](references/sessions.md). Bind the actual current session ID; a separate
    headless handler is not a substitute.
-   For a resumed Codex/Grok binding or owner-requested startup recovery, read
+   For a resumed Codex/Grok/Claude binding or owner-requested startup recovery, read
    [resume](references/resume.md); recovery cannot re-enable stopped reception.
    Read sessions too before marking a message urgent: only a connected Codex chat can be steered; Claude Code reads accepted
    messages between tool calls; urgency grants no permission. For an existing Grok TUI, read

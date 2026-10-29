@@ -32,12 +32,14 @@ class ResumeTests(unittest.TestCase):
         self.old = {'leader_socket':'/synthetic/old.sock', 'tui_pid':123, 'tui_start':456,
                     'cwd':str(self.root)}
         self.new = {**self.old, 'leader_socket':'/synthetic/new.sock', 'tui_pid':124, 'tui_start':789}
+        self.old_socket, self.new_socket = '/synthetic/claude-old.sock', '/synthetic/claude-new.sock'
 
     def record(self, engine):
         registration = {'engine':engine, 'session_ref':SID, 'project_ref':'project', 'cwd':str(self.root)}
         value = {**registration, 'registration':registration, 'agent_id':'agent', 'quorum_id':'quorum',
                  'role':'worker', 'quorum':'team', 'delegation':{'coordinator_id':'coordinator'}}
         if engine == 'grok': value['grok_transport'] = self.old
+        if engine == 'claude': value['messaging_socket'] = self.old_socket
         self.ledger.setting('session-agent', value)
         return value
 
@@ -51,12 +53,15 @@ class ResumeTests(unittest.TestCase):
         self.children.append([child.thread.is_alive() for child in self.live])
         return self.generation(command[command.index('--run-id') + 1])
 
-    def dispatch(self, action, *, engine='codex', session=SID, transport=None, **extra):
+    def dispatch(self, action, *, engine='codex', session=SID, transport=None, endpoint=None, **extra):
         from quorum_session import dispatch
-        env = {('GROK_SESSION_ID' if engine == 'grok' else 'CODEX_THREAD_ID'):session}
+        variable = {'grok':'GROK_SESSION_ID', 'claude':'CLAUDE_CODE_SESSION_ID'}.get(engine, 'CODEX_THREAD_ID')
+        env = {variable:session}
+        claude = patch('quorum_claude_pipe.binding', return_value=endpoint or self.new_socket)
+        if isinstance(endpoint, Exception): claude = patch('quorum_claude_pipe.binding', side_effect=endpoint)
         with patch.dict(os.environ, env), patch('pathlib.Path.cwd', return_value=self.root), \
              patch('quorum_live.api_for', return_value=(self.api, None, None)), \
-             patch('quorum_grok_leader.binding', return_value=transport or self.new), \
+             patch('quorum_grok_leader.binding', return_value=transport or self.new), claude, \
              patch('quorum_session.spawn_background', side_effect=self.spawn):
             return dispatch(SimpleNamespace(action=action, session_id=SID, **extra), SimpleNamespace(root=self.root), None)
 
@@ -291,6 +296,137 @@ class ResumeTests(unittest.TestCase):
         self.assertEqual(self.ledger.setting('session-reception'), grant)
 
     @isolated_profiles
+    def test_claude_same_chat_recover_adopts_its_current_endpoint_without_a_new_grant(self):
+        original = self.record('claude')
+        started = self.dispatch('start', engine='claude', endpoint=self.old_socket)
+        grant = self.ledger.setting('session-reception')
+        self.ledger.setting('delivery:' + MID, {'state':'submitted'})
+        self.offline_generation()
+        recovered = self.dispatch('recover', engine='claude')
+        self.assertNotEqual(recovered['run_id'], started['run_id'])
+        self.assertTrue(recovered['messaging_rebound'])
+        self.assertEqual(self.ledger.setting('session-agent'), {**original, 'messaging_socket':self.new_socket})
+        self.assertEqual(self.ledger.setting('session-reception'), grant, 'recovery never rearms or extends')
+        self.assertEqual(self.ledger.setting('delivery:' + MID), {'state':'submitted'})
+        # A repeated recover reuses the live run instead of spawning another.
+        self.assertEqual(self.dispatch('recover', engine='claude')['run_id'], recovered['run_id'])
+        self.assertEqual(len(self.children), 2)
+
+    @isolated_profiles
+    def test_claude_recover_stops_the_old_generation_before_rebinding(self):
+        self.record('claude')
+        self.dispatch('start', engine='claude', endpoint=self.old_socket)
+        old = self.generations[-1]
+        self.dispatch('recover', engine='claude')
+        self.assertFalse(old.thread.is_alive())
+        self.assertEqual(self.children[-1], [])
+        self.assertEqual(self.ledger.setting('session-agent')['messaging_socket'], self.new_socket)
+
+    @isolated_profiles
+    def test_claude_recovery_requires_the_enabled_exact_binding(self):
+        original = self.record('claude')
+        with self.assertRaisesRegex(ValueError, 'session_recovery_denied'): self.dispatch('recover', engine='claude')
+        self.dispatch('start', engine='claude', endpoint=self.old_socket)
+        self.dispatch('stop')
+        with self.assertRaisesRegex(ValueError, 'session_recovery_denied'): self.dispatch('recover', engine='claude')
+        self.assertEqual(self.ledger.setting('session-agent'), original)
+        self.assertEqual(len(self.children), 1)
+
+    @isolated_profiles
+    def test_claude_wrong_chat_engine_directory_or_inbox_cannot_recover(self):
+        original = self.record('claude')
+        self.dispatch('start', engine='claude', endpoint=self.old_socket)
+        self.offline_generation()
+        with self.assertRaisesRegex(ValueError, 'session_binding_denied'):
+            self.dispatch('recover', engine='claude', session=MID)
+        with self.assertRaisesRegex(ValueError, 'session_binding_denied'): self.dispatch('recover', engine='codex')
+        with self.assertRaisesRegex(ValueError, 'claude_pipe_unavailable'):
+            self.dispatch('recover', engine='claude', endpoint=ValueError('claude_pipe_unavailable'))
+        self.ledger.setting('session-agent', {**original, 'cwd':str(self.root / 'elsewhere')})
+        with self.assertRaisesRegex(ValueError, 'session_binding_denied'): self.dispatch('recover', engine='claude')
+        self.ledger.setting('session-agent', original)
+        self.assertEqual(len(self.children), 1)
+
+    @isolated_profiles
+    def test_claude_intent_blocks_recovery_without_replay(self):
+        original = self.record('claude')
+        self.dispatch('start', engine='claude', endpoint=self.old_socket)
+        self.ledger.setting('delivery:' + MID, {'state':'intent'})
+        with self.assertRaisesRegex(ValueError, 'session_delivery_unknown'): self.dispatch('recover', engine='claude')
+        self.assertEqual(self.ledger.setting('session-agent'), original)
+        self.assertEqual(self.ledger.setting('delivery:' + MID), {'state':'intent'})
+        self.assertEqual(len(self.children), 1)
+
+    @isolated_profiles
+    def test_expiry_during_claude_shutdown_does_not_publish_the_new_endpoint(self):
+        from quorum_listener import Control
+        original = self.record('claude')
+        self.dispatch('start', engine='claude', endpoint=self.old_socket)
+        grant, clock = self.finite_grant(), [0]
+        request_stop = Control.request_stop
+        def expire(control, run_id=None):
+            clock[0] = 2
+            return request_stop(control, run_id)
+        with patch('quorum_resume.time.time', side_effect=lambda:clock[0]), \
+             patch.object(Control, 'request_stop', expire):
+            with self.assertRaisesRegex(ValueError, 'session_recovery_denied'):
+                self.dispatch('recover', engine='claude')
+        self.assertEqual(self.ledger.setting('session-agent'), original)
+        self.assertEqual(len(self.children), 1)
+        self.assertEqual(self.ledger.setting('session-reception'), grant)
+
+    @isolated_profiles
+    def test_internal_claude_recovery_run_checks_its_current_endpoint_and_grant(self):
+        self.record('claude')
+        self.dispatch('start', engine='claude', endpoint=self.old_socket)
+        self.offline_generation()
+        # A recovering run spawned for another endpoint is refused before any service I/O.
+        with self.assertRaisesRegex(ValueError, 'session_binding_denied'):
+            self.dispatch('run', engine='claude', run_id='33333333-3333-4333-8333-333333333333', recovering=True)
+        self.dispatch('stop')
+        with self.assertRaisesRegex(ValueError, 'session_recovery_denied'):
+            self.dispatch('run', engine='claude', endpoint=self.old_socket,
+                          run_id='33333333-3333-4333-8333-333333333333', recovering=True)
+
+    @isolated_profiles
+    def test_start_during_an_outage_is_abandoned_without_enabling_reception(self):
+        from quorum_api import QuorumError
+        from quorum_listener import Control, run_listener
+        from quorum_state import LocalLedger
+        self.record('codex')
+        attempts = []
+        def spawn(command, ledger):
+            run_id = command[command.index('--run-id') + 1]
+            class Down:
+                def reconcile(self):
+                    attempts.append(1)
+                    raise QuorumError('service_unavailable')
+                def run_once(self): raise AssertionError('no dispatch before a successful reconcile')
+            def run():
+                own = LocalLedger(ledger.root)
+                try: run_listener(own, Down, run_id, timeout=0, sleep=lambda _:time.sleep(.001), retry=True)
+                finally: own.db.close()
+            thread = threading.Thread(target=run, daemon=True)
+            thread.start()
+            def close():
+                if thread.is_alive(): Control(ledger).request_stop(run_id)
+                thread.join(timeout=5)
+            self.addCleanup(close)
+            return SimpleNamespace(poll=lambda:None if thread.is_alive() else 0,
+                                   terminate=close, kill=close, wait=lambda **_:close())
+        self.spawn = spawn
+        real, offset = time.monotonic, [0.0]
+        def fast():
+            offset[0] += 5  # The 90-second readiness deadline passes without real waiting.
+            return real() + offset[0]
+        with patch('time.monotonic', side_effect=fast):
+            with self.assertRaisesRegex(Exception, 'listener_start_failed'): self.dispatch('start')
+        self.assertIsNone(self.ledger.setting('session-reception'), 'a degraded start never enables reception')
+        status = Control(self.ledger).status()
+        self.assertEqual(status['listener'], 'offline')
+        self.assertTrue(attempts)
+
+    @isolated_profiles
     def test_recovery_relay_pins_its_original_binding_against_current_ledger(self):
         from quorum_resume import require_enabled
         from quorum_session import Relay
@@ -336,7 +472,7 @@ class ResumeTests(unittest.TestCase):
         setting = self.ledger.setting
         def persist(key, value=None):
             result = setting(key, value)
-            if key == 'delivery:' + MID and value == {'state':'intent'}: clock[0] = 2
+            if key == 'delivery:' + MID and value and value.get('state') == 'intent': clock[0] = 2
             return result
         relay = Relay(self.api, self.ledger, record, lambda message:submitted.append(message) or 'submitted')
         relay.authorize = lambda:require_enabled(self.ledger, record)
@@ -457,7 +593,9 @@ class ResumeTests(unittest.TestCase):
                 guarded = ReceptionApi(raw, self.ledger, record)
                 with patch('quorum_resume.time.time', side_effect=lambda:clock[0]):
                     waiter = RealtimeWait(guarded, record, self.ledger, connect=connect, authorize=guarded.authorize)
-                    waiter.prepare(lambda:False)
+                    # A fixed denial ends reception instead of falling back to polling.
+                    with self.assertRaisesRegex(ValueError, 'session_recovery_denied'):
+                        waiter.prepare(lambda:False)
                 self.assertEqual(frames, [])
                 self.assertEqual(closed, [True])
                 expected = grant if cancellation == 'expiry' else {**grant, 'enabled':False}
