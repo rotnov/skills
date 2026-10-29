@@ -544,8 +544,12 @@ class DebugService:
                 })
         listener = snapshot.get('listener') or {}
         stored = run['watch']['listeners'].setdefault(binding, {})
-        signature = (listener.get('run_id'), listener.get('state'), listener.get('handled'), snapshot.get('reception_enabled'))
-        if stored.get('signature') != signature:
+        signature = [
+            listener.get('run_id'), listener.get('state'), listener.get('handled'),
+            snapshot.get('reception_enabled'), listener.get('code'),
+        ]
+        previous = stored.get('signature')
+        if not isinstance(previous, (list, tuple)) or list(previous) != signature:
             self._event(run, {
                 'source': 'local-ledger', 'live_observation': True, 'baseline': baseline, 'binding': binding,
                 'stage': 'listener', 'run_id': listener.get('run_id'), 'listener_state': listener.get('state'),
@@ -599,10 +603,14 @@ class DebugService:
 
     def _event(self, run, event):
         event = {key: value for key, value in event.items() if value is not None}
-        event['event_id'] = digest([event.get('source'), event.get('binding'), event.get('stage'),
-                                    event.get('message_id'), event.get('state'), event.get('epoch'),
-                                    event.get('run_id'), event.get('mode'), event.get('attempt_id'),
-                                    event.get('name')])[:32]
+        identity = [event.get('source'), event.get('binding'), event.get('stage'),
+                    event.get('message_id'), event.get('state'), event.get('epoch'),
+                    event.get('run_id'), event.get('mode'), event.get('attempt_id'),
+                    event.get('name')]
+        if event.get('stage') == 'listener':
+            identity.extend((event.get('listener_state'), event.get('handled'),
+                             event.get('code'), event.get('reception_enabled')))
+        event['event_id'] = digest(identity)[:32]
         if any(item['event_id'] == event['event_id'] for item in run['events']):
             return
         if len(run['events']) >= MAX_EVENTS:

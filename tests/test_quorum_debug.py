@@ -1986,6 +1986,93 @@ class DebugReviewP2Tests(unittest.TestCase):
         self.assertEqual(read_local(linked_root, scope), [])
 
 
+class DebugListenerEventTests(unittest.TestCase):
+    """Same-run listener changes stay on the timeline. Identical samples do not."""
+
+    def _open(self, root):
+        from quorum_listener import Control
+        from quorum_state import LocalLedger
+        ledger = LocalLedger(Path(root) / 'sessions' / SID)
+        ledger.setting('session-agent', {
+            'quorum': 'team', 'quorum_id': 'qid-1', 'project_ref': 'proj', 'role': 'peer',
+            'engine': 'codex', 'agent_id': AID, 'session_ref': SID, 'transport': 'tool-inbox',
+        })
+        ledger.setting('delivery:' + MID, {'state': 'acked', 'notification': False})
+        self.addCleanup(ledger.db.close)
+        clock, github = Clock(), FakeGitHub()
+        github.available = False
+        return clock, github, open_service(root, clock, github), Control(ledger), ledger
+
+    def _listeners(self, service):
+        return [item for item in service.report()['timeline'] if item.get('stage') == 'listener']
+
+    def test_same_run_listener_material_changes_remain_visible(self):
+        from quorum_debug_ledger import read_scoped
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        clock, github, service, control, ledger = self._open(root)
+        scope = {'quorum': 'team', 'project_ref': 'proj', 'bindings': []}
+        control.update('one-listener-run', 'waiting', 0)
+        service.activate('team', 'proj')
+        with self.subTest('waiting to error'):
+            control.update('one-listener-run', 'error', 0, code='service_unavailable')
+            current = read_scoped(ledger.root / 'ledger.sqlite', SID, scope)
+            self.assertEqual(current['listener']['state'], 'error')
+            self.assertEqual(current['listener']['code'], 'service_unavailable')
+            self.assertEqual(current['listener']['handled'], 0)
+            service.collect()
+            listeners = self._listeners(service)
+            self.assertTrue(any(item.get('listener_state') == 'waiting' and item.get('handled') == 0
+                                for item in listeners))
+            self.assertTrue(any(
+                item.get('listener_state') == 'error' and item.get('code') == 'service_unavailable'
+                and item.get('handled') == 0 and item.get('run_id') == 'one-listener-run'
+                for item in listeners))
+        with self.subTest('identical sample'):
+            seen = [item['event_id'] for item in service.report()['timeline']]
+            clock.advance(30)
+            service.collect()
+            self.assertEqual([item['event_id'] for item in service.report()['timeline']], seen)
+        with self.subTest('code only'):
+            control.update('one-listener-run', 'error', 0, code='coordination_unavailable')
+            current = read_scoped(ledger.root / 'ledger.sqlite', SID, scope)
+            self.assertEqual(current['listener']['code'], 'coordination_unavailable')
+            service.collect()
+            codes = [item.get('code') for item in self._listeners(service)]
+            self.assertIn('service_unavailable', codes)
+            self.assertIn('coordination_unavailable', codes)
+        with self.subTest('handled progress'):
+            control.update('one-listener-run', 'error', 2, code='coordination_unavailable')
+            service.collect()
+            self.assertTrue(any(item.get('handled') == 2 and item.get('code') == 'coordination_unavailable'
+                                and item.get('run_id') == 'one-listener-run' for item in self._listeners(service)))
+        with self.subTest('new run'):
+            control.update('next-listener-run', 'waiting', 0)
+            service.collect()
+            runs = {item.get('run_id') for item in self._listeners(service)}
+            self.assertIn('one-listener-run', runs)
+            self.assertIn('next-listener-run', runs)
+        with self.subTest('reception'):
+            ledger.setting('session-reception', {'enabled': False})
+            service.collect()
+            self.assertTrue(any(item.get('run_id') == 'next-listener-run' and item.get('reception_enabled') is False
+                                for item in self._listeners(service)))
+            self.assertTrue(any(item.get('run_id') == 'next-listener-run' and 'reception_enabled' not in item
+                                for item in self._listeners(service)))
+        with self.subTest('non listener dedupe'):
+            ledger.setting('presence-epoch', {'connection_id': 'epoch-1'})
+            service.collect()
+            clock.advance(45)
+            service.collect()
+            hellos = [item for item in service.report()['timeline'] if item.get('stage') == 'hello']
+            deliveries = [item for item in service.report()['timeline'] if item.get('message_id') == MID]
+            self.assertEqual(len(hellos), 1)
+            self.assertEqual(hellos[0].get('epoch'), 'epoch-1')
+            self.assertEqual(len(deliveries), 1)
+            self.assertEqual(github.creates(), [])
+
+
 def setUpModule():
     def blocked(*_args, **_kwargs):
         raise AssertionError('live subprocess blocked in quorum debug tests')
