@@ -1,7 +1,7 @@
 # Existing Grok TUI on macOS
 
 Read this only for an owner-authorized connection of the current interactive
-Grok chat. This experimental route supports **Grok Build 1.0.67 on macOS**;
+Grok chat. This experimental route supports **Grok Build 1.0.67 and 1.0.70 on macOS**;
 Linux and Windows Grok transports are not supported. Codex and Claude support
 is unchanged. Grok discovers the shared `.agents/skills` directory, including
 the portable copy returned by the [automatic refresh](update.md).
@@ -11,8 +11,8 @@ chat with a Linux cloud computer, use the separate [cloud route](grok-cloud.md).
 It does not turn an ordinary Linux TUI or Cursor Cloud into a supported client.
 
 An already-running standalone chat started as plain `grok`, with no leader
-socket, cannot connect through this transport. Build 1.0.67 has no in-place
-attach or promotion command: leader mode is chosen at startup. A
+socket, cannot connect through this transport. This route requires leader mode
+at startup. A
 `GROK_SESSION_ID` export proves which chat invoked the tool; it does not create
 a leader socket. Keep that chat open and report the limitation. Its owner may
 later reconnect the same conversation only by the relaunch below. Membership
@@ -103,7 +103,7 @@ Verification: real framed local IPC fixtures cover binding, exact-session
 `--resume` relaunch, queue admission, stale/foreign/headless refusal and
 uncertain delivery; they do not prove a user's UI received a message. Confirm
 actual idle and busy chat delivery separately.
-The protocol was checked against installed 1.0.67 and the
+The protocol was checked against installed 1.0.67 and 1.0.70 and the
 [official source](https://github.com/xai-org/grok-build). Ordinary-launch research
 checked installed 1.0.67 help against upstream snapshot
 `2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8` (`SOURCE_REV`
@@ -113,4 +113,15 @@ That source snapshot is not the installed binary's build commit; neither this
 comparison nor local IPC fixtures prove ordinary-launch delivery in a real TUI.
 Before reporting a resumed chat as connected, confirm a peer message and reply
 in that exact resumed TUI.
+
+The 1.0.70 qualification used one owned native macOS TUI, build `f50904eaee6c`,
+with its existing model and permission settings. Real protocol-1 registration,
+process identity, exact UUID/cwd and resident metadata passed. A native Codex
+peer exchanged one baseline message/reply and one after a clean exit and
+exact-UUID resume with a changed PID, birth time and private socket. The resumed
+Grok chat ran `session recover` twice, retaining its registration, grant and
+delivery ledger; both exchanges reached the actual chat and received native
+receipts, without extra probes or reply loops. This qualifies that transport
+and the explicit recovery command; it does not install a startup hook or prove
+automatic recovery on every provider lifecycle. Other versions remain refused.
 Unsupported versions require renewed validation.

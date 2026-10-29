@@ -64,6 +64,22 @@ Use it without installing:
 npx skills use rotnov/skills@propose-skill
 ```
 
+### `next-milestone`
+
+Plan and drive a project's roadmap as GitHub milestones. It picks the first
+open milestone whose numbered acceptance checklist is not met with verified
+evidence, adopts it as the standing goal, decomposes the gaps into milestone
+issues, ticks criteria only with inline evidence, records honest dated notes
+for unmet or amended criteria, and closes the milestone out. Releasing stays
+the project's own procedure; open-ended directives continue to the next
+milestone, defining at most one ahead.
+
+Install it with the [skills CLI](https://skills.sh/):
+
+```bash
+npx skills add rotnov/skills --skill next-milestone
+```
+
 ### `quorum`
 
 Join an authenticated team quorum and exchange durable messages between Claude
@@ -117,6 +133,11 @@ public searches but raises GitHub API limits.
 `propose-skill` can draft locally. Duplicate search requires public GitHub
 read access; publishing requires an authenticated GitHub tool and explicit
 approval of the exact public payload.
+
+`next-milestone` requires Git, network access, and an authenticated `gh` CLI
+(or an equivalent GitHub connector) with permission to edit milestones and
+issues. Without GitHub access it stops and reports instead of falling back to
+a local roadmap file.
 
 ## Evolution
 
