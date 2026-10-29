@@ -452,6 +452,57 @@ class DebugPublicationTests(unittest.TestCase):
         self.assertEqual(self.service.report()['publication']['ledger'][0]['issue_number'], 9)
         self.assertTrue(self.service.report()['publication']['ledger'][0]['reconciled'])
 
+    def test_real_publisher_discovers_accepted_create_by_indexed_digest_without_a_duplicate(self):
+        from quorum_debug_publish import GhCliPublisher
+        created = []
+        comments = []
+
+        class Completed:
+            returncode = 0
+
+            def __init__(self, stdout=''):
+                self.stdout = stdout
+
+        def runner(args, timeout=20):
+            operation = args[1:3]
+            if operation == ['auth', 'status']:
+                return Completed()
+            if operation == ['issue', 'create']:
+                body = Path(args[args.index('--body-file') + 1]).read_text(encoding='utf-8')
+                created.append({'number': 9, 'body': body})
+                return Completed()  # GitHub accepted the issue; its URL response was lost.
+            if operation == ['issue', 'list']:
+                if not created:
+                    return Completed('[]')
+                finding = created[0]['body'].split('Debug-Finding: ', 1)[1].splitlines()[0]
+                # Observed GitHub search boundary: the digest is indexed, while the
+                # unquoted custom "Debug-Finding:<digest>" operand returns no hits.
+                if args[args.index('--search') + 1] != finding + ' in:body':
+                    return Completed('[]')
+                return Completed(json.dumps([
+                    {'number': 8, 'body': 'An incidental reference to ' + finding},
+                    created[0],
+                ]))
+            if operation == ['issue', 'comment']:
+                comments.append(args)
+                return Completed()
+            self.fail('unexpected GitHub operation: ' + repr(operation))
+
+        publisher = GhCliPublisher(runner=runner, body_dir=self.root)
+        service = open_service(self.root, self.clock, publisher)
+        with patch('quorum_debug_publish.shutil.which', return_value='/fake/gh'):
+            service.activate('team', 'proj', REPO)
+            self.clock.advance(901)
+            self.assertEqual(service.collect()['publication'], 'uncertain')
+            self.assertEqual(len(created), 1)
+            self.assertEqual(service.publish()['publication'], 'published')
+            entry = service.report()['publication']['ledger'][0]
+            self.assertEqual(entry['issue_number'], 9)
+            self.assertTrue(entry['reconciled'])
+            self.assertEqual(service.publish()['publication'], 'published')
+        self.assertEqual(len(created), 1)
+        self.assertEqual(comments, [])
+
     def test_stop_and_github_outage_do_not_write(self):
         self.service.activate('team', 'proj', REPO)
         self.clock.advance(901)
