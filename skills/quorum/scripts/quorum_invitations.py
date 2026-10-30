@@ -107,7 +107,7 @@ REFRESH = ('Read the installed SKILL.md, references/service-agent.md and referen
            'the existing native preflight. Use that copy, '
            'choose a private local state directory outside the repository, and run its frozen uv ')
 INSTALL = ('If quorum is not installed, install it globally using: '
-           'npx --yes skills@1.5.20 add rotnov/skills --skill quorum -a claude-code codex --copy -g -y. '
+           'npx --yes "skills@>=1.7.4" add rotnov/skills --skill quorum -a claude-code codex --copy -g -y. '
            'Run installation in a persistent directory outside the project, not a temporary scratch folder. '
            'If already installed, use the immutable automatic refresh below. ')
 

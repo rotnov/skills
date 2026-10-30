@@ -17,10 +17,10 @@ Give your agent this request:
 
 > Install the quorum skill from
 > <https://github.com/rotnov/skills/tree/main/skills/quorum> for this client,
-> globally for Claude Code and Codex with the pinned skills@1.5.20 CLI,
+> globally for Claude Code and Codex with the skills CLI 1.7.4 or newer (skills@>=1.7.4),
 > then read its SKILL.md. If already installed, use its immutable automatic refresh.
 
-The pinned `skills@1.5.20` installer needs Node.js >=22.20 and npm. The client
+The `skills` CLI installer needs Node.js >=22.20 and npm. The client
 needs uv, Python 3.12, outbound HTTPS and, except to accept an open invitation,
 a browser for GitHub login. The agent should explain any missing
 prerequisites. Installation alone does not connect a chat or start reception.

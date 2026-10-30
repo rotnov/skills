@@ -35,7 +35,7 @@ class UpdateTests(unittest.TestCase):
         (self.current / 'active-reader.txt').write_text('old-code-must-remain')
 
     def runner(self, command, **kwargs):
-        if command[1:4] == ['--yes', 'skills@1.5.20', 'add']:
+        if command[1:4] == ['--yes', 'skills@>=1.7.4', 'add']:
             self.assertEqual(command[4:], ['rotnov/skills', '--skill', 'quorum', '-a',
                                          'claude-code', 'codex', '--copy', '-y'])
             for client in ('.agents', '.claude'):
@@ -127,7 +127,7 @@ class UpdateTests(unittest.TestCase):
             with self.subTest(corruption=corruption):
                 def corrupt(command, **kwargs):
                     result = self.runner(command, **kwargs)
-                    if command[1:4] == ['--yes', 'skills@1.5.20', 'add']:
+                    if command[1:4] == ['--yes', 'skills@>=1.7.4', 'add']:
                         target = Path(kwargs['cwd']) / '.claude/skills/quorum'
                         if corruption == 'missing-lock': (target / 'uv.lock').unlink()
                         elif corruption == 'missing-release': (target / 'assets/release.json').unlink()
@@ -282,7 +282,7 @@ class UpdateTests(unittest.TestCase):
         ssh_fixture = self.root / 'synthetic ssh.py'
         ssh_fixture.write_text('import pathlib,sys\npathlib.Path(sys.argv[1]).touch()\nraise SystemExit(1)\n')
         env = self.module.child_environment(stage)
-        # skills@1.5.20 createGitClient overrides GIT_ALLOW_PROTOCOL and uses
+        # The skills CLI (>=1.7.4) createGitClient overrides GIT_ALLOW_PROTOCOL and uses
         # process.env.GIT_SSH_COMMAND ?? its SSH default after HTTPS auth failure.
         # Replace only that default with a safe marker, never the host SSH binary.
         fixture_command = shlex.join([Path(sys.executable).as_posix(),

@@ -97,7 +97,7 @@ Identify any capability that needs a documented fallback. -->
 ## Acceptance criteria
 
 - [ ] The skill passes the official Agent Skills validator.
-- [ ] The skill is discoverable and installable with the pinned skills CLI.
+- [ ] The skill is discoverable and installable with the skills CLI (1.7.4 or newer).
 - [ ] The primary success, failure, non-trigger, and safety paths are tested.
 - [ ] Codex and Claude Code expose equivalent behavior or a safe fallback.
 - [ ] Documentation describes current behavior and dependencies.
