@@ -606,6 +606,560 @@ class DebugTokenTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, 'debug_usage_rejected')
         self.assertEqual(self.service.report()['tokens']['project']['actual'], 34)
 
+    def test_shared_parent_child_usage_is_order_independent_across_restarts(self):
+        from quorum_debug import DebugError
+        for same_source in (False, True):
+            for child_first in (False, True):
+                with self.subTest(same_source=same_source, child_first=child_first), tempfile.TemporaryDirectory() as root:
+                    service = open_service(root, self.clock, FakeGitHub())
+                    service.activate('team', 'proj')
+                    parent = self.usage(source='parent-host')
+                    child = self.usage(source='parent-host' if same_source else 'child-host',
+                                       shared_parent_sid=True, category='coordination', output_tokens=40)
+                    for record in ((child, parent) if child_first else (parent, child)):
+                        try:
+                            service.add_usage(record)
+                        except DebugError as error:
+                            self.fail(f'parent/shared-child reports must be accepted in either order: {error}')
+                        service = open_service(root, self.clock, FakeGitHub())
+                    tokens = service.report()['tokens']
+                    self.assertEqual(tokens['project']['actual'], 10)
+                    self.assertEqual(tokens['coordination']['actual'], 'unavailable')
+                    self.assertEqual(tokens['excluded_double_count'], 1)
+                    self.assertEqual(len(tokens['records']), 1)
+                    self.assertEqual(tokens['accounting'].get('provisional_shared_windows'), 0)
+                    self.assertEqual(tokens['coverage']['reported_sources'],
+                                     ['parent-host'] if same_source else ['child-host', 'parent-host'])
+
+    def test_child_only_usage_is_provisional_until_a_matching_parent_report(self):
+        self.service.activate('team', 'proj')
+        for source in ('child-a', 'child-b'):
+            tokens = self.service.add_usage(self.usage(source=source, shared_parent_sid=True,
+                                                       category='coordination', output_tokens=40))
+        self.assertEqual(tokens['coordination']['actual'], 96)
+        self.assertEqual(tokens['project']['actual'], 'unavailable')
+        self.assertEqual(tokens['excluded_double_count'], 0)
+        self.assertEqual(tokens['accounting'].get('provisional_shared_windows'), 1)
+        restored = open_service(self.root, self.clock, FakeGitHub())
+        reconciled = restored.add_usage(self.usage(source='parent-host'))
+        self.assertEqual(reconciled['coordination']['actual'], 'unavailable')
+        self.assertEqual(reconciled['project']['actual'], 10)
+        self.assertEqual(reconciled['excluded_double_count'], 2)
+        self.assertEqual(reconciled['accounting'].get('provisional_shared_windows'), 0)
+
+    def test_shared_attribution_distinguishes_identical_source_and_numeric_reports(self):
+        for child_first in (False, True):
+            with self.subTest(child_first=child_first), tempfile.TemporaryDirectory() as root:
+                service = open_service(root, self.clock, FakeGitHub())
+                service.activate('team', 'proj')
+                parent, child = self.usage(), self.usage(shared_parent_sid=True)
+                for record in ((child, parent) if child_first else (parent, child)):
+                    service.add_usage(record)
+                restored = open_service(root, self.clock, FakeGitHub())
+                restored.add_usage(parent)
+                tokens = restored.add_usage(child)
+                self.assertEqual(tokens['project']['actual'], 10)
+                self.assertEqual(tokens['excluded_double_count'], 1)
+                self.assertEqual(len(tokens['records']), 1)
+
+    def test_excluded_shared_usage_replay_is_idempotent_after_restart(self):
+        self.service.activate('team', 'proj')
+        self.service.add_usage(self.usage(source='parent-host'))
+        child = self.usage(source='child-host', shared_parent_sid=True,
+                           category='coordination', output_tokens=40)
+        self.service.add_usage(child)
+        restored = open_service(self.root, self.clock, FakeGitHub())
+        for _ in range(2):
+            tokens = restored.add_usage(child)
+            self.assertEqual(tokens['excluded_double_count'], 1)
+            self.assertEqual(tokens['project']['actual'], 10)
+            self.assertEqual(tokens['coordination']['actual'], 'unavailable')
+            self.assertEqual(len(tokens['records']), 1)
+
+    def test_shared_usage_exclusion_preserves_category_quality_and_cache_semantics(self):
+        cases = (
+            ({'category': 'project', 'quality': 'actual', 'cache_semantics': 'disjoint', 'cache_read_tokens': 4},
+             'project', 'actual', 14),
+            ({'category': 'mixed', 'quality': 'estimated', 'cache_semantics': 'cache_inclusive',
+              'cache_read_tokens': 4, 'cache_write_tokens': 3}, 'mixed_unallocated', 'estimated', 10),
+        )
+        for fields, category, quality, expected in cases:
+            for child_first in (False, True):
+                with self.subTest(category=category, child_first=child_first), tempfile.TemporaryDirectory() as root:
+                    service = open_service(root, self.clock, FakeGitHub())
+                    service.activate('team', 'proj')
+                    parent = self.usage(source='parent-host', **fields)
+                    child = self.usage(source='child-host', shared_parent_sid=True,
+                                       category='coordination', output_tokens=40)
+                    for record in ((child, parent) if child_first else (parent, child)):
+                        service.add_usage(record)
+                    tokens = service.report()['tokens']
+                    self.assertEqual(tokens[category][quality], expected)
+                    self.assertEqual(tokens['coordination'], {'actual': 'unavailable', 'estimated': 'unavailable'})
+                    self.assertEqual(tokens['excluded_double_count'], 1)
+                    self.assertIsNone(tokens['overhead_ratio'])
+
+    def test_legacy_unidentified_exclusion_count_is_preserved_and_reported(self):
+        self.service.activate('team', 'proj')
+        path = self.root / 'debug' / 'current.json'
+        legacy = json.loads(path.read_text())
+        legacy['usage'].pop('excluded_records', None)
+        legacy['usage']['excluded'] = 3
+        path.write_text(json.dumps(legacy))
+        self.service.add_usage(self.usage(source='parent-host'))
+        child = self.usage(source='child-host', shared_parent_sid=True,
+                           category='coordination', output_tokens=40)
+        self.service.add_usage(child)
+        tokens = open_service(self.root, self.clock, FakeGitHub()).add_usage(child)
+        self.assertEqual(tokens['project']['actual'], 10)
+        self.assertEqual(tokens['excluded_double_count'], 4)
+        self.assertEqual(tokens['accounting'].get('unidentified_legacy_exclusions'), 3)
+
+
+class DebugGrantCheckpointTests(unittest.TestCase):
+    def setUp(self):
+        from quorum_debug import DebugService
+        self.clock = Clock()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.service = DebugService(self.root, clock=self.clock, publisher=FakeGitHub(),
+                                    alive_check=lambda _pid: True, pid=lambda: 1234)
+        self.owner = DebugService(self.root, clock=self.clock, publisher=FakeGitHub(),
+                                  alive_check=lambda _pid: True, pid=lambda: 1234)
+        self.service.activate('team', 'proj', REPO, until='1m')
+        self.service._attach_host(30)
+        self.state = self.root / 'debug' / 'current.json'
+
+    def _mark_checkpoint(self):
+        # A real replace/write would reset this old timestamp, even if JSON stays identical.
+        os.utime(self.state, ns=(1_700_000_000_000_000_000, 1_700_000_000_000_000_000))
+        return self.state.read_bytes(), self.state.stat().st_mtime_ns
+
+    def test_unchanged_sleep_ticks_leave_the_durable_checkpoint_untouched(self):
+        content, modified = self._mark_checkpoint()
+        self.assertTrue(self.service._sleep_until(30, self.clock.advance))
+        self.assertEqual(self.state.read_bytes(), content)
+        self.assertEqual(self.state.stat().st_mtime_ns, modified)
+
+    def test_expiry_during_sleep_is_saved_before_the_watch_returns(self):
+        self.clock.advance(59)
+        self.assertFalse(self.service._sleep_until(30, self.clock.advance))
+        saved = json.loads(self.state.read_text())
+        self.assertEqual(saved['state'], 'expired')
+        self.assertEqual(saved['expired_at'], '2026-10-27T12:01:00Z')
+        self.assertEqual(self.owner.status()['state'], 'expired')
+
+    def test_external_stop_is_reread_without_rewriting_its_checkpoint(self):
+        self.owner.stop()
+        content, modified = self._mark_checkpoint()
+        self.assertFalse(self.service._grant_running())
+        self.assertEqual(self.state.read_bytes(), content)
+        self.assertEqual(self.state.stat().st_mtime_ns, modified)
+
+    def test_replacement_run_is_not_overwritten_by_the_old_watch(self):
+        self.owner.stop()
+        replacement = self.owner.activate('team', 'proj')
+        content, modified = self._mark_checkpoint()
+        self.assertFalse(self.service._grant_running())
+        self.assertEqual(json.loads(self.state.read_text())['run_id'], replacement['run_id'])
+        self.assertEqual(self.state.read_bytes(), content)
+        self.assertEqual(self.state.stat().st_mtime_ns, modified)
+
+    def test_overdue_replacement_is_not_expired_by_stale_or_unattached_watchers(self):
+        for watcher in (self.service, self.owner):
+            with self.subTest(stale_host=watcher is self.service):
+                self.owner.stop()
+                replacement = self.owner.activate('team', 'proj', until='1m')
+                self.clock.advance(61)
+                content, modified = self._mark_checkpoint()
+                self.assertFalse(watcher._grant_running())
+                self.assertEqual(self.state.read_bytes(), content)
+                self.assertEqual(self.state.stat().st_mtime_ns, modified)
+                saved = json.loads(self.state.read_text())
+                self.assertEqual(saved['run_id'], replacement['run_id'])
+                self.assertEqual(saved['state'], 'active')
+                self.assertIsNone(saved['expired_at'])
+
+    def test_heartbeat_cannot_expire_or_rewrite_a_foreign_replacement(self):
+        for watcher in (self.service, self.owner):
+            with self.subTest(stale_host=watcher is self.service):
+                self.owner.stop()
+                self.owner.activate('team', 'proj', until='1m')
+                self.clock.advance(61)
+                content, modified = self._mark_checkpoint()
+                self.assertFalse(watcher._heartbeat())
+                self.assertEqual(self.state.read_bytes(), content)
+                self.assertEqual(self.state.stat().st_mtime_ns, modified)
+
+    def test_owned_heartbeat_persists_expiry_before_returning(self):
+        self.clock.advance(60)
+        self.assertFalse(self.service._heartbeat())
+        saved = json.loads(self.state.read_text())
+        self.assertEqual(saved['state'], 'expired')
+        self.assertEqual(saved['expired_at'], '2026-10-27T12:01:00Z')
+
+    def test_detach_cannot_claim_a_replacement_without_an_owned_host(self):
+        for watcher in (self.service, self.owner):
+            with self.subTest(stale_host=watcher is self.service):
+                self.owner.stop()
+                self.owner.activate('team', 'proj')
+                content, modified = self._mark_checkpoint()
+                watcher._detach_host('stopped')
+                self.assertEqual(self.state.read_bytes(), content)
+                self.assertEqual(self.state.stat().st_mtime_ns, modified)
+
+    def test_stale_watch_result_does_not_mutate_the_replacement_grant(self):
+        self.service._detach_host('fixture')
+        original = json.loads(self.state.read_text())['run_id']
+        expected = {}
+
+        def replace_run():
+            self.owner.stop()
+            self.owner.activate('team', 'proj', until='1m')
+            self.clock.advance(61)
+            expected['content'], expected['modified'] = self._mark_checkpoint()
+            expected['publisher_calls'] = list(self.service.publisher.calls)
+
+        result = self.service.watch(cycles=1, sleeper=lambda _: None, on_cycle=replace_run)
+        self.assertEqual(result['cycles_completed'], 0)
+        self.assertEqual(result['run_id'], original)
+        self.assertEqual(result['state'], 'stopped')
+        self.assertEqual(self.state.read_bytes(), expected['content'])
+        self.assertEqual(self.state.stat().st_mtime_ns, expected['modified'])
+        self.assertEqual(self.service.publisher.calls, expected['publisher_calls'])
+
+    def test_replacement_after_grant_check_is_not_collected_or_published(self):
+        self.service._detach_host('fixture')
+        original = json.loads(self.state.read_text())['run_id']
+        expected = {}
+        check = self.service._grant_running
+
+        def replace_after_check(*args, **kwargs):
+            running = check(*args, **kwargs)
+            if running and not expected:
+                self.owner.stop()
+                self.owner.activate('team', 'proj', REPO, until='1m')
+                self.clock.advance(61)
+                expected['content'], expected['modified'] = self._mark_checkpoint()
+                expected['publisher_calls'] = list(self.service.publisher.calls)
+            return running
+
+        with patch.object(self.service, '_grant_running', side_effect=replace_after_check):
+            result = self.service.watch(cycles=1, sleeper=lambda _: None)
+        self.assertEqual(result['run_id'], original)
+        self.assertEqual(result['cycles_completed'], 0)
+        self.assertEqual(self.state.read_bytes(), expected['content'])
+        self.assertEqual(self.state.stat().st_mtime_ns, expected['modified'])
+        self.assertEqual(self.service.publisher.calls, expected['publisher_calls'])
+
+    def test_replacement_before_publication_origin_and_result_reload_is_untouched(self):
+        self.service._detach_host('fixture')
+        original = json.loads(self.state.read_text())['run_id']
+        expected = {}
+        publish = self.service._publish_pending
+
+        def replace_before_publish(*args, **kwargs):
+            self.owner.stop()
+            self.owner.activate('team', 'proj', REPO, until='1m')
+            self.clock.advance(61)
+            expected['content'], expected['modified'] = self._mark_checkpoint()
+            expected['publisher_calls'] = list(self.service.publisher.calls)
+            return publish(*args, **kwargs)
+
+        with patch.object(self.service, '_publish_pending', side_effect=replace_before_publish):
+            result = self.service.watch(cycles=1, sleeper=lambda _: None)
+        self.assertEqual(result['run_id'], original)
+        self.assertEqual(result['cycles_completed'], 1)
+        self.assertEqual(self.state.read_bytes(), expected['content'])
+        self.assertEqual(self.state.stat().st_mtime_ns, expected['modified'])
+        self.assertEqual(self.service.publisher.calls, expected['publisher_calls'])
+
+    def test_missing_original_watch_result_fails_without_viewing_the_replacement(self):
+        from quorum_debug import DebugError
+        self.service._detach_host('fixture')
+        original = json.loads(self.state.read_text())['run_id']
+        expected = {}
+
+        def remove_original():
+            self.owner.stop()
+            self.owner.activate('team', 'proj', until='1m')
+            (self.root / 'debug' / 'runs' / (original + '.json')).unlink()
+            self.clock.advance(61)
+            expected['content'], expected['modified'] = self._mark_checkpoint()
+
+        with self.assertRaises(DebugError) as caught:
+            self.service.watch(cycles=1, sleeper=lambda _: None, on_cycle=remove_original)
+        self.assertEqual(caught.exception.code, 'debug_grant_ended')
+        self.assertEqual(self.state.read_bytes(), expected['content'])
+        self.assertEqual(self.state.stat().st_mtime_ns, expected['modified'])
+
+    def test_watch_expiry_between_publication_locks_is_durable(self):
+        self.service._detach_host('fixture')
+        record_probe = self.service._record_probe
+
+        def expire_after_probe(*args, **kwargs):
+            result = record_probe(*args, **kwargs)
+            self.clock.advance(61)
+            return result
+
+        with patch.object(self.service, '_record_probe', side_effect=expire_after_probe):
+            result = self.service.watch(cycles=1, sleeper=lambda _: None)
+        self.assertEqual(result['state'], 'expired')
+        saved = json.loads(self.state.read_text())
+        self.assertEqual(saved['state'], 'expired')
+        self.assertEqual(saved['host']['stopped_reason'], 'expired')
+
+    def test_inflight_publication_settles_only_its_original_ledger_after_replacement(self):
+        self.owner.stop()
+        write_session(self.root, deliveries=[{'message_id': MID, 'state': 'submitted'}])
+        original = self.service.activate('team', 'proj', REPO)['run_id']
+        self.clock.advance(901)
+        expected = {}
+
+        def replace_during_create(_repo, _title, _body):
+            self.owner.stop()
+            self.owner.activate('team', 'proj', REPO, until='1m')
+            self.clock.advance(61)
+            expected['content'], expected['modified'] = self._mark_checkpoint()
+
+        self.service.publisher.before_create = replace_during_create
+        result = self.service.watch(cycles=1, sleeper=lambda _: None)
+        self.assertEqual(result['run_id'], original)
+        self.assertEqual(result['state'], 'stopped')
+        self.assertEqual(self.state.read_bytes(), expected['content'])
+        self.assertEqual(self.state.stat().st_mtime_ns, expected['modified'])
+        archived = json.loads((self.root / 'debug' / 'runs' / (original + '.json')).read_text())
+        self.assertEqual(archived['publication'][0]['status'], 'published')
+        self.assertEqual(len(self.service.publisher.creates()), 1)
+        self.assertEqual(self.service.publisher.comments(), [])
+
+
+class DebugAnalyzeGuardTests(unittest.TestCase):
+    def setUp(self):
+        self.clock = Clock()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.service = open_service(self.root, self.clock, FakeGitHub())
+        self.run_id = self.service.activate('team', 'proj', until='1h')['run_id']
+        self.finding = self._seed_finding(self.service)
+
+    def _seed_finding(self, service):
+        with service._lock():
+            run = service._require()
+            finding = service._finding(
+                run, 'suspected_reply_loop', [{'conversation_id': 'synthetic-chain', 'message_id': MID}],
+                identity={'conversation_id': 'synthetic-chain'}, definite=False, confidence='low',
+                actionable=True, live=False, delivery_stage='unknown', analysis='pending',
+                expected='A bounded connected reply chain.', observed='A synthetic metadata fixture.')
+            service._upsert(run, finding)
+            service._save(run)
+        return finding
+
+    def _analyze(self, conclusion='synthetic conclusion'):
+        return self.service.analyze(self.finding['finding_id'], conclusion, 'medium', run_id=self.run_id)
+
+    def test_pending_actionable_analysis_records_once_and_preserves_prior_result(self):
+        result = self._analyze()
+        self.assertEqual(result['analysis'], 'recorded')
+        before = run_text(self.root)
+        from quorum_debug import DebugError
+        with self.assertRaises(DebugError) as caught:
+            self._analyze('replacement conclusion')
+        self.assertEqual(caught.exception.code, 'debug_conclusion_rejected')
+        self.assertEqual(run_text(self.root), before)
+        saved = json.loads(before)['findings'][0]
+        self.assertEqual(saved['conclusion'], 'synthetic conclusion')
+        self.assertEqual(saved['confidence'], 'medium')
+
+    def test_nonactionable_and_not_required_findings_are_rejected(self):
+        from quorum_debug import DebugError
+        for fields in ({'actionable': False}, {'analysis': 'not_required'}):
+            with self.subTest(fields=fields):
+                with self.service._lock():
+                    run = self.service._require()
+                    run['findings'][0].update({'actionable': True, 'analysis': 'pending', **fields})
+                    self.service._save(run)
+                before = run_text(self.root)
+                with self.assertRaises(DebugError) as caught:
+                    self._analyze()
+                self.assertEqual(caught.exception.code, 'debug_conclusion_rejected')
+                self.assertEqual(run_text(self.root), before)
+
+    def test_stopped_analysis_is_refused_without_changing_the_checkpoint(self):
+        from quorum_debug import DebugError
+        self.service.stop()
+        before = run_text(self.root)
+        with self.assertRaises(DebugError) as caught:
+            self._analyze()
+        self.assertEqual(caught.exception.code, 'debug_grant_ended')
+        self.assertEqual(run_text(self.root), before)
+
+    def test_analysis_persists_expiry_without_recording_a_conclusion(self):
+        from quorum_debug import DebugError
+        self.clock.advance(3600)
+        with self.assertRaises(DebugError) as caught:
+            self._analyze()
+        self.assertEqual(caught.exception.code, 'debug_grant_ended')
+        saved = json.loads(run_text(self.root))
+        self.assertEqual(saved['state'], 'expired')
+        self.assertEqual(saved['expired_at'], '2026-10-27T13:00:00Z')
+        self.assertEqual(saved['findings'][0]['analysis'], 'pending')
+        self.assertNotIn('conclusion', saved['findings'][0])
+
+    def test_waiting_analysis_cannot_mutate_a_concurrent_replacement_run(self):
+        from quorum_debug import DebugError
+        from quorum_os import FileLock as RealFileLock
+        collision, outcome = threading.Event(), {}
+
+        class ObservingLock:
+            def __init__(self, path):
+                self.real = RealFileLock(path)
+
+            def __enter__(self):
+                try:
+                    return self.real.__enter__()
+                except ValueError:
+                    collision.set()
+                    raise
+
+            def __exit__(self, *args):
+                return self.real.__exit__(*args)
+
+        def analyze():
+            try:
+                outcome['result'] = self._analyze()
+            except Exception as error:
+                outcome['error'] = error
+
+        with patch('quorum_debug.FileLock', ObservingLock):
+            with self.service._lock():
+                thread = threading.Thread(target=analyze, name='stale-debug-analysis', daemon=True)
+                thread.start()
+                self.assertTrue(collision.wait(2), 'analysis must contend on the real run lock')
+                old = self.service._require()
+                old['state'] = 'stopped'
+                self.service._archive(old)
+                scope = self.service._scope('team', 'proj', None, '1h', (), ())
+                replacement = self.service._new_run(scope)
+                replacement['expires_at'] = '2026-10-27T11:00:00Z'
+                replacement['findings'] = [dict(self.finding)]
+                self.service._save(replacement)
+                before = run_text(self.root)
+            thread.join(3)
+        self.assertFalse(thread.is_alive())
+        self.assertIsInstance(outcome.get('error'), DebugError)
+        self.assertEqual(outcome['error'].code, 'debug_invalid_scope')
+        self.assertEqual(run_text(self.root), before)
+        archived = json.loads((self.root / 'debug' / 'runs' / (self.run_id + '.json')).read_text())
+        self.assertEqual(archived['findings'][0]['analysis'], 'pending')
+
+    def test_analyze_cli_requires_the_exact_run_id_before_state_changes(self):
+        from quorum import main
+        before = run_text(self.root)
+        argv = ['--state', str(self.root), 'debug', 'analyze', '--finding-id', self.finding['finding_id'],
+                '--conclusion', 'synthetic conclusion', '--confidence', 'medium']
+        with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(SystemExit) as caught:
+                main(argv)
+        self.assertEqual(caught.exception.code, 2)
+        self.assertEqual(run_text(self.root), before)
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output), patch('quorum_debug.utcnow', self.clock):
+            code = main(argv + ['--run-id', self.run_id])
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(output.getvalue())['data']['run_id'], self.run_id)
+        self.assertEqual(json.loads(run_text(self.root))['findings'][0]['conclusion'], 'synthetic conclusion')
+
+
+class DebugPublicationUrlTests(unittest.TestCase):
+    def test_created_url_accepts_case_only_repository_changes_and_refuses_other_repositories(self):
+        from quorum_debug_publish import GhCliPublisher
+        with tempfile.TemporaryDirectory() as root:
+            for url, expected in (
+                ('https://github.com/example/quorum-debug-test/issues/4', 'created'),
+                ('https://github.com/EXAMPLE/QUORUM-DEBUG-TEST/issues/4', 'created'),
+                ('https://github.com/other/quorum-debug-test/issues/4', 'uncertain'),
+                ('https://github.com/example/other/issues/4', 'uncertain'),
+            ):
+                with self.subTest(url=url):
+                    def runner(args, timeout):
+                        self.assertEqual(args[:3], ['gh', 'issue', 'create'])
+                        path = Path(args[args.index('--body-file') + 1])
+                        self.assertEqual(path.read_text(), 'synthetic body')
+                        return subprocess.CompletedProcess(args, 0, stdout=url)
+                    publisher = GhCliPublisher(runner=runner, body_dir=root)
+                    result = publisher.create_issue('Example/Quorum-Debug-Test', 'synthetic title', 'synthetic body')
+                    self.assertEqual(result['status'], expected)
+                    if expected == 'created':
+                        self.assertEqual(result['number'], 4)
+
+
+class DebugUnreadableScopeTests(unittest.TestCase):
+    def setUp(self):
+        from quorum_debug import DebugService
+        self.clock = Clock()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.service = DebugService(self.root, clock=self.clock, publisher=FakeGitHub(),
+                                    alive_check=lambda _pid: True, pid=lambda: 1234)
+
+    def _corrupt(self, sid):
+        path = self.root / 'sessions' / sid
+        path.mkdir(parents=True)
+        (path / 'ledger.sqlite').write_bytes(b'not a database')
+
+    def test_unknown_scope_sources_are_separate_from_selected_missing_bindings(self):
+        from quorum_state import LocalLedger
+        # A readable database with no binding identity is also unscoped.
+        empty = LocalLedger(self.root / 'sessions' / SID)
+        empty.db.close()
+        self._corrupt(OTHER)
+        self.service.activate('team', 'proj')
+        status = self.service.status()
+        self.assertEqual(status['coverage'].get('unreadable_unscoped'), [SID, OTHER])
+        self.assertEqual(status['coverage']['unreadable_bindings'], [])
+        self.assertEqual(status['coverage']['unavailable_bindings'], [])
+        self.assertIn('unreadable_unscoped', status['blockers'])
+        self.assertNotIn('bindings_not_observed', status['blockers'])
+        self.assertFalse(status['complete'])
+
+    def test_healthy_and_unknown_sources_keep_honest_partial_coverage(self):
+        write_session(self.root)
+        self._corrupt(OTHER)
+        self.service.activate('team', 'proj')
+        observed = {}
+        self.service.watch(cycles=1, sleeper=lambda _: None, on_cycle=lambda: observed.update(self.service.status()))
+        self.assertTrue(observed['host_alive'])
+        self.assertEqual(observed['collection']['state'], 'attached')
+        self.assertEqual(observed['coverage']['participants'][0]['binding'], SID)
+        self.assertEqual(observed['coverage'].get('unreadable_unscoped'), [OTHER])
+        self.assertIn('unreadable_unscoped', observed['blockers'])
+        self.assertNotIn('bindings_not_observed', observed['blockers'])
+        self.assertFalse(observed['complete'])
+
+    def test_selected_unreadable_binding_remains_a_confirmed_coverage_gap(self):
+        self._corrupt(OTHER)
+        status = self.service.activate('team', 'proj', bindings=(OTHER,))
+        self.assertEqual(status['coverage']['unreadable_bindings'], [OTHER])
+        self.assertEqual(status['coverage'].get('unreadable_unscoped'), [])
+        self.assertIn('bindings_not_observed', status['blockers'])
+        self.assertFalse(status['complete'])
+
+    def test_scope_proved_before_a_metadata_failure_stays_scoped_unreadable(self):
+        from quorum_state import LocalLedger
+        write_session(self.root)
+        ledger = LocalLedger(self.root / 'sessions' / SID)
+        ledger.db.execute('drop table attempts')
+        ledger.db.commit()
+        ledger.db.close()
+        status = self.service.activate('team', 'proj')
+        self.assertEqual(status['coverage']['unreadable_bindings'], [SID])
+        self.assertEqual(status['coverage'].get('unreadable_unscoped'), [])
+        self.assertIn('bindings_not_observed', status['blockers'])
+
 
 class DebugCommandTests(unittest.TestCase):
     def test_cli_reports_partial_activation_and_blocks_live_subprocess(self):
@@ -2024,7 +2578,7 @@ class DebugReviewP2Tests(unittest.TestCase):
         (broken / 'ledger.sqlite').write_bytes(b'not a database')
         _clock, _github, service = self._service(root)
         service.activate('team', 'proj')
-        self.assertIn('grok-bot:' + SID, service.report()['coverage']['unreadable_bindings'])
+        self.assertIn('grok-bot:' + SID, service.report()['coverage'].get('unreadable_unscoped', []))
         self.assertIn('unreadable_source', service.status()['blockers'])
         outside = tempfile.TemporaryDirectory()
         self.addCleanup(outside.cleanup)
