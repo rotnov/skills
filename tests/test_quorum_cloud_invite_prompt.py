@@ -64,7 +64,7 @@ class CloudInvitationPromptTests(unittest.TestCase):
                 self.assertIn('Hello transport notices', prompt)
                 self.assertIsNone(re.search(r'\b[Ss]how/receipt\b|receive, show', prompt))
 
-    def test_all_bootstrap_prompts_route_a_proven_codex_worker_and_keep_the_parent_fallback(self):
+    def test_all_bootstrap_prompts_require_a_worker_or_explicit_visible_parent_choice(self):
         from quorum_api import ServiceConfig
         from quorum_invitations import create_id_invitation, create_open_invitation
 
@@ -85,7 +85,9 @@ class CloudInvitationPromptTests(unittest.TestCase):
                 # The worker route and its exact parent relationship are chosen before the invitation is spent.
                 self.assertLess(prompt.index('references/native-inbox.md'), prompt.index('helper accept-id'))
                 self.assertLess(prompt.index('--transport tool-inbox --parent-thread-id'), prompt.index('helper accept-id'))
-                self.assertIn('native_worker_unavailable, the invitation is still unused', prompt)
+                self.assertIn('native_worker_unavailable, keep the invitation unused', prompt)
+                self.assertIn('--require-worker-inbox', prompt)
+                self.assertIn('only after I explicitly choose visible parent reception', prompt)
                 self.assertIn('session receive', prompt)
                 self.assertIn('never runs session start as a background listener', prompt)
                 self.assertIn('not delivery to this chat', prompt)
@@ -96,9 +98,9 @@ class CloudInvitationPromptTests(unittest.TestCase):
                 self.assertIn('Only the original personal parent', prompt)
                 # Flags belong only to accept/connect, and the worker and parent branches are exclusive.
                 self.assertNotIn('every session command with --transport', prompt)
-                self.assertIn('those two commands only take these flags', prompt)
+                self.assertIn('only those two commands take these flags', prompt)
                 worker = prompt.index('For a proven Codex tool-inbox worker')
-                fallback = prompt.index('Parent-native fallback, only when no tool-inbox worker was proven')
+                fallback = prompt.index('Parent-native fallback, only after I explicitly choose visible parent reception')
                 self.assertLess(worker, fallback)
                 self.assertIn('the parent fallback below then does not apply', prompt[worker:fallback])
                 self.assertNotIn('session start', prompt[worker:fallback].replace('never runs session start', ''))

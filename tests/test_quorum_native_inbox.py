@@ -183,6 +183,49 @@ class OtherConnection:
 
 @POSIX_PROOF
 class ProvenanceTests(Harness):
+    @isolated_profiles
+    def test_required_worker_refuses_parent_before_state_auth_or_invitation_use(self):
+        commands = (
+            ('accept-id', INVITE),
+            ('session', 'connect', 'team', '--role', 'quorum-worker', '--project-ref', 'team/project'),
+        )
+        for command in commands:
+            for transport in ((), ('--transport', 'native')):
+                api = Api()
+                with self.subTest(command=command, transport=transport), caller(self.home, sid=PARENT), \
+                        contextlib.ExitStack() as stack:
+                    for target in ('quorum.LocalLedger', 'quorum_profiles.resolve_profile',
+                                   'quorum_profiles.ensure_login', 'quorum_auth.login_pkce',
+                                   'quorum.register_agent'):
+                        stack.enter_context(patch(target, side_effect=AssertionError(target)))
+                    code, result, text = self.cli(api, *command, *transport, '--require-worker-inbox')
+                self.assertEqual((code, result['code']), (3, 'native_worker_required'), text)
+                self.assertEqual(result['data']['reason'], 'parent_route_visible')
+                self.assertIn('visible', result['data']['next_step'])
+                self.assertFalse(Path(self.root).exists())
+                self.assertEqual(api.calls, [])
+        self.assertEqual(self.spawns, [])
+
+    @isolated_profiles
+    def test_required_worker_keeps_provenance_and_own_binding(self):
+        flags = ('--transport', 'tool-inbox', '--parent-thread-id', PARENT, '--require-worker-inbox')
+        api = Api()
+        with caller(self.home):
+            code, result, text = self.cli(api, 'accept-id', INVITE, *flags)
+        self.assertEqual((code, result['code']), (3, 'native_worker_unavailable'), text)
+        self.assertEqual(api.calls, [])
+        rollout(self.home)
+        with caller(self.home), patch('quorum_auth.login_pkce', return_value={'authenticated': True}):
+            code, result, text = self.cli(api, 'accept-id', INVITE, *flags,
+                                          '--origin', 'https://example.com',
+                                          '--publishable-key', 'sb_publishable_synthetic')
+            self.assertEqual(code, 0, text)
+            connected = self.connect(api, '--require-worker-inbox')
+        self.assertEqual(connected['transport'], 'tool-inbox')
+        self.assertEqual(self.ledger().setting('session-agent')['session_ref'], CHILD)
+        self.assertEqual(len([call for call in api.calls if call[0] == 'invite_accept_id']), 1)
+        self.assertEqual(self.spawns, [])
+
     def denied(self, parent=PARENT):
         from quorum_native_inbox import NativeInboxError, prove_worker
         with self.assertRaises(NativeInboxError) as raised: prove_worker(parent)

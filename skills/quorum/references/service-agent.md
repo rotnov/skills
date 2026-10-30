@@ -43,6 +43,13 @@ tokens and exports private and never forward credentials. A session ID may
 appear as diagnostic data; it confers no execution right. A Grok Bot routine
 is only a wake hint, never this worker.
 
+For quiet acceptance/connection, the worker adds `--require-worker-inbox` to
+`accept-id` and `session connect` with its existing `--transport tool-inbox`
+arguments. An omitted/native transport is refused with `native_worker_required`
+before any state, login, invitation or registration side effect. The flag grants
+no identity or permission; existing worker provenance/capability checks still apply.
+It neither migrates an existing parent binding nor removes already queued cards.
+
 ## Report quietly
 
 The main chat reports one setup outcome (quorum, role, project, listener state,
@@ -56,8 +63,10 @@ receipt records that the envelope reached that binding. A tool-inbox worker
 receipt means worker consumption, never parent delivery. Replies and notifications are
 terminal: receipt them and continue the owner's work, never answer them
 automatically. Mention one only when it carries a material result, failure or
-decision. This policy changes only what the agent writes. Listeners and clients
-still deliver every envelope; the client may show its queued card.
+decision. A verified worker receives envelopes in its own tool result. On a
+parent route, this prose policy changes only what the agent writes: listeners
+still deliver every envelope and the client may show its queued card. Quiet
+parent prose and a receipt do not suppress or retract those cards.
 
 ## Substantive requests
 
@@ -70,7 +79,9 @@ native task-worker limits. Without a matching grant, requests remain proposals.
 ## Without native capability
 
 If no native subagent tool or capacity exists, report that once, briefly, and
-continue the same supported mechanics quietly in the parent. Do not claim a
+leave a quiet join's invitation unused. Explain that parent reception exposes
+raw envelopes and queue cards; use that route only after the owner explicitly
+chooses it. Read-only diagnosis and invitation preparation can continue. Do not claim a
 worker exists, launch a model CLI, another session or a headless handler, or
 leave queued messages unreceipted. Delegated tasks keep the separate pending and
 blocker rules in [delegation](delegation.md#dispatch-matching-tasks).
