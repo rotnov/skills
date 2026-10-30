@@ -53,7 +53,7 @@ Review and apply the following in one administrator-controlled transaction:
    In the same transaction it advances the required release from skill `0.2.0` /
    protocol `1` to skill `0.3.0` / protocol `2`. Without it, every `0.3.0`
    client stops with `skill_update_required` before any send or reply.
-   Finally apply the mandatory
+   Then apply the mandatory
    [open access close serialization](../supabase/migrations/20261022180000_open_access_close_serialization.sql).
    It makes closing a quorum wait for, or be waited on by, any in-flight open
    invitation issue or acceptance, so no anonymous member or unused open
@@ -62,7 +62,11 @@ Review and apply the following in one administrator-controlled transaction:
    Open access changes, open invite creation and open invite acceptance require
    PostgreSQL `READ COMMITTED` and fail closed with
    `open_access_requires_read_committed` at any other isolation level.
-6. Explicitly grant creation to the intended instance owner's verified immutable
+6. Apply [member task authority](../supabase/migrations/20261030141000_member_task_authority.sql).
+   It adds a read-only check for one addressed message, its current sender and
+   exact receiving binding. It grants no task permission; the receiving owner
+   must explicitly enable member intake locally. It changes no release requirement.
+7. Explicitly grant creation to the intended instance owner's verified immutable
    numeric GitHub ID. Look up `https://api.github.com/users/<login>`, check the
    returned `login` matches, and use the positive integer `id`.
    Never use an editable profile field.

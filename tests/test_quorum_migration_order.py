@@ -7,6 +7,8 @@ import unittest
 SKILL = Path(__file__).resolve().parents[1] / 'skills/quorum'
 MIGRATIONS = sorted((SKILL / 'supabase/migrations').glob('*.sql'))
 SERIALIZATION = '_open_access_close_serialization.sql'
+PRIORITY_PATH = next(path for path in MIGRATIONS if path.name.endswith('_urgent_message_priority.sql'))
+SERIALIZATION_PATH = next(path for path in MIGRATIONS if path.name.endswith(SERIALIZATION))
 REVIEWED_SOURCES = {
     '20261022150000_open_access_quorums.sql': 'd9d1e1b3409da29ba59574e90bd5d96946d965ec4fa240d6bb7b8290d1a16bab',
     '20261022160000_open_session_requirements.sql': '360665bd4ee5b918e5685fa99f4c1b7241ca61fc16bc906808c9b582ebb62a13',
@@ -61,11 +63,11 @@ class MigrationOrderTests(unittest.TestCase):
         self.assertIn(name, guide)
         self.assertLess(guide.index('_open_access_quorums.sql'), guide.index(name))
 
-    def test_priority_release_precedes_only_close_serialization_and_pins_the_session_chain(self):
+    def test_priority_release_precedes_close_serialization_and_pins_the_session_chain(self):
         names = [path.name for path in MIGRATIONS]
-        self.assertTrue(names[-2].endswith('_urgent_message_priority.sql'), names)
-        self.assertGreater(names[-2], next(name for name in names if name.endswith('_open_session_requirements.sql')))
-        body = MIGRATIONS[-2].read_text(encoding='utf-8')
+        self.assertLess(PRIORITY_PATH.name, SERIALIZATION_PATH.name)
+        self.assertGreater(PRIORITY_PATH.name, next(name for name in names if name.endswith('_open_session_requirements.sql')))
+        body = PRIORITY_PATH.read_text(encoding='utf-8')
         for signature in ('quorum_private.call(text,jsonb,text)', 'quorum_private.call_invite_core(text,jsonb,text)',
                           'quorum_private.call_legacy_core(text,jsonb,text)', 'quorum_private.verified_actor(uuid)',
                           'quorum_private.native_session(uuid,text)', 'quorum_private.owned_agent(uuid,uuid)',
@@ -73,7 +75,7 @@ class MigrationOrderTests(unittest.TestCase):
             self.assertRegex(body, re.escape(f"'{signature}','") + '[0-9a-f]{64}' + "'")
         self.assertIn("raise exception 'reviewed_release_changed'", body)
         guide = (SKILL / 'references/server.md').read_text(encoding='utf-8')
-        self.assertLess(guide.index('_open_session_requirements.sql'), guide.index(names[-2]))
+        self.assertLess(guide.index('_open_session_requirements.sql'), guide.index(PRIORITY_PATH.name))
 
     def test_reviewed_open_access_sources_stay_byte_identical(self):
         # Live servers applied these bytes; later pins hash the bodies they install.
@@ -81,24 +83,25 @@ class MigrationOrderTests(unittest.TestCase):
             data = (SKILL / 'supabase/migrations' / name).read_bytes()
             self.assertEqual(hashlib.sha256(data).hexdigest(), digest, name)
 
-    def test_close_serialization_is_last_and_pins_the_priority_release(self):
+    def test_close_serialization_precedes_member_authority_and_pins_the_priority_release(self):
         names = [path.name for path in MIGRATIONS]
-        self.assertTrue(names[-1].endswith(SERIALIZATION), names)
-        body = MIGRATIONS[-1].read_text(encoding='utf-8')
+        member = next(name for name in names if name.endswith('_member_task_authority.sql'))
+        self.assertLess(SERIALIZATION_PATH.name, member)
+        body = SERIALIZATION_PATH.read_text(encoding='utf-8')
         pins = dict(re.findall(r"'([a-z_.]+\([a-z,]*\))','([0-9a-f]{64})'", body))
         self.assertEqual(pins, SERIALIZATION_PINS)
         # The open-access wrapper keeps the exact body the priority release pinned.
-        priority = MIGRATIONS[-2].read_text(encoding='utf-8')
+        priority = PRIORITY_PATH.read_text(encoding='utf-8')
         self.assertIn("'quorum_private.call_priority_core(text,jsonb,text)'", body)
         self.assertIn("'quorum_private.call(text,jsonb,text)','" + SERIALIZATION_PINS[
             'quorum_private.call_priority_core(text,jsonb,text)'] + "'", priority)
         self.assertIn("raise exception 'reviewed_dispatcher_changed: %', f;", body)
         self.assertIn("raise exception 'serial_core_present'", body)
         guide = (SKILL / 'references/server.md').read_text(encoding='utf-8')
-        self.assertLess(guide.index(names[-2]), guide.index(names[-1]))
+        self.assertLess(guide.index(PRIORITY_PATH.name), guide.index(SERIALIZATION_PATH.name))
 
     def test_close_serialization_locks_the_quorum_row_before_any_other_row(self):
-        body = MIGRATIONS[-1].read_text(encoding='utf-8')
+        body = SERIALIZATION_PATH.read_text(encoding='utf-8')
         wrapper = body.split('create function quorum_private.call(', 1)[1]
         # Close conflicts with issue and accept, but not with foreign-key KEY SHARE checks.
         self.assertIn('for no key update', wrapper)
@@ -114,7 +117,7 @@ class MigrationOrderTests(unittest.TestCase):
 
     def test_close_serialization_refuses_other_isolation_before_any_lock(self):
         # Stale REPEATABLE READ/SERIALIZABLE snapshots skip the core's rereads.
-        wrapper = MIGRATIONS[-1].read_text(encoding='utf-8').split('create function quorum_private.call(', 1)[1]
+        wrapper = SERIALIZATION_PATH.read_text(encoding='utf-8').split('create function quorum_private.call(', 1)[1]
         guard = wrapper.index("if current_setting('transaction_isolation')<>'read committed' then")
         self.assertLess(wrapper.index('return quorum_private.call_serial_core(op,p,req);'), guard)
         self.assertLess(guard, wrapper.index("raise exception 'open_access_requires_read_committed';"))

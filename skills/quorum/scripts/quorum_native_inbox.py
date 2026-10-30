@@ -55,7 +55,7 @@ class NativeInboxError(ValueError):
                         'invalid_message', 'invalid_priority', 'worker_already_running'}
     # Service reads: having completed one changes nothing at the service.
     READS = {'session_requirements', 'session_inbox', 'quorum_lookup', 'resolve_role', 'agent_status',
-             'session_peers', 'conversation_read'}
+             'session_peers', 'conversation_read', 'session_task_authority'}
 
     # A request already dispatched: its effect is known (`accepted`, `completed`) or `uncertain`.
     EFFECTS = {'accepted', 'completed', 'uncertain'}

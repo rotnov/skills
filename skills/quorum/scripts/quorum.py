@@ -206,7 +206,7 @@ def main(argv=None):
             safe.update({'grok_transport_unavailable', 'session_binding_denied', 'coordinator_changed',
                          'claude_pipe_unavailable', 'listener_stop_pending', 'session_delivery_unknown',
                          'session_delivery_unsent', 'session_reconcile_denied',
-                         'session_recovery_denied',
+                         'session_recovery_denied', 'delegation_scope_changed', 'member_intake_requires_inline',
                          'private_acl_unavailable', 'unsafe_link', 'browser_unavailable', 'login_timeout',
                          'worker_already_running'})
         code = str(error) if str(error) in safe else 'operation_failed'
