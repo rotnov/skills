@@ -98,6 +98,8 @@ class Control:
         release = self.ledger.setting('release')
         if release: result['release'] = release
         result['stop_requested'] = bool(record.get('run_id') and self.stopping(record['run_id']))
+        from quorum_release import runtime_evidence
+        result['runtime_source'] = runtime_evidence(self.ledger)
         return result
 
     def update(self, run_id, state, handled, *, timeout=60, code=None, release=None):
@@ -107,7 +109,10 @@ class Control:
                   'started_at': old.get('started_at', time.time()) if old.get('run_id') == run_id else time.time()}
         if code is not None: record['code'] = code
         records = {'listener':record}
-        if release is not None: records['listener-release'] = {**release, 'run_id':run_id}
+        if release is not None:
+            from quorum_release import installed_source
+            records['listener-release'] = {**release, 'run_id':run_id}
+            records['listener-source'] = {**installed_source(), 'run_id':run_id}
         # Publish a winning run and its marker together; readers must never see
         # a marker from one generation paired with another run's control record.
         with self.ledger.db:

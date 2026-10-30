@@ -110,3 +110,35 @@ OAuth login or cross-chat delivery from SQL success alone.
 The supplied SQL is tested in disposable PostgreSQL with synthetic Auth fixtures.
 Repository developers can run `npm ci --prefix tests/quorum-backend` followed by
 `npm test --prefix tests/quorum-backend`; these tests use no cloud credentials.
+
+## Owner maintenance extension
+
+Only after reviewing the concrete source and obtaining administrator deployment
+authorization, apply
+[`20261030140000_owner_update_maintenance.sql`](../supabase/migrations/20261030140000_owner_update_maintenance.sql)
+in one transaction after `20261022180000_open_access_close_serialization.sql`.
+The migration pins the reviewed inbox, receipt, dispatcher and required-release
+bodies and refuses drift or reapplication. It does not change the required release.
+Refresh PostgREST's schema cache after changing functions, using the service's
+supported administrator workflow.
+
+It adds private target/operation/notice/phase records and three authenticated,
+exact-binding RPCs: `session_update_request`, `session_update_status` and
+`session_update_report`. Inbox metadata is projected from private typed notices,
+never recognized from message-body claims. Receipt records consumption only;
+refresh and timestamped runtime self-reports are distinct. No table is exposed,
+no updater runs server-side and no receiving-owner installation or lifecycle
+permission is created. Deployment and a later change of required release are
+separate operations from [owner updates](update.md#explicit-owner-update).
+
+An offline, suspended or release-stopped client cannot be forced to consume a
+notice. The receiving owner's supported interaction/recovery path remains
+necessary. SQL tests and source preparation do not qualify real native clients
+or prove owner-chat quietness; perform that bounded acceptance separately.
+
+Maintenance fan-out, recipient reports and typed maintenance receipts require
+`READ COMMITTED`. They preserve the existing quorum-first close order, recheck
+exact session authority after protocol lock waits, and hold the current owned
+agent/device/membership rows through commit so revocation serializes with the
+operation. Ordinary receipt behavior and existing reviewed RPC bodies remain
+unchanged. Status reads remain point-in-time snapshots.

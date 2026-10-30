@@ -31,7 +31,7 @@ CANONICAL = re.compile(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f
 COMPETING = ('CLAUDE_CODE_SESSION_ID', 'CLAUDE_CODE_HOST_SESSION_ID', 'CLAUDE_CODE_MESSAGING_SOCKET',
              'CLAUDE_CODE_MESSAGING_TOKEN', 'GROK_SESSION_ID', 'GROK_LEADER_SOCKET', 'CURSOR_CONVERSATION_ID')
 MESSAGE_FIELDS = ('id', 'sender_id', 'sender_role', 'recipient_id', 'conversation_id', 'sequence',
-                  'body', 'priority', 'reply_to', 'notification', 'created_at')
+                  'body', 'priority', 'reply_to', 'notification', 'created_at', 'maintenance')
 
 
 class NativeInboxError(ValueError):

@@ -11,7 +11,8 @@ OPERATIONS = frozenset(('quorum_create invite_create invite_accept device_regist
     'work_register work_admit work_transition agent_status agent_leave conversation_read '
     'quorum_lookup quorum_check_owner resolve_role session_inbox session_ack session_reply '
     'invite_create_id invite_accept_id invite_revoke_id invite_create_open quorum_set_access '
-    'session_heartbeat session_peers session_requirements session_task_authority').split())
+    'session_heartbeat session_peers session_requirements session_task_authority '
+    'session_update_request session_update_status session_update_report').split())
 
 
 # Gateway/overload statuses only; missing RPCs, denials and client errors stay terminal.

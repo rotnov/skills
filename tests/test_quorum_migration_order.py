@@ -83,10 +83,12 @@ class MigrationOrderTests(unittest.TestCase):
             data = (SKILL / 'supabase/migrations' / name).read_bytes()
             self.assertEqual(hashlib.sha256(data).hexdigest(), digest, name)
 
-    def test_close_serialization_precedes_member_authority_and_pins_the_priority_release(self):
+    def test_close_serialization_precedes_extensions_and_pins_the_priority_release(self):
         names = [path.name for path in MIGRATIONS]
         member = next(name for name in names if name.endswith('_member_task_authority.sql'))
-        self.assertLess(SERIALIZATION_PATH.name, member)
+        self.assertLess(SERIALIZATION_PATH.name, '20261030140000_owner_update_maintenance.sql')
+        self.assertIn('20261030140000_owner_update_maintenance.sql', names)
+        self.assertLess('20261030140000_owner_update_maintenance.sql', member)
         body = SERIALIZATION_PATH.read_text(encoding='utf-8')
         pins = dict(re.findall(r"'([a-z_.]+\([a-z,]*\))','([0-9a-f]{64})'", body))
         self.assertEqual(pins, SERIALIZATION_PINS)

@@ -73,6 +73,8 @@ def main(argv=None):
                              help='Generated Claude worker capability file; slug, access and request ID come from its scope')
     from quorum_live import add_commands
     add_commands(commands)
+    from quorum_updates import add_commands as add_update_commands
+    add_update_commands(commands)
     args = parser.parse_args(argv)
     ledger = None
     try:
@@ -103,6 +105,11 @@ def main(argv=None):
             ledger = root_ledger(args.state)
         else: ledger = LocalLedger(args.state)
         config_path = ledger.root / 'config.json'
+        if args.command == 'update':
+            from quorum_updates import dispatch as update_dispatch
+            value = update_dispatch(args, ledger)
+            print(json.dumps({'ok':True, 'code':'ok', 'data':value}))
+            return 0
         from quorum_live import dispatch, LIVE_COMMANDS
         if args.command in LIVE_COMMANDS:
             value = dispatch(args, ledger, register_agent)
@@ -174,9 +181,12 @@ def main(argv=None):
                  'auth_profile_conflict': 3, 'service_config_conflict': 4, 'service_unavailable': 5, 'service_error': 5,
                  'response_too_large': 5, 'invalid_response': 5, 'listener_start_failed': 5, 'listener_stop_failed': 5, 'listener_not_ready': 5,
                  'anonymous_login_unavailable': 4, 'open_invite_required': 3}
+        codes.update({'update_extension_unavailable':4, 'runtime_source_unavailable':4})
         code = str(error) if str(error) in codes else 'operation_failed'
         from quorum_release import ReleaseMismatch
+        from quorum_updates import UpdateFailure
         data = {'release':error.diagnostic} if isinstance(error, ReleaseMismatch) else {}
+        if isinstance(error, UpdateFailure): data = {'update':error.diagnostic}
         print(json.dumps({'ok': False, 'code': code, 'data': data}))
         return codes.get(code, 3)
     except GrokBindingError as error:
@@ -203,6 +213,10 @@ def main(argv=None):
                 'service_config_conflict', 'github_identity_required', 'auth_lock_timeout',
                 'browser_unavailable', 'login_timeout', 'anonymous_state_conflict'}
         if isinstance(error, ValueError):
+            safe.update({'update_request_invalid', 'update_notice_denied', 'update_target_changed',
+                         'update_fetch_failed', 'update_tool_missing', 'update_invalid_copy',
+                         'update_validation_failed', 'update_cache_conflict', 'update_unsafe_cache',
+                         'update_in_progress', 'session_not_connected'})
             safe.update({'grok_transport_unavailable', 'session_binding_denied', 'coordinator_changed',
                          'claude_pipe_unavailable', 'listener_stop_pending', 'session_delivery_unknown',
                          'session_delivery_unsent', 'session_reconcile_denied',

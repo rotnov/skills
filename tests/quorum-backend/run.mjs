@@ -16,6 +16,7 @@ const priority = all.find(name => name.endsWith('_urgent_message_priority.sql'))
 // Mandatory follow-on: close serializes with open invitation issue and acceptance.
 const serialization = all.find(name => name.endsWith('_open_access_close_serialization.sql'));
 const memberAuthority = '20261030141000_member_task_authority.sql';
+const maintenance = all.find(name => name.endsWith('_owner_update_maintenance.sql'));
 // Installations that deployed native coordination before open access apply the
 // older-dated open access file late; the final session requirements must match.
 const late = name => name.endsWith('_open_access_quorums.sql');
@@ -196,13 +197,13 @@ try {
   for (const fn of serialized) {
     await drifted(fn, 'reviewed_dispatcher_changed: ' + fn, [...fresh, priority], serialization, unserialized);
   }
-  const reviewedTail = [priority, serialization, memberAuthority];
+  const reviewedTail = [priority, serialization, maintenance, memberAuthority];
   if (JSON.stringify(all.filter(name => name >= priority)) !== JSON.stringify(reviewedTail)) {
     throw new Error('unreviewed migration after the close serialization');
   }
   // Exercise the actual additive migration after the pinned historical chain.
   // Its sender/current-membership behavior also runs in real PostgreSQL CI.
-  const memberDb = await database([...fresh, priority, serialization, memberAuthority]);
+  const memberDb = await database([...fresh, ...reviewedTail]);
   try {
     const result = await memberDb.query(`select
       to_regprocedure('public.session_task_authority(uuid,text,uuid)')::text signature,
@@ -213,6 +214,7 @@ try {
     if (!row.signature || !row.authenticated || row.anon || row.service) {
       throw new Error('member authority migration privilege contract');
     }
+    await memberDb.exec(suite('quorum_updates_backend.sql'));
   } finally {
     await memberDb.exec('rollback');
     await memberDb.close();
