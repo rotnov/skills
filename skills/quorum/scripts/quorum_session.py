@@ -720,7 +720,8 @@ def dispatch(args, auth_ledger, register_agent):
             ledger.setting('session-agent', record)
             return {'delegation':record.get('delegation')}
         if args.action == 'peers':
-            return api.call('session_peers', {'agent_id':record['agent_id'], 'session_ref':sid})
+            from quorum_peer_wake import with_wake_diagnostics
+            return with_wake_diagnostics(api.call('session_peers', {'agent_id':record['agent_id'], 'session_ref':sid}))
         if args.action == 'thread':
             # Only this native binding's agent; the backend checks conversation membership.
             return api.call('conversation_read', {'quorum_id':record['quorum_id'], 'agent_id':record['agent_id'],

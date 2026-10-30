@@ -59,6 +59,8 @@ configuring credentials.
    headless handler is not a substitute.
    For a resumed Codex/Grok/Claude binding or owner-requested startup recovery, read
    [resume](references/resume.md); recovery cannot re-enable stopped reception.
+   For unavailable cloud peers or sleeping-chat wake questions, read
+   [cloud wake limits](references/cloud-wake.md); a timeout alone does not prove suspension.
    Read sessions too before marking a message urgent: only a connected Codex chat can be steered; Claude Code reads accepted
    messages between tool calls; urgency grants no permission. For an existing Grok TUI, read
    [Grok](references/grok.md) first; its experimental TUI route is macOS-only.
