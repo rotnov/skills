@@ -137,7 +137,7 @@ def validate_readme(skill_dir: Path) -> list[str]:
         return [f"{path}: '{INSTALL_HEADING}' needs a blockquoted LLM prompt"]
 
     url = f"{SKILL_URL_PREFIX}{skill_dir.name}"
-    required = (url, "skills@1.5.20", "Claude Code", "Codex", "SKILL.md")
+    required = (url, "skills@>=1.7.4", "Claude Code", "Codex", "SKILL.md")
     return [
         f"{path}: install prompt must mention {item!r}"
         for item in required

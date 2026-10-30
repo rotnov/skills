@@ -48,7 +48,7 @@ ID, quorum and expiry. GitHub is required; the recipient signs in through GitHub
 via Supabase Auth and does not register for the Supabase dashboard.
 
 Share `session_prompt` for a first machine: it includes only the public `service`
-locator and installs from `rotnov/skills` globally with the pinned CLI. An already
+locator and installs from `rotnov/skills` globally with the skills CLI 1.7.4 or newer. An already
 installed copy uses immutable automatic refresh. For a configured machine, share
 `configured_machine_prompt`, which only needs `invite_id` and reuses its selected
 machine profile/login, including in a new state directory. Missing/ambiguous

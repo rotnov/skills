@@ -7,7 +7,7 @@
   [Agent Skills specification](https://agentskills.io/specification) as the
   normative format contract. The `name` must match the directory, and the
   `description` must say what the skill does and when to use it.
-- Treat [skills.sh](https://skills.sh/) and the pinned `skills` CLI as the
+- Treat [skills.sh](https://skills.sh/) and the `skills` CLI (1.7.4 or newer) as the
   publication and installation compatibility target. A skill is incomplete
   until the CLI can discover and copy-install it for both Codex and Claude
   Code from a clean temporary project.
@@ -19,19 +19,23 @@
   an `## Install the skill` section whose blockquote is a ready-to-paste LLM
   prompt that names the skill, links
   `https://github.com/rotnov/skills/tree/main/skills/<skill-name>`, asks for
-  the pinned `skills@1.5.20` CLI install for Claude Code and Codex, and ends
-  with reading its `SKILL.md`. Keep requirements and example requests in the
-  README; keep agent instructions in `SKILL.md`.
+  a global Claude Code and Codex install with the newest skills CLI at or
+  above the tested minimum (`skills@>=1.7.4`), and ends with reading its
+  `SKILL.md`. Do not pin an exact CLI version in user-facing install
+  instructions. Keep requirements and example requests in the README; keep
+  agent instructions in `SKILL.md`.
 - Keep `SKILL.md` concise and move detailed material into one-level-deep
   `references/` files.
 - Make scripts non-interactive, self-contained where practical, safe for
   untrusted input, and explicit about dependencies.
 - Do not merge a skill that only passes a repository-local parser. It must also
   pass the pinned official `agentskills/agentskills` `skills-ref` validator and
-  the pinned skills.sh CLI smoke test.
-- Keep those same pinned gates in `.pre-commit-config.yaml`. Do not replace the
-  immutable `skills-ref` revision or `skills@1.5.20` CLI version with a movable
-  branch, tag, or unversioned package.
+  the skills.sh CLI smoke test.
+- Keep those same gates in `.pre-commit-config.yaml`. Keep the `skills-ref`
+  revision immutable; never replace it with a movable branch or tag. Run the
+  skills CLI as `skills@>=1.7.4` everywhere (smoke test, install instructions,
+  and runtime refresh) so it resolves the newest release at or above the
+  tested minimum; raise the minimum in all places together.
 
 ## Codex and Claude Code
 

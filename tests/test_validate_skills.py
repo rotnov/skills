@@ -54,7 +54,7 @@ description: >-
 
 > Install the demo skill from
 > <https://github.com/rotnov/skills/tree/main/skills/demo> for this client,
-> globally for Claude Code and Codex with the pinned skills@1.5.20 CLI,
+> globally for Claude Code and Codex with the skills CLI 1.7.4 or newer (skills@>=1.7.4),
 > then read its SKILL.md.
 
 ## Use

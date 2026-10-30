@@ -87,7 +87,7 @@ Code and Codex clients through a configured Supabase backend. Install the shared
 skill directly from this repository:
 
 ```bash
-npx --yes skills@1.5.20 add rotnov/skills --skill quorum -a claude-code codex --global --copy -y
+npx --yes "skills@>=1.7.4" add rotnov/skills --skill quorum -a claude-code codex --global --copy -y
 ```
 
 The client carries an independent uv project selecting Python 3.12. GitHub login
