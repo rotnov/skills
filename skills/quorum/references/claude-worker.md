@@ -95,8 +95,8 @@ The bearer stays in that file and memory, never in arguments, output or chat.
 
 ```text
 Q create <slug> --access github --json-stdin --worker-capability <capability-file>
-Q accept-id <invite-id> --transport tool-inbox --worker-capability <capability-file>
-Q session --worker-capability <capability-file> connect <slug> --role <role> --project-ref <project> --transport tool-inbox
+Q accept-id <invite-id> --transport tool-inbox --worker-capability <capability-file> --require-worker-inbox
+Q session --worker-capability <capability-file> connect <slug> --role <role> --project-ref <project> --transport tool-inbox --require-worker-inbox
 Q session --worker-capability <capability-file> receive --wait-seconds 30
 Q session --worker-capability <capability-file> status
 Q session --worker-capability <capability-file> stop
@@ -139,8 +139,10 @@ inbox or grants; the same handle cannot be bound again.
 ## Parent fallback
 
 If the client has no native background worker, capacity or attestation
-receipt, report that once and keep the parent route in [join](join.md) and
-[sessions](sessions.md), labelled as parent reception, never as a worker inbox.
+receipt, report that once and keep the invitation unused. The parent route in
+[join](join.md) and [sessions](sessions.md) shows raw envelopes and queue cards
+in the owner chat; it needs the owner's explicit choice before retrying without
+`--require-worker-inbox`. Label it as parent reception, never as a worker inbox.
 Use no replacement model, session or headless handler, and do not copy exports
 or change provider configuration. `native_worker_unavailable`,
 `native_worker_binding_denied` and `native_inbox_transport_conflict` before

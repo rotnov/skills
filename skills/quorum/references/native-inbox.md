@@ -42,8 +42,9 @@ Failures leave the invitation unused and print only fixed codes:
 `native_worker_unavailable` (unsupported provider, competing exports, missing,
 ambiguous, unsafe, oversized or non-spawn metadata) or
 `native_worker_binding_denied` (wrong parent, the parent itself as caller, or a
-changed binding). Report one quiet capability limitation and use the parent
-fallback below; never borrow, copy or spoof exports.
+changed binding). Report one capability limitation and leave the invitation
+unused; the parent fallback below needs an explicit owner choice. Never borrow,
+copy or spoof exports.
 
 ## Setup by the worker
 
@@ -53,8 +54,8 @@ parent UUID. The worker uses the already authorized machine login, runs the
 [automatic refresh](update.md) once, then itself runs:
 
 ```text
-uv run --project <skill-dir> --frozen python <skill-dir>/scripts/quorum.py --state <private-state> accept-id <invite-id> --transport tool-inbox --parent-thread-id <parent-UUID> [service flags]
-uv run --project <skill-dir> --frozen python <skill-dir>/scripts/quorum.py --state <private-state> session connect <quorum> --role <role> --project-ref <shared-project> --transport tool-inbox --parent-thread-id <parent-UUID> [--accept-tasks-from <role> --dispatch-mode native-subagent]
+uv run --project <skill-dir> --frozen python <skill-dir>/scripts/quorum.py --state <private-state> accept-id <invite-id> --transport tool-inbox --parent-thread-id <parent-UUID> --require-worker-inbox [service flags]
+uv run --project <skill-dir> --frozen python <skill-dir>/scripts/quorum.py --state <private-state> session connect <quorum> --role <role> --project-ref <shared-project> --transport tool-inbox --parent-thread-id <parent-UUID> --require-worker-inbox [--accept-tasks-from <role> --dispatch-mode native-subagent]
 uv run --project <skill-dir> --frozen python <skill-dir>/scripts/quorum.py --state <private-state> session status
 ```
 
@@ -152,7 +153,9 @@ inbox or receipts. Never claim perpetual service.
 ## Parent fallback
 
 If the provider lacks verified worker identity or capacity, the supported parent
-routes in [join](join.md) and [sessions](sessions.md) remain available within
-the owner's scope. Report them as parent reception, never as a worker inbox, and
+routes in [join](join.md) and [sessions](sessions.md) expose raw envelopes and
+queue cards in the owner chat. Keep the invitation unused and report that limit
+once. Only after the owner explicitly chooses visible parent reception may it
+retry without `--require-worker-inbox`. Report it as parent reception, never as a worker inbox, and
 do not transfer secrets or change auth or provider configuration to force
 support.

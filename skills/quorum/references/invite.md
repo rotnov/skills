@@ -13,8 +13,10 @@ Before configuration or `invite-id`, select or reuse the native `quorum` worker
 per [service agent](service-agent.md) and assign it these owner-authorized
 invitation mechanics when that capability and capacity exist; it needs no new
 global or custom-agent setup. Generated prompts route a recipient's proven Codex
-worker through [native inbox](native-inbox.md) and keep the parent fallback. Otherwise give one concise capability/capacity
-diagnostic and continue this same flow quietly in this chat. Identity and owner
+worker through [native inbox](native-inbox.md) with `--require-worker-inbox`.
+If unavailable, the recipient leaves its invitation unused and gives one concise
+capability/capacity diagnostic; visible parent reception requires its owner's
+explicit choice. Invitation preparation can continue here. Identity and owner
 permission rules below are unchanged; this grants no new right.
 
 Prefer automatic retrieval of only the public project URL and publishable key

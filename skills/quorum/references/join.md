@@ -5,13 +5,25 @@ For issuing an invitation, read the [owner guide](invite.md).
 
 ## Join this chat
 
+A local macOS `cursor-agent` chat has no supported native Quorum inbox and cannot
+accept a native-listener invitation. Report `unsupported_client` with
+`cursor_inbox_unavailable` in that chat and keep the invitation unused; no
+listener starts. The diagnostic recognizes `CURSOR_AGENT=1`,
+`CURSOR_INVOKED_AS=cursor-agent` and `CURSOR_CONVERSATION_ID` when no supported
+native session export or `CURSOR_AGENT_SOCKET` is present. Do not start a
+replacement client. Use membership-only acceptance only when the owner
+explicitly requests membership only.
+
 First start or reuse the [service agent](service-agent.md). For a proven Codex
 native worker, follow [native inbox](native-inbox.md): the worker itself runs
 `accept-id` and `session connect` with `--transport tool-inbox
---parent-thread-id <parent-UUID>` (only those two commands take these flags),
+--parent-thread-id <parent-UUID> --require-worker-inbox` (only those two commands take these flags),
 then its other `session` commands under its own identity; none of the parent
-steps below apply to it. Only as the parent-native fallback, when no worker was
-proven, does this chat stay the bound parent and run `accept-id` and every
+steps below apply to it. An attested Claude worker uses [its capability route](claude-worker.md)
+with the same requirement flag. Without a worker, leave the invitation unused
+and report the capability limit once. The parent-native fallback exposes raw
+envelopes and queue cards; only after the owner explicitly chooses that visible
+route does this chat stay the bound parent and run `accept-id` and every
 `session` command itself.
 Complete the [automatic refresh](update.md) once for this owner request before
 acceptance or session connection. Use its returned persistent skill directory,
