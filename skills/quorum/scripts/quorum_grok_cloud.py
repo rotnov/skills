@@ -183,7 +183,9 @@ def _dispatch(args, auth_ledger, register_agent):
                 record['delegation'] = grant(record, peer['agent_id'], args.coordinator_role, dispatch_mode=dispatch_mode)
             ledger.setting('cloud-agent', record)
             return {'delegation': record.get('delegation')}
-        if args.action == 'peers': return api.call('session_peers', scope)
+        if args.action == 'peers':
+            from quorum_peer_wake import with_wake_diagnostics
+            return with_wake_diagnostics(api.call('session_peers', scope))
         if args.action == 'thread':
             return api.call('conversation_read', {'quorum_id': record['quorum_id'], 'agent_id': record['agent_id'],
                             'conversation_id': args.conversation_id, 'after_sequence': args.after_sequence})

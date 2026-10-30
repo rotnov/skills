@@ -74,6 +74,9 @@ current `poll_seconds` safety/fallback interval and `notification_signals`.
 `last_signal_at`, `last_connected_at`, `last_fallback_at` are local Unix timestamps;
 `last_wake` distinguishes a signal, subscription, safety scan or fallback poll.
 These diagnostics prove transport activity, not delivery to the actual chat.
+For unavailable peers, `session peers` adds unsupported automatic-wake guidance
+while preserving the original health and reason. Hosting and suspension remain
+unknown; see [cloud wake limits](cloud-wake.md) when diagnosing sleeping chats.
 `release` contains the last compatibility check's `installed`, `required` and
 `update_required` fields (unknown fields are null); status is offline and does
 not fetch current server requirements. A stale active process can also appear
