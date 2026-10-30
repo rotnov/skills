@@ -107,8 +107,9 @@ Codex execution are not included.
 ## Compatibility
 
 The canonical behavior lives in standard `SKILL.md` files and works with
-Agent Skills-compatible clients, including Codex and Claude Code. Optional
-client metadata does not change the behavior contract.
+Agent Skills-compatible clients, including Codex and Claude Code. Skills ship
+no client-specific metadata. Each skill's own `README.md` carries a
+ready-to-paste installation prompt for your agent.
 
 `learning` requires Git, `uv`, and a platform with safe no-follow
 directory-descriptor operations for recording mutations. Recorder commands explicitly

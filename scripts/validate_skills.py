@@ -13,6 +13,11 @@ ROOT = Path(__file__).resolve().parents[1]
 SKILLS_DIR = ROOT / "skills"
 NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 MARKDOWN_LINK_RE = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
+INSTALL_HEADING = "## Install the skill"
+INSTALL_SECTION_RE = re.compile(
+    rf"^{re.escape(INSTALL_HEADING)}[ \t]*\n(.*?)(?=^## |\Z)", re.M | re.S
+)
+SKILL_URL_PREFIX = "https://github.com/rotnov/skills/tree/main/skills/"
 
 
 def parse_frontmatter(path: Path) -> tuple[dict[str, str], str]:
@@ -105,7 +110,39 @@ def validate_skill(skill_dir: Path) -> list[str]:
         normalized_target = target.split("#", 1)[0]
         if normalized_target and not (skill_dir / normalized_target).exists():
             problems.append(f"{path}: broken local reference {target!r}")
+
+    if (skill_dir / "agents").exists():
+        problems.append(
+            f"{skill_dir}: client-specific agents/ metadata is not allowed"
+        )
+    problems.extend(validate_readme(skill_dir))
     return problems
+
+
+def validate_readme(skill_dir: Path) -> list[str]:
+    path = skill_dir / "README.md"
+    if not path.is_file():
+        return [f"{skill_dir}: missing README.md"]
+
+    match = INSTALL_SECTION_RE.search(path.read_text(encoding="utf-8"))
+    if not match:
+        return [f"{path}: missing '{INSTALL_HEADING}' section"]
+
+    prompt = " ".join(
+        line.lstrip(">").strip()
+        for line in match.group(1).splitlines()
+        if line.startswith(">")
+    )
+    if not prompt:
+        return [f"{path}: '{INSTALL_HEADING}' needs a blockquoted LLM prompt"]
+
+    url = f"{SKILL_URL_PREFIX}{skill_dir.name}"
+    required = (url, "skills@1.5.20", "Claude Code", "Codex", "SKILL.md")
+    return [
+        f"{path}: install prompt must mention {item!r}"
+        for item in required
+        if item not in prompt
+    ]
 
 
 def main() -> int:

@@ -11,8 +11,17 @@
   publication and installation compatibility target. A skill is incomplete
   until the CLI can discover and copy-install it for both Codex and Claude
   Code from a clean temporary project.
-- Keep the canonical workflow platform-neutral. Codex- or Claude-specific
-  metadata may improve presentation but must not change behavior.
+- Keep the canonical workflow platform-neutral. Do not add client-specific
+  metadata to a skill: no `agents/` directory, `agents/openai.yaml`, or other
+  Codex- or Claude-only presentation files. Skill identity and routing come
+  only from the `SKILL.md` frontmatter.
+- Give every skill a `skills/<skill-name>/README.md` for humans. It must have
+  an `## Install the skill` section whose blockquote is a ready-to-paste LLM
+  prompt that names the skill, links
+  `https://github.com/rotnov/skills/tree/main/skills/<skill-name>`, asks for
+  the pinned `skills@1.5.20` CLI install for Claude Code and Codex, and ends
+  with reading its `SKILL.md`. Keep requirements and example requests in the
+  README; keep agent instructions in `SKILL.md`.
 - Keep `SKILL.md` concise and move detailed material into one-level-deep
   `references/` files.
 - Make scripts non-interactive, self-contained where practical, safe for
