@@ -76,6 +76,10 @@ def main(argv=None):
     args = parser.parse_args(argv)
     ledger = None
     try:
+        # A quiet setup request must never fall through to visible parent reception.
+        # This is only a route constraint; worker provenance/capabilities are still checked below.
+        if getattr(args, 'require_worker_inbox', False) and getattr(args, 'transport', None) != 'tool-inbox':
+            raise NativeInboxError('native_worker_required', 'parent_route_visible')
         if args.command == 'version':
             from quorum_release import installed_release
             print(json.dumps({'ok':True, 'code':'ok', 'data':installed_release()}))

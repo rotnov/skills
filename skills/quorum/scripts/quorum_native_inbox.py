@@ -36,7 +36,7 @@ MESSAGE_FIELDS = ('id', 'sender_id', 'sender_role', 'recipient_id', 'conversatio
 
 class NativeInboxError(ValueError):
     """Fixed codes and reasons only; never a path, transcript text, exception text or peer data."""
-    CODES = {'native_worker_unavailable', 'native_worker_binding_denied', 'native_inbox_transport_conflict',
+    CODES = {'native_worker_unavailable', 'native_worker_required', 'native_worker_binding_denied', 'native_inbox_transport_conflict',
              'native_inbox_receipt_not_offered', 'native_inbox_reply_loop_denied', 'native_worker_slot_terminal',
              'native_worker_create_ambiguous'}
     REASONS = {'provider_unsupported', 'competing_exports', 'session_missing', 'session_invalid',
@@ -48,7 +48,7 @@ class NativeInboxError(ValueError):
                'permission_expired', 'handle_invalid', 'actor_claimed', 'capability_invalid', 'path_unsafe',
                'cwd_mismatch', 'operation_denied', 'scope_mismatch', 'request_override', 'target_pending',
                'target_mismatch', 'service_mismatch', 'service_unconfigured', 'wait_invalid', 'selector_conflict',
-               'management_only', 'create_unresolved', 'evidence_unpersisted', 'recovery_needed'}
+               'management_only', 'create_unresolved', 'evidence_unpersisted', 'recovery_needed', 'parent_route_visible'}
     # Existing fixed local codes a failure after dispatch keeps, now with its remote effect.
     DISPATCHED_CODES = {'operation_failed', 'session_delivery_unknown', 'session_binding_denied',
                         'session_not_connected', 'binding_conflict', 'coordinator_changed', 'invalid_response',
@@ -83,6 +83,13 @@ class NativeInboxError(ValueError):
     def diagnostic(self):
         result = {'transport': TRANSPORT}
         if self.reason: result['reason'] = self.reason
+        if self.code == 'native_worker_required':
+            result.update(transport='native', required_transport=TRANSPORT,
+                          next_step=('Nothing was accepted, registered or started. Parent reception makes raw '
+                                     'envelopes and queue cards visible in the owner chat. Keep the invitation unused; '
+                                     'use a verified worker inbox, or disclose this limit and let the owner explicitly '
+                                     'choose parent reception before retrying without --require-worker-inbox.'))
+            return result
         if self.remote_effect:
             result['remote_effect'] = dict(self.remote_effect)
             state = self.remote_effect['state']
@@ -118,8 +125,9 @@ class NativeInboxError(ValueError):
             # Emitted only when this command dispatched nothing; any later refusal carries remote_effect instead.
             result['next_step'] = ('This command sent nothing to the service: an invitation it would accept was not '
                                    'accepted and stays unused, and nothing was registered or started. Report '
-                                   'this capability limit once; use the parent chat\'s supported native route only '
-                                   'within the owner\'s scope and report it as parent reception, never worker inbox.')
+                                   'this capability limit once. Parent reception shows raw envelopes and queue cards '
+                                   'in the owner chat; disclose that and obtain an explicit owner choice before using '
+                                   'that route, never report it as a worker inbox.')
         return result
 
 

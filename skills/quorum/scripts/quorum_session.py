@@ -29,11 +29,17 @@ class UnsupportedClient(ValueError):
         self.reason, self.detected = reason, detected
 
     def diagnostic(self):
+        next_step = ('The invitation was not accepted and no listener was started. Run this request '
+                     'from a supported local client chat. Do not start a headless model or substitute '
+                     'another session; report this blocker if no supported client is available.')
+        if self.reason == 'cursor_inbox_unavailable':
+            next_step = ('This local macOS cursor-agent chat cannot accept a native-listener invitation. '
+                         'The invitation was not accepted and no listener was started. Report this blocker '
+                         'in this chat; do not start a headless model or substitute another session. '
+                         'Membership-only acceptance requires an explicit owner request.')
         return {'reason':self.reason, 'detected_client':self.detected, 'platform':sys.platform,
                 'supported_transports':[dict(row) for row in SUPPORTED_TRANSPORTS],
-                'next_step':'The invitation was not accepted and no listener was started. Run this request '
-                            'from a supported local client chat. Do not start a headless model or substitute '
-                            'another session; report this blocker if no supported client is available.'}
+                'next_step':next_step}
 
 
 def current_engine():
@@ -47,7 +53,15 @@ def current_engine():
 def current_session():
     value = (os.environ.get('CODEX_THREAD_ID') or os.environ.get('CLAUDE_CODE_SESSION_ID')
              or os.environ.get('GROK_SESSION_ID'))
-    if not value: raise UnsupportedClient('no_client_session')
+    if not value:
+        # Only the evidenced local Cursor context gets this diagnostic. These
+        # markers identify no inbox and never supply a supported session UUID.
+        if (sys.platform == 'darwin' and os.environ.get('CURSOR_AGENT') == '1'
+                and os.environ.get('CURSOR_INVOKED_AS') == 'cursor-agent'
+                and os.environ.get('CURSOR_CONVERSATION_ID')
+                and not os.environ.get('CURSOR_AGENT_SOCKET')):
+            raise UnsupportedClient('cursor_inbox_unavailable', 'cursor')
+        raise UnsupportedClient('no_client_session')
     current_engine()
     return str(uuid.UUID(value))
 
@@ -377,6 +391,8 @@ def add_commands(commands):
 
 
 def add_transport_arguments(parser):
+    parser.add_argument('--require-worker-inbox', action='store_true',
+                        help='Refuse parent-chat delivery before setup side effects; requires a verified tool-inbox worker')
     parser.add_argument('--transport', choices=('native', 'tool-inbox'),
                         help='tool-inbox: this proven Codex native service worker receives in its own tool result; '
                              'omitted or native keeps the existing parent-chat transport')

@@ -29,7 +29,10 @@ configuring credentials.
    may own its separate binding through [native inbox](references/native-inbox.md)
    (`--transport tool-inbox`), and an owner-attested Claude Code background worker
    may own a scoped logical binding through [Claude worker](references/claude-worker.md);
-   otherwise use the parent fallback. Only for creating, accepting,
+   require that worker inbox for quiet acceptance/connection. If unavailable,
+   report the limit once and leave the invitation unused; parent reception
+   shows raw envelopes/queue cards and requires the owner's explicit choice.
+   Only for creating, accepting,
    joining or connecting, then read [update](references/update.md) and run its
    automatic refresh once per owner request; issuing an invitation alone does
    not trigger it. Read the returned persistent copy's instructions,
