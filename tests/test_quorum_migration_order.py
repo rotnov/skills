@@ -89,6 +89,8 @@ class MigrationOrderTests(unittest.TestCase):
         self.assertLess(SERIALIZATION_PATH.name, '20261030140000_owner_update_maintenance.sql')
         self.assertIn('20261030140000_owner_update_maintenance.sql', names)
         self.assertLess('20261030140000_owner_update_maintenance.sql', member)
+        self.assertLess(member, '20261030142000_project_knowledge.sql')
+        self.assertIn('20261030142000_project_knowledge.sql', names)
         body = SERIALIZATION_PATH.read_text(encoding='utf-8')
         pins = dict(re.findall(r"'([a-z_.]+\([a-z,]*\))','([0-9a-f]{64})'", body))
         self.assertEqual(pins, SERIALIZATION_PINS)

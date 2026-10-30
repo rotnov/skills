@@ -19,7 +19,8 @@ class UpdateAuthorityRaceTests(unittest.TestCase):
         cls.cluster.sql('postgres', 'create database update_races')
         setup = (ROOT/'tests/quorum_backend_fixture.sql').read_text()
         setup += (ROOT/'skills/quorum/references/server-bootstrap.sql').read_text()
-        setup += ''.join(path.read_text() for path in sorted((ROOT/'skills/quorum/supabase/migrations').glob('*.sql')))
+        setup += ''.join(path.read_text() for path in sorted((ROOT/'skills/quorum/supabase/migrations').glob('*.sql'))
+                         if path.name <= '20261030141000_member_task_authority.sql')
         cls.cluster.sql('update_races', setup, single=True)
         cls.cluster.sql('update_races', (ROOT/'tests/quorum_updates_backend.sql').read_text(), single=True)
         cls.actor = json.loads(cls.cluster.sql('update_races', "select json_build_object('agent',id,'quorum',quorum_id,"

@@ -17,6 +17,8 @@ const priority = all.find(name => name.endsWith('_urgent_message_priority.sql'))
 const serialization = all.find(name => name.endsWith('_open_access_close_serialization.sql'));
 const memberAuthority = '20261030141000_member_task_authority.sql';
 const maintenance = all.find(name => name.endsWith('_owner_update_maintenance.sql'));
+// pgvector contracts run separately on real digest-pinned PostgreSQL, not PGlite.
+const knowledge = all.find(name => name.endsWith('_project_knowledge.sql'));
 // Installations that deployed native coordination before open access apply the
 // older-dated open access file late; the final session requirements must match.
 const late = name => name.endsWith('_open_access_quorums.sql');
@@ -197,13 +199,16 @@ try {
   for (const fn of serialized) {
     await drifted(fn, 'reviewed_dispatcher_changed: ' + fn, [...fresh, priority], serialization, unserialized);
   }
-  const reviewedTail = [priority, serialization, maintenance, memberAuthority];
+  const portableTail = [priority, serialization, maintenance, memberAuthority];
+  const reviewedTail = [...portableTail, knowledge];
   if (JSON.stringify(all.filter(name => name >= priority)) !== JSON.stringify(reviewedTail)) {
     throw new Error('unreviewed migration after the close serialization');
   }
+  // pgvector is exercised by mandatory real PostgreSQL CI; PGlite applies all
+  // reviewed portable predecessors, including maintenance and member authority.
   // Exercise the actual additive migration after the pinned historical chain.
   // Its sender/current-membership behavior also runs in real PostgreSQL CI.
-  const memberDb = await database([...fresh, ...reviewedTail]);
+  const memberDb = await database([...fresh, ...portableTail]);
   try {
     const result = await memberDb.query(`select
       to_regprocedure('public.session_task_authority(uuid,text,uuid)')::text signature,

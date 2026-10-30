@@ -36,7 +36,7 @@ class MemberAuthoritySqlTests(unittest.TestCase):
         script = (ROOT / 'tests/quorum_backend_fixture.sql').read_text()
         script += (SKILL / 'references/server-bootstrap.sql').read_text()
         for path in sorted((SKILL / 'supabase/migrations').glob('*.sql')):
-            script += path.read_text()
+            if path.name <= MIGRATION: script += path.read_text()
         cls.cluster.sql('member_authority', script, single=True)
         cls.cluster.sql('member_authority', f"""
           insert into auth.users(id,raw_user_meta_data) values('{OWNER}','{{}}'),('{ANONYMOUS}','{{}}');

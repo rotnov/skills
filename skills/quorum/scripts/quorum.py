@@ -17,6 +17,7 @@ from quorum_session import UnsupportedClient
 from quorum_grok_cloud import CloudError
 from quorum_native_inbox import NativeInboxError
 from quorum_debug import DebugError
+from quorum_knowledge import KnowledgeError
 
 
 def register_agent(api, ledger, slug, role, data, *, device_key="device", expected_quorum_id=None):
@@ -75,6 +76,8 @@ def main(argv=None):
     add_commands(commands)
     from quorum_updates import add_commands as add_update_commands
     add_update_commands(commands)
+    from quorum_knowledge import add_commands as add_knowledge_commands
+    add_knowledge_commands(commands)
     args = parser.parse_args(argv)
     ledger = None
     try:
@@ -111,6 +114,11 @@ def main(argv=None):
             print(json.dumps({'ok':True, 'code':'ok', 'data':value}))
             return 0
         from quorum_live import dispatch, LIVE_COMMANDS
+        if args.command == 'knowledge':
+            from quorum_knowledge import dispatch as knowledge_dispatch
+            value = knowledge_dispatch(args, ledger)
+            print(json.dumps({'ok': True, 'code': 'ok', 'data': value}))
+            return 0
         if args.command in LIVE_COMMANDS:
             value = dispatch(args, ledger, register_agent)
             if args.command == 'mcp': return 0
@@ -175,6 +183,9 @@ def main(argv=None):
                                               'access:' + value['quorum_id']))
         print(json.dumps({'ok': True, 'code': 'ok', 'data': value}))
         return 0
+    except KnowledgeError as error:
+        print(json.dumps({'ok': False, 'code': error.code, 'data': {}}))
+        return 3
     except QuorumError as error:
         codes = {'skill_update_required': 4, 'release_manifest_invalid': 4, 'auth_required': 3, 'service_not_configured': 4, 'live_agents_disabled': 4,
                  'engine_acceptance_pending': 4, 'service_profile_ambiguous': 4, 'machine_profile_unavailable': 4,

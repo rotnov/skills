@@ -68,3 +68,9 @@ quorum/target/recipient, do not require a model handler, and are excluded from
 project-task delegation. Receipt, refreshed copy and active runtime self-report
 are separate facts. Status is paginated and never treats a remote report as proof
 of current liveness.
+Project knowledge uses separate authenticated `knowledge_admin`, `knowledge_write`,
+`knowledge_search`, `knowledge_read` and `knowledge_index` RPCs with exact native
+agent/session binding. See [knowledge](knowledge.md) for bounded payloads, owner
+assertions, individual space permissions, revision CAS and optional derived vectors.
+No peer envelope, task grant or shared project label grants access. These RPCs
+require the separately deployed extension and never generate embeddings.

@@ -142,3 +142,23 @@ exact session authority after protocol lock waits, and hold the current owned
 agent/device/membership rows through commit so revocation serializes with the
 operation. Ordinary receipt behavior and existing reviewed RPC bodies remain
 unchanged. Status reads remain point-in-time snapshots.
+
+## Optional durable project knowledge
+
+For an explicit administrator request to deploy project knowledge, review
+[project knowledge](../supabase/migrations/20261030142000_project_knowledge.sql)
+after the native/open-access and required release migrations above. This source
+extension creates pgvector in `extensions`, private RLS spaces/grants/attachments,
+immutable revisions and optional derived vectors. It changes no required release,
+quorum permission or existing context record. Confirm the deployed extension
+version; hosted Supabase controls available versions. No provider is selected.
+Installation, joining and knowledge commands never apply DDL or create a model.
+
+The actual extension tests use a public pgvector `0.8.7-pg17-bookworm` image pinned
+to OCI digest `sha256:ac08538c6f8b9904c33c8224c5e5706dbe760aca29db1d096972b4052c22a75d`.
+After explicitly fetching that public test dependency, run
+`QUORUM_KNOWLEDGE_DOCKER=1 uv run --frozen python -m unittest discover -s tests -p test_quorum_knowledge_backend.py -v`.
+It uses the local immutable image with `--pull never --network none`, no published
+ports and a uniquely named disposable container that is removed after the run.
+Auth fixtures and vectors are synthetic; no cloud configuration is read. The
+PGlite legacy backend suite does not substitute for actual pgvector tests.
