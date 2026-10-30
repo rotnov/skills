@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import struct
 import sys
 import tempfile
 import time
@@ -15,6 +16,87 @@ from unittest.mock import patch
 
 SCRIPTS = Path(__file__).resolve().parents[1] / 'skills/quorum/scripts'
 CHECK_TIMEOUT = 15
+
+
+def sid_text(raw):
+    if len(raw) < 8 or raw[0] != 1 or raw[1] > 15 or len(raw) != 8 + 4 * raw[1]:
+        raise ValueError('invalid_sid')
+    parts = [1, int.from_bytes(raw[2:8], 'big'), *struct.unpack_from('<' + 'I' * raw[1], raw, 8)]
+    return 'S-' + '-'.join(map(str, parts))
+
+
+def native_acl_view(owner, current_user, control, raw):
+    """Decode actual owner/DACL bytes without filtering away unexpected rules."""
+    if not control & 4 or raw is None or len(raw) < 8:
+        raise ValueError('missing_dacl')
+    revision, _, size, count, _ = struct.unpack_from('<BBHHH', raw)
+    if revision not in (2, 4) or size != len(raw):
+        raise ValueError('invalid_acl')
+    rules, offset = [], 8
+    for _ in range(count):
+        if offset + 8 > size: raise ValueError('invalid_ace')
+        kind, flags, length, rights = struct.unpack_from('<BBHI', raw, offset)
+        if kind not in (0, 1) or length < 16 or offset + length > size:
+            raise ValueError('invalid_ace')
+        rules.append({'sid': sid_text(raw[offset + 8:offset + length]), 'rights': rights,
+                      'inherited': bool(flags & 0x10), 'inheritance': flags & 3,
+                      'propagation': flags & 0xC, 'type': 'Allow' if kind == 0 else 'Deny'})
+        offset += length
+    return {'owner': sid_text(owner), 'current_user': sid_text(current_user),
+            'protected': bool(control & 0x1000), 'rules': rules}
+
+
+def inspect_native_acl(path):
+    """Independent READ_CONTROL inspection; no PowerShell startup and no SACL request."""
+    import ctypes
+    from ctypes import wintypes as w
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    security = ctypes.WinDLL('advapi32', use_last_error=True)
+    pointer = w.LPVOID
+    kernel.GetCurrentProcess.restype = w.HANDLE
+    kernel.CloseHandle.argtypes = [w.HANDLE]
+    kernel.LocalFree.argtypes, kernel.LocalFree.restype = [pointer], pointer
+    security.OpenProcessToken.argtypes = [w.HANDLE, w.DWORD, ctypes.POINTER(w.HANDLE)]
+    security.GetTokenInformation.argtypes = [w.HANDLE, ctypes.c_int, pointer, w.DWORD, ctypes.POINTER(w.DWORD)]
+    security.GetLengthSid.argtypes, security.GetLengthSid.restype = [pointer], w.DWORD
+    security.GetNamedSecurityInfoW.argtypes = [w.LPWSTR, ctypes.c_int, w.DWORD] + [ctypes.POINTER(pointer)] * 5
+    security.GetNamedSecurityInfoW.restype = w.DWORD
+    security.GetSecurityDescriptorControl.argtypes = [pointer, ctypes.POINTER(w.WORD), ctypes.POINTER(w.DWORD)]
+
+    def sid_bytes(sid):
+        if not sid: raise ValueError('missing_sid')
+        length = security.GetLengthSid(sid)
+        if not length: raise ctypes.WinError(ctypes.get_last_error())
+        return ctypes.string_at(sid, length)
+
+    token, needed = w.HANDLE(), w.DWORD()
+    if not security.OpenProcessToken(kernel.GetCurrentProcess(), 8, ctypes.byref(token)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        security.GetTokenInformation(token, 1, None, 0, ctypes.byref(needed))  # TokenUser
+        if not needed.value: raise ctypes.WinError(ctypes.get_last_error())
+        user = ctypes.create_string_buffer(needed.value)
+        if not security.GetTokenInformation(token, 1, user, needed, ctypes.byref(needed)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        current = sid_bytes(ctypes.cast(user, ctypes.POINTER(pointer)).contents)
+    finally:
+        kernel.CloseHandle(token)
+    owner, dacl, descriptor = pointer(), pointer(), pointer()
+    # SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION.
+    error = security.GetNamedSecurityInfoW(str(path), 1, 5, ctypes.byref(owner), None,
+                                          ctypes.byref(dacl), None, ctypes.byref(descriptor))
+    if error: raise ctypes.WinError(error)
+    try:
+        control, revision = w.WORD(), w.DWORD()
+        if not security.GetSecurityDescriptorControl(descriptor, ctypes.byref(control), ctypes.byref(revision)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        raw = None
+        if dacl:
+            size = struct.unpack_from('<H', ctypes.string_at(dacl, 8), 2)[0]
+            raw = ctypes.string_at(dacl, size)
+        return native_acl_view(sid_bytes(owner), current, control.value, raw)
+    finally:
+        kernel.LocalFree(descriptor)
 
 
 def timed(timings, phase, action):
@@ -77,27 +159,10 @@ def probe_without_sacl_privilege(root):
     directory.mkdir()
     file = directory / 'invitation.json'
     file.write_text('{}', encoding='utf-8')
-    script = r'''
-$ErrorActionPreference = 'Stop'
-$item = Get-Item -LiteralPath $env:QUORUM_TEST_PATH -Force
-$acl = $item.GetAccessControl([System.Security.AccessControl.AccessControlSections]'Access,Owner')
-$sidType = [System.Security.Principal.SecurityIdentifier]
-$rules = @($acl.GetAccessRules($true, $true, $sidType) | ForEach-Object {
-  @{sid=$_.IdentityReference.Value; rights=[int]$_.FileSystemRights;
-    inherited=$_.IsInherited; inheritance=[int]$_.InheritanceFlags; type=[string]$_.AccessControlType}
-})
-@{current_user=[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value;
-  owner=$acl.GetOwner($sidType).Value; protected=$acl.AreAccessRulesProtected; rules=$rules} | ConvertTo-Json -Depth 4
-'''
-    powershell = Path(os.environ['SystemRoot']) / 'System32/WindowsPowerShell/v1.0/powershell.exe'
     results = []
     for path, kind in ((directory, 'directory'), (file, 'file')):
         timed(timings, f'protect_{kind}', lambda: protect(path, directory=kind == 'directory'))
-        inspected = timed(timings, f'inspect_{kind}', lambda: subprocess.run(
-            [str(powershell), '-NoProfile', '-NonInteractive', '-Command', script],
-            env=dict(os.environ, QUORUM_TEST_PATH=str(path)),
-            capture_output=True, text=True, check=True, timeout=CHECK_TIMEOUT))
-        results.append(json.loads(inspected.stdout))
+        results.append(timed(timings, f'inspect_{kind}', lambda: inspect_native_acl(path)))
     print(json.dumps(results))
     print('probe_ok ' + ' '.join(timings), file=sys.stderr)
 
@@ -119,7 +184,89 @@ class WindowsAclTests(unittest.TestCase):
             self.assertTrue(acl['protected'])
             self.assertEqual(acl['owner'], acl['current_user'])
             self.assertEqual(acl['rules'], [{'sid': acl['current_user'], 'rights': 2032127,
-                                           'inherited': False, 'inheritance': inheritance, 'type': 'Allow'}])
+                                           'inherited': False, 'inheritance': inheritance,
+                                           'propagation': 0, 'type': 'Allow'}])
+
+
+class NativeAclViewTests(unittest.TestCase):
+    USER = bytes.fromhex('0102000000000005150000002a000000')  # S-1-5-21-42
+    OTHER = bytes.fromhex('010100000000000512000000')  # S-1-5-18
+
+    def acl(self, entries):
+        aces = b''.join(struct.pack('<BBHI', kind, flags, 8 + len(sid), rights) + sid
+                        for kind, flags, rights, sid in entries)
+        return struct.pack('<BBHHH', 2, 0, 8 + len(aces), len(entries), 0) + aces
+
+    def test_native_view_preserves_exact_owner_protection_rights_and_inheritance(self):
+        raw = self.acl([(0, 3, 2032127, self.USER)])
+        self.assertEqual(native_acl_view(self.USER, self.USER, 0x1004, raw), {
+            'current_user': 'S-1-5-21-42', 'owner': 'S-1-5-21-42', 'protected': True,
+            'rules': [{'sid': 'S-1-5-21-42', 'rights': 2032127, 'inherited': False,
+                       'inheritance': 3, 'propagation': 0, 'type': 'Allow'}]})
+
+    def test_native_view_does_not_hide_an_extra_deny_or_inherited_rule(self):
+        raw = self.acl([(0, 0, 2032127, self.USER), (1, 0x18, 1, self.OTHER)])
+        result = native_acl_view(self.OTHER, self.USER, 4, raw)
+        self.assertEqual(result['owner'], 'S-1-5-18')
+        self.assertFalse(result['protected'])
+        self.assertEqual(len(result['rules']), 2)
+        self.assertEqual(result['rules'][1], {'sid': 'S-1-5-18', 'rights': 1, 'inherited': True,
+                                            'inheritance': 0, 'propagation': 8, 'type': 'Deny'})
+
+    def test_native_view_fails_closed_for_missing_truncated_or_unknown_acl(self):
+        good = self.acl([(0, 0, 2032127, self.USER)])
+        for control, raw in ((0x1004, None), (0x1000, good), (0x1004, good[:-1]),
+                             (0x1004, self.acl([(5, 0, 2032127, self.USER)]))):
+            with self.subTest(control=control, raw=raw), self.assertRaises(ValueError):
+                native_acl_view(self.USER, self.USER, control, raw)
+
+    def test_native_inspection_reads_only_owner_dacl_and_releases_its_handles(self):
+        import ctypes
+        from ctypes import wintypes as w
+        user = ctypes.create_string_buffer(self.USER)
+        acl = ctypes.create_string_buffer(self.acl([(0, 0, 2032127, self.USER)]))
+        calls = []
+
+        def value(output, kind, data):
+            ctypes.cast(output, ctypes.POINTER(kind))[0] = data
+
+        def open_token(process, access, output):
+            calls.append(('token_access', access))
+            value(output, w.HANDLE, 77)
+            return 1
+
+        def token_info(token, kind, output, length, needed):
+            self.assertEqual(kind, 1)  # TokenUser, never privilege/SACL acquisition.
+            value(needed, w.DWORD, ctypes.sizeof(ctypes.c_void_p))
+            if output is not None:
+                value(output, ctypes.c_void_p, ctypes.addressof(user))
+            return int(output is not None)
+
+        def named_info(path, kind, flags, owner, group, dacl, sacl, descriptor):
+            calls.append(('security_info', kind, flags, group, sacl))
+            value(owner, ctypes.c_void_p, ctypes.addressof(user))
+            value(dacl, ctypes.c_void_p, ctypes.addressof(acl))
+            value(descriptor, ctypes.c_void_p, 88)
+            return 0
+
+        def control(descriptor, flags, revision):
+            value(flags, w.WORD, 0x1004)
+            value(revision, w.DWORD, 1)
+            return 1
+
+        # Plain callables accept the same ctypes signature declarations as DLL exports.
+        kernel = SimpleNamespace(GetCurrentProcess=lambda: 1,
+                                 CloseHandle=lambda handle: calls.append(('close', handle.value)),
+                                 LocalFree=lambda handle: calls.append(('free', handle.value)))
+        security = SimpleNamespace(OpenProcessToken=open_token, GetTokenInformation=token_info,
+                                   GetLengthSid=lambda sid: len(self.USER), GetNamedSecurityInfoW=named_info,
+                                   GetSecurityDescriptorControl=control)
+        with patch.object(ctypes, 'WinDLL', side_effect=lambda name, **_: kernel if name == 'kernel32' else security,
+                          create=True), patch.object(subprocess, 'run', side_effect=AssertionError('no inspection subprocess')):
+            result = inspect_native_acl(Path('/synthetic'))
+        self.assertEqual(result, native_acl_view(self.USER, self.USER, 0x1004, bytes(acl.raw[:-1])))
+        self.assertEqual(calls, [('token_access', 8), ('close', 77),
+                                 ('security_info', 1, 5, None, None), ('free', 88)])
 
 
 class PrivateAclDeadlineTests(unittest.TestCase):

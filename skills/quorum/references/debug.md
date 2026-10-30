@@ -8,7 +8,7 @@ start a run or change its quorum, project, repository, sources, or lifetime.
 Use the installed helper and the same private state directory as the binding:
 
 ```text
-uv run --project <skill-dir> --frozen python <skill-dir>/scripts/quorum.py debug activate --quorum <quorum> --project-ref <project> --report-repo <owner/name> --until stop --watch
+uv run --project <skill-dir> --frozen python <skill-dir>/scripts/quorum.py debug activate --quorum <quorum> --project-ref <project> --report-repo <owner/name> --until 5m --watch --interval 30 --cycles 3
 uv run --project <skill-dir> --frozen python <skill-dir>/scripts/quorum.py debug watch
 uv run --project <skill-dir> --frozen python <skill-dir>/scripts/quorum.py debug status
 uv run --project <skill-dir> --frozen python <skill-dir>/scripts/quorum.py debug collect
@@ -18,9 +18,13 @@ uv run --project <skill-dir> --frozen python <skill-dir>/scripts/quorum.py debug
 
 Infer the quorum, project, and reporting repository from the task the owner is
 already running. Ask only when one of those values is still unresolved. Pass
-`--until stop` when the owner says to continue until they stop it. A duration
-such as `6h` or a UTC `YYYY-MM-DDTHH:MM:SSZ` timestamp is an earliest end, not
-a promise that a later process resumes the watch.
+`--until stop` when the owner says to continue until they stop it. Otherwise,
+prefer a bounded owner-chosen lifetime: retained delivery and conversation metadata
+can grow during a long watch. The example samples immediately, then at 30-second
+intervals, for at most three cycles. The grant remains until stop or its deadline
+after the watch detaches. A duration such as `5m` or a UTC
+`YYYY-MM-DDTHH:MM:SSZ` timestamp sets a grant deadline checked between operations;
+it does not guarantee an exact process-return time or later resumption.
 
 ## What the helper does
 
@@ -38,6 +42,11 @@ alive: the pid answers, the heartbeat is fresh, and the host state is
 `supervising`. A stored alive flag is not enough. `automatic_runtime_restoration`
 is false. After the watch returns, the host is detached and observation is a
 handoff again.
+If a tool or shell runs it in the background, retain and await that owned process.
+Backgrounding alone provides no survival guarantee when the executor or host exits.
+A watch stays bound to its original run. Replacement ends it, and its final
+read-only summary refers to that original run. Use `debug status` to inspect a
+later run.
 
 `debug collect` reads and can publish, but it does not supervise. Use it for
 one extra sample. A dead or stale host records `collector_host_dead` once and
@@ -56,6 +65,11 @@ A native binding id is the session directory name. Select an owned local
 `cloud/<conversation UUID>` ledger with
 `--binding grok-bot:<conversation UUID>`. The same UUID is a different
 participant in each store.
+`coverage.unreadable_unscoped` lists sources whose unreadable identity leaves their
+quorum/project unknown. Its blocker keeps coverage partial, including alongside
+healthy sources, without counting those sources as confirmed missing bindings.
+Explicitly selected unreadable bindings and failures after proving in-scope
+identity remain in `unreadable_bindings`.
 
 Trust the helper's `definite`, `actionable`, `confidence`, and
 `live_observation` fields. Delivery stages are `intent`, `queued`,
@@ -80,10 +94,16 @@ with `source`, `model`, `window_start`, `window_end`, `category`
 `estimated`), and integer token counts. Set `cache_semantics` to `disjoint` or
 `cache_inclusive` whenever cache counts are non-zero. `disjoint` adds cache
 tokens. `cache_inclusive` does not add them again. An identical report is
-stored once. A different report for the same source and window is rejected.
-Set `shared_parent_sid` when a child shares the parent's model and window; that
-later report is excluded. Do not estimate usage from message length or call a
-provider billing API.
+stored once, including excluded reports after a restart. A different nonshared
+report for the same source, model and window is rejected.
+Set `shared_parent_sid` when a child shares the parent's model and window. Child-only
+reports count provisionally; `accounting.provisional_shared_windows` counts those
+windows. Once a nonshared parent report covers that model and exact window, shared
+reports are excluded in either arrival order. This groups reported model/windows;
+it does not prove an exact parent-child relationship. Old runs may have exclusion
+counts without stored report identities; `accounting.unidentified_legacy_exclusions`
+shows that unreconciled history. Do not estimate usage from message length or call
+a provider billing API.
 
 `debug import --file <path>` accepts an owner-provided artifact only when the
 run's sources include `imported-artifact`. The helper forces
@@ -101,8 +121,13 @@ is `delayed` and the finding id stays pending. When the run is stopped or
 expired, publication is `ended`. Do not file those findings with another tool
 or another repository.
 
-A finding with `analysis` equal to `pending` may receive one short conclusion
-through `debug analyze`. Use only the finding's sanitized fields. Do not open
+A pending, actionable finding in the active, unexpired grant may receive one short
+conclusion through `debug analyze --run-id <run-id> --finding-id <finding-id>
+--conclusion <conclusion> --confidence <low|medium|high>`. Take the exact `run_id`
+from current `debug status` or `debug report`; stale run IDs, ended grants and
+nonpending findings are refused without overwriting a prior result. Analysis does
+not extend permission to another run or change archived snapshots.
+Use only the finding's sanitized fields. Do not open
 transcripts, credential files, invitation files, or nonces, and do not call a
 model provider for this step.
 

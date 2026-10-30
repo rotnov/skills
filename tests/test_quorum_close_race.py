@@ -141,12 +141,18 @@ def wait_for(cluster, db, label, predicate, what):
     deadline = time.monotonic() + TIMEOUT
     while time.monotonic() < deadline:
         row = cluster.sql(db, f"""select json_build_object('pid',pid,'state',state,'wait_event_type',wait_event_type,
-          'wait_event',wait_event,'xid',backend_xid::text,'blocking',pg_blocking_pids(pid))
+          'wait_event',wait_event,'xid',backend_xid::text,'blocking',pg_blocking_pids(pid),'query',query)
           from pg_stat_activity where application_name like '{label}%'""").strip()
         if row and predicate(json.loads(row)):
             return json.loads(row)
         time.sleep(0.1)
     raise AssertionError(f'{label} never reached: {what}')
+
+
+def idle_after(row, statement):
+    """psql can be idle between statements; only the named last query is a barrier."""
+    return (row['state'] == 'idle in transaction'
+            and row['query'].strip().rstrip(';') == statement.strip().rstrip(';'))
 
 
 def advisory_key(actor, op, request_id):
@@ -165,8 +171,9 @@ def race(cluster, db, operation):
         actor, op, req = OWNER, 'invite_create_open', 'race-create'
         call = f"select public.invite_create_open('{q}','{req}');"
     blocker = cluster.session(db, 'race_blocker')
-    blocker.send(f'begin; select pg_advisory_xact_lock({advisory_key(actor, op, req)});')
-    held = wait_for(cluster, db, blocker.label, lambda r: r['state'] == 'idle in transaction', 'advisory held')
+    hold = f'select pg_advisory_xact_lock({advisory_key(actor, op, req)});'
+    blocker.send('begin; ' + hold)
+    held = wait_for(cluster, db, blocker.label, lambda r: idle_after(r, hold), 'advisory held')
     worker = cluster.session(db, 'race_' + operation)
     worker.send(f"begin; select 'txid', txid_current(), pg_backend_pid();"
                 f" select set_config('request.jwt.claim.sub','{actor}',true); {call}")
@@ -174,21 +181,23 @@ def race(cluster, db, operation):
                       lambda r: r['wait_event'] == 'advisory' and held['pid'] in r['blocking'],
                       'paused on the post-access-check advisory lock')
     closer = cluster.session(db, 'race_close')
+    close = f"select public.quorum_set_access('{q}','github','race-close');"
     closer.send(f"begin; select 'txid', txid_current(), pg_backend_pid();"
                 f" select set_config('request.jwt.claim.sub','{OWNER}',true);"
-                f" select public.quorum_set_access('{q}','github','race-close');")
+                ' ' + close)
     # Unserialized create never blocks the close; any other close waits on the worker.
     closing = wait_for(cluster, db, closer.label,
-                       lambda r: r['state'] == 'idle in transaction'
+                       lambda r: idle_after(r, close)
                        or (r['wait_event_type'] == 'Lock' and paused['pid'] in r['blocking']),
                        'blocked by the paused operation or finished')
     # A blocked close cannot commit before the worker; a finished one commits first.
     closer.send('commit;')
+    closer_result = closer.finish() if idle_after(closing, close) else None
     blocker.send('commit;')
     blocker.finish()
     worker.send('commit;')
     worker_result = worker.finish()
-    closer_result = closer.finish()
+    if closer_result is None: closer_result = closer.finish()
     state = json.loads(cluster.sql(db, f"""select json_build_object(
       'access',(select access from quorum_private.quorums where id='{q}'),
       'live_anonymous',(select count(*) from quorum_private.memberships where quorum_id='{q}' and user_id='{ANON}' and not revoked),
@@ -201,10 +210,11 @@ def close_first(cluster, db):
     """The close commits its row changes first; the acceptance must be denied."""
     fixture = prepared(cluster, db)
     closer = cluster.session(db, 'first_close')
+    close = f"select public.quorum_set_access('{fixture['quorum_id']}','github','first-close');"
     closer.send(f"begin; select 'txid', txid_current(), pg_backend_pid();"
                 f" select set_config('request.jwt.claim.sub','{OWNER}',true);"
-                f" select public.quorum_set_access('{fixture['quorum_id']}','github','first-close');")
-    closing = wait_for(cluster, db, closer.label, lambda r: r['state'] == 'idle in transaction', 'close done')
+                ' ' + close)
+    closing = wait_for(cluster, db, closer.label, lambda r: idle_after(r, close), 'close done')
     worker = cluster.session(db, 'first_accept')
     worker.send(f"begin; select 'txid', txid_current(), pg_backend_pid();"
                 f" select set_config('request.jwt.claim.sub','{ANON}',true);"
@@ -241,10 +251,11 @@ def isolation_refused(cluster, db, operation, level):
     }[operation]
     before = snapshot(cluster, db, q)
     blocker = cluster.session(db, 'iso_blocker')
+    hold = f"select pg_advisory_xact_lock({advisory_key(actor, op, req)});"
     blocker.send(f"begin; select 1 from quorum_private.quorums where id='{q}' for update;"
                  f" select 1 from quorum_private.id_invitations where id='{invite}' for update;"
-                 f" select pg_advisory_xact_lock({advisory_key(actor, op, req)});")
-    wait_for(cluster, db, blocker.label, lambda r: r['state'] == 'idle in transaction', 'locks held')
+                 ' ' + hold)
+    wait_for(cluster, db, blocker.label, lambda r: idle_after(r, hold), 'locks held')
     worker = cluster.session(db, 'iso_' + operation)
     worker.send(f"set session characteristics as transaction isolation level {level};"
                 f" begin; select 'level', current_setting('transaction_isolation');"
@@ -407,6 +418,44 @@ class CloseRaceTests(unittest.TestCase):
         self.assertEqual(result['closer'][0], 0, result)
         self.assertIn(result['paused']['pid'], result['closing']['blocking'])
         self.assertEqual(result['state']['access'], 'github')
+        self.assertEqual(result['state']['live_anonymous'], 1)
+
+    def test_interstatement_idle_cannot_be_mistaken_for_a_completed_close(self):
+        # psql submits each statement separately. Force its real backend to be
+        # idle after the prefix, before it has submitted quorum_set_access.
+        with Cluster() as cluster:
+            build(cluster)
+            send, sql = Session.send, cluster.sql
+            pending, observed = {}, []
+
+            def split_close(session, script):
+                if session.label.startswith('race_close-') and 'quorum_set_access' in script:
+                    prefix, call = script.rsplit(' select public.', 1)
+                    send(session, prefix)
+                    pending[session.label] = (session, 'select public.' + call)
+                else:
+                    send(session, script)
+
+            def observe_gap(db, script, single=False):
+                result = sql(db, script, single)
+                if 'pg_stat_activity' in script:
+                    for label, (session, call) in list(pending.items()):
+                        if label in script and result.strip():
+                            row = json.loads(result)
+                            if row['state'] == 'idle in transaction':
+                                observed.append(row)
+                                send(session, call)
+                                del pending[label]
+                return result
+
+            with unittest.mock.patch.object(Session, 'send', split_close), \
+                    unittest.mock.patch.object(cluster, 'sql', observe_gap):
+                result = race(cluster, scenario(cluster, 'prefix'), 'accept')
+        self.assertEqual(len(observed), 1)
+        self.assertEqual(observed[0]['blocking'], [])
+        self.assertIn(result['paused']['pid'], result['closing']['blocking'])
+        self.assertEqual(result['worker'][0], 0, result)
+        self.assertEqual(result['closer'][0], 0, result)
         self.assertEqual(result['state']['live_anonymous'], 1)
 
     def test_unserialized_create_leaves_open_invitation_after_close(self):
