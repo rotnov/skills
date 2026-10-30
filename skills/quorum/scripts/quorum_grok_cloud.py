@@ -12,7 +12,7 @@ import sys
 import time
 import uuid
 from quorum_api import QuorumError
-from quorum_delegation import grant, instruction
+from quorum_delegation import grant, instruction, member_grant, task_check, save_grant_binding
 from quorum_release import ReleaseGuard, ReleaseMismatch, diagnostic
 
 # Grok Bot exports these names in the personal chat; their services are never opened.
@@ -107,14 +107,18 @@ def add_commands(commands):
     connect.add_argument('quorum')
     connect.add_argument('--role', required=True)
     connect.add_argument('--project-ref', required=True)
-    connect.add_argument('--accept-tasks-from', help='Owner opt-in: pin this project coordinator role to its agent UUID')
+    intake = connect.add_mutually_exclusive_group()
+    intake.add_argument('--accept-tasks-from', help='Owner opt-in: pin this project coordinator role to its agent UUID')
+    intake.add_argument('--accept-tasks-from-members', action='store_true', help='Owner opt-in: current and future members, excluding owner-held actions')
     connect.add_argument('--dispatch-mode', choices=('inline', 'native-subagent'), default='inline')
     delegation = actions.add_parser('delegate', help='Receiving-owner task intake permission for this exact binding')
     choice = delegation.add_mutually_exclusive_group(required=True)
     choice.add_argument('--coordinator-role')
+    choice.add_argument('--members', action='store_true')
     choice.add_argument('--revoke', action='store_true')
     delegation.add_argument('--dispatch-mode', choices=('inline', 'native-subagent'), default='inline')
     actions.add_parser('peers')
+    actions.add_parser('task-check').add_argument('message_id', type=lambda x: str(uuid.UUID(x)))
     thread = actions.add_parser('thread')
     thread.add_argument('conversation_id', type=lambda x: str(uuid.UUID(x)))
     thread.add_argument('--after-sequence', type=sequence, default=0)
@@ -158,6 +162,9 @@ def _dispatch(args, auth_ledger, register_agent):
         dispatch_mode = getattr(args, 'dispatch_mode', 'inline')
         if args.action in ('connect', 'delegate'):
             coordinator = getattr(args, 'accept_tasks_from' if args.action == 'connect' else 'coordinator_role', None)
+            members = getattr(args, 'accept_tasks_from_members' if args.action == 'connect' else 'members', False)
+            if members and (coordinator or dispatch_mode != 'inline' or getattr(args, 'revoke', False)):
+                raise ValueError('member_intake_requires_inline')
             if dispatch_mode == 'native-subagent' and (not coordinator or getattr(args, 'revoke', False)):
                 raise ValueError('dispatch_mode_requires_coordinator')
         if args.action != 'connect' and record is None: raise CloudError('cloud_not_connected')
@@ -176,13 +183,17 @@ def _dispatch(args, auth_ledger, register_agent):
         messages = api.call('session_inbox', scope)
         if not isinstance(messages, list): raise QuorumError('invalid_response')
         if args.action == 'delegate':
+            snapshot = dict(record)
             if args.revoke: record.pop('delegation', None)
+            elif members: record['delegation'] = member_grant(record)
             else:
                 peer = api.call('resolve_role', {'quorum_id': record['quorum_id'], 'role': args.coordinator_role,
                                                  'project_ref': record['project_ref']})
                 record['delegation'] = grant(record, peer['agent_id'], args.coordinator_role, dispatch_mode=dispatch_mode)
-            ledger.setting('cloud-agent', record)
+            save_grant_binding(ledger, 'cloud-agent', record, snapshot)
             return {'delegation': record.get('delegation')}
+        if args.action == 'task-check':
+            return task_check(api, record, args.message_id, lambda: ledger.setting('cloud-agent'))
         if args.action == 'peers':
             from quorum_peer_wake import with_wake_diagnostics
             return with_wake_diagnostics(api.call('session_peers', scope))
@@ -243,20 +254,28 @@ def connect(args, api, auth_ledger, ledger, old, conversation, register_agent, d
             'cwd': str(Path.cwd().resolve())}
     if old and (old['registration'] != data or old['role'] != args.role or old['quorum'] != args.quorum):
         raise CloudError('cloud_binding_conflict')
+    members = getattr(args, 'accept_tasks_from_members', False)
+    coordinator = getattr(args, 'accept_tasks_from', None)
+    previous = (old or {}).get('delegation')
+    if old and ((members and (previous or {}).get('scope', 'coordinator') != 'members')
+                     or (coordinator and (previous or {}).get('scope') == 'members')):
+        raise ValueError('delegation_scope_changed')
     # Idempotent owned registration only; no relay or model is started here.
     result = register_agent(api, auth_ledger, args.quorum, args.role, data, device_key='cloud-device:' + conversation)
     record = {**result, **data, 'registration': data, 'role': args.role, 'quorum': args.quorum,
               'client': 'grok-bot', 'provider_conversation_id': conversation, 'transport': TRANSPORT}
     if old and old.get('delegation'): record['delegation'] = old['delegation']
-    ledger.setting('cloud-agent', record)
-    coordinator = getattr(args, 'accept_tasks_from', None)
+    snapshot = save_grant_binding(ledger, 'cloud-agent', record, old)
+    if members:
+        record['delegation'] = member_grant(record)
+        snapshot = save_grant_binding(ledger, 'cloud-agent', record, snapshot)
     if coordinator:
         peer = api.call('resolve_role', {'quorum_id': record['quorum_id'], 'role': coordinator,
                                          'project_ref': record['project_ref']})
         if old and old.get('delegation') and old['delegation']['coordinator_id'] != peer['agent_id']:
             raise ValueError('coordinator_changed')
         record['delegation'] = grant(record, peer['agent_id'], coordinator, dispatch_mode=dispatch_mode)
-        ledger.setting('cloud-agent', record)
+        save_grant_binding(ledger, 'cloud-agent', record, snapshot)
     return {**result, 'session_ref': session_ref, 'provider_conversation_id': conversation,
             'transport': TRANSPORT, 'relay': 'offline', 'delegation': record.get('delegation')}
 

@@ -17,6 +17,7 @@ from quorum_session import UnsupportedClient
 from quorum_grok_cloud import CloudError
 from quorum_native_inbox import NativeInboxError
 from quorum_debug import DebugError
+from quorum_knowledge import KnowledgeError
 
 
 def register_agent(api, ledger, slug, role, data, *, device_key="device", expected_quorum_id=None):
@@ -73,6 +74,10 @@ def main(argv=None):
                              help='Generated Claude worker capability file; slug, access and request ID come from its scope')
     from quorum_live import add_commands
     add_commands(commands)
+    from quorum_updates import add_commands as add_update_commands
+    add_update_commands(commands)
+    from quorum_knowledge import add_commands as add_knowledge_commands
+    add_knowledge_commands(commands)
     args = parser.parse_args(argv)
     ledger = None
     try:
@@ -103,7 +108,17 @@ def main(argv=None):
             ledger = root_ledger(args.state)
         else: ledger = LocalLedger(args.state)
         config_path = ledger.root / 'config.json'
+        if args.command == 'update':
+            from quorum_updates import dispatch as update_dispatch
+            value = update_dispatch(args, ledger)
+            print(json.dumps({'ok':True, 'code':'ok', 'data':value}))
+            return 0
         from quorum_live import dispatch, LIVE_COMMANDS
+        if args.command == 'knowledge':
+            from quorum_knowledge import dispatch as knowledge_dispatch
+            value = knowledge_dispatch(args, ledger)
+            print(json.dumps({'ok': True, 'code': 'ok', 'data': value}))
+            return 0
         if args.command in LIVE_COMMANDS:
             value = dispatch(args, ledger, register_agent)
             if args.command == 'mcp': return 0
@@ -168,15 +183,21 @@ def main(argv=None):
                                               'access:' + value['quorum_id']))
         print(json.dumps({'ok': True, 'code': 'ok', 'data': value}))
         return 0
+    except KnowledgeError as error:
+        print(json.dumps({'ok': False, 'code': error.code, 'data': {}}))
+        return 3
     except QuorumError as error:
         codes = {'skill_update_required': 4, 'release_manifest_invalid': 4, 'auth_required': 3, 'service_not_configured': 4, 'live_agents_disabled': 4,
                  'engine_acceptance_pending': 4, 'service_profile_ambiguous': 4, 'machine_profile_unavailable': 4,
                  'auth_profile_conflict': 3, 'service_config_conflict': 4, 'service_unavailable': 5, 'service_error': 5,
                  'response_too_large': 5, 'invalid_response': 5, 'listener_start_failed': 5, 'listener_stop_failed': 5, 'listener_not_ready': 5,
                  'anonymous_login_unavailable': 4, 'open_invite_required': 3}
+        codes.update({'update_extension_unavailable':4, 'runtime_source_unavailable':4})
         code = str(error) if str(error) in codes else 'operation_failed'
         from quorum_release import ReleaseMismatch
+        from quorum_updates import UpdateFailure
         data = {'release':error.diagnostic} if isinstance(error, ReleaseMismatch) else {}
+        if isinstance(error, UpdateFailure): data = {'update':error.diagnostic}
         print(json.dumps({'ok': False, 'code': code, 'data': data}))
         return codes.get(code, 3)
     except GrokBindingError as error:
@@ -203,10 +224,14 @@ def main(argv=None):
                 'service_config_conflict', 'github_identity_required', 'auth_lock_timeout',
                 'browser_unavailable', 'login_timeout', 'anonymous_state_conflict'}
         if isinstance(error, ValueError):
+            safe.update({'update_request_invalid', 'update_notice_denied', 'update_target_changed',
+                         'update_fetch_failed', 'update_tool_missing', 'update_invalid_copy',
+                         'update_validation_failed', 'update_cache_conflict', 'update_unsafe_cache',
+                         'update_in_progress', 'session_not_connected'})
             safe.update({'grok_transport_unavailable', 'session_binding_denied', 'coordinator_changed',
                          'claude_pipe_unavailable', 'listener_stop_pending', 'session_delivery_unknown',
                          'session_delivery_unsent', 'session_reconcile_denied',
-                         'session_recovery_denied',
+                         'session_recovery_denied', 'delegation_scope_changed', 'member_intake_requires_inline',
                          'private_acl_unavailable', 'unsafe_link', 'browser_unavailable', 'login_timeout',
                          'worker_already_running'})
         code = str(error) if str(error) in safe else 'operation_failed'

@@ -56,3 +56,21 @@ notices for same-project native peers; ordinary heartbeat retries create no noti
 records. `session_ack` also refreshes health as positive delivery evidence. These
 RPCs expose no table access or coordinator authorization. Delegation is the receiving
 owner's private local policy, never a peer-supplied privilege claim.
+
+The optional owner-maintenance extension exposes `session_update_request`,
+`session_update_status` and `session_update_report`; see
+[update](update.md#explicit-owner-update) for their owner workflow and
+[server](server.md#owner-maintenance-extension) for the separately authorized
+deployment. Its inbox `maintenance` metadata is projected from private typed
+records. A target is only bounded protocol/package versions and a content SHA-256,
+never an executable source or authority. Notices are deduplicated per selected
+quorum/target/recipient, do not require a model handler, and are excluded from
+project-task delegation. Receipt, refreshed copy and active runtime self-report
+are separate facts. Status is paginated and never treats a remote report as proof
+of current liveness.
+Project knowledge uses separate authenticated `knowledge_admin`, `knowledge_write`,
+`knowledge_search`, `knowledge_read` and `knowledge_index` RPCs with exact native
+agent/session binding. See [knowledge](knowledge.md) for bounded payloads, owner
+assertions, individual space permissions, revision CAS and optional derived vectors.
+No peer envelope, task grant or shared project label grants access. These RPCs
+require the separately deployed extension and never generate embeddings.

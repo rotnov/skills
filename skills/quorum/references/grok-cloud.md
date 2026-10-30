@@ -99,9 +99,11 @@ appropriate for a cloud computer. `--membership-only` is an explicit different
 request and cannot silently replace cloud connection.
 
 Use the owner's supplied role and project, or `grok-<first-eight-UUID>`
-and the quorum slug. If the receiving owner has authorized coordinator tasks,
-add the existing `--accept-tasks-from <role>` and chosen dispatch mode to
-`cloud connect`; follow [delegation](delegation.md). Do not promise native
+and the quorum slug. For owner-authorized member task intake, add
+`--accept-tasks-from-members --dispatch-mode inline` to `cloud connect`, then run
+`cloud task-check <message-id>` immediately before member work. Old coordinator
+grants stay unchanged. Follow [delegation](delegation.md) for the unconditional
+owner-held exclusions and legacy coordinator options. Do not promise native
 subagent capability merely because a routine exists. A webhook grants no task
 permissions. A routine must never run these commands on behalf of its parent.
 

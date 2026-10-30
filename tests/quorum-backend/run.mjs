@@ -15,6 +15,10 @@ const fresh = all.filter(name => applied.some(suffix => name.endsWith(suffix)));
 const priority = all.find(name => name.endsWith('_urgent_message_priority.sql'));
 // Mandatory follow-on: close serializes with open invitation issue and acceptance.
 const serialization = all.find(name => name.endsWith('_open_access_close_serialization.sql'));
+const memberAuthority = '20261030141000_member_task_authority.sql';
+const maintenance = all.find(name => name.endsWith('_owner_update_maintenance.sql'));
+// pgvector contracts run separately on real digest-pinned PostgreSQL, not PGlite.
+const knowledge = all.find(name => name.endsWith('_project_knowledge.sql'));
 // Installations that deployed native coordination before open access apply the
 // older-dated open access file late; the final session requirements must match.
 const late = name => name.endsWith('_open_access_quorums.sql');
@@ -195,12 +199,34 @@ try {
   for (const fn of serialized) {
     await drifted(fn, 'reviewed_dispatcher_changed: ' + fn, [...fresh, priority], serialization, unserialized);
   }
-  if (all.at(-1) !== serialization || all.at(-2) !== priority) {
+  const portableTail = [priority, serialization, maintenance, memberAuthority];
+  const reviewedTail = [...portableTail, knowledge];
+  if (JSON.stringify(all.filter(name => name >= priority)) !== JSON.stringify(reviewedTail)) {
     throw new Error('unreviewed migration after the close serialization');
+  }
+  // pgvector is exercised by mandatory real PostgreSQL CI; PGlite applies all
+  // reviewed portable predecessors, including maintenance and member authority.
+  // Exercise the actual additive migration after the pinned historical chain.
+  // Its sender/current-membership behavior also runs in real PostgreSQL CI.
+  const memberDb = await database([...fresh, ...portableTail]);
+  try {
+    const result = await memberDb.query(`select
+      to_regprocedure('public.session_task_authority(uuid,text,uuid)')::text signature,
+      has_function_privilege('authenticated','public.session_task_authority(uuid,text,uuid)','execute') authenticated,
+      has_function_privilege('anon','public.session_task_authority(uuid,text,uuid)','execute') anon,
+      has_function_privilege('service_role','public.session_task_authority(uuid,text,uuid)','execute') service`);
+    const row = result.rows[0];
+    if (!row.signature || !row.authenticated || row.anon || row.service) {
+      throw new Error('member authority migration privilege contract');
+    }
+    await memberDb.exec(suite('quorum_updates_backend.sql'));
+  } finally {
+    await memberDb.exec('rollback');
+    await memberDb.close();
   }
   if (!coordination(upgraded[3]) || !late(upgraded[4])) throw new Error('upgraded order is not coordination first');
   console.log('Invitation, session, Realtime, open-access, coordination, open-session, coordination-only refusal, '
-    + 'mandatory priority release, close serialization, open-member priority and pinned-chain drift regression '
+    + 'mandatory priority release, close serialization, member authority ACLs, open-member priority and pinned-chain drift regression '
     + '(fresh and coordination-first upgraded order): PASS (disposable PostgreSQL)');
 } catch (error) {
   console.error(error.message, error.where || '');

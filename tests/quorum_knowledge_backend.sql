@@ -1,0 +1,145 @@
+-- Synthetic users, spaces and vectors only; executes on actual pgvector PostgreSQL.
+create function pg_temp.denied(statement text) returns void language plpgsql as $$
+begin
+ begin execute statement; exception when insufficient_privilege then return; end;
+ raise exception 'expected_denial: %',statement;
+end $$;
+create function pg_temp.failed(statement text,code text) returns void language plpgsql as $$
+begin
+ begin execute statement; exception when others then if sqlerrm=code then return; else raise; end if; end;
+ raise exception 'expected_failure: %',code;
+end $$;
+do $test$
+declare
+ u uuid:='11111111-1111-4111-8111-111111111159';
+ v uuid:='22222222-2222-4222-8222-222222222259';
+ anon_id uuid:='33333333-3333-4333-8333-333333333359';
+ q uuid:='44444444-4444-4444-8444-444444444459';
+ q2 uuid:='44444444-4444-4444-8444-444444444469';
+ s uuid:='55555555-5555-4555-8555-555555555559'; s2 uuid;
+ a uuid:='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa59';
+ b uuid:='bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbb59';
+ c uuid:='cccccccc-cccc-4ccc-8ccc-cccccccccc59';
+ later uuid:='dddddddd-dddd-4ddd-8ddd-dddddddddd59';
+ e uuid:=gen_random_uuid(); replacement uuid:=gen_random_uuid();
+ body jsonb; result jsonb; retry jsonb; hash text; sql text; n integer;
+begin
+ insert into auth.users(id) values(u),(v),(anon_id);
+ insert into auth.identities(user_id,provider,provider_id) values(u,'github','9000059'),(v,'github','9000069');
+ insert into quorum_private.quorums(id,slug,owner_id,access) values(q,'knowledge-owner',u,'open'),(q2,'knowledge-later',u,'open');
+ insert into quorum_private.memberships(quorum_id,user_id,role) values(q,u,'owner'),(q,v,'member'),(q,anon_id,'member'),(q2,u,'owner');
+ insert into quorum_private.devices(id,owner_id,label) values(a,u,'synthetic-owner'),(b,v,'synthetic-member'),(c,anon_id,'synthetic-anon');
+ insert into quorum_private.agents(id,quorum_id,device_id,owner_id,project_ref,role,engine,session_ref) values
+ (a,q,a,u,'same','owner','codex','owner-session'),(b,q,b,v,'same','member','claude','member-session'),
+ (c,q,c,anon_id,'same','anonymous','grok','anonymous-session'),(later,q2,a,u,'same','later','codex','later-session');
+ perform set_config('request.jwt.claim.sub',u::text,true);
+ result:=public.knowledge_admin(a,'owner-session','create',jsonb_build_object('space_id',s,'name','same'),'create');
+ if result<>public.knowledge_admin(a,'owner-session','create',jsonb_build_object('space_id',s,'name','same'),'create') then raise exception 'create_retry_changed'; end if;
+ perform public.knowledge_admin(a,'owner-session','attach',jsonb_build_object('space_id',s,'quorum_id',q,'project_ref','same'),'attach');
+ perform set_config('request.jwt.claim.sub',v::text,true);
+ s2:=(public.knowledge_admin(b,'member-session','create','{"name":"same"}','create')->>'space_id')::uuid;
+ if s=s2 then raise exception 'label_reused_identity'; end if;
+ perform pg_temp.denied(format('select public.knowledge_search(%L,%L,%L,%L,10,6000,null,null)',b,'member-session',s,'ERR_59'));
+ perform set_config('request.jwt.claim.sub',anon_id::text,true);
+ perform pg_temp.denied(format('select public.knowledge_admin(%L,%L,%L,%L,%L)',c,'anonymous-session','create','{"name":"same"}','anon-create'));
+ perform pg_temp.denied(format('select public.knowledge_search(%L,%L,%L,%L,10,6000,null,null)',c,'anonymous-session',s,'ERR_59'));
+ perform set_config('request.jwt.claim.sub',u::text,true);
+ perform public.knowledge_admin(a,'owner-session','grant',jsonb_build_object('space_id',s,'user_id',v,'permission','writer'),'grant');
+ body:=jsonb_build_object('entry_id',e,'type','decision','title','ERR_59 #59','body',repeat('Synthetic evidence ERR_59. ',150),
+   'source_refs',jsonb_build_array('issue:59'),'versions',jsonb_build_array('v0.5'));
+ result:=public.knowledge_write(a,'owner-session',s,'propose',body,'proposal');
+ hash:=result->>'content_sha256';
+ if result->>'status'<>'proposed' or result<>public.knowledge_write(a,'owner-session',s,'propose',body,'proposal') then raise exception 'proposal_retry_or_status'; end if;
+ perform pg_temp.failed(format('select public.knowledge_write(%L,%L,%L,%L,%L,%L)',a,'owner-session',s,'propose',body||'{"body":"changed"}','proposal'),'knowledge_idempotency_conflict');
+ perform pg_temp.failed(format('select public.knowledge_write(%L,%L,%L,%L,%L,%L)',a,'owner-session',s,'propose',body||'{"verified_by":"owner"}','unknown'),'knowledge_invalid_payload');
+ perform set_config('request.jwt.claim.sub',v::text,true);
+ perform pg_temp.denied(format('select public.knowledge_write(%L,%L,%L,%L,%L,%L)',b,'member-session',s,'verify',jsonb_build_object('entry_id',e,'expected_revision',1,'owner_assertion',true,'evidence','issue:59'),'verify-member'));
+ result:=public.knowledge_search(b,'member-session',s,'ERR_59',10,6000,null,null);
+ if result->>'ranking'<>'lexical' or result#>>'{results,0,status}'<>'proposed' or result#>>'{indexing,state}'<>'unconfigured' then raise exception 'lexical_fallback_untruthful'; end if;
+ if char_length(result::text)>6000 or char_length(result#>>'{results,0,excerpt}')>600 then raise exception 'search_budget'; end if;
+ result:=public.knowledge_search(b,'member-session',s,'#59',10,512,null,null);
+ if char_length(result::text)>512 or not (result->>'truncated')::boolean then raise exception 'small_budget_not_explicit'; end if;
+ result:=public.knowledge_read(b,'member-session',s,e,null,0,4096,false);
+ if char_length(result->>'body')>4096 then raise exception 'page_unbounded'; end if;
+ perform set_config('request.jwt.claim.sub',u::text,true);
+ result:=public.knowledge_write(a,'owner-session',s,'verify',jsonb_build_object('entry_id',e,'expected_revision',1,'owner_assertion',true,'evidence','issue:59'),'verify');
+ if result->>'status'<>'verified' or (result->>'revision')::int<>2 then raise exception 'verify_missing'; end if;
+ perform public.knowledge_admin(a,'owner-session','configure_vector',jsonb_build_object('space_id',s,'model','synthetic-v1','dimensions',3),'vector-config');
+ hash:=result->>'content_sha256';
+ result:=public.knowledge_index(a,'owner-session',s,e,2,hash,'synthetic-v1',3,'[1,0,0]','index');
+ if result->>'indexed'<>'true' then raise exception 'vector_not_indexed'; end if;
+ result:=public.knowledge_search(a,'owner-session',s,'ERR_59',10,6000,'synthetic-v1','[1,0,0]');
+ if result->>'ranking'<>'rrf' or result#>>'{indexing,indexed}'<>'1' then raise exception 'real_vector_rrf_missing'; end if;
+ perform pg_temp.failed(format('select public.knowledge_index(%L,%L,%L,%L,2,%L,%L,3,%L,%L)',a,'owner-session',s,e,hash,'other-model','[1,0,0]','bad-model'),'knowledge_vector_incompatible');
+ perform pg_temp.failed(format('select public.knowledge_index(%L,%L,%L,%L,2,%L,%L,3,%L,%L)',a,'owner-session',s,e,hash,'synthetic-v1','["NaN",0,0]','bad-vector'),'knowledge_invalid_vector');
+ result:=public.knowledge_write(a,'owner-session',s,'revise',body||jsonb_build_object('expected_revision',2,'body','Revised ERR_59 evidence'),'revise');
+ if result->>'status'<>'proposed' or exists(select 1 from quorum_private.knowledge_vectors where entry_id=e) then raise exception 'revision_invalidation'; end if;
+ perform pg_temp.failed(format('select public.knowledge_index(%L,%L,%L,%L,2,%L,%L,3,%L,%L)',a,'owner-session',s,e,hash,'synthetic-v1','[1,0,0]','index'),'knowledge_stale_revision');
+ perform pg_temp.failed(format('select public.knowledge_write(%L,%L,%L,%L,%L,%L)',a,'owner-session',s,'withdraw',jsonb_build_object('entry_id',e,'expected_revision',1),'stale-cas'),'knowledge_revision_conflict');
+ perform public.knowledge_write(a,'owner-session',s,'propose',jsonb_build_object('entry_id',replacement,'type','hypothesis','title','ERR_59 alternative','body','Conflicting synthetic evidence','conflicts_with',jsonb_build_array(e)),'replacement');
+ result:=public.knowledge_write(a,'owner-session',s,'dispute',jsonb_build_object('entry_id',e,'expected_revision',3,'evidence','Conflicts with alternative','conflicts_with',jsonb_build_array(replacement)),'dispute');
+ if result->>'status'<>'disputed' then raise exception 'dispute_missing'; end if;
+ result:=public.knowledge_search(a,'owner-session',s,'ERR_59',10,6000,null,null);
+ if jsonb_array_length(result->'results')<>2 or not result::text like '%conflicts_with%' then raise exception 'conflicts_hidden'; end if;
+ perform public.knowledge_write(a,'owner-session',s,'supersede',jsonb_build_object('entry_id',e,'expected_revision',4,'replacement_id',replacement),'supersede');
+ result:=public.knowledge_search(a,'owner-session',s,'ERR_59',10,6000,null,null);
+ if jsonb_array_length(result->'results')<>1 or result#>>'{results,0,entry_id}'<>replacement::text then raise exception 'superseded_searchable'; end if;
+ perform pg_temp.denied(format('select public.knowledge_read(%L,%L,%L,%L,1,0,100,false)',a,'owner-session',s,e));
+ result:=public.knowledge_read(a,'owner-session',s,e,1,0,100,true);
+ if result->>'body' is null then raise exception 'owner_audit_missing'; end if;
+ perform public.knowledge_admin(a,'owner-session','attach',jsonb_build_object('space_id',s,'quorum_id',q2,'project_ref','same'),'attach-later');
+ if jsonb_array_length(public.knowledge_search(later,'later-session',s,'ERR_59',10,6000,null,null)->'results')<>1 then raise exception 'explicit_later_quorum_cannot_reuse'; end if;
+ perform public.knowledge_admin(a,'owner-session','detach',jsonb_build_object('space_id',s,'quorum_id',q2,'project_ref','same'),'detach-later');
+ perform pg_temp.denied(format('select public.knowledge_search(%L,%L,%L,%L,10,6000,null,null)',later,'later-session',s,'ERR_59'));
+ perform public.knowledge_admin(a,'owner-session','revoke',jsonb_build_object('space_id',s,'user_id',v),'revoke');
+ perform set_config('request.jwt.claim.sub',v::text,true);
+ perform pg_temp.denied(format('select public.knowledge_search(%L,%L,%L,%L,10,6000,null,null)',b,'member-session',s,'ERR_59'));
+ perform set_config('request.jwt.claim.sub',u::text,true);
+ perform public.knowledge_admin(a,'owner-session','grant',jsonb_build_object('space_id',s,'user_id',anon_id,'permission','reader'),'grant-anon');
+ perform set_config('request.jwt.claim.sub',anon_id::text,true);
+ perform public.knowledge_search(c,'anonymous-session',s,'ERR_59',10,6000,null,null);
+ update quorum_private.devices set revoked=true where id=c;
+ perform pg_temp.denied(format('select public.knowledge_search(%L,%L,%L,%L,10,6000,null,null)',c,'anonymous-session',s,'ERR_59'));
+ update quorum_private.devices set revoked=false where id=c;
+ update quorum_private.memberships set revoked=true where quorum_id=q and user_id=anon_id;
+ perform pg_temp.denied(format('select public.knowledge_search(%L,%L,%L,%L,10,6000,null,null)',c,'anonymous-session',s,'ERR_59'));
+ update quorum_private.memberships set revoked=false where quorum_id=q and user_id=anon_id;
+ update quorum_private.agents set revoked=true where id=c;
+ perform pg_temp.denied(format('select public.knowledge_search(%L,%L,%L,%L,10,6000,null,null)',c,'anonymous-session',s,'ERR_59'));
+ perform set_config('request.jwt.claim.sub',u::text,true);
+ -- Cached mutations never bypass revoked individual grants.
+ perform public.knowledge_admin(a,'owner-session','grant',jsonb_build_object('space_id',s,'user_id',v,'permission','writer'),'grant-again');
+ perform set_config('request.jwt.claim.sub',v::text,true);
+ retry:=public.knowledge_write(b,'member-session',s,'propose',jsonb_build_object('entry_id',gen_random_uuid(),'type','fact','title','retry','body','private retry'),'member-retry');
+ perform set_config('request.jwt.claim.sub',u::text,true);
+ perform public.knowledge_admin(a,'owner-session','revoke',jsonb_build_object('space_id',s,'user_id',v),'revoke-again');
+ perform set_config('request.jwt.claim.sub',v::text,true);
+ perform pg_temp.denied(format('select public.knowledge_write(%L,%L,%L,%L,%L,%L)',b,'member-session',s,'propose',jsonb_build_object('entry_id',(retry->>'entry_id')::uuid,'type','fact','title','retry','body','private retry'),'member-retry'));
+ perform set_config('request.jwt.claim.sub',u::text,true);
+ -- Vector-only matches are derived evidence, with cosine order and a real RRF path.
+ body:=jsonb_build_object('entry_id',gen_random_uuid(),'type','fact','title','Vector nearer','body','synthetic vector only');
+ retry:=public.knowledge_write(a,'owner-session',s,'propose',body,'near');
+ perform public.knowledge_index(a,'owner-session',s,(retry->>'entry_id')::uuid,1,retry->>'content_sha256','synthetic-v1',3,'[1,0,0]','near-index');
+ body:=jsonb_build_object('entry_id',gen_random_uuid(),'type','hypothesis','title','Vector farther','body','synthetic vector only');
+ retry:=public.knowledge_write(a,'owner-session',s,'propose',body,'far');
+ perform public.knowledge_index(a,'owner-session',s,(retry->>'entry_id')::uuid,1,retry->>'content_sha256','synthetic-v1',3,'[0,1,0]','far-index');
+ result:=public.knowledge_search(a,'owner-session',s,'nonlexical-query',10,6000,'synthetic-v1','[1,0,0]');
+ if result#>>'{results,0,title}'<>'Vector nearer' or result#>>'{results,1,title}'<>'Vector farther' then raise exception 'vector_distance_rank_wrong'; end if;
+ if jsonb_array_length(public.knowledge_search(a,'owner-session',s,'nonlexical-query',10,6000,null,null)->'results')<>0 then raise exception 'lexical_manufactured_match'; end if;
+ result:=public.knowledge_search(a,'owner-session',s,'Vector',10,6000,null,null);
+ n:=length(result::text);
+ retry:=public.knowledge_search(a,'owner-session',s,'Vector',10,n-1,null,null);
+ if length(retry::text)>n-1 then raise exception 'knowledge_context_budget_boundary'; end if;
+ perform pg_temp.denied(format('select public.knowledge_search(%L,%L,%L,%L,10,6000,null,null)',a,'wrong-session',s,'ERR_59'));
+ update quorum_private.agents set project_ref='other' where id=a;
+ perform pg_temp.denied(format('select public.knowledge_search(%L,%L,%L,%L,10,6000,null,null)',a,'owner-session',s,'ERR_59'));
+ update quorum_private.agents set project_ref='same' where id=a;
+ perform pg_temp.failed(format('select public.knowledge_admin(%L,%L,%L,%L,%L)',a,'owner-session','revoke',jsonb_build_object('space_id',s,'user_id',v,'permission','writer'),'unexpected-revoke-field'),'knowledge_invalid_payload');
+ perform public.knowledge_write(a,'owner-session',s,'withdraw',jsonb_build_object('entry_id',replacement,'expected_revision',1),'withdraw');
+ if jsonb_array_length(public.knowledge_search(a,'owner-session',s,'ERR_59',10,6000,null,null)->'results')<>0 then raise exception 'withdrawn_searchable'; end if;
+ perform public.knowledge_admin(a,'owner-session','purge',jsonb_build_object('space_id',s,'entry_id',replacement,'expected_revision',2),'purge');
+ if exists(select 1 from quorum_private.knowledge_revisions where entry_id=replacement) or exists(select 1 from quorum_private.knowledge_vectors where entry_id=replacement) then raise exception 'purge_incomplete'; end if;
+ if has_function_privilege('anon','public.knowledge_search(uuid,text,uuid,text,integer,integer,text,jsonb)','EXECUTE') then raise exception 'anonymous_role_execution'; end if;
+ if has_table_privilege('authenticated','quorum_private.knowledge_revisions','SELECT') then raise exception 'direct_history_grant'; end if;
+end $test$;
+select 'knowledge_contract_green';

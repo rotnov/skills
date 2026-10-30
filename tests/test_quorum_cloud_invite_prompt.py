@@ -91,7 +91,7 @@ class CloudInvitationPromptTests(unittest.TestCase):
                 self.assertIn('session receive', prompt)
                 self.assertIn('never runs session start as a background listener', prompt)
                 self.assertIn('not delivery to this chat', prompt)
-                self.assertIn('--accept-tasks-from coordinator --dispatch-mode native-subagent', prompt)
+                self.assertIn('--accept-tasks-from-members --dispatch-mode inline', prompt)
                 # The supported parent fallback stays intact and truthfully labelled.
                 self.assertIn('then session start and session status', prompt)
                 self.assertIn('Never relabel parent reception as a worker inbox', prompt)

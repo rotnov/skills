@@ -49,6 +49,24 @@ jobs:
           docker pull postgres:17-alpine
           uv run --frozen python -m unittest discover -s tests -p test_quorum_close_race.py -v
 
+      - name: Verify current member task authority in isolated PostgreSQL
+        env:
+          QUORUM_MEMBER_DOCKER: "1"
+        run: uv run --frozen python -m unittest discover -s tests -p test_quorum_member_authority_sql.py -v
+
+      - name: Verify owner maintenance and revocation races in isolated PostgreSQL
+        env:
+          QUORUM_UPDATE_DOCKER: "1"
+          PYTHONPATH: tests
+        run: uv run --frozen python -m unittest test_quorum_updates_backend test_quorum_update_authority_races -v
+
+      - name: Verify project knowledge in isolated pgvector PostgreSQL
+        env:
+          QUORUM_KNOWLEDGE_DOCKER: "1"
+        run: |
+          docker pull pgvector/pgvector@sha256:ac08538c6f8b9904c33c8224c5e5706dbe760aca29db1d096972b4052c22a75d
+          uv run --frozen python -m unittest discover -s tests -p test_quorum_knowledge_backend.py -v
+
       - name: Validate the official Agent Skills format
         run: ./scripts/check-agent-skills-spec.sh
 

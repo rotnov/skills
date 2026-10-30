@@ -317,16 +317,19 @@ if a necessary action requires that human.
 
 ## Delegation and availability
 
-For the receiving owner's one-time coordinator task grant, read
-[delegation](delegation.md). Connecting without that opt-in grants reception only.
-`session delegate --revoke` takes effect for new envelopes immediately; inspect
-current status before acting on a grant quoted in an older queued envelope.
+For receiving-owner task intake from current/future quorum members or a pinned
+coordinator, read [delegation](delegation.md). Connecting without that opt-in grants
+reception only. Member intake uses `--accept-tasks-from-members` with inline mode
+and requires fresh `session task-check <message-id>` immediately before work;
+queued envelopes and local status cannot prove current sender membership.
+`session delegate --revoke` takes effect for new envelopes and task checks;
+coordinator intake still requires current status before acting on an old envelope.
 Add `--dispatch-mode native-subagent` to `session connect` alongside
 `--accept-tasks-from <coordinator-role>`, or to `session delegate` alongside
 `--coordinator-role <coordinator-role>`, only on the receiving owner's explicit
 instruction. The private grant/status stores this choice; default and legacy
 grants execute inline, and revocation removes the mode. Follow
-[delegation](delegation.md#dispatch-matching-tasks) for matching-only native
+[delegation](delegation.md#coordinator-compatibility) for matching-only native
 workers, the two-worker limit, parent replies and unavailable-capability fallback.
 Workers do not bypass queued input. Active-turn ingestion is the separate Codex
 [urgent message](#urgent-messages) steering route or Claude Code's

@@ -54,8 +54,9 @@ duplicate keys) to stdin from its approved project directory:
 ```
 
 For joining, use `"mode": "accept"` with `"invite_id"` instead of `access`.
-Optional keys: `coordinator_role`, `dispatch_mode` (`native-subagent` needs a
-coordinator), `operations` (a subset only) and the permission lifetime:
+Optional keys: `coordinator_role`, `accept_tasks_from_members` (boolean; defaults
+to false and excludes `coordinator_role`), `dispatch_mode` (`native-subagent`
+needs a coordinator; member intake is inline), `operations` (a subset only) and the permission lifetime:
 
 - `lifetime: "bounded"` is the default for finite QA: `ttl_seconds` 1..3600,
   default 900, measured from prepare.
@@ -103,7 +104,14 @@ Q session --worker-capability <capability-file> stop
 ```
 
 Every argument must equal the approved scope, including `--access open`,
-`--accept-tasks-from` and `--dispatch-mode` when the scope sets them. Create
+`--accept-tasks-from`, `--accept-tasks-from-members` and `--dispatch-mode` when
+the scope sets them. Member intake requires `accept_tasks_from_members=true` in
+the original owner scope and the matching connect flag. Before member task work,
+the same worker runs `session --worker-capability <capability-file> task-check
+<message-id>`; an earlier envelope or status is insufficient. Legacy capabilities
+cannot add member scope or run member checks. All owner-held exclusions in
+[delegation](delegation.md) still apply; a stopped/expired capability denies a
+check even when its read-only RPC is in flight. Create
 JSON may hold only the approved `slug` and `role`; the stable request ID comes
 from the slot. Before any profile or token, the state's public service config
 must match the pinned service. A lost create or open-access response is retried

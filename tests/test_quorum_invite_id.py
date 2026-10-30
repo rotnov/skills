@@ -70,8 +70,8 @@ class IdInvitationTests(unittest.TestCase):
             for required in ('@Octocat', 'GitHub ID 123', '2026-10-23T12:00:00Z',
                              'via Supabase Auth', 'no Supabase dashboard registration',
                              'session connect', 'session start', 'session status', 'Hello',
-                             '--accept-tasks-from coordinator', 'without asking again for each assignment',
-                             'Pin the resolved coordinator agent UUID locally'):
+                             '--accept-tasks-from-members', 'without asking again for each assignment',
+                             'Persist the explicit member scope during connect'):
                 self.assertIn(required, prompt)
             self.assertIn('GitHub is required', prompt)
             for required in ('https://github.com/rotnov/skills/issues', 'Check existing issues',
@@ -138,7 +138,7 @@ class IdInvitationTests(unittest.TestCase):
                          'single-use', 'No GitHub login', 'fresh private state', 'session connect', 'Hello',
                          'https://github.com/rotnov/skills/issues',
                          f'protocol {release["protocol_version"]} and skill {release["skill_version"]}',
-                         '--accept-tasks-from coordinator --dispatch-mode native-subagent',
+                         '--accept-tasks-from-members --dispatch-mode inline',
                          'paste this prompt as my own instruction'):
             self.assertIn(required, prompt)
         self.assertNotIn('GitHub is required', prompt)
