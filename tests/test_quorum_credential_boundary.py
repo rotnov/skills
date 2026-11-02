@@ -253,6 +253,14 @@ class CredentialBoundaryTests(fixture.Bound):
 
 
 class ApiGuardContractTests(unittest.TestCase):
+    def test_invalid_argument_names_are_rejected_before_credentials_or_transport(self):
+        def forbidden(*args): raise AssertionError('must reject before token or request')
+        api = QuorumApi(ServiceConfig(fixture.ORIGIN, fixture.KEY), forbidden, request=forbidden)
+        for key in ('', '256hash', 'content-sha256', 'content.sha256', 'content sha256',
+                    'content_sha256\n', 'content_\u0662', 'CONTENT_SHA256'):
+            with self.subTest(key=key), self.assertRaisesRegex(ValueError, '^invalid_argument$'):
+                api.call('session_update_request', {key:'synthetic'}, 'invalid')
+
     def test_opt_in_guard_keeps_legacy_encoding_token_and_request_callbacks(self):
         events, sent = [], []
         def token():

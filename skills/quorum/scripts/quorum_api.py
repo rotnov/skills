@@ -96,7 +96,7 @@ class QuorumApi:
     def call(self, operation, payload, request_id=None):
         if operation not in OPERATIONS or not isinstance(payload, dict):
             raise ValueError('invalid_operation')
-        if any(not re.fullmatch('[a-z_]+', key) for key in payload):
+        if any(not re.fullmatch('[a-z_][a-z0-9_]*', key) for key in payload):
             raise ValueError('invalid_argument')
         data = {'p_' + key: value for key, value in payload.items()}
         if request_id is not None:

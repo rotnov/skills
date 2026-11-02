@@ -1,5 +1,6 @@
 """Portable project-knowledge client contracts; no service or provider calls."""
 import os
+import json
 from pathlib import Path
 import shutil
 import subprocess
@@ -21,6 +22,25 @@ ENTRY = {'entry_id':'55555555-5555-4555-8555-555555555555', 'type':'fact',
 
 
 class KnowledgeTests(unittest.TestCase):
+    def test_index_sends_the_complete_revision_through_real_transport(self):
+        from quorum_knowledge import invoke
+        from quorum_api import QuorumApi, ServiceConfig
+        sent=[]
+        def request(url, headers, body):
+            sent.append((url,json.loads(body)))
+            return {'indexed':True}
+        api=QuorumApi(ServiceConfig('https://synthetic.invalid','public'),
+                      lambda:'synthetic-token',request=request)
+        result=invoke(api,RECORD,'index',{'space_id':SPACE,'entry_id':ENTRY['entry_id'],
+            'revision':1,'content_sha256':'a'*64,'model':'synthetic-v1','dimensions':2,
+            'vector':[1,0]},request_id='index-1')
+        self.assertEqual(result,{'indexed':True})
+        self.assertEqual(sent,[('https://synthetic.invalid/rest/v1/rpc/knowledge_index',
+            {'p_agent_id':RECORD['agent_id'],'p_session_ref':SID,
+             'p_space_id':SPACE,'p_entry_id':ENTRY['entry_id'],'p_revision':1,
+             'p_content_sha256':'a'*64,'p_model':'synthetic-v1','p_dimensions':2,
+             'p_vector':[1,0],'p_request_id':'index-1'})])
+
     def test_owner_operations_require_explicit_current_assertion_before_rpc(self):
         from quorum_knowledge import invoke, KnowledgeError
         calls=[]
