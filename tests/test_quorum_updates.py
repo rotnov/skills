@@ -88,6 +88,22 @@ class OwnerUpdateTests(unittest.TestCase):
         self.assertEqual(self.ledger.setting('delegation-test'), {'coordinator':'unchanged'})
         self.assertFalse(result['runtime']['verified'])
 
+    def test_owner_fanout_sends_the_complete_target_through_real_transport(self):
+        from quorum_api import QuorumApi, ServiceConfig
+        sent = []
+        def request(url, headers, body):
+            sent.append((url, json.loads(body)))
+            return {'operation_id':OPID, 'queued':2, 'existing':0}
+        self.api = QuorumApi(ServiceConfig('https://synthetic.invalid', 'public'),
+                             lambda:'synthetic-token', request=request)
+        result = self.invoke()
+        self.assertEqual(sent, [('https://synthetic.invalid/rest/v1/rpc/session_update_request',
+                                {'p_agent_id':AID, 'p_session_ref':SID, 'p_quorum_id':QID,
+                                 'p_protocol_version':2, 'p_skill_version':'0.3.0',
+                                 'p_content_sha256':result['target']['content_sha256'],
+                                 'p_request_id':'owner-1'})])
+        self.assertEqual(result['fanout'], {'operation_id':OPID, 'queued':2, 'existing':0})
+
     def test_lost_send_response_resumes_the_same_target_without_refetch(self):
         from quorum_api import QuorumError
         self.api.lose = True
