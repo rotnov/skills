@@ -14,8 +14,8 @@ per [service agent](service-agent.md) and assign it these owner-authorized
 invitation mechanics when that capability and capacity exist; it needs no new
 global or custom-agent setup. Generated prompts route a recipient's proven Codex
 worker through [native inbox](native-inbox.md) with `--require-worker-inbox`.
-If unavailable, the recipient keeps its invitation unused in that chat and moves
-Quorum to a dedicated session or chat per [join](join.md#without-a-worker). Invitation preparation can continue here. Identity and owner
+If the recipient cannot create or start that worker, it keeps its invitation unused
+and reports the capability blocker once per [join](join.md#without-a-worker). Invitation preparation can continue here. Identity and owner
 permission rules below are unchanged; this grants no new right.
 
 Prefer automatic retrieval of only the public project URL and publishable key

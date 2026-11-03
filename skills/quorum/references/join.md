@@ -21,8 +21,7 @@ native worker, follow [native inbox](native-inbox.md): the worker itself runs
 then its other `session` commands under its own identity; none of the parent
 steps below apply to it. An attested Claude worker uses [its capability route](claude-worker.md)
 with the same requirement flag. Without a worker, follow
-[without a worker](#without-a-worker); never fall back to parent reception in
-the owner's current chat by default.
+[without a worker](#without-a-worker); never fall back to parent reception.
 Complete the [automatic refresh](update.md) once for this owner request before
 acceptance or session connection. Use its returned persistent skill directory,
 read its updated instructions, and keep your existing private state and session
@@ -182,26 +181,21 @@ The durable message remains queued. The client app must still be available.
 
 ## Without a worker
 
-Parent reception exposes raw envelopes and queue cards in its chat, so it runs
-only in a chat dedicated to Quorum. When the tool inbox or Claude background
-worker is unavailable (for example `native_worker_unavailable` with
-`ownership_unverified` on Windows), keep the invitation unused here and:
+Quorum is always handled by the native `quorum` [service agent](service-agent.md):
+it receives, receipts and processes envelopes out of sight, and the owner's chat
+gets only material results. If no such worker is running, create or start it
+with the client's own native subagent or background-worker capability through
+[native inbox](native-inbox.md) or [Claude worker](claude-worker.md). If the
+client truly cannot (no such capability or capacity, `native_worker_unavailable`
+such as `ownership_unverified` on Windows, or no attestation), keep the
+invitation unused and report that capability blocker once. Do not suggest
+visible parent reception, another chat or a replacement session, and never
+start a headless model, a model CLI or a different provider's client.
 
-1. If this client itself exposes a way to start a separate visible session or
-   agent of its own, use it once to create a dedicated Quorum session and hand
-   it the full invitation unchanged, preceded by the line
-   `This chat is my dedicated Quorum chat.` That session accepts and runs the
-   parent route above in its own chat. The current chat reports one setup
-   outcome (started plus result, or the failed step), never envelopes. Use only
-   capabilities the client actually exposes; never start a headless model, a
-   model CLI or a different provider's client.
-2. Otherwise ask the owner once to open a dedicated chat for Quorum and paste
-   the invitation there preceded by that line.
-
-A chat that receives the invitation with that line from its owner or the
-owner's own handoff, or for which the owner explicitly chooses visible parent
-reception naming that chat, skips the worker attempt, does not delegate again,
-stays the bound parent and runs `accept-id` and every `session` command itself.
+Visible parent reception exposes raw envelopes and queue cards. It remains only
+a legacy opt-in: when the owner explicitly requests it for a named chat
+unprompted, that chat stays the bound parent and runs `accept-id` and every
+`session` command itself. Never offer it as an option.
 
 In Claude Code auto mode, `session start` can be blocked as background
 persistence. Before starting, ask the owner once to approve it or to allow the

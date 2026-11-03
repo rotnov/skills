@@ -2514,7 +2514,7 @@ class PromptTests(unittest.TestCase):
                 self.assertIn('attests', prompt)
                 self.assertIn('session --worker-capability <capability-file> connect', prompt)
                 self.assertIn('the parent fallback below then does not apply', prompt)
-                self.assertIn('Parent-native fallback, only in a dedicated Quorum chat or after I explicitly choose visible parent reception naming this chat', prompt)
+                self.assertIn('Legacy parent-native opt-in, only when I explicitly request visible parent reception for this chat myself', prompt)
                 self.assertIn('--require-worker-inbox', prompt)
                 self.assertNotIn('Claude and other clients have no worker inbox', prompt)
         text = self.reference()
@@ -2546,8 +2546,8 @@ class PromptTests(unittest.TestCase):
 
     def test_missing_background_support_reports_once_without_replacement(self):
         text = self.reference()
-        for required in ('join.md#without-a-worker', 'no replacement model or headless handler',
-                         'no session other than that dedicated one',
+        for required in ('join.md#without-a-worker', 'report that blocker once',
+                         'no replacement model, session or headless handler',
                          'native_worker_unavailable', 'never as a worker inbox'):
             self.assertIn(required, text)
         evals = json.loads((SKILL / 'evals/evals.json').read_text())['evals']

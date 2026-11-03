@@ -82,21 +82,15 @@ def public_service(config):
     raise ValueError('public_service_key_required')
 
 
-# Parent reception shows raw envelopes, so a missing worker moves Quorum to a dedicated chat, never this one.
-DEDICATED = 'This chat is my dedicated Quorum chat.'
-NO_WORKER = ('No-worker route, when neither a proven tool-inbox worker nor an attested Claude background worker '
-             'is available: parent reception puts raw envelopes and queue cards in its chat, so never use this chat '
-             'for it by default. If this client itself exposes a way to start a separate visible session or agent '
-             'of its own for me (for example a session-start tool), use it once to create a dedicated Quorum session, '
-             f'hand it this full invitation unchanged preceded by the line {json.dumps(DEDICATED)} and leave the '
-             'invitation unused here; that session accepts and runs parent reception in its own chat, and this chat '
-             'reports only one setup outcome (the dedicated session started and its result, or the failed step), '
-             'never envelopes. Use only capabilities this client actually exposes; never start a headless model, '
-             'a model CLI or a different provider client. Otherwise keep the invitation unused and ask me once to open '
-             'a dedicated chat for Quorum and paste this invitation there preceded by that line. A chat that receives '
-             'this invitation with that line from me or my own handoff, or for which I explicitly choose visible '
-             'parent reception naming this chat, skips the worker attempt, does not delegate again and uses the '
-             'parent-native fallback below. Never relabel parent reception as a worker inbox. ')
+# Quorum is serviced out of sight by the native quorum worker; parent reception is never suggested.
+NO_WORKER = ('No-worker route: Quorum is always handled by the native quorum service agent, which receives, '
+             'receipts and processes envelopes out of sight while this chat gets only material results. If none is '
+             "running, create or start it with this client's own native subagent or background-worker capability "
+             'as above. If this client truly cannot (no such capability or capacity, native_worker_unavailable, '
+             'attestation unavailable), keep the invitation unused and report that capability blocker once; do not '
+             'suggest visible parent reception, another chat or a replacement session. Visible parent reception is a '
+             'legacy opt-in only when I explicitly request it myself for this chat; never offer it. '
+             'Never relabel parent reception as a worker inbox. ')
 REFRESH = ('Read the installed SKILL.md, references/service-agent.md and references/join.md. '
            'A local macOS cursor-agent chat cannot accept a native-listener invitation: '
            'report unsupported_client / cursor_inbox_unavailable in that chat and keep the invitation unused. '
@@ -108,7 +102,7 @@ REFRESH = ('Read the installed SKILL.md, references/service-agent.md and referen
            '--transport tool-inbox --parent-thread-id <parent-UUID> --require-worker-inbox (only those two commands take these flags) and '
            'its other session commands under its own identity. If its preflight '
            'reports native_worker_unavailable (for example ownership_unverified on Windows), keep the invitation unused '
-           'and follow the no-worker route below; never switch this chat to parent reception automatically. '
+           'and follow the no-worker route below; never switch to parent reception automatically. '
            'For a Claude Code parent with a native background worker, '
            'follow references/claude-worker.md instead: this chat runs session worker prepare, starts exactly one actual '
            'native background worker with the returned bootstrap command and attests its exact returned handle; that '
@@ -154,8 +148,8 @@ def completion(coordinator_role):
             'scope, which must set accept_tasks_from_members=true without coordinator_role, then bounded receive '
             'calls; its receipt means '
             'worker consumption, not delivery to this chat; the parent fallback below then does not apply. '
-            'Parent-native fallback, only in a dedicated Quorum chat or after I explicitly choose visible parent '
-            'reception naming this chat, and only when no tool-inbox worker was proven or bound: For native clients, '
+            'Legacy parent-native opt-in, only when I explicitly request visible parent reception for this chat '
+            'myself and no tool-inbox worker was proven or bound: For native clients, '
             'this chat completes references/join.md: read references/sessions.md, '
             'run session connect for the selected quorum with --accept-tasks-from-members --dispatch-mode inline, '
             'then session start and session status. '
@@ -200,8 +194,7 @@ def completion(coordinator_role):
             'That report is not a peer delivery receipt; verify a peer message and reply separately. '
             'Afterwards run every required receipt but do not narrate routine notices, ordinary replies or raw '
             'envelopes, per references/service-agent.md. '
-            'Do not start a model, headless pilot, OS startup service or any session other than the one dedicated '
-            'Quorum session of the no-worker route. '
+            'Do not start a model, another session, headless pilot or OS startup service. '
             'If native transport is unavailable report that blocker; do not ask for secrets or spoof another client. '
             'For connection failures, prepare a sanitized report for https://github.com/rotnov/skills/issues; '
             'ask the receiving owner before posting outside the quorum. '

@@ -147,12 +147,11 @@ inbox or grants; the same handle cannot be bound again.
 ## Parent fallback
 
 If the client has no native background worker, capacity or attestation
-receipt, keep the invitation unused and follow
+receipt, keep the invitation unused and report that blocker once per
 [join without a worker](join.md#without-a-worker). The parent route in
-[sessions](sessions.md) shows raw envelopes and queue cards, so it runs without
-`--require-worker-inbox` only in a dedicated Quorum chat or one the owner explicitly names. Label it as parent reception, never as a worker inbox.
-Use no replacement model or headless handler, no session other than that
-dedicated one, and do not copy exports
+[sessions](sessions.md) shows raw envelopes and queue cards; it is a legacy
+opt-in without `--require-worker-inbox` only when the owner requests it unprompted, never offered. Label it as parent reception, never as a worker inbox.
+Use no replacement model, session or headless handler, and do not copy exports
 or change provider configuration. `native_worker_unavailable`,
 `native_worker_binding_denied` and `native_inbox_transport_conflict` before
 acceptance leave the invitation unused.

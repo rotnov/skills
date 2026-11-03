@@ -30,9 +30,9 @@ configuring credentials.
    (`--transport tool-inbox`), and an owner-attested Claude Code background worker
    may own a scoped logical binding through [Claude worker](references/claude-worker.md);
    require that worker inbox for quiet acceptance/connection. If unavailable,
-   leave the invitation unused and move Quorum to a dedicated session or chat
-   per [join](references/join.md#without-a-worker); parent reception shows raw
-   envelopes/queue cards, so never default to it in the owner's current chat.
+   leave the invitation unused and report the blocker once per
+   [join](references/join.md#without-a-worker); never suggest parent reception
+   (raw envelopes/queue cards), a legacy opt-in only on the owner's own request.
    Only for creating, accepting,
    joining or connecting, then read [update](references/update.md) and run its
    automatic refresh once per owner request; issuing an invitation alone does
