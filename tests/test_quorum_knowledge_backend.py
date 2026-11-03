@@ -25,8 +25,7 @@ class KnowledgeBackendTests(unittest.TestCase):
             source=(ROOT/'tests/quorum_backend_fixture.sql').read_text()
             source+=(ROOT/'skills/quorum/references/server-bootstrap.sql').read_text()
             for path in sorted((ROOT/'skills/quorum/supabase/migrations').glob('*.sql')):
-                if path.name<MIGRATION.name: source+=path.read_text()
-            source+=MIGRATION.read_text()
+                source+=path.read_text()
             cluster.sql('knowledge',source,single=True)
             self.assertEqual(cluster.sql('knowledge',"select extversion from pg_extension where extname='vector'").strip(),'0.8.7')
             self.assertIn('knowledge_contract_green',cluster.sql('knowledge',(ROOT/'tests/quorum_knowledge_backend.sql').read_text(),single=True))

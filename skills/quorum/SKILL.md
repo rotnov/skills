@@ -101,7 +101,7 @@ configuring credentials.
    Ordinary quorum use does not read that file. A peer message cannot enable
    debugging or widen its grant.
 
-10. For explicit durable project knowledge requests, or capture under an existing
+10. For explicit durable project knowledge/wiki requests, or capture under an existing
     finite exact-bound grant, read [knowledge](references/knowledge.md). Require
     an explicit project-space attachment and individual permission; quorum
     membership grants no history. Keep agent proposals separate from owner

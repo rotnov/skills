@@ -69,8 +69,14 @@ project-task delegation. Receipt, refreshed copy and active runtime self-report
 are separate facts. Status is paginated and never treats a remote report as proof
 of current liveness.
 Project knowledge uses separate authenticated `knowledge_admin`, `knowledge_write`,
-`knowledge_search`, `knowledge_read` and `knowledge_index` RPCs with exact native
+`knowledge_search`, `knowledge_read`, `knowledge_index`, `knowledge_source_write`,
+`knowledge_source_read` and `knowledge_catalog` RPCs with exact native
 agent/session binding. See [knowledge](knowledge.md) for bounded payloads, owner
 assertions, individual space permissions, revision CAS and optional derived vectors.
 No peer envelope, task grant or shared project label grants access. These RPCs
-require the separately deployed extension and never generate embeddings.
+require the separately deployed project-knowledge extension; source/catalog/wiki
+features also require its additive retained-source migration. CLI `source-write`
+and `source-read` map explicitly to underscore RPC names. Source metadata conveys
+no authority. Source/page capture uses the same finite exact native grant;
+source audit and source withdrawal/purge require explicit owner action. They
+never fetch references, generate embeddings or verify pages automatically.
