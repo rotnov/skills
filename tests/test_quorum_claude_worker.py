@@ -37,6 +37,8 @@ EXPORTS = ('CODEX_THREAD_ID', 'CODEX_HOME', 'CLAUDE_CODE_SESSION_ID', 'CLAUDE_CO
            'CLAUDE_CODE_MESSAGING_SOCKET', 'CLAUDE_CODE_MESSAGING_TOKEN', 'GROK_SESSION_ID',
            'GROK_LEADER_SOCKET', 'CURSOR_CONVERSATION_ID', 'CURSOR_AGENT', 'SAND_AGENT_STORE_RPC_SERVICE')
 POSIX_PROOF = unittest.skipIf(os.name == 'nt', 'Claude worker slots need POSIX owner proof; Windows fails closed')
+# End-to-end routes without POSIX mode fixtures run on POSIX and on Windows (handle owner/DACL proof).
+OWNER_PROOF = unittest.skipUnless(os.name in ('posix', 'nt'), 'Claude worker slots need a POSIX or Windows owner proof')
 
 
 @contextlib.contextmanager
@@ -617,7 +619,7 @@ def actor(handle=HANDLE):
     return 'claude-worker:' + str(uuid.uuid5(uuid.UUID(SID), handle))
 
 
-@POSIX_PROOF
+@OWNER_PROOF
 class CliTests(Harness):
     @isolated_profiles
     def test_required_worker_preserves_attested_capability_scope(self):
@@ -1282,7 +1284,7 @@ class Bound(Harness):
         return stop
 
 
-@POSIX_PROOF
+@OWNER_PROOF
 class DeliveryTests(Bound):
     @isolated_profiles
     def test_claude_offer_precedes_stdout_and_explicit_receipt_only(self):

@@ -19,8 +19,12 @@ class AnchoredPath(type(Path())):
         return type(self)(*segments, held=self.held)
 
     def anchored_child(self):
-        """(name, directory descriptor) for a direct child of the anchored directory, else None."""
-        if self.held is None or self.name in ('', '.', '..'): return None
+        """(name, directory descriptor) for a direct child of the anchored directory, else None.
+
+        Windows has no dir_fd; there the holder keeps the verified chain pinned against rename and
+        deletion (`quorum_winproof`), so ordinary pathname use names the verified directory.
+        """
+        if os.name == 'nt' or self.held is None or self.name in ('', '.', '..'): return None
         directory, base = self.held
         return (self.name, directory) if str(self.parent) == base else None
 

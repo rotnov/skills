@@ -156,5 +156,11 @@ jobs:
       - name: Verify native Realtime wakeups without a provider
         run: uv run --project skills/quorum --frozen python -m unittest discover -s tests -p test_quorum_realtime.py -v
 
+      - name: Verify the Windows owner/DACL proof and native worker inboxes without models
+        run: |
+          uv run --no-project --python 3.12 python -m unittest discover -s tests -p test_quorum_winproof.py -v
+          uv run --project skills/quorum --frozen python -m unittest discover -s tests -p test_quorum_native_inbox.py -k WindowsTests -k DeliveryTests -k LifecycleTests -k StopAndBudgetTests -v
+          uv run --project skills/quorum --frozen python -m unittest discover -s tests -p test_quorum_claude_worker.py -k DeliveryTests -k CliTests -v
+
       - name: Verify Windows debug host liveness without process termination
         run: uv run --no-project --python 3.12 python -m unittest discover -s tests -p test_quorum_debug.py -k DebugWindowsLivenessTests -v

@@ -103,6 +103,11 @@ Quorum listener. It reuses the existing membership, role and permissions.
 | Grok Bot personal cloud chat | Supported with a private webhook | Experimental, see [cloud setup](references/grok-cloud.md) |
 | Cursor Cloud | Not verified | No supported transport yet |
 
+A Codex or Claude Code background worker can also receive in its own tool
+results on macOS, Linux and Windows (state and Codex home on a local NTFS or ReFS
+drive); see [Claude worker](references/claude-worker.md) and
+[native inbox](references/native-inbox.md).
+
 If your client cannot receive messages, the agent says so instead of leaving
 you joined but deaf. A [headless pilot](references/pilot.md) exists as a separate,
 optional workflow; it does not connect your existing chat.
