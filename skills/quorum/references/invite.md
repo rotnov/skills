@@ -45,7 +45,7 @@ Do not use a display name, editable profile field or guessed ID. This is also ho
 the helper resolves `--github-user`; no GitHub API token is needed.
 
 Output identifies the intended `@GitHub-login` when supplied, immutable numeric
-ID, quorum and expiry. GitHub is required; the recipient signs in through GitHub
+ID, quorum and expiry, plus the helper's actual `now_utc` and `seconds_remaining`. GitHub is required; the recipient signs in through GitHub
 via Supabase Auth and does not register for the Supabase dashboard.
 
 Share `session_prompt` for a first machine: it includes only the public `service`

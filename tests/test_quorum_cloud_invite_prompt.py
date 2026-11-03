@@ -151,4 +151,45 @@ class CloudInvitationPromptTests(unittest.TestCase):
         self.assertIn('never suggest parent reception', skill)
 
 
+    def test_prompts_leave_expiry_to_the_server_and_helper_reports_a_real_clock(self):
+        from datetime import datetime, timezone
+        from quorum_api import ServiceConfig
+        from quorum_invitations import clock, create_id_invitation, create_open_invitation
+
+        class Api:
+            def call(self, op, payload, request_id=None):
+                if op == 'quorum_lookup': return {'quorum_id': 'q'}
+                if op == 'quorum_check_owner': return True
+                return {'invite_id': '11111111-1111-4111-8111-111111111111',
+                        'expires_at': '2026-10-23T12:00:00+00:00'}
+
+        config = ServiceConfig('https://example.com', 'sb_publishable_synthetic')
+        github = create_id_invitation(Api(), config, 'team', '123', 'github')
+        anonymous = create_open_invitation(Api(), config, 'team', 'open')
+        for name, prompt in [('github', github['session_prompt']),
+                             ('configured', github['configured_machine_prompt']),
+                             ('anonymous', anonymous['session_prompt'])]:
+            with self.subTest(name=name):
+                for required in ('Do not judge expiry yourself',
+                                 'never compare expires_at with your own clock or sense of the date',
+                                 'attempt acceptance promptly', 'Only the server response decides',
+                                 'invite_denied', 'report that code',
+                                 'Mention remaining time only from an actual UTC clock reading', 'never an estimate'):
+                    self.assertIn(required, prompt)
+                self.assertLess(prompt.index('Do not judge expiry yourself'), prompt.index('helper accept-id'))
+        for result in (github, anonymous):
+            self.assertRegex(result['now_utc'], r'^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$')
+            self.assertIn('seconds_remaining', result)
+        now = datetime(2026, 10, 23, 11, 45, tzinfo=timezone.utc)
+        self.assertEqual(clock('2026-10-23T12:00:00Z', now), {'now_utc': '2026-10-23T11:45:00Z', 'seconds_remaining': 900})
+        self.assertEqual(clock('2026-10-23T12:00:00.5+00:00', now)['seconds_remaining'], 900)
+        self.assertEqual(clock('2026-10-23T11:00:00Z', now)['seconds_remaining'], 0)
+        self.assertIsNone(clock('tomorrow', now)['seconds_remaining'])
+        self.assertIsNone(clock(None, now)['seconds_remaining'])
+        join = ' '.join((Path(__file__).resolve().parents[1] / 'skills/quorum/references/join.md').read_text().split())
+        for required in ('Do not judge expiry yourself', 'compare `expires_at` with your own clock',
+                         'attempt acceptance promptly', '`invite_denied`', 'never an estimate'):
+            self.assertIn(required, join)
+
+
 if __name__ == '__main__': unittest.main()

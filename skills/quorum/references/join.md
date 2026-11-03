@@ -75,6 +75,11 @@ register a device/agent, guess a session ID, start a model/listener or connect a
 headless pilot. A consumed invite cannot restore revoked membership. Expired,
 revoked, wrong-target and anonymous acceptance of a GitHub invitation are denied,
 including cached retries. GitHub invitations expire after 24 hours; open ones after 15 minutes.
+Do not judge expiry yourself or compare `expires_at` with your own clock or
+sense of the date; attempt acceptance promptly. Only the server decides: report
+`invite_denied` (expired, used or revoked) if it comes back. Mention remaining
+time only from an actual UTC clock reading (the OS clock, or the issuing
+helper's `now_utc` and `seconds_remaining`), never an estimate.
 
 Before login or acceptance, `accept-id` checks that this chat can carry a native
 listener. For Grok it verifies this session's private leader socket, active

@@ -91,6 +91,25 @@ NO_WORKER = ('No-worker route: Quorum is always handled by the native quorum ser
              'suggest visible parent reception, another chat or a replacement session. Visible parent reception is a '
              'legacy opt-in only when I explicitly request it myself for this chat; never offer it. '
              'Never relabel parent reception as a worker inbox. ')
+# Agents misjudge "now"; only the server decides expiry, and any remaining time comes from a real clock.
+EXPIRY = ('Do not judge expiry yourself and never compare expires_at with your own clock or sense of the date; '
+          'attempt acceptance promptly. Only the server response decides: if it returns invite_denied (expired, '
+          'used or revoked), report that code. Mention remaining time only from an actual UTC clock reading, such '
+          'as the OS clock, never an estimate. ')
+
+
+def clock(expires_at, now=None):
+    """The helper's actual UTC time and seconds left, so nobody has to guess."""
+    from datetime import datetime, timezone
+    now = now or datetime.now(timezone.utc)
+    try:
+        expiry = datetime.fromisoformat(expires_at)
+        remaining = max(0, int((expiry - now).total_seconds())) if expiry.tzinfo else None
+    except (TypeError, ValueError):
+        remaining = None
+    return {'now_utc': now.isoformat(timespec='seconds').replace('+00:00', 'Z'), 'seconds_remaining': remaining}
+
+
 REFRESH = ('Read the installed SKILL.md, references/service-agent.md and references/join.md. '
            'A local macOS cursor-agent chat cannot accept a native-listener invitation: '
            'report unsupported_client / cursor_inbox_unavailable in that chat and keep the invitation unused. '
@@ -227,15 +246,15 @@ def create_id_invitation(api, config, slug, target, request_id, *, github_user=N
                     f'expires at {json.dumps(expires_at)}. GitHub is required and the account '
                     'must match this invitation. Sign in through GitHub via Supabase Auth; '
                     'no Supabase dashboard registration is needed. ')
-    prompt = (introduction + INSTALL + REFRESH + f'helper accept-id {invite_id} with --origin and --publishable-key from this public '
+    prompt = (introduction + EXPIRY + INSTALL + REFRESH + f'helper accept-id {invite_id} with --origin and --publishable-key from this public '
               f'service locator: {json.dumps(service)}. Reuse my machine login; complete my own GitHub '
               'browser login only for initial setup or explicit reauthentication. ' + finish)
-    configured = (introduction + 'Use the installed quorum skill and my configured machine profile. '
+    configured = (introduction + EXPIRY + 'Use the installed quorum skill and my configured machine profile. '
                   + REFRESH + f'helper accept-id {invite_id} without service flags. '
                   'Reuse my existing machine login. Missing or ambiguous service profiles are blockers; '
                   'never infer a server from the invitation UUID. ' + finish)
     return {'invite_id': invite_id, 'quorum': slug, 'quorum_id': quorum_id, 'target_github_id': target,
-            'target_github_user': github_user, 'expires_at': expires_at, 'service': service,
+            'target_github_user': github_user, 'expires_at': expires_at, **clock(expires_at), 'service': service,
             'session_prompt': prompt, 'configured_machine_prompt': configured}
 
 
@@ -246,11 +265,11 @@ def create_open_invitation(api, config, slug, request_id, *, coordinator_role='c
     prompt = (f'This single-use open invitation joins quorum slug {json.dumps(slug)}; it expires at '
               f'{json.dumps(expires_at)}. No GitHub login or browser is needed: accept it with a new '
               'anonymous Quorum identity kept only in a fresh private state directory. Anyone holding this '
-              'text before acceptance can use it; do not forward it. ' + INSTALL + REFRESH
+              'text before acceptance can use it; do not forward it. ' + EXPIRY + INSTALL + REFRESH
               + f'helper accept-id {invite_id} --anonymous with --origin and --publishable-key from this '
               f'public service locator: {json.dumps(service)}. ' + finish)
     return {'invite_id': invite_id, 'quorum': slug, 'quorum_id': quorum_id, 'access': 'open',
-            'expires_at': expires_at, 'service': service, 'session_prompt': prompt}
+            'expires_at': expires_at, **clock(expires_at), 'service': service, 'session_prompt': prompt}
 
 
 def accept_id_invitation(args, ledger):
