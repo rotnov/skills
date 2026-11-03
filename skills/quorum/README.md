@@ -7,33 +7,14 @@ person keeps working in their own chat.
 
 ## Install the skill
 
-Copy this prompt into the chat you want to use. It installs the skill, explains
-how Quorum works and asks what you want to do next. Nothing connects until you
-say so.
+Paste this into the chat you want to use:
 
-> Install the Quorum skill from
-> <https://github.com/rotnov/skills/tree/main/skills/quorum> and get it ready to use.
->
-> 1. Install it globally for Claude Code and Codex with the pinned installer:
->    `npx --yes skills@1.5.20 add rotnov/skills --skill quorum -a claude-code codex --copy -g -y`.
->    If it is already installed, use its automatic refresh instead
->    (references/update.md). Then read the installed SKILL.md.
-> 2. Check the prerequisites: Node.js >= 22.20 with npm, uv (it selects
->    Python 3.12), git, outbound HTTPS/WSS and, for GitHub sign-in, a browser.
->    List anything missing with the exact fix; do not work around it.
-> 3. Learn how the skill works before acting: a shared Supabase server stores
->    membership and messages; a quorum is a team on that server; each chat is
->    connected separately with a role and a shared project reference; a local
->    listener delivers messages into this exact chat without starting another
->    model. Joining needs an invitation; creating a quorum needs a server
->    whose administrator allowed my GitHub account.
-> 4. Installation alone must not sign in, join, connect or start a listener.
->    Report what was installed (skill version and path) and ask me which of
->    these I want: join with an invitation I have, set up my own server,
->    create a quorum, invite someone, or check this chat's connection.
+> Set up Quorum for me: fetch and follow this guide
+> <https://github.com/rotnov/skills/tree/main/skills/quorum>
 
-If someone sent you an invitation, paste their prompt instead. It already
-includes the installation step.
+Your agent installs the skill, checks what is missing and asks what you want
+to do next. Nothing signs in or connects until you say so. If someone sent you
+an invitation, paste their prompt instead; it already includes installation.
 
 ## How it works
 
@@ -146,6 +127,28 @@ optional workflow; it does not connect your existing chat.
 - **Project knowledge and debugging** are opt-in and need extra server setup:
   see [project knowledge](references/knowledge.md) and
   [debugging](references/debug.md).
+
+## Setup guide for agents
+
+You are an AI agent asked to set up Quorum. Follow these steps in order.
+
+1. Install the skill globally for Claude Code and Codex with the pinned installer:
+   `npx --yes skills@1.5.20 add rotnov/skills --skill quorum -a claude-code codex --copy -g -y`.
+   If it is already installed, use its automatic refresh instead
+   ([update](references/update.md)). Then read the installed [SKILL.md](SKILL.md).
+2. Check the prerequisites: Node.js 22.20 or newer with npm, uv (it selects
+   Python 3.12), git, outbound HTTPS and WSS and, for GitHub sign-in, a browser.
+   Report anything missing with the exact fix; do not work around it.
+3. Understand the model before acting: a shared Supabase server stores
+   membership and messages; a quorum is a team on that server; each chat is
+   connected separately with a role and a shared project reference; a local
+   listener delivers messages into this exact chat without starting another
+   model. Joining needs an invitation; creating a quorum needs a server whose
+   administrator allowed the owner's GitHub account.
+4. Do not sign in, join, connect or start a listener during installation.
+   Report the installed skill version and path, then ask the owner which they
+   want: join with an invitation, set up their own server, create a quorum,
+   invite someone, or check this chat's connection.
 
 ## More detail
 
