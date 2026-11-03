@@ -34,6 +34,13 @@ begin
  result:=public.session_heartbeat(agent,sid,gen_random_uuid(),p,v);
  if result->>'online' is distinct from 'true' or result->>'new_connection' is distinct from 'true'
     or result->'required'<>required then raise exception 'open_member_heartbeat'; end if;
+ -- With the Hello reporting extension the newcomer gets its own roster notice; receipt it quietly.
+ if jsonb_typeof(result->'hello')='object' then
+  head:=public.session_inbox(agent,sid)->0;
+  if head->>'id' is distinct from result->'hello'->>'roster_message_id' or head->>'notification'<>'true' then
+   raise exception 'roster_not_notification: %',head; end if;
+  perform public.session_ack(agent,sid,(head->>'id')::uuid);
+ end if;
  if not exists(select 1 from quorum_private.session_notices n join quorum_private.messages m on m.id=n.message_id
    where n.agent_id=agent and m.recipient_id=owner_agent) then raise exception 'open_member_hello_missing'; end if;
  if public.session_heartbeat(agent,sid,gen_random_uuid(),1,'0.2.1')->>'code' is distinct from 'skill_update_required' then
