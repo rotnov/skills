@@ -281,6 +281,55 @@ class StandingCommandTests(unittest.TestCase):
             self.assertNotIn('standing_grants', delegate()['delegation'])
             self.assertIsNone(status()['standing_grants'])
 
+    def test_skill_refresh_recovers_a_stale_binding_but_client_tests_stay_release_gated(self):
+        from quorum_release import ReleaseMismatch, installed_release
+        from quorum_session import dispatch
+        from quorum_state import LocalLedger
+        self.assertEqual(installed_release(), {'protocol_version': 2, 'skill_version': '0.3.0'})
+        class Remote(Api):
+            required = installed_release()
+            def call(self, operation, payload, request_id=None):
+                if operation == 'session_requirements':
+                    self.calls.append((operation, payload))
+                    return self.required
+                return super().call(operation, payload)
+        api = Remote()
+        environment = {key: value for key, value in os.environ.items()
+                       if key not in ('CODEX_THREAD_ID', 'CLAUDE_CODE_SESSION_ID', 'GROK_SESSION_ID')}
+        environment['CODEX_THREAD_ID'] = SESSION
+        with tempfile.TemporaryDirectory() as root, patch.dict(os.environ, environment, clear=True), \
+                patch('quorum_live.api_for', return_value=(api, None, None)), \
+                patch('quorum_session.shutil.which', return_value='/synthetic/codex'):
+            auth = LocalLedger(Path(root))
+            self.addCleanup(auth.db.close)
+            register = lambda *_, **__: dict(agent_id=AGENT, quorum_id=QUORUM)
+            dispatch(SimpleNamespace(session_id=SESSION, action='connect', role='receiver', quorum='team',
+                                     project_ref='project', accept_tasks_from=None, accept_tasks_from_members=True,
+                                     dispatch_mode='inline', standing_grants_from='lead'), auth, register)
+            api.required = {'protocol_version': 2, 'skill_version': '0.3.1'}
+            def check(message, action='skill-refresh'):
+                return dispatch(SimpleNamespace(session_id=SESSION, action='standing-check', message_id=message,
+                                                standing_action=action), auth, register)
+            # A current member that is not the coordinator is still refused under the mismatch.
+            api.coordinator = OTHER
+            api.calls.clear()
+            denied = check(MESSAGES[0])
+            self.assertEqual((denied['authorized'], denied['reason']), (False, 'sender_not_coordinator'))
+            self.assertEqual(denied['release']['code'], 'skill_update_required')
+            self.assertEqual([op for op, _ in api.calls],
+                             ['session_requirements', 'session_task_authority', 'resolve_role'])
+            api.coordinator = SENDER
+            granted = check(MESSAGES[0])
+            self.assertTrue(granted['authorized'])
+            self.assertEqual(granted['sender_id'], SENDER)
+            self.assertEqual(granted['release']['required']['skill_version'], '0.3.1')
+            # The once-per-message marker still applies.
+            self.assertEqual(check(MESSAGES[0])['reason'], 'request_already_used')
+            api.calls.clear()
+            with self.assertRaisesRegex(ReleaseMismatch, 'skill_update_required'):
+                check(MESSAGES[1], action='client-test')
+            self.assertEqual([op for op, _ in api.calls], ['session_requirements'])
+
     def test_first_connect_with_flag_persists_the_grant(self):
         from quorum_release import installed_release
         from quorum_session import dispatch

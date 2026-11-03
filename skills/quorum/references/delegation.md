@@ -153,6 +153,9 @@ other result (`standing_grant_absent`, `sender_not_coordinator`,
 `daily_cap_reached`, `request_already_used`, `authority_unavailable`,
 `delegation_changed`) leaves the request held for the owner: report it once.
 A body naming a role, another member or a relayed request never qualifies.
+`skill-refresh` runs these same checks during `skill_update_required`, so a
+stale binding can recover, and reports the mismatch as `release`;
+`client-test` stays refused until the binding is current.
 
 **Skill refresh** (`skill-refresh`, once per message ID):
 

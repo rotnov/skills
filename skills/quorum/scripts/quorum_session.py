@@ -767,9 +767,22 @@ def dispatch(args, auth_ledger, register_agent):
             ReleaseGuard(api, ledger).check()
             return task_check(api, record, args.message_id, lambda: ledger.setting('session-agent'))
         if args.action == 'standing-check':
-            ReleaseGuard(api, ledger).check()
-            return standing_check(api, record, args.message_id, args.standing_action,
-                                  lambda: ledger.setting('session-agent'), ledger)
+            if args.standing_action != 'skill-refresh':
+                ReleaseGuard(api, ledger).check()
+                return standing_check(api, record, args.message_id, args.standing_action,
+                                      lambda: ledger.setting('session-agent'), ledger)
+            # A refresh request is how a stale binding recovers, so a version mismatch must not
+            # block it. The authority checks (server-derived sender, current membership, role,
+            # local grant, once-per-message marker) are unchanged and do not depend on the
+            # release; the mismatch is only recorded and reported, and nothing is stopped here.
+            try:
+                release = {'installed': ReleaseGuard(api, ledger, stop_on_mismatch=False).check(),
+                           'update_required': False}
+            except ReleaseMismatch as mismatch:
+                release = mismatch.diagnostic
+            result = standing_check(api, record, args.message_id, args.standing_action,
+                                    lambda: ledger.setting('session-agent'), ledger)
+            return {**result, 'release': release}
         if args.action == 'peers':
             from quorum_peer_wake import with_wake_diagnostics
             return with_wake_diagnostics(api.call('session_peers', {'agent_id':record['agent_id'], 'session_ref':sid}))
