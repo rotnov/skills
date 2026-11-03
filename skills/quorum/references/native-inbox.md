@@ -29,7 +29,8 @@ use, registration or RPC, that:
   handle: the home, provider directories and file are the user's, and only the
   user, SYSTEM and Administrators may write them. Ancestors are owned by the user,
   SYSTEM, Administrators or TrustedInstaller, and nobody else may delete, rename
-  or re-permission them. The home must be on a local NTFS or ReFS drive. Only directory names are listed, the whole
+  or re-permission them (AppContainer package and capability rules count as the
+  user's own; other accounts do not). The home must be on a local NTFS or ReFS drive. Only directory names are listed, the whole
   history is scanned for uniqueness, and each date directory is closed after its
   subtree, so descriptor use stays bounded by depth rather than history;
 - its first line only (256 KiB maximum, read byte by byte so no byte after the

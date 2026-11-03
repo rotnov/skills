@@ -6,6 +6,18 @@ import tempfile
 from unittest.mock import patch
 
 
+def anchor_owner_proof_fixtures():
+    """On Windows, keep temporary fixtures under the user profile, like the real state and Codex homes.
+
+    %TEMP% commonly grants other accounts (sandbox users) Modify, which the ancestor proof rightly
+    refuses, just as POSIX refuses a non-sticky shared directory. POSIX keeps the system default.
+    """
+    if os.name != 'nt': return
+    base = Path.home() / '.quorum-test-tmp'
+    base.mkdir(exist_ok=True)
+    tempfile.tempdir = str(base.resolve())
+
+
 def isolated_profiles(method):
     @wraps(method)
     def run(*args, **kwargs):

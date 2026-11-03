@@ -28,6 +28,11 @@ REPLACE = DELETE | WRITE_DAC | WRITE_OWNER | FILE_DELETE_CHILD | GENERIC_ALL
 # Group/other-writable (POSIX 0o022) for the Codex rollout tree.
 WRITE = REPLACE | FILE_WRITE_DATA | FILE_APPEND_DATA | FILE_WRITE_EA | FILE_WRITE_ATTRIBUTES | GENERIC_WRITE
 
+# AppContainer package (S-1-15-2-) and capability (S-1-15-3-) SIDs match only AppContainer tokens, and
+# Windows grants such a token only access its user and groups also receive (a dual access check), so
+# a rule naming one never reaches beyond the user's own access: same-user, like a sandboxed process.
+APP_CONTAINER = ('S-1-15-2-', 'S-1-15-3-')
+
 ALLOWED, DENIED = 0, 1
 INHERIT_ONLY, INHERITED = 0x08, 0x10
 SE_DACL_PRESENT, SE_DACL_PROTECTED, SE_SELF_RELATIVE = 0x4, 0x1000, 0x8000
@@ -96,6 +101,7 @@ def evaluate(descriptor, kind, policy, user, owners):
 
     - 'ancestor': owned by the user, SYSTEM, Administrators or TrustedInstaller; no other principal may
       delete, rename or re-permission it (others may only add entries, like a sticky directory).
+      AppContainer package/capability rules count as the user's own (see `APP_CONTAINER`).
     - 'claude' 'private' directory: owned by the user; a protected DACL with no inherited ACE whose allow
       ACEs name only the user, SYSTEM or Administrators (POSIX 0700).
     - 'claude' 'file': owned by the user; allow ACEs name only the user, SYSTEM or Administrators (POSIX
@@ -114,6 +120,7 @@ def evaluate(descriptor, kind, policy, user, owners):
     strict = policy == 'claude' and kind != 'ancestor'
     for ace_type, flags, mask, sid in aces:
         if ace_type != ALLOWED or sid in trusted: continue
+        if kind == 'ancestor' and sid.startswith(APP_CONTAINER): continue
         if strict: raise Unsafe()
         if not flags & INHERIT_ONLY and mask & limit: raise Unsafe()
     if strict and kind == 'private' and (not protected or any(ace[1] & INHERITED for ace in aces)): raise Unsafe()

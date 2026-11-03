@@ -10,7 +10,9 @@ import tempfile
 import unittest
 from unittest.mock import patch
 import uuid
-from quorum_test_support import isolated_profiles
+from quorum_test_support import anchor_owner_proof_fixtures, isolated_profiles
+
+anchor_owner_proof_fixtures()
 
 SCRIPTS = Path(__file__).resolve().parents[1] / 'skills/quorum/scripts'
 sys.path.insert(0, str(SCRIPTS))

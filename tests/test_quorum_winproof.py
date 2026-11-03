@@ -16,6 +16,9 @@ from unittest.mock import patch
 SCRIPTS = Path(__file__).resolve().parents[1] / 'skills/quorum/scripts'
 sys.path.insert(0, str(SCRIPTS))
 import quorum_winproof as proof  # noqa: E402
+from quorum_test_support import anchor_owner_proof_fixtures  # noqa: E402
+
+anchor_owner_proof_fixtures()
 
 USER = bytes.fromhex('0105000000000005150000000100000002000000030000000a000000')  # S-1-5-21-1-2-3-10
 OTHER = bytes.fromhex('0105000000000005150000000100000002000000030000000b000000')  # S-1-5-21-1-2-3-11
@@ -98,6 +101,16 @@ class DescriptorDecisionTests(unittest.TestCase):
             with self.subTest(owner=proof.sid_text(owner)):
                 self.assertTrue(accepted(descriptor(owner, windows_root, protected=False), 'ancestor'))
         self.assertFalse(accepted(descriptor(OTHER, windows_root), 'ancestor'))
+        # An AppContainer capability with full control (seen on real AppData) is the user's own,
+        # but only on ancestors: private paths stay owner-only.
+        capability = sid_bytes('S-1-15-3-3557520199-3666692283-3112367039-3524159787-2791857073-3163583606-3692855932')
+        package = sid_bytes('S-1-15-2-1')
+        for sid in (capability, package):
+            self.assertTrue(accepted(descriptor(ADMINS, windows_root + [(0, 0, FULL, sid)]), 'ancestor'))
+            self.assertFalse(accepted(descriptor(USER, [(0, 3, FULL, USER), (0, 0, FULL, sid)]), 'private'))
+            self.assertFalse(accepted(descriptor(USER, [(0, 0, FULL, USER), (0, 0, FULL, sid)]), 'file', 'codex'))
+        # A sandbox user group or another account with Modify (seen on real %TEMP%) stays refused.
+        self.assertFalse(accepted(descriptor(USER, windows_root + [(0, 3, MODIFY, OTHER)]), 'ancestor'))
         for right in (0x10000, 0x40000, 0x80000, 0x40, 0x10000000, MODIFY):
             with self.subTest(right=hex(right)):
                 self.assertFalse(accepted(descriptor(SYSTEM, windows_root + [(0, 0, right, USERS)]), 'ancestor'))

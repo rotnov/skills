@@ -25,7 +25,9 @@ through a junction or other reparse point: private directories need a protected
 DACL with no inherited rule, and they and their files may grant access only to
 the current user, SYSTEM or Administrators. Ancestors must be owned by the user,
 SYSTEM, Administrators or TrustedInstaller, and nobody else may delete, rename
-or re-permission them. The state directory must be on a local NTFS or ReFS
+or re-permission them; AppContainer package and capability rules count as the
+user's own, but another account (such as a sandbox user group) does not, so
+keep the state directory under the user profile, not `%TEMP%`. The state directory must be on a local NTFS or ReFS
 drive. No ACL is changed; new private directories and files get an owner-only
 DACL when created. In an elevated session, objects owned by Administrators (that
 session's default owner) count as the user's. Where neither proof is available,
