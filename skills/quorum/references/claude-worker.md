@@ -84,6 +84,9 @@ duplicate keys) to stdin from its approved project directory:
 ```
 
 For joining, use `"mode": "accept"` with `"invite_id"` instead of `access`.
+For an open (anonymous) invitation, the accept scope also sets
+`"access": "open"`; omitted or `"github"` keeps the GitHub login. Prepare an
+open scope in a fresh private state (no GitHub `config.json` or credentials).
 Optional keys: `coordinator_role`, `accept_tasks_from_members` (boolean; defaults
 to false and excludes `coordinator_role`), `dispatch_mode` (`native-subagent`
 needs a coordinator; member intake is inline), `operations` (a subset only) and the permission lifetime:
@@ -127,6 +130,7 @@ The bearer stays in that file and memory, never in arguments, output or chat.
 ```text
 Q create <slug> --access github --json-stdin --worker-capability <capability-file>
 Q accept-id <invite-id> --transport tool-inbox --worker-capability <capability-file> --require-worker-inbox
+Q accept-id <invite-id> --anonymous --origin <origin> --publishable-key <key> --transport tool-inbox --worker-capability <capability-file> --require-worker-inbox
 Q session --worker-capability <capability-file> connect <slug> --role <role> --project-ref <project> --transport tool-inbox --require-worker-inbox
 Q session --worker-capability <capability-file> receive --wait-seconds 30
 Q session --worker-capability <capability-file> status
@@ -135,7 +139,11 @@ Q session --worker-capability <capability-file> stop
 
 Every argument must equal the approved scope, including `--access open`,
 `--accept-tasks-from`, `--accept-tasks-from-members` and `--dispatch-mode` when
-the scope sets them. Member intake requires `accept_tasks_from_members=true` in
+the scope sets them. `--anonymous` is accepted only with an open accept scope,
+which in turn refuses a GitHub accept; it needs the explicit pinned public
+service and keeps the new anonymous login in that state's
+`anonymous-credentials/`, as the ordinary open join does. A state already used
+for GitHub is refused with `anonymous_state_conflict`. Member intake requires `accept_tasks_from_members=true` in
 the original owner scope and the matching connect flag. Before member task work,
 the same worker runs `session --worker-capability <capability-file> task-check
 <message-id>`; an earlier envelope or status is insufficient. Legacy capabilities

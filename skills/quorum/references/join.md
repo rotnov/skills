@@ -63,6 +63,8 @@ anonymously, with no browser or GitHub, and keeps that login only in
 a state already used for GitHub (`anonymous_state_conflict`) and vice versa. Keep
 that state for every later command; if it is lost, the membership cannot be
 recovered and a new open invitation is required (`open_invite_required`).
+A Claude worker joins the same way when its owner-approved accept scope sets
+`"access": "open"` ([Claude worker](claude-worker.md#owner-parent-setup)).
 
 On a configured machine, use `configured_machine_prompt`: only the invite ID is
 needed, including for a fresh state directory, when one machine service is
