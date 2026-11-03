@@ -14,9 +14,8 @@ per [service agent](service-agent.md) and assign it these owner-authorized
 invitation mechanics when that capability and capacity exist; it needs no new
 global or custom-agent setup. Generated prompts route a recipient's proven Codex
 worker through [native inbox](native-inbox.md) with `--require-worker-inbox`.
-If unavailable, the recipient leaves its invitation unused and gives one concise
-capability/capacity diagnostic; visible parent reception requires its owner's
-explicit choice. Invitation preparation can continue here. Identity and owner
+If the recipient cannot create or start that worker, it keeps its invitation unused
+and reports the capability blocker once per [join](join.md#without-a-worker). Invitation preparation can continue here. Identity and owner
 permission rules below are unchanged; this grants no new right.
 
 Prefer automatic retrieval of only the public project URL and publishable key
@@ -46,7 +45,11 @@ Do not use a display name, editable profile field or guessed ID. This is also ho
 the helper resolves `--github-user`; no GitHub API token is needed.
 
 Output identifies the intended `@GitHub-login` when supplied, immutable numeric
-ID, quorum and expiry. GitHub is required; the recipient signs in through GitHub
+ID, quorum and expiry. Run the [automatic refresh](update.md) first so the
+prompt's installer and wording come from the current skill. Prompts stay thin:
+data, the receiving owner's authorizations and hard rules; the recipient first
+refreshes and then follows its own installed [join](join.md), which wins over
+the invitation text, so later fixes reach already issued invitations. GitHub is required; the recipient signs in through GitHub
 via Supabase Auth and does not register for the Supabase dashboard.
 
 Share `session_prompt` for a first machine: it includes only the public `service`
