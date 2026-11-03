@@ -36,7 +36,9 @@ containing `SKILL.md`, `pyproject.toml` and `scripts/quorum.py`.
 `<private-state>` is an absolute writable directory you choose outside the
 repository, such as `~/.local/share/quorum/my-instance` on macOS/Linux or
 `$env:LOCALAPPDATA\Quorum\my-instance` on Windows. Expand it to an absolute
-path and pass `--state` before the command. It holds an authoritative service
+path and pass `--state` before the command. On Windows, let the helper create
+it; a directory pre-created with `mkdir -p` or `New-Item` inherits its parent's
+rules, which a [Claude worker](claude-worker.md#trust-and-identity) refuses. It holds an authoritative service
 config and independent ledgers/session bindings. New state directories can reuse
 the machine's selected service and login; another service needs its own state.
 Credentials use the shared machine profile described below, except an
