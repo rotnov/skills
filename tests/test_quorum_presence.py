@@ -234,3 +234,142 @@ class PresenceTests(unittest.TestCase):
                 with self.assertRaisesRegex(QuorumError,'coordination_unavailable'): health.tick()
                 self.assertEqual(ledger.setting('presence')['code'],'coordination_unavailable')
             finally: ledger.db.close()
+
+
+class HelloReportTests(unittest.TestCase):
+    """#88: the Hello result is persisted once per connection and reported by status."""
+    RECORD = {'agent_id':'a', 'session_ref':'s', 'project_ref':'shared'}
+
+    def api(self, responses, calls):
+        class Api:
+            def call(self, operation, payload):
+                if operation == 'session_requirements': return {'protocol_version':2, 'skill_version':'0.3.0'}
+                calls.append(payload['connection_id'])
+                return {'online':True, **responses(payload['connection_id'], len(calls))}
+        return Api()
+
+    @staticmethod
+    def hello(peers, roles, available=None):
+        return {'peers':peers, 'roles':roles, 'available':len(roles) if available is None else available,
+                'available_roles':roles, 'roster_message_id':'00000000-0000-4000-8000-000000000001'}
+
+    @isolated_profiles
+    def test_new_connection_reports_peers_and_later_heartbeats_do_not_rewrite_it(self):
+        from quorum_presence import Presence
+        from quorum_state import LocalLedger
+        with tempfile.TemporaryDirectory() as root:
+            ledger = LocalLedger(Path(root))
+            try:
+                calls, now, writes = [], [0], []
+                hello = self.hello(2, ['alpha', 'zeta'])
+                api = self.api(lambda _, n: {'new_connection':n == 1, 'hello':hello}, calls)
+                health = Presence(api, self.RECORD, ledger, clock=lambda:now[0])
+                original = ledger.setting
+                def spy(key, value=None):
+                    if key == 'hello' and value is not None: writes.append(value)
+                    return original(key, value)
+                ledger.setting = spy
+                health.tick()
+                for second in (20, 40): now[0] = second; health.tick()
+                self.assertEqual(len(calls), 3)
+                self.assertEqual(len(writes), 1, 'one persisted outcome per connection, not per heartbeat')
+                saved = ledger.setting('hello')
+                self.assertEqual((saved['sent'], saved['available'], saved['reused'], saved['roster']), (2, 2, False, True))
+                self.assertEqual(saved['summary'], 'Hello sent to 2 peers in shared (alpha, zeta); roster: 2 available')
+            finally: ledger.db.close()
+
+    def test_zero_and_many_peers_are_explicit_and_bounded(self):
+        from quorum_presence import hello_result, hello_summary
+        zero = {'connection_id':'c', 'project_ref':'alone', 'reused':False, 'kept':0, **hello_result(self.hello(0, []))}
+        self.assertEqual(hello_summary(zero), '0 peers share project reference alone; the Hello reached no one; '
+                                              'roster: 0 available')
+        roles = ['peer-%02d' % n for n in range(1, 17)]
+        many = {'connection_id':'c', 'project_ref':'crowd', 'reused':False, 'kept':0,
+                **hello_result({**self.hello(20, roles + ['x'] * 9, 20), 'roles':roles})}
+        self.assertEqual(len(many['roles']), 16)
+        self.assertTrue(hello_summary(many).startswith('Hello sent to 20 peers in crowd (peer-01, '))
+        self.assertIn('peer-16, ...); roster: 20 available', hello_summary(many))
+        # Malformed or hostile counts are dropped rather than reported.
+        self.assertIsNone(hello_result({'peers':'9', 'available':10**6, 'roles':'x'})['sent'])
+        self.assertIsNone(hello_result({'peers':True})['sent'])
+        legacy = {'connection_id':'c', 'project_ref':'p', 'reused':False, 'kept':0, **hello_result(None)}
+        self.assertIn('not reported by the server', hello_summary(legacy))
+
+    @isolated_profiles
+    def test_reused_tool_inbox_epoch_reports_that_no_new_hello_was_sent(self):
+        from quorum_presence import Presence
+        from quorum_state import LocalLedger
+        with tempfile.TemporaryDirectory() as root:
+            ledger = LocalLedger(Path(root))
+            try:
+                calls, wall = [], [1000.0]
+                hello = self.hello(3, ['a', 'b', 'c'])
+                fresh = [True]
+                def respond(connection, n):
+                    new, fresh[0] = fresh[0], False
+                    return {'new_connection':new, 'hello':hello}
+                api = self.api(respond, calls)
+                Presence(api, self.RECORD, ledger, persist_epoch=True, wall=lambda:wall[0]).tick()
+                self.assertFalse(ledger.setting('hello')['reused'])
+                # The next bounded receive is a new process with the same persisted epoch.
+                wall[0] = 1010.0
+                Presence(api, self.RECORD, ledger, persist_epoch=True, wall=lambda:wall[0]).tick()
+                self.assertEqual(calls[0], calls[1])
+                saved = ledger.setting('hello')
+                self.assertTrue(saved['reused'])
+                self.assertEqual(saved['summary'], 'Reused connection ' + calls[0][:8] + ': no new Hello was sent; '
+                                 'earlier: Hello sent to 3 peers in shared (a, b, c); roster: 3 available')
+                # After a real gap the epoch rotates and a new Hello is reported plainly again.
+                fresh[0] = True
+                wall[0] = 1100.0
+                Presence(api, self.RECORD, ledger, persist_epoch=True, wall=lambda:wall[0]).tick()
+                self.assertNotEqual(calls[2], calls[0])
+                self.assertFalse(ledger.setting('hello')['reused'])
+            finally: ledger.db.close()
+
+    @isolated_profiles
+    def test_lost_response_retry_is_not_misreported_as_reuse(self):
+        from quorum_api import QuorumError
+        from quorum_presence import Presence
+        from quorum_state import LocalLedger
+        with tempfile.TemporaryDirectory() as root:
+            ledger = LocalLedger(Path(root))
+            try:
+                calls, now = [], [0]
+                hello = self.hello(1, ['peer'])
+                def respond(connection, n):
+                    if n == 1: raise QuorumError('service_unavailable')  # Server sent Hello; response lost.
+                    return {'new_connection':False, 'hello':hello}
+                health = Presence(self.api(respond, calls), self.RECORD, ledger, clock=lambda:now[0])
+                health.tick()
+                self.assertIsNone(ledger.setting('hello'))
+                now[0] = 20; health.tick()
+                self.assertEqual(calls[0], calls[1])
+                saved = ledger.setting('hello')
+                self.assertEqual((saved['reused'], saved['sent']), (False, 1))
+                self.assertEqual(saved['summary'], 'Hello sent to 1 peer in shared (peer); roster: 1 available')
+            finally: ledger.db.close()
+
+    @isolated_profiles
+    def test_realtime_resubscription_that_keeps_the_connection_is_reported(self):
+        from quorum_listener import Control
+        from quorum_presence import Presence
+        from quorum_state import LocalLedger
+        with tempfile.TemporaryDirectory() as root:
+            ledger = LocalLedger(Path(root))
+            try:
+                calls, now = [], [0]
+                hello = self.hello(0, [])
+                health = Presence(self.api(lambda _, n: {'new_connection':n == 1, 'hello':hello}, calls),
+                                  self.RECORD, ledger, clock=lambda:now[0])
+                health.connected()
+                self.assertEqual(ledger.setting('hello')['kept'], 0)
+                now[0] = 5; health.connected()
+                saved = ledger.setting('hello')
+                self.assertEqual((saved['kept'], saved['reused']), (1, False))
+                self.assertTrue(saved['summary'].startswith('Reconnect kept connection ' + calls[0][:8]
+                                                            + ': no new Hello was sent; earlier: 0 peers share'))
+                status = Control(ledger).status()
+                self.assertEqual(status['hello']['summary'], saved['summary'])
+                self.assertEqual(status['hello']['connection'], 'last')  # No listener lock is held here.
+            finally: ledger.db.close()

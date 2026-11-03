@@ -143,6 +143,25 @@ agent/device/membership rows through commit so revocation serializes with the
 operation. Ordinary receipt behavior and existing reviewed RPC bodies remain
 unchanged. Status reads remain point-in-time snapshots.
 
+## Hello reporting extension
+
+After reviewing the source and obtaining administrator deployment authorization,
+apply
+[`20261103180000_hello_roster_visibility.sql`](../supabase/migrations/20261103180000_hello_roster_visibility.sql)
+in one transaction after `20261022180000_open_access_close_serialization.sql`
+and, where deployed, after `20261103075741_llm_wiki.sql`. It pins the reviewed
+heartbeat and release bodies and refuses drift or reapplication. It does not
+change the required release, Hello recipients or task authority.
+
+The reviewed heartbeat moves to a private function. The new
+`session_heartbeat` adds a `hello` object: Hello recipient count and up to 16
+roles, the same-project peers with a fresh heartbeat, and a roster message ID.
+A retry with the same connection returns the same object. A new connection also
+gets one self-addressed roster notice, idempotent per connection ID. It is a
+notification with `requires_handler=false`, never a task. Like a Hello, it needs
+a receipt and counts toward `receipt_timeout` until receipted. Clients without this
+extension report the Hello result as not reported by the server.
+
 ## Optional durable project knowledge
 
 For an explicit administrator request to deploy project knowledge, review

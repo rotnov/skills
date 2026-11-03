@@ -358,6 +358,17 @@ in the same project (up to 128). Realtime resubscription, wake signals, safety
 scans and transient heartbeat retries keep the same connection ID, which the
 server treats idempotently, so they send no Hello. Notices require receipt but no reply and carry no
 task authority. A transport Hello does not prove the actual chat has read anything.
+
+With the [Hello reporting extension](server.md#hello-reporting-extension),
+the heartbeat also reports which peers the Hello reached. `session status`,
+and once the first bounded `receive` result, carries `hello.summary`, for
+example `Hello sent to 2 peers in team/project (alpha, zeta); roster: 1
+available` or `0 peers share project reference team/project`. Put it once in
+the setup outcome. A reused or kept connection ID says `no new Hello was sent`
+and repeats the earlier result. Each new connection also gets one roster
+notice listing the available peers. It is a notification: receipt it quietly,
+never answer it or treat it as a task. Without the extension the summary says
+the server did not report the result.
 Existing old listeners must be upgraded before their heartbeat is available.
 
 Codex queue acceptance counts as a delivery receipt even while the model is busy;

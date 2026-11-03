@@ -173,6 +173,9 @@ and decisions.
 
 The updated listener sends Hello transport notices after connection/reconnection,
 without a model call; receipt them quietly per [service agent](service-agent.md).
+The new chat gets one quiet roster notice of available peers in its project. The
+setup outcome includes `hello.summary` from status once: how many peers received
+the Hello, or that no one else uses this project reference.
 It keeps a quiet heartbeat every 20 seconds. Use
 `session peers` for same-project availability and client/required versions.
 A missing legacy version sets `update_required`; it does not change permissions
