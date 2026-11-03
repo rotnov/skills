@@ -152,13 +152,24 @@ extension creates pgvector in `extensions`, private RLS spaces/grants/attachment
 immutable revisions and optional derived vectors. It changes no required release,
 quorum permission or existing context record. Confirm the deployed extension
 version; hosted Supabase controls available versions. No provider is selected.
+For retained-source wiki support, review and apply
+[retained-source wiki](../supabase/migrations/20261103075741_llm_wiki.sql) after
+project knowledge. It adds immutable private sources, revision evidence/link
+arrays, source lifecycle operations and bounded catalog. Existing read callers
+retain compatible defaults; `include_history` only permits superseded current
+revisions for scoped readers. Both extensions remain optional and separately
+deployed; absent or rejected RPCs use the fixed unavailable diagnostic.
 Installation, joining and knowledge commands never apply DDL or create a model.
 
 The actual extension tests use a public pgvector `0.8.7-pg17-bookworm` image pinned
 to OCI digest `sha256:ac08538c6f8b9904c33c8224c5e5706dbe760aca29db1d096972b4052c22a75d`.
 After explicitly fetching that public test dependency, run
 `QUORUM_KNOWLEDGE_DOCKER=1 uv run --frozen python -m unittest discover -s tests -p test_quorum_knowledge_backend.py -v`.
-It uses the local immutable image with `--pull never --network none`, no published
+Also run
+`QUORUM_KNOWLEDGE_DOCKER=1 uv run --frozen python -m unittest discover -s tests -p test_quorum_wiki_backend.py -v`
+for retained-source immutability, permission/output suppression, lifecycle,
+concurrent CAS and source-withdrawal races. Fixtures apply both additive migrations.
+These tests use the local immutable image with `--pull never --network none`, no published
 ports and a uniquely named disposable container that is removed after the run.
 Auth fixtures and vectors are synthetic; no cloud configuration is read. The
 PGlite legacy backend suite does not substitute for actual pgvector tests.

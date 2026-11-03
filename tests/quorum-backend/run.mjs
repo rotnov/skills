@@ -18,7 +18,8 @@ const serialization = all.find(name => name.endsWith('_open_access_close_seriali
 const memberAuthority = '20261030141000_member_task_authority.sql';
 const maintenance = all.find(name => name.endsWith('_owner_update_maintenance.sql'));
 // pgvector contracts run separately on real digest-pinned PostgreSQL, not PGlite.
-const knowledge = all.find(name => name.endsWith('_project_knowledge.sql'));
+const knowledge = '20261030142000_project_knowledge.sql';
+const wiki = '20261103075741_llm_wiki.sql';
 // Installations that deployed native coordination before open access apply the
 // older-dated open access file late; the final session requirements must match.
 const late = name => name.endsWith('_open_access_quorums.sql');
@@ -200,7 +201,7 @@ try {
     await drifted(fn, 'reviewed_dispatcher_changed: ' + fn, [...fresh, priority], serialization, unserialized);
   }
   const portableTail = [priority, serialization, maintenance, memberAuthority];
-  const reviewedTail = [...portableTail, knowledge];
+  const reviewedTail = [...portableTail, knowledge, wiki];
   if (JSON.stringify(all.filter(name => name >= priority)) !== JSON.stringify(reviewedTail)) {
     throw new Error('unreviewed migration after the close serialization');
   }
