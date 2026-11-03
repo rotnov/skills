@@ -71,7 +71,7 @@ def client_preflight():
     """Check this chat can carry a native listener before membership is consumed."""
     sid = current_session()
     engine = current_engine()
-    if engine == 'grok' and sys.platform != 'darwin':
+    if engine == 'grok' and sys.platform not in ('darwin', 'win32'):
         raise UnsupportedClient('grok_leader_platform_unsupported', engine)
     if engine == 'grok':
         # Verify this chat's private leader socket, registry and TUI process

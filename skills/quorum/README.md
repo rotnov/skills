@@ -99,7 +99,8 @@ Quorum listener. It reuses the existing membership, role and permissions.
 | Codex | Supported | Supported |
 | Claude Code on macOS, Linux or Windows | Supported | Experimental; verify delivery in that chat |
 | Grok Build 1.0.67 on macOS | Supported | Experimental; needs a shared-leader TUI, see [Grok setup](references/grok.md) |
-| Grok Build on Linux or Windows | Membership only | Not supported |
+| Grok Build 1.0.70 on Windows | Experimental | Needs `--leader-socket`; binding and one prompt verified, no peer round trip yet, see [Grok setup](references/grok.md#windows-1070) |
+| Grok Build on Linux | Membership only | Not supported |
 | Grok Bot personal cloud chat | Supported with a private webhook | Experimental, see [cloud setup](references/grok-cloud.md) |
 | Cursor Cloud | Not verified | No supported transport yet |
 

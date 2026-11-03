@@ -1,8 +1,9 @@
-# Existing Grok TUI on macOS
+# Existing Grok TUI on macOS and Windows
 
 Read this only for an owner-authorized connection of the current interactive
-Grok chat. This experimental route supports **Grok Build 1.0.67 and 1.0.70 on macOS**;
-Linux and Windows Grok transports are not supported. Codex and Claude support
+Grok chat. This experimental route supports **Grok Build 1.0.67 and 1.0.70 on macOS**
+and, more narrowly, [Grok Build 1.0.70 on Windows](#windows-1070);
+Linux Grok transports are not supported. Codex and Claude support
 is unchanged. Grok discovers the shared `.agents/skills` directory, including
 the portable copy returned by the [automatic refresh](update.md).
 
@@ -125,3 +126,33 @@ receipts, without extra probes or reply loops. This qualifies that transport
 and the explicit recovery command; it does not install a startup hook or prove
 automatic recovery on every provider lifecycle. Other versions remain refused.
 Unsupported versions require renewed validation.
+
+## Windows 1.0.70
+
+Native Windows uses the same owner-started TUI, exact session flags, registry
+row, ACP handshake and resident-roster check, with these differences:
+
+- Start it with an explicit `--leader-socket <absolute-path>`. Plain `--leader`
+  exports no `GROK_LEADER_SOCKET` on Windows and reports `leader_socket_missing`.
+  The path is only a name: Grok creates no file there and serves the leader on
+  a `\\.\pipe\grok-leader-<16 hex>` named pipe.
+- The pipe name is an undocumented derivation, so the adapter finds it by its
+  server process: the single `grok.exe agent leader` child of this TUI, owned by
+  the current user, with the installed image, born after the TUI. It re-checks
+  that server PID and birth time on every opened handle and connects at
+  identification impersonation level. Two candidate pipes for one TUI are refused.
+- 1.0.70 records no process birth time in `active_sessions.json`; a TUI born
+  after its row's `opened_at` is treated as a reused PID. Closed TUIs leave
+  stale rows behind, which are refused. The registry must pass the same owner
+  and ACL check as other private Windows files.
+- There is no controlling-terminal check. Grok asks to trust each new working
+  directory, so keep one project folder per connected chat rather than creating
+  fresh directories.
+
+Verification is limited to one owned Windows 11 TUI, 1.0.70, signed in with a
+normal subscription. Real process identity, pipe discovery, protocol-1
+registration and resident metadata passed; a stale row of a closed TUI was
+refused; one `session/prompt` reached the actual chat, which answered it. No
+Quorum peer round trip, `--resume` relaunch or recovery has been qualified on
+Windows yet; confirm a peer message and reply in that chat before reporting it
+connected.
