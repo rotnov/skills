@@ -12,7 +12,8 @@ from quorum_resume import binding as resume_binding
 from quorum_update import refresh as canonical_refresh, validate_source
 
 BLOCKERS = {'update_tool_missing', 'update_fetch_failed', 'update_invalid_copy', 'update_validation_failed',
-            'update_cache_conflict', 'update_target_changed', 'update_in_progress', 'update_unsafe_cache'}
+            'update_cache_conflict', 'update_target_changed', 'update_in_progress', 'update_unsafe_cache',
+            'python_provisioning_failed'}
 
 
 class UpdateFailure(QuorumError):

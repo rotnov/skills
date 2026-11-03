@@ -9,6 +9,12 @@ Use `uv run --project <skill-dir> --frozen python <skill-dir>/scripts/quorum.py`
 The skill carries its own pyproject and lockfile; uv selects Python 3.12 without
 using the current repository environment. Direct Python 3.12 invocation remains
 possible. The helper uses only the standard library and never installs adapters.
+uv must be able to provision or find CPython 3.12. It honors `UV_PYTHON_INSTALL_DIR`
+(where uv keeps managed Pythons) and `UV_PYTHON` (a specific interpreter). If a
+custom install directory makes uv fail with a raw error such as "Missing expected
+target directory for Python minor version link", set `UV_PYTHON_INSTALL_DIR` to the
+directory uv already uses, or `UV_PYTHON` to an existing 3.12, and retry. The
+refresh helper reports such a failure in its children as `python_provisioning_failed`.
 
 ## Paths and command examples
 
@@ -155,6 +161,14 @@ the profile/identity selection, and clears capabilities in the selected ledger.
 
 Quorum credentials are stored **unencrypted** for this owner-approved pilot.
 Directories are mode 0700; each profile file is mode 0600 (owner-only ACLs on Windows).
+On Windows the helper replaces the DACL with one protected full-control rule for the
+current user. It takes ownership only when another principal owns the object, so a
+state directory under an inherited ACL that withholds `WRITE_OWNER` (for example
+under `C:\tools`) still works when the user already owns it. Two fixed codes cover a
+refusal: `private_acl_access_denied` when Windows denies the security open or write
+(choose a state directory the user owns, such as under `%LOCALAPPDATA%`), and
+`private_acl_unavailable` for any other ACL failure. A link or reparse point is
+`unsafe_link`.
 Writes are atomic and reject symlinks, shared files and unsafe permissions. The
 store has no Keychain, encryption or external-service dependency. Never display
 or copy the session JSON into model context, logs, source control or another

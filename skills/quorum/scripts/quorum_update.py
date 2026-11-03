@@ -25,7 +25,15 @@ REQUIRED = ('SKILL.md', 'pyproject.toml', 'uv.lock', 'scripts/quorum.py',
             'references/invitations.md', 'assets/release.json', 'scripts/quorum_release.py')
 ERRORS = {'update_tool_missing', 'update_fetch_failed', 'update_invalid_copy',
           'update_validation_failed', 'update_cache_conflict', 'update_unsafe_cache',
-          'update_in_progress'}
+          'update_in_progress', 'python_provisioning_failed'}
+# uv's own messages when it cannot find, download or link a managed CPython. Matched on the
+# captured bytes only; the text itself is never reported.
+PROVISIONING = (b'python minor version link', b'no interpreter found', b'failed to install cpython',
+                b'failed to download cpython', b'no download found for request',
+                b'failed to install python', b'failed to download python')
+HINTS = {'python_provisioning_failed': 'uv could not provision CPython 3.12. Make `uv python find 3.12` '
+         'succeed, set UV_PYTHON_INSTALL_DIR to the directory uv uses for managed Pythons, or set '
+         'UV_PYTHON to an existing CPython 3.12, then retry.'}
 
 
 def content_hash(root):
@@ -118,10 +126,18 @@ def checked_run(run, command, stage, env, code, timeout):
         # Keep tool logs as bytes; status JSON is decoded strictly by json.loads.
         result = run(command, cwd=str(stage), env=env, stdin=subprocess.DEVNULL,
                      capture_output=True, timeout=timeout)
-        if result.returncode: raise ValueError(code)
-        return result
     except (OSError, subprocess.SubprocessError, UnicodeError):
         raise ValueError(code) from None
+    if result.returncode:
+        if Path(command[0]).stem.lower() == 'uv' and provisioning_failed(result): code = 'python_provisioning_failed'
+        raise ValueError(code)
+    return result
+
+
+def provisioning_failed(result):
+    output = b''.join(part if isinstance(part, bytes) else str(part or '').encode('utf-8', 'replace')
+                      for part in (result.stdout, result.stderr))
+    return any(marker in output.lower() for marker in PROVISIONING)
 
 
 def refresh(current, cache, engine, *, run=subprocess.run):
@@ -202,7 +218,8 @@ def main(argv=None):
         return 0
     except (ValueError, OSError, subprocess.SubprocessError) as error:
         code = str(error) if str(error) in ERRORS else 'update_failed'
-        print(json.dumps({'ok': False, 'code': code, 'data': {}}))
+        data = {'hint': HINTS[code]} if code in HINTS else {}
+        print(json.dumps({'ok': False, 'code': code, 'data': data}))
         return 3
 
 

@@ -161,6 +161,38 @@ class UpdateTests(unittest.TestCase):
                     self.refresh(runner=fail)
                 self.assertFalse(any(p.is_dir() for p in self.cache.iterdir()))
 
+    def test_uv_python_provisioning_failure_is_a_named_blocker_without_raw_output(self):
+        raw = (b'Downloading cpython-3.12.15-windows-x86_64-none (download) (21.0MiB)\n'
+               b'error: Missing expected target directory for Python minor version link at '
+               b'`C:\\Users\\secret-owner\\AppData\\Roaming\\uv\\python\\cpython-3.12.15`\n')
+        for step in ('sync', 'run'):
+            def fail(command, **kwargs):
+                if command[1] == step:
+                    return subprocess.CompletedProcess(command, 2, b'', raw)
+                return self.runner(command, **kwargs)
+            with self.subTest(step=step):
+                with self.assertRaisesRegex(ValueError, '^python_provisioning_failed$') as caught:
+                    self.refresh(runner=fail)
+                self.assertIsNone(caught.exception.__cause__)
+                self.assertFalse(any(p.is_dir() for p in self.cache.iterdir()))
+        # The same text from the installer is not a uv provisioning failure.
+        def fetch(command, **kwargs):
+            return subprocess.CompletedProcess(command, 1, b'', raw)
+        with self.assertRaisesRegex(ValueError, '^update_fetch_failed$'):
+            self.refresh(runner=fetch)
+
+    def test_cli_reports_python_provisioning_with_a_fixed_hint_only(self):
+        with patch('quorum_update.refresh', side_effect=ValueError('python_provisioning_failed')), \
+                patch.dict(os.environ, {'UV_PYTHON_INSTALL_DIR': 'C:\\secret-owner\\uv'}), \
+                contextlib.redirect_stdout(io.StringIO()) as output:
+            code = self.module.main(['--engine', 'claude', '--cache-root', str(self.cache)])
+        self.assertEqual(code, 3)
+        result = json.loads(output.getvalue())
+        self.assertEqual(result['code'], 'python_provisioning_failed')
+        self.assertEqual(list(result['data']), ['hint'])
+        self.assertIn('UV_PYTHON_INSTALL_DIR', result['data']['hint'])
+        self.assertNotIn('secret-owner', output.getvalue())
+
     def test_cache_with_corrupt_published_content_is_not_reused_or_overwritten(self):
         result = self.refresh()
         published = Path(result['skill_dir'])

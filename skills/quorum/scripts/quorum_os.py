@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 
 FILE_ALL_ACCESS = 0x1F01FF
+READ_CONTROL, WRITE_DAC, WRITE_OWNER = 0x00020000, 0x00040000, 0x00080000
 
 
 class AnchoredPath(type(Path())):
@@ -52,7 +53,7 @@ def protect(path, directory=False):
     try:
         _protect_windows(path, directory)
     except ValueError as error:
-        if str(error) == 'unsafe_link': raise ValueError('unsafe_link') from None
+        if str(error) in ('unsafe_link', 'private_acl_access_denied'): raise ValueError(str(error)) from None
         raise ValueError('private_acl_unavailable') from None
     except Exception:
         raise ValueError('private_acl_unavailable') from None
@@ -81,6 +82,10 @@ def _protect_windows(path, directory):
     security.AddAccessAllowedAceEx.argtypes = [pointer, w.DWORD, w.DWORD, w.DWORD, pointer]
     security.SetSecurityInfo.argtypes = [w.HANDLE, ctypes.c_int, w.DWORD, pointer, pointer, pointer, pointer]
     security.SetSecurityInfo.restype = w.DWORD
+    security.GetSecurityInfo.argtypes = [w.HANDLE, ctypes.c_int, w.DWORD] + [ctypes.POINTER(pointer)] * 5
+    security.GetSecurityInfo.restype = w.DWORD
+    security.EqualSid.argtypes = [pointer, pointer]
+    kernel.LocalFree.argtypes, kernel.LocalFree.restype = [pointer], pointer
 
     token, needed = w.HANDLE(), w.DWORD()
     if not security.OpenProcessToken(kernel.GetCurrentProcess(), 8, ctypes.byref(token)):  # TOKEN_QUERY
@@ -102,9 +107,38 @@ def _protect_windows(path, directory):
     if (not security.InitializeAcl(acl, size, 2)
             or not security.AddAccessAllowedAceEx(acl, 2, inheritance, FILE_ALL_ACCESS, sid)):
         raise OSError('acl_unavailable')
-    # READ_CONTROL | WRITE_DAC | WRITE_OWNER on the link itself; directories need backup semantics.
-    handle = kernel.CreateFileW(str(path), 0x000E0000, 7, None, 3, 0x02200000, None)
-    if handle is None or handle == ctypes.c_void_p(-1).value: raise OSError('private_file_unavailable')
+    # The owner already has READ_CONTROL and WRITE_DAC, but an inherited ACL (a directory under a
+    # drive root such as C:\tools) need not grant WRITE_OWNER. Ask for it only to take ownership.
+    handle = _open_security(kernel, path, READ_CONTROL | WRITE_DAC)
+    try:
+        if _owned_by(security, kernel, handle, sid):
+            # DACL | PROTECTED_DACL: drop inherited rules; the owner stays, the SACL is never touched.
+            error = security.SetSecurityInfo(handle, 1, 0x80000004, None, None, acl, None)
+            if error: raise _security_error(error)
+            return
+    finally:
+        kernel.CloseHandle(handle)
+    handle = _open_security(kernel, path, READ_CONTROL | WRITE_DAC | WRITE_OWNER)
+    try:
+        # OWNER | DACL | PROTECTED_DACL: take ownership and drop inherited rules, never the SACL.
+        error = security.SetSecurityInfo(handle, 1, 0x80000005, sid, None, acl, None)
+        if error: raise _security_error(error)
+    finally:
+        kernel.CloseHandle(handle)
+
+
+def _security_error(code):
+    return ValueError('private_acl_access_denied') if code == 5 else OSError('acl_unavailable')
+
+
+def _open_security(kernel, path, access):
+    """Open the link itself with backup semantics and refuse a reparse point."""
+    import ctypes
+    from ctypes import wintypes as w
+    handle = kernel.CreateFileW(str(path), access, 7, None, 3, 0x02200000, None)
+    if handle is None or handle == ctypes.c_void_p(-1).value:
+        if ctypes.get_last_error() == 5: raise ValueError('private_acl_access_denied')  # ERROR_ACCESS_DENIED
+        raise OSError('private_file_unavailable')
     try:
         class Attributes(ctypes.Structure):
             _fields_ = [('attributes', w.DWORD), ('tag', w.DWORD)]
@@ -112,11 +146,21 @@ def _protect_windows(path, directory):
         if not kernel.GetFileInformationByHandleEx(handle, 9, ctypes.byref(attrs), ctypes.sizeof(attrs)):
             raise OSError('private_file_unavailable')
         if attrs.attributes & 0x400: raise ValueError('unsafe_link')
-        # OWNER | DACL | PROTECTED_DACL: drop inherited rules, never touch the SACL.
-        if security.SetSecurityInfo(handle, 1, 0x80000005, sid, None, acl, None):
-            raise OSError('acl_unavailable')
-    finally:
+    except BaseException:
         kernel.CloseHandle(handle)
+        raise
+    return handle
+
+
+def _owned_by(security, kernel, handle, sid):
+    """Whether the open object's owner (read through READ_CONTROL) is `sid`."""
+    import ctypes
+    owner, descriptor = ctypes.c_void_p(), ctypes.c_void_p()
+    # SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION only.
+    if security.GetSecurityInfo(handle, 1, 1, ctypes.byref(owner), None, None, None, ctypes.byref(descriptor)):
+        raise OSError('acl_unavailable')
+    try: return bool(owner.value) and bool(security.EqualSid(owner, sid))
+    finally: kernel.LocalFree(descriptor)
 
 
 def background_flags(extra=0):

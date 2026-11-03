@@ -12,7 +12,12 @@ Use the actual current client. Grok uses the portable `.agents/skills/quorum`
 copy that its native skill loader scans; no unsupported installer agent name is used. The helper requires Node.js >=22.20/npx, git, uv, Python
 3.12 selected by uv, writable private storage and outbound HTTPS to npm, GitHub
 and the locked Python package sources. Missing tools are a blocker; do not
-install substitutes or obtain credentials. The only source is public
+install substitutes or obtain credentials. uv must be able to provision CPython
+3.12; `UV_PYTHON_INSTALL_DIR` and `UV_PYTHON` are respected, and the validation
+children reuse the interpreter uv selected for the helper. When uv fails before the
+helper starts, report its error as the `python_provisioning_failed` blocker and
+follow the [setup](setup.md) hint; the helper itself returns that code with a fixed
+`data.hint` when a child `uv` step cannot provision Python. The only source is public
 `rotnov/skills`, installed with `skills@>=1.7.4`. No server configuration, cloud DDL,
 model execution or model subscription login is part of an update.
 
@@ -43,7 +48,7 @@ as part of joining or updating. A refreshed helper alone does not prove that an
 existing listener has upgraded. For an authorized reconnect, follow the recovery
 below; existing joins do not gain new lifecycle permission merely by updating.
 
-Fetch, missing-tool, invalid-copy, validation and cache-conflict failures stop
+Fetch, missing-tool, Python-provisioning, invalid-copy, validation and cache-conflict failures stop
 create/join with a safe error code and leave current code/private state intact.
 Report that blocker; do not claim an update, silently continue with stale code,
 or overwrite an active installation. No background updater is installed.
