@@ -22,35 +22,6 @@ anchor_owner_proof_fixtures()
 SCRIPTS = Path(__file__).resolve().parents[1] / 'skills/quorum/scripts'
 sys.path.insert(0, str(SCRIPTS))
 
-if os.name == 'nt':  # TEMPORARY CI diagnostic: where does path_unsafe arise on Windows?
-    import traceback as _tb
-    import quorum_claude_worker as _worker
-    _original = _worker._unavailable
-    def _traced(reason=None):
-        if reason == 'path_unsafe':
-            import sys as _sys
-            print('PATH_UNSAFE_TRACE ' + ' | '.join(f'{f.name}:{f.lineno}' for f in _tb.extract_stack()[-8:-1])
-                  + ' ctx=' + repr(_sys.exc_info()[1]), file=_sys.stderr)
-        return _original(reason)
-    _worker._unavailable = _traced
-    import quorum_winproof as _proof
-    _verify, _open_at = _proof.verify, _proof.open_at
-    def _verify_traced(fd, kind, policy):
-        try: return _verify(fd, kind, policy)
-        except _proof.Unsafe:
-            try:
-                api = _proof._api()
-                detail = _proof.parse(_proof.descriptor_of(api, _proof._handle(fd)))
-                print(f'VERIFY_REFUSED kind={kind} attrs={_proof._attributes(api, _proof._handle(fd))} '
-                      f'descriptor={detail} owners={api["owners"]}', file=sys.stderr)
-            except Exception as error: print(f'VERIFY_REFUSED kind={kind} undecodable={error!r}', file=sys.stderr)
-            raise
-    def _open_traced(parent, name, **options):
-        try: return _open_at(parent, name, **options)
-        except _proof.Unsafe:
-            print(f'OPEN_REFUSED name={name} options={options}', file=sys.stderr)
-            raise
-    _proof.verify, _proof.open_at = _verify_traced, _open_traced
 SID = '5b0c1c39-6c2e-4a4f-9a51-2f8d3c1e7a10'
 OTHER_SID = '0e9d6f1a-3b7c-4d2e-8f10-1a2b3c4d5e6f'
 HANDLE = 'agent_01 quorum · ünicode'
@@ -313,7 +284,7 @@ class Harness(unittest.TestCase):
     def worker_ledger(self, slot):
         from quorum_state import LocalLedger
         session_ref = self.setting(slot)['binding']['session_ref']
-        ledger = LocalLedger(self.root / 'sessions' / session_ref)
+        ledger = LocalLedger(self.root / 'sessions' / actor_directory(session_ref))
         self.addCleanup(ledger.db.close)
         return ledger
 
@@ -646,6 +617,11 @@ class SlotTests(Harness):
         self.authorize(self.capability(slot), 'status')
         self.now = T0 + 900
         self.denied('native_worker_slot_terminal', self.authorize, self.capability(slot), 'status')
+
+
+def actor_directory(session_ref):
+    from quorum_claude_worker import actor_directory
+    return actor_directory(session_ref)
 
 
 def actor(handle=HANDLE):
@@ -1632,7 +1608,7 @@ class ActorPathTests(Bound):
     post-dispatch failures report the remote effect truthfully (review fix I2)."""
 
     def actor_dir(self):
-        return self.root / 'sessions' / actor()
+        return self.root / 'sessions' / actor_directory(actor())
 
     def snapshot(self, path):
         info = path.stat()
@@ -1883,7 +1859,7 @@ class ConnectionIdentityTests(Bound):
         return stat.S_IMODE(info.st_mode), path.read_bytes()
 
     def actor_dir(self):
-        return self.root / 'sessions' / actor()
+        return self.root / 'sessions' / actor_directory(actor())
 
     def create(self, api, cap):
         from quorum_api import ServiceConfig
@@ -1988,7 +1964,7 @@ class DurableStorageTests(Bound):
     private recovery journals allowed, unsafe sidecars refused unchanged."""
 
     def actor_dir(self):
-        return self.root / 'sessions' / actor()
+        return self.root / 'sessions' / actor_directory(actor())
 
     def fill(self):
         """80 committed 4096-byte rows, written through the product's verified actor ledger."""

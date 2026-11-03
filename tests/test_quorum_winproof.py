@@ -246,6 +246,19 @@ class PatchedNativeTests(unittest.TestCase):
         self.assertIsNone(proof._bindings)
 
 
+class ActorDirectoryTests(unittest.TestCase):
+    def test_windows_actor_directory_avoids_the_stream_separator_and_posix_is_unchanged(self):
+        import quorum_claude_worker as worker
+        ref = 'claude-worker:eff16e70-917b-5f0a-9f66-332724ba16fb'
+        with patch.object(worker.os, 'name', 'posix'):
+            self.assertEqual(worker.actor_directory(ref), ref)
+        with patch.object(worker.os, 'name', 'nt'):
+            name = worker.actor_directory(ref)
+        self.assertEqual(name, 'claude-worker-eff16e70-917b-5f0a-9f66-332724ba16fb')
+        self.assertEqual(proof.component(name), name)
+        with self.assertRaises(proof.Unsafe): proof.component(ref)
+
+
 # --- Real NTFS ----------------------------------------------------------------------------------
 
 def run(*command):

@@ -358,9 +358,18 @@ ACTOR_KINDS = ('ancestor', 'private', 'file')
 SLOT_KINDS = ('private', 'private')
 
 
+def actor_directory(session_ref):
+    """On-disk name of a logical actor's directory under `sessions`.
+
+    NTFS reserves ':' for alternate data streams, so Windows stores `claude-worker:<uuid>` as
+    `claude-worker-<uuid>`; that form cannot collide with any other session reference (a bare UUID).
+    """
+    return session_ref.replace(':', '-', 1) if os.name == 'nt' else session_ref
+
+
 def _actor_ledger(root, session_ref, *, create=False):
     """The logical actor's ledger; see `_ledger`."""
-    return _ledger(root, ('sessions', session_ref), ACTOR_KINDS[:2], create=create)
+    return _ledger(root, ('sessions', actor_directory(session_ref)), ACTOR_KINDS[:2], create=create)
 
 
 def root_ledger(state_root):
@@ -642,7 +651,7 @@ def _session_status(root, record):
     from quorum_native_inbox import CONTROL
     binding = record.get('binding')
     if not binding: return None
-    names = ('sessions', binding['session_ref'])
+    names = ('sessions', actor_directory(binding['session_ref']))
     with _components(root, names, ACTOR_KINDS[:2]) as fds:
         if fds is None: return None
         rows = _read_db(fds[-1], root.joinpath(*names, 'ledger.sqlite'), lambda db: db.execute(

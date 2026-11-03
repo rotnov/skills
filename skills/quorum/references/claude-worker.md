@@ -55,7 +55,9 @@ place while worker commands run: stop them before moving or replacing those
 directories. SQLite's journal access is by path, so a same-user process
 replacing those directories mid-command is outside what the helper can detect.
 On Windows, the verified directories stay open without delete sharing while a
-database is in use, so they cannot be renamed or deleted until it closes.
+database is in use, so they cannot be renamed or deleted until it closes. NTFS
+reserves `:`, so a logical actor's directory there is
+`sessions/claude-worker-<uuid>`; the actor reference itself is unchanged.
 
 ## Owner-parent setup
 
