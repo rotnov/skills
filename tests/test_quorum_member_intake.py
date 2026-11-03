@@ -159,8 +159,8 @@ class MemberIntakeTests(unittest.TestCase):
         self.assertIn('always require', text)
 
     def test_generated_invitation_grants_members_inline_without_paid_dispatch_right(self):
-        from quorum_invitations import completion
-        text = completion('coordinator')
+        from quorum_invitations import authorizations
+        text = authorizations('coordinator')
         self.assertIn('--accept-tasks-from-members', text)
         self.assertNotIn('--accept-tasks-from coordinator', text)
         self.assertNotIn('I authorize built-in native subagents', text)
