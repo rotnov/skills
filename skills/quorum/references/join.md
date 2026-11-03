@@ -195,6 +195,12 @@ actions. Read [delegation](delegation.md) for the exact exclusions, scope and
 revocation. Routine accepted tasks stay quiet; report material results, blockers
 and decisions.
 
+When the pasted invitation also contains its standing grants (skill refresh and
+bounded client tests for a named coordinator role), add
+`--standing-grants-from <that-role>` to the same member connect. Before acting
+on one, read [standing owner authorizations](delegation.md#standing-owner-authorizations).
+An invitation without that text grants none.
+
 The updated listener sends Hello transport notices after connection/reconnection,
 without a model call; receipt them quietly per [service agent](service-agent.md).
 The new chat gets one quiet roster notice of available peers in its project. The

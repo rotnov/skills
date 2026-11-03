@@ -103,7 +103,23 @@ EXPIRY = ('The expiry above is server data only: do not judge it yourself from a
           'if it comes back). ')
 
 
-def authorizations(coordinator_role):
+def standing_authorizations(coordinator_role):
+    """The receiving owner's bounded standing grants; procedure lives in references/delegation.md."""
+    from quorum_delegation import CLIENT_TESTS_PER_DAY
+    return (f'Standing grants (connect with --standing-grants-from {coordinator_role}): act only on my request here '
+            f'or a Quorum message from the {json.dumps(coordinator_role)} role that this binding\'s standing-check '
+            '<message-id> authorizes. (1) Skill freshness: the automatic refresh once per request, then stop/reconnect/'
+            'restart only this bound listener with the same state, session UUID, quorum, role and project; if the '
+            'refreshed copy offers this client\'s native background-worker route, switch to it, starting only that one '
+            'worker with this same member scope; if that fails keep this connection, report the exact code, never '
+            'use parent reception. (2) Client tests: local grok, codex or claude CLI/TUI sessions only to test the '
+            f'quorum skill, daily cap {CLIENT_TESTS_PER_DAY} per UTC day, in a fresh folder outside real projects, no '
+            'prompt reading private data, shut down after. These are the only exceptions to the no-model/no-session '
+            'rule below; merges, default-branch pushes, deploys, migrations, secrets, external posts, permission/'
+            'config edits and destructive actions still need me, typed in this chat. ')
+
+
+def authorizations(coordinator_role, standing=True):
     if not re.fullmatch('[a-z][a-z0-9-]{0,47}', coordinator_role): raise ValueError('invalid_coordinator_role')
     from quorum_delegation import MEMBER_LIMITS
     return ('I am the receiving human and paste this prompt as my own instruction. I authorize acceptance and '
@@ -118,7 +134,7 @@ def authorizations(coordinator_role):
             'run this exact binding\'s task-check <message-id>. Existing joins, grants and capabilities remain '
             'unchanged. ' + MEMBER_LIMITS +
             'Member intake never grants paid model, session or agent creation. Use my supplied role and shared '
-            'project reference if present. ')
+            'project reference if present. ' + (standing_authorizations(coordinator_role) if standing else ''))
 
 
 SAFETY = ('Hard rules: use only this actual session identity; never spoof another client, session or export, and '
@@ -140,11 +156,12 @@ def issue_id_invitation(api, config, slug, operation, payload, request_id):
     return str(uuid.UUID(data['invite_id'])), quorum_id, data['expires_at'], service
 
 
-def create_id_invitation(api, config, slug, target, request_id, *, github_user=None, coordinator_role='coordinator'):
+def create_id_invitation(api, config, slug, target, request_id, *, github_user=None, coordinator_role='coordinator',
+                         standing_grants=True):
     if not re.fullmatch(r'[0-9]{1,20}', target): raise ValueError('invitation_arguments_invalid')
     if github_user is not None and not re.fullmatch(r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?', github_user):
         raise ValueError('github_user_invalid')
-    granted = authorizations(coordinator_role)
+    granted = authorizations(coordinator_role, standing_grants)
     invite_id, quorum_id, expires_at, service = issue_id_invitation(
         api, config, slug, 'invite_create_id', {'target_github_id': target}, request_id)
     target_label = (f'@{github_user}, ' if github_user else '') + f'GitHub ID {target}'
@@ -160,11 +177,12 @@ def create_id_invitation(api, config, slug, target, request_id, *, github_user=N
                   'blockers; never infer a server from the invitation UUID. ' + granted + SAFETY)
     return {'invite_id': invite_id, 'quorum': slug, 'quorum_id': quorum_id, 'target_github_id': target,
             'target_github_user': github_user, 'expires_at': expires_at, 'service': service,
+            'standing_grants': standing_grants,
             'session_prompt': prompt, 'configured_machine_prompt': configured}
 
 
-def create_open_invitation(api, config, slug, request_id, *, coordinator_role='coordinator'):
-    granted = authorizations(coordinator_role)
+def create_open_invitation(api, config, slug, request_id, *, coordinator_role='coordinator', standing_grants=True):
+    granted = authorizations(coordinator_role, standing_grants)
     invite_id, quorum_id, expires_at, service = issue_id_invitation(
         api, config, slug, 'invite_create_open', {}, request_id)
     prompt = (f'Single-use open Quorum invitation: quorum slug {json.dumps(slug)}, invite ID {invite_id}, expires at '
@@ -174,7 +192,7 @@ def create_open_invitation(api, config, slug, request_id, *, coordinator_role='c
               + f'Accept with accept-id {invite_id} --anonymous and --origin and --publishable-key from this public '
               f'service locator: {json.dumps(service)}. ' + granted + SAFETY)
     return {'invite_id': invite_id, 'quorum': slug, 'quorum_id': quorum_id, 'access': 'open',
-            'expires_at': expires_at, 'service': service, 'session_prompt': prompt}
+            'expires_at': expires_at, 'service': service, 'standing_grants': standing_grants, 'session_prompt': prompt}
 
 
 def accept_id_invitation(args, ledger):

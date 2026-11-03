@@ -70,8 +70,11 @@ issuing an invite alone grants no task permissions. New grants use explicit
 message-scoped task check before work and keep every owner-held exclusion in
 [delegation](delegation.md), including paid starts and external publication.
 Existing coordinator grants and worker capabilities are never expanded by an
-update or reconnect. The legacy `--coordinator-role` invitation argument remains
-accepted as a coordination label; it no longer limits member task intake.
+update or reconnect. `--coordinator-role` (default `coordinator`) does not limit
+member task intake; it names the only role that may invoke the prompt's
+[standing owner authorizations](delegation.md#standing-owner-authorizations): a
+skill refresh and at most 3 local client test sessions per day. Pass
+`--no-standing-grants` to issue the prompt without them.
 Read [join](join.md) for default role/project selection and delivery checks.
 Both prompts request a sanitized connection-failure report prepared for the owner;
 posting outside the quorum needs the receiving owner's confirmation. Follow [the failure-reporting procedure](join.md#connection-failures),

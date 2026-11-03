@@ -89,6 +89,7 @@ configuring credentials.
    intake, read [delegation](references/delegation.md): an explicit receiving-owner
    opt-in may cover current/future members or a pinned coordinator. Member work
    requires a fresh bound `task-check`; excluded actions always stay owner-held.
+   Invitation standing grants (skill refresh, capped client tests) need its `standing-check`.
    Updates never expand older grants; unmatched peers remain proposals.
    Native subagent dispatch requires the owner's scoped `native-subagent` opt-in;
    follow that reference's worker limits and capability fallback. It does not
