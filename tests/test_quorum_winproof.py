@@ -378,6 +378,24 @@ class NtfsTests(unittest.TestCase):
         child.mkdir()  # Inherits only the user's rule, but inherited all the same.
         self.refused(child, 'private')
 
+    def test_precreated_state_root_with_inherited_rules_is_path_unsafe_until_repaired(self):
+        """claude-worker.md: a `mkdir -p`/New-Item state root refuses; both documented repairs pass."""
+        import quorum_claude_worker as worker
+        from quorum_native_inbox import NativeInboxError
+        state = self.base / 'state'
+        state.mkdir()  # Like Git Bash `mkdir -p` or New-Item: inherited, unprotected DACL.
+        before = self.inspect(state)
+        with self.assertRaises(NativeInboxError) as raised: worker._root_fd(state, create=True)
+        self.assertEqual((raised.exception.code, raised.exception.reason), ('native_worker_unavailable', 'path_unsafe'))
+        self.assertEqual(self.inspect(state), before, 'the helper never repairs an ACL itself')
+        sid = before['current_user']
+        self.assertEqual(run('icacls', str(state), '/inheritance:r', '/grant:r', f'*{sid}:(OI)(CI)F').returncode, 0)
+        os.close(worker._root_fd(state))
+        fresh = self.base / 'fresh'
+        os.mkdir(fresh, 0o700)
+        os.close(worker._root_fd(fresh))
+        os.close(worker._root_fd(self.base / 'created', create=True))
+
     def test_foreign_owner_refuses(self):
         path, _, _ = self.private()
         if run('icacls', str(path), '/setowner', '*S-1-5-19').returncode != 0:  # LOCAL SERVICE

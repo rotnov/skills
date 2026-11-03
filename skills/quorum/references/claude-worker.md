@@ -33,7 +33,20 @@ drive. No ACL is changed; new private directories and files get an owner-only
 DACL when created. In an elevated session, objects owned by Administrators (that
 session's default owner) count as the user's. Where neither proof is available,
 every command fails closed with `native_worker_unavailable` reason
-`ownership_unverified`.
+`ownership_unverified`; on Windows that means the installed copy predates this
+proof (run the [automatic refresh](update.md)) or `advapi32` cannot load.
+
+On Windows, an existing state directory made by Git Bash `mkdir -p`, PowerShell
+`New-Item` or Explorer has an inherited, unprotected DACL, so the proof refuses
+it as reason `path_unsafe` and leaves it unchanged. Pass a path that does not
+exist yet (`session worker prepare` creates it owner-only), or create it with
+Python `os.mkdir(path, 0o700)`. To keep an existing state directory, stop its
+worker commands and replace its inherited rules with one owner rule:
+
+```powershell
+$sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+icacls "<private-state>" /inheritance:r /grant:r "*${sid}:(OI)(CI)F"
+```
 
 Worker databases keep SQLite's ordinary disk journal. If a command is
 interrupted, only its uncommitted local SQLite changes are discarded, by the
