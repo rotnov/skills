@@ -62,14 +62,19 @@ public side effects. Write "No external writes" when applicable. -->
 ```text
 skills/<skill-name>/
 ├── SKILL.md
-├── agents/
-│   └── openai.yaml
+├── README.md
 └── evals/
     └── evals.json
 ```
 
 <!-- Add references/, scripts/, or assets/ only when justified. Never attach a
 ZIP as the primary review artifact. -->
+
+<!-- README.md must include an "## Install the skill" section with a blockquoted
+LLM prompt naming the skill, linking
+https://github.com/rotnov/skills/tree/main/skills/<skill-name>, requesting a global
+Claude Code and Codex install using skills@>=1.7.4, and ending with reading
+SKILL.md. Keep the bundle free of client-specific metadata. -->
 
 <details>
 <summary>Optional short proposed files</summary>
@@ -97,7 +102,7 @@ Identify any capability that needs a documented fallback. -->
 ## Acceptance criteria
 
 - [ ] The skill passes the official Agent Skills validator.
-- [ ] The skill is discoverable and installable with the pinned skills CLI.
+- [ ] The skill is discoverable and installable with the skills CLI (1.7.4 or newer).
 - [ ] The primary success, failure, non-trigger, and safety paths are tested.
 - [ ] Codex and Claude Code expose equivalent behavior or a safe fallback.
 - [ ] Documentation describes current behavior and dependencies.

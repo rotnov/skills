@@ -13,7 +13,7 @@ copy that its native skill loader scans; no unsupported installer agent name is 
 3.12 selected by uv, writable private storage and outbound HTTPS to npm, GitHub
 and the locked Python package sources. Missing tools are a blocker; do not
 install substitutes or obtain credentials. The only source is public
-`rotnov/skills`, installed with `skills@1.5.20`. No server configuration, cloud DDL,
+`rotnov/skills`, installed with `skills@>=1.7.4`. No server configuration, cloud DDL,
 model execution or model subscription login is part of an update.
 
 On success, `data.skill_dir` is the persistent fresh copy to use for this request.

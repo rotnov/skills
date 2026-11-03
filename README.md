@@ -87,7 +87,7 @@ Code and Codex clients through a configured Supabase backend. Install the shared
 skill directly from this repository:
 
 ```bash
-npx --yes skills@1.5.20 add rotnov/skills --skill quorum -a claude-code codex --global --copy -y
+npx --yes "skills@>=1.7.4" add rotnov/skills --skill quorum -a claude-code codex --global --copy -y
 ```
 
 The client carries an independent uv project selecting Python 3.12. GitHub login
@@ -107,8 +107,9 @@ Codex execution are not included.
 ## Compatibility
 
 The canonical behavior lives in standard `SKILL.md` files and works with
-Agent Skills-compatible clients, including Codex and Claude Code. Optional
-client metadata does not change the behavior contract.
+Agent Skills-compatible clients, including Codex and Claude Code. Skills ship
+no client-specific metadata. Each skill's own `README.md` carries a
+ready-to-paste installation prompt for your agent.
 
 `learning` requires Git, `uv`, and a platform with safe no-follow
 directory-descriptor operations for recording mutations. Recorder commands explicitly
