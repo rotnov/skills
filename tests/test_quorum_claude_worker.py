@@ -18,6 +18,18 @@ from quorum_test_support import anchor_owner_proof_fixtures, isolated_profiles
 
 anchor_owner_proof_fixtures()
 
+if os.name == 'nt':  # TEMPORARY CI diagnostic: where does path_unsafe arise on Windows?
+    import traceback as _tb
+    import quorum_claude_worker as _worker
+    _original = _worker._unavailable
+    def _traced(reason=None):
+        if reason == 'path_unsafe':
+            import sys as _sys
+            print('PATH_UNSAFE_TRACE ' + ' | '.join(f'{f.name}:{f.lineno}' for f in _tb.extract_stack()[-8:-1])
+                  + ' ctx=' + repr(_sys.exc_info()[1]), file=_sys.stderr)
+        return _original(reason)
+    _worker._unavailable = _traced
+
 SCRIPTS = Path(__file__).resolve().parents[1] / 'skills/quorum/scripts'
 sys.path.insert(0, str(SCRIPTS))
 SID = '5b0c1c39-6c2e-4a4f-9a51-2f8d3c1e7a10'
