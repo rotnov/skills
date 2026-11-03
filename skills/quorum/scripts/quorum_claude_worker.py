@@ -72,7 +72,11 @@ def _strict_json(raw, reason):
 
 
 def proof_available():
-    """Owner/permission proof uses POSIX descriptors; elsewhere this route fails closed (never chmods)."""
+    """Owner/permission proof uses POSIX descriptors or Windows handles (`quorum_winproof`); elsewhere this
+    route fails closed (never chmods or changes an ACL)."""
+    if os.name == 'nt':
+        from quorum_winproof import available
+        return available()
     return (os.name == 'posix' and hasattr(os, 'O_NOFOLLOW') and hasattr(os, 'O_DIRECTORY')
             and all(function in os.supports_dir_fd for function in (os.open, os.mkdir, os.rename, os.unlink)))
 
@@ -121,8 +125,29 @@ def _verify(info, kind):
         raise _unavailable('path_unsafe')
 
 
+def _windows(action):
+    """Run a Windows handle proof step (`quorum_winproof`); any refusal is the fixed path_unsafe."""
+    from quorum_winproof import Unsafe
+    try: return action()
+    except (Unsafe, OSError): raise _unavailable('path_unsafe') from None
+
+
+def _verify_fd(fd, kind):
+    """`_verify` of an open descriptor; on Windows its owner and DACL are read from the handle."""
+    if os.name == 'nt':
+        from quorum_winproof import verify
+        _windows(lambda: verify(fd, kind, 'claude'))
+    else: _verify(os.fstat(fd), kind)
+
+
 def _open(name, parent, kind, *, create=False):
-    """Open one component relative to its verified parent; a link, swap or loose mode is refused unchanged."""
+    """Open one component relative to its verified parent; a link, swap or loose mode is refused unchanged.
+
+    On Windows a creation receives an owner-only protected DACL atomically, like mkdir 0700.
+    """
+    if os.name == 'nt':
+        from quorum_winproof import open_verified
+        return _windows(lambda: open_verified(parent, name, kind, 'claude', create=create))
     if create:
         try: os.mkdir(name, 0o700, dir_fd=parent)
         except FileExistsError: pass
@@ -138,11 +163,53 @@ def _open(name, parent, kind, *, create=False):
     return fd
 
 
+def _mkdir_new(name, parent):
+    """Create a new private directory relative to its verified parent; an existing entry refuses."""
+    if os.name == 'nt':
+        from quorum_winproof import open_at
+        os.close(_windows(lambda: open_at(parent, name, directory=True, create=True, exclusive=True)))
+        return
+    try: os.mkdir(name, 0o700, dir_fd=parent)
+    except OSError: raise _unavailable('path_unsafe') from None
+
+
+def _create_new(name, parent):
+    """Exclusively create a private regular file relative to its verified parent; a writable descriptor."""
+    if os.name == 'nt':
+        from quorum_winproof import open_at
+        return _windows(lambda: open_at(parent, name, directory=False, create=True, exclusive=True, write=True))
+    try: return os.open(name, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=parent)
+    except OSError: raise _unavailable('path_unsafe') from None
+
+
+def _rename_at(directory, source, target):
+    """Rename relative to the held verified directory (FileRenameInformation with its handle on Windows)."""
+    if os.name == 'nt':
+        from quorum_winproof import rename_at
+        _windows(lambda: rename_at(directory, source, target))
+    else: os.rename(source, target, src_dir_fd=directory, dst_dir_fd=directory)
+
+
+def _unlink_at(directory, name):
+    """Remove a file relative to the held verified directory; an absent one is ignored."""
+    if os.name == 'nt':
+        from quorum_winproof import Unsafe, unlink_at
+        try: unlink_at(directory, name)
+        except FileNotFoundError: pass
+        except (Unsafe, OSError): raise _unavailable('path_unsafe') from None
+        return
+    try: os.unlink(name, dir_fd=directory)
+    except FileNotFoundError: pass
+
+
 def _root_fd(root, *, create=False):
     """Descriptor of the private state root, every component opened without following links."""
-    opened = [os.open('/', os.O_RDONLY | os.O_DIRECTORY)]
+    if os.name == 'nt':
+        from quorum_winproof import open_root
+        opened = [_windows(lambda: open_root(root.parts[0]))]
+    else: opened = [os.open('/', os.O_RDONLY | os.O_DIRECTORY)]
     try:
-        _verify(os.fstat(opened[0]), 'ancestor')
+        _verify_fd(opened[0], 'ancestor')
         parts = root.parts[1:]
         for index, name in enumerate(parts):
             last = index == len(parts) - 1
@@ -210,8 +277,9 @@ def _sidecars(directory):
 
 
 class _AnchoredConnection(sqlite3.Connection):
-    """Closes the held verified directory descriptor together with the connection."""
+    """Closes the held verified directory descriptor (and Windows pins) together with the connection."""
     anchor = None
+    pins = ()
 
     def close(self):
         try: super().close()
@@ -219,6 +287,8 @@ class _AnchoredConnection(sqlite3.Connection):
             if self.anchor is not None:
                 os.close(self.anchor)
                 self.anchor = None
+            for fd in self.pins: os.close(fd)
+            self.pins = ()
 
 
 def _descriptors():
@@ -237,14 +307,19 @@ def _connect(path, expected, mode):
     """Open SQLite on `path`, then prove the descriptor it actually opened is the verified file.
 
     The connection is returned only when exactly one new regular descriptor appeared and its
-    (device, inode) equals `expected`; any other observation closes it unused.
+    (device, inode) equals `expected`; any other observation closes it unused. Windows has no descriptor
+    listing: the caller holds every verified component without delete sharing, so none can be renamed,
+    replaced or deleted, and the pathname must still name the verified (volume, file ID).
     """
-    before = _descriptors()
+    before = None if os.name == 'nt' else _descriptors()
     try: db = sqlite3.connect('file:' + quote(str(path)) + '?mode=' + mode, uri=True, timeout=5,
                               factory=_AnchoredConnection)
     except sqlite3.Error: raise _unavailable('path_unsafe') from None
     try:
-        if [identity for fd, identity in _descriptors().items() if before.get(fd) != identity] != [expected]:
+        if os.name == 'nt':
+            from quorum_winproof import path_identity
+            if _windows(lambda: path_identity(path)) != expected: raise _unavailable('path_unsafe')
+        elif [identity for fd, identity in _descriptors().items() if before.get(fd) != identity] != [expected]:
             raise _unavailable('path_unsafe')
     except BaseException:
         db.close()
@@ -283,9 +358,18 @@ ACTOR_KINDS = ('ancestor', 'private', 'file')
 SLOT_KINDS = ('private', 'private')
 
 
+def actor_directory(session_ref):
+    """On-disk name of a logical actor's directory under `sessions`.
+
+    NTFS reserves ':' for alternate data streams, so Windows stores `claude-worker:<uuid>` as
+    `claude-worker-<uuid>`; that form cannot collide with any other session reference (a bare UUID).
+    """
+    return session_ref.replace(':', '-', 1) if os.name == 'nt' else session_ref
+
+
 def _actor_ledger(root, session_ref, *, create=False):
     """The logical actor's ledger; see `_ledger`."""
-    return _ledger(root, ('sessions', session_ref), ACTOR_KINDS[:2], create=create)
+    return _ledger(root, ('sessions', actor_directory(session_ref)), ACTOR_KINDS[:2], create=create)
 
 
 def root_ledger(state_root):
@@ -323,10 +407,9 @@ def _ledger(root, names=(), kinds=(), *, create=False):
         fd = _open('ledger.sqlite', directory, 'file')
         if fd is None:
             if not create: return None
-            try: fd = os.open('ledger.sqlite', os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory)
-            except OSError: raise _unavailable('path_unsafe') from None
+            fd = _create_new('ledger.sqlite', directory)
             fds.append(fd)
-            _verify(os.fstat(fd), 'file')
+            _verify_fd(fd, 'file')
         else: fds.append(fd)
         # A legitimate recovery journal is a private, owned, single-link regular file and is kept for
         # SQLite's recovery; a link, loose mode, other owner or other type refuses before mutable use.
@@ -334,6 +417,8 @@ def _ledger(root, names=(), kinds=(), *, create=False):
         db = _connect(path, _identity([fd])[0], 'rw')
         try:
             db.anchor = os.dup(directory)
+            # Windows: keep the whole verified chain pinned while SQLite uses pathnames under it.
+            if os.name == 'nt': db.pins = [os.dup(fd) for fd in fds]
             # Locks and logs under this root open relative to the held verified directory descriptor.
             return LocalLedger.adopt(AnchoredPath(path.parent, held=(db.anchor, str(path.parent))), db)
         except BaseException:
@@ -378,7 +463,7 @@ def _lock(root, names, name, seconds=10):
                 if str(error) != 'worker_already_running' or time.monotonic() >= deadline: raise
                 time.sleep(.05)
         try:
-            _verify(os.fstat(guard.fd), 'file')
+            _verify_fd(guard.fd, 'file')
             yield
         finally: guard.__exit__()
 
@@ -538,10 +623,21 @@ def _summary(root, record, *, session=True):
 
 
 def _held(directory, name):
-    """Whether another holder has the verified lock file; probed with a shared lock, nothing created."""
-    import fcntl
+    """Whether another holder has the verified lock file; probed with a shared lock, nothing created.
+
+    Windows `FileLock` locks byte 0 exclusively, so the probe takes and at once releases that byte.
+    """
     fd = _open(name, directory, 'file')
     if fd is None: return False
+    if os.name == 'nt':
+        import msvcrt
+        try:
+            try: msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+            except OSError: return True
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+            return False
+        finally: os.close(fd)
+    import fcntl
     try:
         fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
         return False
@@ -555,7 +651,7 @@ def _session_status(root, record):
     from quorum_native_inbox import CONTROL
     binding = record.get('binding')
     if not binding: return None
-    names = ('sessions', binding['session_ref'])
+    names = ('sessions', actor_directory(binding['session_ref']))
     with _components(root, names, ACTOR_KINDS[:2]) as fds:
         if fds is None: return None
         rows = _read_db(fds[-1], root.joinpath(*names, 'ledger.sqlite'), lambda db: db.execute(
@@ -598,8 +694,7 @@ def prepare(state_root, scope):
     os.close(_root_fd(root, create=True))
     _ledger(root, create=True).db.close()
     with _directory(root, 'claude-workers', create=True) as workers:
-        try: os.mkdir(slot_id, 0o700, dir_fd=workers)
-        except OSError: raise _unavailable('path_unsafe') from None
+        _mkdir_new(slot_id, workers)
         os.close(_open(slot_id, workers, 'private'))
     record = {'slot_id': slot_id, 'state': 'pending', 'terminal_reason': None, 'provider_session_id': sid,
               'state_root': str(root), 'scope': scope, 'scope_hash': _digest(scope), 'lifetime': scope['lifetime'],
@@ -619,19 +714,19 @@ def _write_capability(root, slot_id, token):
     with _directory(root, 'claude-workers', slot_id) as directory:
         if directory is None: raise _denied('slot_invalid')
         name = '.capability-' + secrets.token_hex(8) + '.tmp'
-        fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory)
+        if os.name == 'nt': fd = _create_new(name, directory)  # Owner-only DACL set at creation.
+        else: fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory)
         try:
             try:
-                os.fchmod(fd, 0o600)
+                if os.name != 'nt': os.fchmod(fd, 0o600)
                 view = memoryview(data)
                 while view: view = view[os.write(fd, view):]
                 os.fsync(fd)
             finally: os.close(fd)
-            # POSIX rename atomically replaces an earlier unactivated attempt's file.
-            os.rename(name, 'capability.json', src_dir_fd=directory, dst_dir_fd=directory)
+            # The rename atomically replaces an earlier unactivated attempt's file.
+            _rename_at(directory, name, 'capability.json')
         except BaseException:
-            try: os.unlink(name, dir_fd=directory)
-            except FileNotFoundError: pass
+            _unlink_at(directory, name)
             raise
 
 

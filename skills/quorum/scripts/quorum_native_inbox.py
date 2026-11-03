@@ -207,9 +207,20 @@ def _codex_home():
 
 
 def _ownership_proof_available():
-    """Owner/permission proof uses POSIX descriptors; elsewhere tool mode fails closed (never chmods)."""
+    """Owner/permission proof uses POSIX descriptors or Windows handles; elsewhere tool mode fails closed
+    (never chmods or changes an ACL)."""
+    if os.name == 'nt':
+        from quorum_winproof import available
+        return available()
     return (os.name == 'posix' and hasattr(os, 'O_NOFOLLOW') and hasattr(os, 'O_DIRECTORY')
             and os.open in os.supports_dir_fd and os.scandir in os.supports_fd)
+
+
+def _windows(action):
+    """Run a Windows handle proof step; any refusal is the fixed rollout_unsafe, never a path."""
+    from quorum_winproof import Unsafe
+    try: return action()
+    except (Unsafe, OSError): raise _unsafe() from None
 
 
 def _unsafe(reason='rollout_unsafe'):
@@ -228,8 +239,41 @@ def _check(info, *, kind):
         raise _unsafe()
 
 
+def _check_fd(fd, kind):
+    if os.name == 'nt':
+        from quorum_winproof import verify
+        _windows(lambda: verify(fd, kind, 'codex'))
+    else: _check(os.fstat(fd), kind=kind)
+
+
+def _open_root(name):
+    """The verified filesystem root (a local drive root on Windows)."""
+    if os.name == 'nt':
+        from quorum_winproof import open_root
+        fd = _windows(lambda: open_root(name))
+    else: fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY)
+    try: _check_fd(fd, 'ancestor')
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def _open_file(name, parent):
+    """The rollout opened relative to its verified directory without following a link; None when gone."""
+    if os.name == 'nt':
+        from quorum_winproof import open_at
+        return _windows(lambda: open_at(parent, name, directory=False, share_delete=True))
+    try: return os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+    except FileNotFoundError: return None
+    except OSError: raise _unsafe() from None
+
+
 def _open_dir(name, parent, kind):
     """Open one component relative to its already verified parent; a link or replacement is refused."""
+    if os.name == 'nt':
+        from quorum_winproof import open_verified
+        return _windows(lambda: open_verified(parent, name, kind, 'codex', share_delete=True))
     try: fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
     except FileNotFoundError: return None
     except OSError: raise _unsafe() from None
@@ -243,6 +287,13 @@ def _open_dir(name, parent, kind):
 def _children(fd, pattern):
     """Names only (no contents) of matching entries; a matching link is refused, never followed."""
     names = []
+    if os.name == 'nt':
+        from quorum_winproof import ATTRIBUTE_REPARSE, children
+        for entry, attributes in _windows(lambda: children(fd)):
+            if re.fullmatch(pattern, entry):
+                if attributes & ATTRIBUTE_REPARSE: raise _unsafe()
+                names.append(entry)
+        return sorted(names)
     with os.scandir(fd) as entries:
         for entry in entries:
             if re.fullmatch(pattern, entry.name):
@@ -261,9 +312,8 @@ def _rollout(sid):
     home = _codex_home()
     if not home.is_absolute(): raise _unsafe()
     parts = home.parts
-    opened, found = [os.open(parts[0], os.O_RDONLY | os.O_DIRECTORY)], []
+    opened, found = [_open_root(parts[0])], []
     try:
-        _check(os.fstat(opened[0]), kind='ancestor')
         for index, name in enumerate(parts[1:]):
             fd = _open_dir(name, opened[-1], 'private' if index == len(parts) - 2 else 'ancestor')
             if fd is None: raise _unsafe('rollout_missing')
@@ -281,11 +331,10 @@ def _rollout(sid):
             """
             for child in _children(parent, patterns[0] if patterns else name):
                 if not patterns:
-                    try: fd = os.open(child, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
-                    except FileNotFoundError: continue
-                    except OSError: raise _unsafe() from None
+                    fd = _open_file(child, parent)
+                    if fd is None: continue
                     found.append(fd)
-                    _check(os.fstat(fd), kind='file')
+                    _check_fd(fd, 'file')
                     if len(found) > 1: raise _unsafe('rollout_ambiguous')
                     continue
                 fd = _open_dir(child, parent, 'private')

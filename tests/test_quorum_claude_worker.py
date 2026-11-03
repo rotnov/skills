@@ -14,10 +14,14 @@ import tempfile
 import unittest
 from unittest.mock import patch
 import uuid
-from quorum_test_support import isolated_profiles
+from quorum_test_support import anchor_owner_proof_fixtures, isolated_profiles
+
+anchor_owner_proof_fixtures()
+
 
 SCRIPTS = Path(__file__).resolve().parents[1] / 'skills/quorum/scripts'
 sys.path.insert(0, str(SCRIPTS))
+
 SID = '5b0c1c39-6c2e-4a4f-9a51-2f8d3c1e7a10'
 OTHER_SID = '0e9d6f1a-3b7c-4d2e-8f10-1a2b3c4d5e6f'
 HANDLE = 'agent_01 quorum · ünicode'
@@ -37,6 +41,8 @@ EXPORTS = ('CODEX_THREAD_ID', 'CODEX_HOME', 'CLAUDE_CODE_SESSION_ID', 'CLAUDE_CO
            'CLAUDE_CODE_MESSAGING_SOCKET', 'CLAUDE_CODE_MESSAGING_TOKEN', 'GROK_SESSION_ID',
            'GROK_LEADER_SOCKET', 'CURSOR_CONVERSATION_ID', 'CURSOR_AGENT', 'SAND_AGENT_STORE_RPC_SERVICE')
 POSIX_PROOF = unittest.skipIf(os.name == 'nt', 'Claude worker slots need POSIX owner proof; Windows fails closed')
+# End-to-end routes without POSIX mode fixtures run on POSIX and on Windows (handle owner/DACL proof).
+OWNER_PROOF = unittest.skipUnless(os.name in ('posix', 'nt'), 'Claude worker slots need a POSIX or Windows owner proof')
 
 
 @contextlib.contextmanager
@@ -278,7 +284,7 @@ class Harness(unittest.TestCase):
     def worker_ledger(self, slot):
         from quorum_state import LocalLedger
         session_ref = self.setting(slot)['binding']['session_ref']
-        ledger = LocalLedger(self.root / 'sessions' / session_ref)
+        ledger = LocalLedger(self.root / 'sessions' / actor_directory(session_ref))
         self.addCleanup(ledger.db.close)
         return ledger
 
@@ -613,11 +619,16 @@ class SlotTests(Harness):
         self.denied('native_worker_slot_terminal', self.authorize, self.capability(slot), 'status')
 
 
+def actor_directory(session_ref):
+    from quorum_claude_worker import actor_directory
+    return actor_directory(session_ref)
+
+
 def actor(handle=HANDLE):
     return 'claude-worker:' + str(uuid.uuid5(uuid.UUID(SID), handle))
 
 
-@POSIX_PROOF
+@OWNER_PROOF
 class CliTests(Harness):
     @isolated_profiles
     def test_required_worker_preserves_attested_capability_scope(self):
@@ -1282,7 +1293,7 @@ class Bound(Harness):
         return stop
 
 
-@POSIX_PROOF
+@OWNER_PROOF
 class DeliveryTests(Bound):
     @isolated_profiles
     def test_claude_offer_precedes_stdout_and_explicit_receipt_only(self):
@@ -1599,7 +1610,7 @@ class ActorPathTests(Bound):
     post-dispatch failures report the remote effect truthfully (review fix I2)."""
 
     def actor_dir(self):
-        return self.root / 'sessions' / actor()
+        return self.root / 'sessions' / actor_directory(actor())
 
     def snapshot(self, path):
         info = path.stat()
@@ -1850,7 +1861,7 @@ class ConnectionIdentityTests(Bound):
         return stat.S_IMODE(info.st_mode), path.read_bytes()
 
     def actor_dir(self):
-        return self.root / 'sessions' / actor()
+        return self.root / 'sessions' / actor_directory(actor())
 
     def create(self, api, cap):
         from quorum_api import ServiceConfig
@@ -1955,7 +1966,7 @@ class DurableStorageTests(Bound):
     private recovery journals allowed, unsafe sidecars refused unchanged."""
 
     def actor_dir(self):
-        return self.root / 'sessions' / actor()
+        return self.root / 'sessions' / actor_directory(actor())
 
     def fill(self):
         """80 committed 4096-byte rows, written through the product's verified actor ledger."""

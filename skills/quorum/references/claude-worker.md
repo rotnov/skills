@@ -19,8 +19,21 @@ operations to the local caller. It does not authenticate the child: the same OS
 user, including the parent, can read the file and invoke it. Existing machine
 login can also act outside this route; there is no new server ACL or sandbox.
 Private paths must be owned by the current user, unlinked and not group- or
-other-accessible; they are never chmodded. Without that owner proof (currently
-Windows) every command fails closed with `native_worker_unavailable`.
+other-accessible; they are never chmodded. On Windows the same proof reads the
+owner and DACL from handles opened relative to their verified parent, never
+through a junction or other reparse point: private directories need a protected
+DACL with no inherited rule, and they and their files may grant access only to
+the current user (directly or through OWNER RIGHTS, as Python's `mkdir(mode=0o700)`
+writes), SYSTEM or Administrators. Ancestors must be owned by the user,
+SYSTEM, Administrators or TrustedInstaller, and nobody else may delete, rename
+or re-permission them; AppContainer package and capability rules count as the
+user's own, but another account (such as a sandbox user group) does not, so
+keep the state directory under the user profile, not `%TEMP%`. The state directory must be on a local NTFS or ReFS
+drive. No ACL is changed; new private directories and files get an owner-only
+DACL when created. In an elevated session, objects owned by Administrators (that
+session's default owner) count as the user's. Where neither proof is available,
+every command fails closed with `native_worker_unavailable` reason
+`ownership_unverified`.
 
 Worker databases keep SQLite's ordinary disk journal. If a command is
 interrupted, only its uncommitted local SQLite changes are discarded, by the
@@ -41,6 +54,10 @@ file, is refused unchanged. Keep the state directory and its parents in
 place while worker commands run: stop them before moving or replacing those
 directories. SQLite's journal access is by path, so a same-user process
 replacing those directories mid-command is outside what the helper can detect.
+On Windows, the verified directories stay open without delete sharing while a
+database is in use, so they cannot be renamed or deleted until it closes. NTFS
+reserves `:`, so a logical actor's directory there is
+`sessions/claude-worker-<uuid>`; the actor reference itself is unchanged.
 
 ## Owner-parent setup
 

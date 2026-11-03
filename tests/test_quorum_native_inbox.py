@@ -10,7 +10,9 @@ import tempfile
 import unittest
 from unittest.mock import patch
 import uuid
-from quorum_test_support import isolated_profiles
+from quorum_test_support import anchor_owner_proof_fixtures, isolated_profiles
+
+anchor_owner_proof_fixtures()
 
 SCRIPTS = Path(__file__).resolve().parents[1] / 'skills/quorum/scripts'
 sys.path.insert(0, str(SCRIPTS))
@@ -168,6 +170,8 @@ class Harness(unittest.TestCase):
 
 
 POSIX_PROOF = unittest.skipIf(os.name == 'nt', 'tool-inbox provenance needs POSIX owner proof; Windows fails closed')
+# End-to-end routes without POSIX mode fixtures run on POSIX and on Windows (handle owner/DACL proof).
+OWNER_PROOF = unittest.skipUnless(os.name in ('posix', 'nt'), 'tool inbox needs a POSIX or Windows owner proof')
 
 
 class OtherConnection:
@@ -500,18 +504,42 @@ class DescriptorLimitTests(Harness):
         self.assertEqual(self.probe()['outcome'], CHILD)
 
 
-@unittest.skipUnless(os.name == 'nt', 'Windows-only fail-closed check')
+@unittest.skipUnless(os.name == 'nt', 'Real Windows handle owner/DACL proof')
 class WindowsTests(Harness):
+    @isolated_profiles
+    def test_windows_proves_the_worker_and_refuses_a_junction_or_a_writable_rollout(self):
+        import subprocess
+        from quorum_native_inbox import NativeInboxError, prove_worker
+        path = rollout(self.home)
+        with caller(self.home):
+            self.assertEqual(prove_worker(PARENT), {'provider': 'codex', 'session_ref': CHILD, 'parent_thread_id': PARENT})
+        # Another principal able to write the rollout is refused, the ACL left unchanged.
+        self.assertEqual(subprocess.run(['icacls', str(path), '/grant', '*S-1-5-32-545:(M)'],
+                                        capture_output=True, timeout=30).returncode, 0)
+        with caller(self.home), self.assertRaises(NativeInboxError) as raised: prove_worker(PARENT)
+        self.assertEqual(raised.exception.reason, 'rollout_unsafe')
+        path.unlink()
+        # A junction anywhere in the sessions tree is refused, never followed.
+        day = Path(self.home) / 'sessions' / '2026' / '10'
+        real = day.with_name('real-10')
+        day.rename(real)
+        self.assertEqual(subprocess.run(['cmd', '/c', 'mklink', '/J', str(day), str(real)],
+                                        capture_output=True, timeout=30).returncode, 0)
+        rollout(self.home)
+        with caller(self.home), self.assertRaises(NativeInboxError) as raised: prove_worker(PARENT)
+        self.assertEqual(raised.exception.reason, 'rollout_unsafe')
+
     @isolated_profiles
     def test_windows_fails_closed_without_owner_proof(self):
         from quorum_native_inbox import NativeInboxError, prove_worker
         rollout(self.home)
-        with caller(self.home), self.assertRaises(NativeInboxError) as raised: prove_worker(PARENT)
+        with caller(self.home), patch('quorum_winproof.available', return_value=False), \
+                self.assertRaises(NativeInboxError) as raised: prove_worker(PARENT)
         self.assertEqual((raised.exception.code, raised.exception.reason),
                          ('native_worker_unavailable', 'ownership_unverified'))
 
 
-@POSIX_PROOF
+@OWNER_PROOF
 class DeliveryTests(Harness):
     def setUp(self):
         super().setUp()
@@ -854,7 +882,7 @@ class DeliveryTests(Harness):
         proposal(absent['notice'])
 
 
-@POSIX_PROOF
+@OWNER_PROOF
 class LifecycleTests(Harness):
     def setUp(self):
         super().setUp()
@@ -1087,7 +1115,7 @@ class LifecycleTests(Harness):
                           status['data']['run_id']), ('offline', 'error', 'listener_exited', run_id))
 
 
-@POSIX_PROOF
+@OWNER_PROOF
 class StopAndBudgetTests(Harness):
     """Interleavings at blocking boundaries; real ledgers and locks, fake API, waiter and clock."""
     def setUp(self):

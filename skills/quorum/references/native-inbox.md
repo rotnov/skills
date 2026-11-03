@@ -24,7 +24,13 @@ use, registration or RPC, that:
   following links: no home, ancestor or provider link is accepted. The home,
   provider directories and file are owned by the current user and not group-
   or other-writable; ancestors are root- or user-owned and shared-writable only
-  when sticky (such as `/tmp`). Only directory names are listed, the whole
+  when sticky (such as `/tmp`). On Windows, handles opened relative to their
+  verified parent refuse any reparse point, and the owner and DACL come from the
+  handle: the home, provider directories and file are the user's, and only the
+  user, SYSTEM and Administrators may write them. Ancestors are owned by the user,
+  SYSTEM, Administrators or TrustedInstaller, and nobody else may delete, rename
+  or re-permission them (AppContainer package and capability rules count as the
+  user's own; other accounts do not). The home must be on a local NTFS or ReFS drive. Only directory names are listed, the whole
   history is scanned for uniqueness, and each date directory is closed after its
   subtree, so descriptor use stays bounded by depth rather than history;
 - its first line only (256 KiB maximum, read byte by byte so no byte after the
@@ -33,9 +39,9 @@ use, registration or RPC, that:
   is the expected parent.
 
 Transcript bodies are never read. There is no path, transcript or worker-ID
-override. Where this owner proof is unavailable (currently Windows), tool mode
-fails closed with `native_worker_unavailable` reason `ownership_unverified`;
-provider files are never chmodded or adopted. This corroborates provider provenance under the local-user trust
+override. Where neither owner proof is available, tool mode fails closed with
+`native_worker_unavailable` reason `ownership_unverified`; provider files are
+never chmodded, re-permissioned or adopted. This corroborates provider provenance under the local-user trust
 model; it does not protect against the same OS user forging files.
 
 Failures leave the invitation unused and print only fixed codes:
