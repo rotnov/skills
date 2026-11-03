@@ -11,7 +11,8 @@ import uuid
 from quorum_listener import Control, abandon_start, locked, run_listener, spawn_background, stop_listener
 from quorum_os import FileLock
 from quorum_state import LocalLedger
-from quorum_delegation import grant, instruction, member_grant, task_check, save_grant_binding
+from quorum_delegation import (grant, instruction, member_grant, task_check, save_grant_binding, standing_check,
+                               standing_grants, standing_status, STANDING_ACTIONS)
 from quorum_release import ReleaseGuard, ReleaseMismatch, diagnostic
 
 
@@ -351,6 +352,8 @@ def add_commands(commands):
     intake.add_argument('--accept-tasks-from-members', action='store_true', help='Owner opt-in: current and future quorum members, excluding owner-held actions')
     connect.add_argument('--dispatch-mode', choices=('inline', 'native-subagent'), default='inline',
                          help='Receiving-owner task execution policy; native-subagent requires coordinator intake opt-in')
+    connect.add_argument('--standing-grants-from', metavar='COORDINATOR_ROLE',
+                         help='Owner opt-in with member intake: standing skill-refresh/client-test grants for this role')
     add_transport_arguments(connect)
     delegation = actions.add_parser('delegate', help='Receiving-owner task intake permission for this exact binding')
     choice = delegation.add_mutually_exclusive_group(required=True)
@@ -359,9 +362,15 @@ def add_commands(commands):
     choice.add_argument('--revoke', action='store_true')
     delegation.add_argument('--dispatch-mode', choices=('inline', 'native-subagent'), default='inline',
                             help='Receiving-owner task execution policy for this scoped coordinator grant')
+    delegation.add_argument('--standing-grants-from', metavar='COORDINATOR_ROLE',
+                            help='With --members: standing skill-refresh/client-test grants for this role')
     actions.add_parser('peers')
     actions.add_parser('task-check', help='Fresh authority for one member task; run immediately before execution').add_argument(
         'message_id', type=lambda x: str(uuid.UUID(x)))
+    standing = actions.add_parser('standing-check',
+                                  help="Fresh coordinator-role authority and budget for one standing owner grant")
+    standing.add_argument('message_id', type=lambda x: str(uuid.UUID(x)))
+    standing.add_argument('--action', dest='standing_action', required=True, choices=STANDING_ACTIONS)
     thread = actions.add_parser('thread', help="Read a conversation as this bound session's agent")
     thread.add_argument('conversation_id', type=lambda x: str(uuid.UUID(x)))
     thread.add_argument('--after-sequence', type=sequence, default=0,
@@ -617,7 +626,8 @@ def dispatch(args, auth_ledger, register_agent):
         ledger.setting('listener-mode','codex_tool_inbox' if tool else 'native_'+engine+'_session')
         if args.action=='status':
             if tool: return {**inbox.status(ledger,record),'session_id':sid,
-                             'delegation':record.get('delegation'),'release':diagnostic(ledger)}
+                             'delegation':record.get('delegation'),'standing_grants':standing_status(record,ledger),
+                             'release':diagnostic(ledger)}
             deliveries = [(key,json.loads(raw)) for key,raw in
                           ledger.db.execute("select key,data from settings where key like 'delivery:%'")]
             pending = sum(value['state']=='submitted' for _,value in deliveries)
@@ -625,7 +635,8 @@ def dispatch(args, auth_ledger, register_agent):
                        for key,value in deliveries if value['state']=='intent']
             return {**Control(ledger).status(),'session_id':sid,'pending_receipts':pending,
                     'unknown_attempts':unknown,
-                    'delegation':record.get('delegation') if record else None, 'release':diagnostic(ledger)}
+                    'delegation':record.get('delegation') if record else None,
+                    'standing_grants':standing_status(record,ledger) if record else None, 'release':diagnostic(ledger)}
         if args.action=='stop':
             # Exact-SID supervision: a parent may stop its worker but never act as it.
             if tool: return {**inbox.stop(ledger,record),'session_id':sid}
@@ -659,6 +670,10 @@ def dispatch(args, auth_ledger, register_agent):
                 raise ValueError('member_intake_requires_inline')
             if dispatch_mode == 'native-subagent' and (not coordinator or getattr(args, 'revoke', False)):
                 raise ValueError('dispatch_mode_requires_coordinator')
+            standing_from = getattr(args, 'standing_grants_from', None)
+            if standing_from is not None:
+                if not members: raise ValueError('standing_grants_require_members')
+                if not re.fullmatch('[a-z][a-z0-9-]{0,47}', standing_from): raise ValueError('invalid_coordinator_role')
         api, _, _ = api_for(auth_ledger)
         guard = None
         if args.action == 'recover' or (args.action == 'run' and getattr(args, 'recovering', False)):
@@ -692,6 +707,12 @@ def dispatch(args, auth_ledger, register_agent):
             if old and ((members and (previous or {}).get('scope', 'coordinator') != 'members')
                              or (coordinator and (previous or {}).get('scope') == 'members')):
                 raise ValueError('delegation_scope_changed')
+            # A reconnect keeps an existing standing grant but can never add or change one;
+            # the receiving owner uses `delegate --members --standing-grants-from` instead.
+            kept = standing_grants(old)
+            if old and members and standing_from is not None and (kept or {}).get('from_role') != standing_from:
+                raise ValueError('delegation_scope_changed')
+            if old and members: standing_from = (kept or {}).get('from_role')
             result=register_agent(api,auth_ledger,args.quorum,args.role,data,device_key='session-device:'+sid)
             record={**result,**data,'registration':data,'role':args.role,'quorum':args.quorum}
             # Reconnect must not hide an old generation's endpoint from start.
@@ -711,7 +732,7 @@ def dispatch(args, auth_ledger, register_agent):
                     snapshot = save_grant_binding(ledger, 'session-agent', record, snapshot)
                 return snapshot
             save_binding()
-            if members: record['delegation'] = member_grant(record)
+            if members: record['delegation'] = member_grant(record, standing_from)
             if coordinator:
                 peer = api.call('resolve_role', {'quorum_id':record['quorum_id'], 'role':coordinator,
                                                 'project_ref':record['project_ref']})
@@ -735,7 +756,7 @@ def dispatch(args, auth_ledger, register_agent):
                 # Peer enumeration is read-only and never supplies sender authority.
                 ReleaseGuard(api, ledger).check()
                 api.call('session_peers', {'agent_id':record['agent_id'], 'session_ref':sid})
-                record['delegation'] = member_grant(record)
+                record['delegation'] = member_grant(record, standing_from)
             else:
                 peer = api.call('resolve_role', {'quorum_id':record['quorum_id'], 'role':args.coordinator_role,
                                                 'project_ref':record['project_ref']})
@@ -745,6 +766,10 @@ def dispatch(args, auth_ledger, register_agent):
         if args.action == 'task-check':
             ReleaseGuard(api, ledger).check()
             return task_check(api, record, args.message_id, lambda: ledger.setting('session-agent'))
+        if args.action == 'standing-check':
+            ReleaseGuard(api, ledger).check()
+            return standing_check(api, record, args.message_id, args.standing_action,
+                                  lambda: ledger.setting('session-agent'), ledger)
         if args.action == 'peers':
             from quorum_peer_wake import with_wake_diagnostics
             return with_wake_diagnostics(api.call('session_peers', {'agent_id':record['agent_id'], 'session_ref':sid}))

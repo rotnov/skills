@@ -233,7 +233,7 @@ def main(argv=None):
                          'session_delivery_unsent', 'session_reconcile_denied',
                          'session_recovery_denied', 'delegation_scope_changed', 'member_intake_requires_inline',
                          'private_acl_unavailable', 'private_acl_access_denied', 'unsafe_link', 'browser_unavailable', 'login_timeout',
-                         'worker_already_running'})
+                         'worker_already_running', 'standing_grants_require_members', 'invalid_coordinator_role'})
         code = str(error) if str(error) in safe else 'operation_failed'
         data = error.diagnostic() if code == 'auth_profile_conflict' and hasattr(error, 'diagnostic') else {}
         print(json.dumps({'ok': False, 'code': code, 'data': data}))

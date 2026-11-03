@@ -70,7 +70,9 @@ def add_commands(commands):
                         help='Generated Claude worker capability file; requires --transport tool-inbox')
     invite_id = commands.add_parser('invite-id', help='Create an invitation ID and new-session prompt')
     invite_id.add_argument('--coordinator-role', default='coordinator',
-                           help='Role the receiving owner authorizes for project task intake')
+                           help='Coordinator role named in the standing grants (and a coordination label)')
+    invite_id.add_argument('--no-standing-grants', dest='standing_grants', action='store_false',
+                           help='Issue the prompt without standing skill-refresh/client-test grants')
     invite_id.add_argument('quorum')
     target_id = invite_id.add_mutually_exclusive_group(required=True)
     target_id.add_argument('--github-user')
@@ -163,11 +165,13 @@ def dispatch(args, ledger, register_agent):
         return api.call('quorum_set_access', {'quorum_id': quorum_id, 'access': args.mode}, 'access:' + quorum_id)
     if args.command == 'invite-id' and args.open:
         from quorum_invitations import create_open_invitation
-        return create_open_invitation(api, config, args.quorum, args.request_id, coordinator_role=args.coordinator_role)
+        return create_open_invitation(api, config, args.quorum, args.request_id, coordinator_role=args.coordinator_role,
+                                      standing_grants=getattr(args, 'standing_grants', True))
     if args.command == 'invite-id':
         from quorum_invitations import create_id_invitation, github_id
         target = args.github_id or github_id(args.github_user)
-        return create_id_invitation(api, config, args.quorum, target, args.request_id, github_user=args.github_user, coordinator_role=args.coordinator_role)
+        return create_id_invitation(api, config, args.quorum, target, args.request_id, github_user=args.github_user, coordinator_role=args.coordinator_role,
+                                    standing_grants=getattr(args, 'standing_grants', True))
     if args.command == 'invite-file':
         from quorum_invitations import create_invitation, github_id
         target = args.github_id or github_id(args.github_user)

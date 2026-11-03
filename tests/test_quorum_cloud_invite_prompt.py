@@ -68,7 +68,8 @@ class InvitationPromptTests(unittest.TestCase):
                                   'cursor', 'Bash(uv run', 'protocol 2', 'skill 0.', 'No-worker route', 'Parent-native'):
                     self.assertNotIn(procedure, prompt)
                 self.assertIsNone(re.search(r'\bsay Hello\b|\bgreet', prompt))
-                self.assertLess(len(prompt), 4500)
+                # Standing owner grants add ~1 KB; `--no-standing-grants` prompts stay under 4500.
+                self.assertLess(len(prompt), 5600)
 
     def test_expiry_is_server_data_and_no_local_clock_decides(self):
         for name, prompt, result in prompts():
