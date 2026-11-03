@@ -244,14 +244,19 @@ class Harness(unittest.TestCase):
         try: ledger.setting(key, value)
         finally: ledger.db.close()
 
-    def cli(self, api, *argv, stdin=b'', sid=SID, extra=None):
+    def cli(self, api, *argv, stdin=b'', sid=SID, extra=None, resolved=False, ensure=None):
         import quorum
         from quorum_api import QuorumError, ServiceConfig
         config = ServiceConfig(ORIGIN, KEY)
         service = (dict(return_value=(api, config, Store())) if api is not None
                    else dict(side_effect=QuorumError('auth_required')))
+        if resolved:
+            # This state's real profile and credential store; only the service API is the fake.
+            from quorum_profiles import resolve_profile
+            service = dict(side_effect=lambda ledger: (api, *resolve_profile(ledger.root)))
         with claude(sid, **(extra or {})), patch('quorum_live.api_for', **service), \
-                patch('quorum_profiles.ensure_login', return_value={'authenticated': True, 'reused': True}), \
+                patch('quorum_profiles.ensure_login', **(dict(side_effect=ensure) if ensure else dict(
+                    return_value={'authenticated': True, 'reused': True}))), \
                 patch('sys.stdin', io.TextIOWrapper(io.BytesIO(stdin))), \
                 contextlib.redirect_stdout(io.StringIO()) as output:
             code = quorum.main(['--state', str(self.root), *argv])
@@ -701,6 +706,80 @@ class CliTests(Harness):
         code, result, _ = self.cli(None, 'session', '--session-id', actor(), 'stop', sid=OTHER_SID)
         self.assertEqual(self.setting(slot)['state'], 'active')
         self.assertFalse((self.root / 'sessions').exists())
+
+    def anonymous_accept(self, api, cap, *extra):
+        logins = []
+        def ensure(config, store, *, explicit=False, anonymous=False):
+            logins.append((type(store).__name__, anonymous))
+            return {'authenticated': True, 'anonymous': anonymous}
+        result = self.cli(api, 'accept-id', INVITE, '--transport', 'tool-inbox', '--worker-capability', str(cap),
+                          '--origin', ORIGIN, '--publishable-key', KEY, *extra, resolved=True, ensure=ensure)
+        return (*result, logins)
+
+    @isolated_profiles
+    def test_open_scope_accepts_anonymously_in_its_own_state_and_connects(self):
+        api = Api()
+        slot, cap = self.active(self.accept_scope(access='open'))
+        self.assertEqual(self.setting(slot)['scope']['access'], 'open')
+        code, result, text, logins = self.anonymous_accept(api, cap, '--anonymous')
+        self.assertEqual(code, 0, text)
+        self.assertEqual((result['data']['membership_id'], result['data']['transport']), ('membership-1', 'tool-inbox'))
+        # A new anonymous identity kept only in this state, never GitHub or the machine profile.
+        self.assertEqual(logins, [('AnonymousCredentials', True)])
+        self.assertTrue((self.root / 'anonymous-credentials').is_dir())
+        self.assertFalse((self.root / 'credentials').exists())
+        self.assertEqual(json.loads((self.root / 'config.json').read_text()), {'origin': ORIGIN, 'publishable_key': KEY})
+        self.assertEqual(self.setting(slot)['target'], {'quorum_id': QUORUM, 'membership_id': 'membership-1'})
+        self.assertEqual(api.ops(), ['invite_accept_id'])
+        # The single-use invitation is pinned: another invitation is refused before any service call.
+        code, result, _ = self.cli(api, 'accept-id', OTHER_SID, '--transport', 'tool-inbox', '--worker-capability',
+                                   str(cap), '--anonymous', '--origin', ORIGIN, '--publishable-key', KEY)
+        self.assertEqual((code, result['code']), (3, 'native_worker_binding_denied'))
+        code, result, text = self.cli(api, 'session', '--worker-capability', str(cap), 'connect', 'team', '--role',
+                                      'service-worker', '--project-ref', 'team/project', '--transport', 'tool-inbox',
+                                      resolved=True)
+        self.assertEqual(code, 0, text)
+        self.assertEqual(self.setting(slot)['target'], {'quorum_id': QUORUM, 'membership_id': 'membership-1',
+                                                         'agent_id': AGENT})
+        self.assertEqual(self.worker_ledger(slot).setting('session-agent')['session_ref'], actor())
+
+    @isolated_profiles
+    def test_anonymous_accept_needs_an_open_scope_and_the_pinned_service(self):
+        api = Api()
+        github, github_cap = self.active(self.accept_scope(), handle='github')
+        explicit, explicit_cap = self.active(self.accept_scope(access='github'), handle='explicit')
+        opened, open_cap = self.active(self.accept_scope(access='open'), handle='open')
+        with patch('quorum_profiles.resolve_profile', side_effect=forbidden('profile')), \
+                patch('quorum.LocalLedger', side_effect=forbidden('root ledger')):
+            cases = [(github_cap, ('--anonymous', '--origin', ORIGIN, '--publishable-key', KEY)),
+                     (explicit_cap, ('--anonymous', '--origin', ORIGIN, '--publishable-key', KEY)),
+                     # An open scope never falls back to a GitHub login.
+                     (open_cap, ('--origin', ORIGIN, '--publishable-key', KEY)), (open_cap, ()),
+                     # Anonymous needs the explicit public service, and only the pinned one.
+                     (open_cap, ('--anonymous',)),
+                     (open_cap, ('--anonymous', '--origin', 'https://other.example', '--publishable-key', KEY)),
+                     (open_cap, ('--anonymous', '--origin', ORIGIN, '--publishable-key', 'sb_publishable_other'))]
+            for cap, extra in cases:
+                with self.subTest(cap=cap.parent.name, extra=extra):
+                    code, result, text = self.cli(api, 'accept-id', INVITE, '--transport', 'tool-inbox',
+                                                  '--worker-capability', str(cap), *extra)
+                    self.assertEqual((code, result['code']), (3, 'native_worker_binding_denied'), text)
+        self.assertEqual(api.calls, [], 'the invitation stays unused')
+        self.assertFalse((self.root / 'anonymous-credentials').exists())
+        self.assertFalse((self.root / 'config.json').exists())
+        for raw in ('private', None, 1):
+            self.denied('native_worker_binding_denied', self.prepare, self.accept_scope(access=raw or False))
+
+    @isolated_profiles
+    def test_open_scope_never_converts_a_github_state(self):
+        api = Api()
+        slot, cap = self.active(self.accept_scope(access='open'))
+        self.configure()
+        code, result, text, logins = self.anonymous_accept(api, cap, '--anonymous')
+        self.assertEqual((code, result['code']), (3, 'anonymous_state_conflict'), text)
+        self.assertEqual((api.calls, logins), ([], []))
+        self.assertFalse((self.root / 'anonymous-credentials').exists())
+        self.assertNotIn('quorum_id', self.setting(slot).get('target') or {})
 
     @isolated_profiles
     def test_actor_selector_service_and_target_cannot_cross_bind(self):

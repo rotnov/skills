@@ -528,7 +528,8 @@ def normalize_scope(raw):
     mode = raw['mode']
     required = {'mode', 'service', 'quorum_slug', 'role', 'project_ref', 'cwd'} | (
         {'access'} if mode == 'create' else {'invite_id'})
-    optional = {'coordinator_role', 'dispatch_mode', 'lifetime', 'ttl_seconds', 'operations', 'accept_tasks_from_members'}
+    optional = {'coordinator_role', 'dispatch_mode', 'lifetime', 'ttl_seconds', 'operations', 'accept_tasks_from_members'} | (
+        {'access'} if mode == 'accept' else set())
     if not required <= set(raw) or set(raw) - required - optional: raise _denied('scope_invalid')
     service = raw['service']
     if not isinstance(service, dict) or set(service) != {'origin', 'publishable_key_sha256'}:
@@ -555,6 +556,10 @@ def normalize_scope(raw):
         if not isinstance(raw['invite_id'], str) or not CANONICAL.fullmatch(raw['invite_id']):
             raise _denied('scope_invalid')
         scope['invite_id'] = raw['invite_id']
+        # An open invitation is owner-approved here only; omission keeps the legacy GitHub scope and hash.
+        if 'access' in raw:
+            if raw['access'] not in ('github', 'open'): raise _denied('scope_invalid')
+            scope['access'] = raw['access']
     coordinator = raw.get('coordinator_role')
     if coordinator is not None and not _name(coordinator): raise _denied('scope_invalid')
     members = raw.get('accept_tasks_from_members', False)
@@ -851,13 +856,19 @@ def _same_service(scope, origin, publishable_key):
                                     service['publishable_key_sha256']))
 
 
+def _anonymous(scope):
+    """Only an accept scope the owner prepared for an open invitation admits an anonymous identity."""
+    return scope['mode'] == 'accept' and scope.get('access') == 'open'
+
+
 def _check_syntax(operation, arguments):
     """Argument rules that need no authority record: forbidden modes, flags and request overrides."""
     get = arguments.get
     if operation == 'create' and get('request_id') is not None: raise _denied('request_override')
     if operation == 'accept' and not (get('transport') == TRANSPORT and get('parent_thread_id') is None
                                       and not get('membership_only') and get('client') is None
-                                      and not get('anonymous') and bool(get('origin')) == bool(get('publishable_key'))):
+                                      and bool(get('origin')) == bool(get('publishable_key'))
+                                      and (not get('anonymous') or bool(get('origin')))):
         raise _denied('scope_mismatch')
     if operation == 'connect' and not (get('transport') == TRANSPORT and get('parent_thread_id') is None):
         raise _denied('scope_mismatch')
@@ -873,7 +884,7 @@ def _check_arguments(record, operation, arguments):
         require(get('quorum') == scope['quorum_slug'] and get('access') == scope['access']
                 and get('role') in (None, scope['role']))
     elif operation == 'accept':
-        require(get('invite_id') == scope['invite_id'])
+        require(get('invite_id') == scope['invite_id'] and bool(get('anonymous')) == _anonymous(scope))
         if get('origin'): require(_same_service(scope, get('origin'), get('publishable_key')))
     elif operation == 'connect':
         require(get('quorum') == scope['quorum_slug'] and get('role') == scope['role']
@@ -1247,11 +1258,14 @@ def accept_worker(args, ledger, context):
     if explicit is not None: public_service(explicit)
     service_check(context, explicit)
     # A fresh state records only the already pinned explicit service through the common locked writer.
-    if explicit is not None: resolve_profile(ledger.root, explicit)
+    anonymous = _anonymous(context['scope'])
+    # An open scope keeps its anonymous login only in this state, as the ordinary `--anonymous` accept does;
+    # a GitHub or legacy state is never converted (`anonymous_state_conflict`).
+    if explicit is not None or anonymous: resolve_profile(ledger.root, explicit, anonymous=anonymous)
     api, config, store = _api(ledger, context, explicit)
     public_service(config)
-    if isinstance(store, AnonymousCredentials): raise ValueError('anonymous_state_conflict')
-    ensure_login(config, store)
+    if isinstance(store, AnonymousCredentials) != anonymous: raise ValueError('anonymous_state_conflict')
+    ensure_login(config, store, anonymous=anonymous)
     invite_id = context['scope']['invite_id']
     guard(context)
     sent = False
