@@ -47,7 +47,7 @@ def native_acl_view(owner, current_user, control, raw):
 
 
 def inspect_native_acl(path):
-    """Independent READ_CONTROL inspection; no PowerShell startup and no SACL request."""
+    """Independent READ_CONTROL inspection through GetNamedSecurityInfoW; no SACL request."""
     import ctypes
     from ctypes import wintypes as w
     kernel = ctypes.WinDLL('kernel32', use_last_error=True)
@@ -171,9 +171,8 @@ def probe_without_sacl_privilege(root):
 class WindowsAclTests(unittest.TestCase):
     def test_owner_only_directory_and_file_without_sacl_privilege(self):
         sys.path.insert(0, str(SCRIPTS))
-        from quorum_os import PRIVATE_ACL_TIMEOUT
         # Exceed every bounded probe operation plus interpreter and token setup.
-        deadline = CHECK_TIMEOUT + 2 * (PRIVATE_ACL_TIMEOUT + CHECK_TIMEOUT) + 30
+        deadline = 3 * CHECK_TIMEOUT + 30
         with tempfile.TemporaryDirectory() as temporary:
             result = subprocess.run([sys.executable, str(Path(__file__).resolve()), '--probe', temporary],
                                     capture_output=True, text=True, timeout=deadline)
@@ -269,58 +268,114 @@ class NativeAclViewTests(unittest.TestCase):
                                  ('security_info', 1, 5, None, None), ('free', 88)])
 
 
-class PrivateAclDeadlineTests(unittest.TestCase):
-    """Synthetic Windows host: success, timeout and launch failure stay fail-closed and hidden."""
-    def protect(self, run):
+class NativePrivateAclTests(unittest.TestCase):
+    """Synthetic Windows host: advapi32 calls, link refusal and hidden fixed failures."""
+    USER = NativeAclViewTests.USER
+
+    def protect(self, directory=False, attributes=0x80, token=1, handle=55, set_error=0):
+        import ctypes
         sys.path.insert(0, str(SCRIPTS))
         import quorum_os
         temporary = self.enterContext(tempfile.TemporaryDirectory())
         path = Path(temporary) / "hostile $(x) ' `n; & é"
-        path.touch()
-        host = SimpleNamespace(name='nt', environ=dict(os.environ, SystemRoot='C:/Windows'))
+        path.mkdir() if directory else path.touch()
+        user = ctypes.create_string_buffer(self.USER)
+        calls = []
+
+        def value(output, kind, data):
+            ctypes.cast(output, ctypes.POINTER(kind))[0] = data
+
+        def open_token(process, access, output):
+            calls.append(('token_access', access))
+            value(output, ctypes.c_void_p, 77)
+            return token
+
+        def token_info(token_handle, kind, output, length, needed):
+            self.assertEqual(kind, 1)  # TokenUser only.
+            value(needed, ctypes.c_uint32, ctypes.sizeof(ctypes.c_void_p))
+            if output is not None:
+                value(output, ctypes.c_void_p, ctypes.addressof(user))
+            return int(output is not None)
+
+        def add_ace(acl, revision, flags, mask, sid):
+            calls.append(('ace', revision, flags, mask, ctypes.string_at(sid.value, len(self.USER))))
+            return 1
+
+        def create(name, access, share, attributes_, disposition, flags, template):
+            calls.append(('open', name, access, share, disposition, flags))
+            return handle
+
+        def file_info(file, kind, output, size):
+            self.assertEqual(kind, 9)  # FileAttributeTagInfo
+            value(output, ctypes.c_uint32, attributes)
+            return 1
+
+        def set_info(file, kind, flags, owner, group, dacl, sacl):
+            calls.append(('set', file, kind, flags, ctypes.string_at(owner.value, len(self.USER)),
+                          group, dacl is not None, sacl))
+            return set_error
+
+        kernel = SimpleNamespace(
+            GetCurrentProcess=lambda: 1, CreateFileW=create, GetFileInformationByHandleEx=file_info,
+            CloseHandle=lambda item: calls.append(('close', getattr(item, 'value', item))))
+        security = SimpleNamespace(
+            OpenProcessToken=open_token, GetTokenInformation=token_info,
+            GetLengthSid=lambda sid: len(self.USER), InitializeAcl=lambda acl, size, revision: 1,
+            AddAccessAllowedAceEx=add_ace, SetSecurityInfo=set_info)
+        host = SimpleNamespace(name='nt', environ=dict(os.environ))
         with patch.object(quorum_os, 'os', host), \
-             patch.object(subprocess, 'CREATE_NO_WINDOW', 0x08000000, create=True), \
-             patch.object(subprocess, 'run', side_effect=run) as launched:
-            try: quorum_os.protect(path)
+             patch.object(ctypes, 'WinDLL', side_effect=lambda name, **_: kernel if name == 'kernel32' else security,
+                          create=True), \
+             patch.object(subprocess, 'run', side_effect=AssertionError('no ACL subprocess')), \
+             patch.object(subprocess, 'Popen', side_effect=AssertionError('no ACL subprocess')):
+            try: quorum_os.protect(path, directory=directory)
             except ValueError as error: failure = error
             else: failure = None
-        return quorum_os, path, launched, failure
+        return path, calls, failure
 
-    def assert_hidden_failure(self, path, failure):
+    def assert_hidden_failure(self, path, failure, code='private_acl_unavailable'):
         self.assertIsInstance(failure, ValueError)
-        self.assertEqual(str(failure), 'private_acl_unavailable')
+        self.assertEqual(str(failure), code)
         self.assertIsNone(failure.__cause__)
         self.assertTrue(failure.__context__ is None or failure.__suppress_context__)
         rendered = ''.join(traceback.format_exception(failure))
-        for leaked in (path.name, str(path), 'EncodedCommand', 'timed out', 'secret'):
+        for leaked in (path.name, str(path), 'secret'):
             self.assertNotIn(leaked, rendered)
 
-    def test_success_uses_owned_deadline_hidden_window_and_path_as_environment_data(self):
-        quorum_os, path, launched, failure = self.protect(lambda *_, **__: SimpleNamespace(returncode=0))
+    def test_file_gets_owner_and_one_protected_full_control_rule_in_process(self):
+        path, calls, failure = self.protect()
         self.assertIsNone(failure)
-        command, options = launched.call_args.args[0], launched.call_args.kwargs
-        self.assertEqual(options['timeout'], quorum_os.PRIVATE_ACL_TIMEOUT)
-        self.assertEqual(options['creationflags'], 0x08000000)
-        self.assertEqual(options['env']['QUORUM_ACL_PATH'], str(path.resolve()))
-        self.assertFalse(any(path.name in part for part in command))
+        self.assertEqual(calls, [
+            ('token_access', 8), ('close', 77),
+            ('ace', 2, 0, 0x1F01FF, self.USER),
+            # READ_CONTROL|WRITE_DAC|WRITE_OWNER, open existing link itself with backup semantics.
+            ('open', str(path), 0x000E0000, 7, 3, 0x02200000),
+            # OWNER|DACL|PROTECTED_DACL; no group and never the SACL.
+            ('set', 55, 1, 0x80000005, self.USER, None, True, None),
+            ('close', 55)])
 
-    def test_nonzero_exit_reports_fixed_code(self):
-        _, path, _, failure = self.protect(lambda *_, **__: SimpleNamespace(returncode=1))
-        self.assert_hidden_failure(path, failure)
+    def test_directory_rule_is_inherited_by_children(self):
+        _, calls, failure = self.protect(directory=True)
+        self.assertIsNone(failure)
+        self.assertIn(('ace', 2, 3, 0x1F01FF, self.USER), calls)
 
-    def test_timeout_reports_fixed_code_without_command_or_path(self):
-        def expire(command, **options):
-            raise subprocess.TimeoutExpired(command + [options['env']['QUORUM_ACL_PATH']], options['timeout'])
-        _, path, launched, failure = self.protect(expire)
-        self.assertEqual(launched.call_count, 1)  # No blind retry after the deadline.
-        self.assert_hidden_failure(path, failure)
+    def test_reparse_point_is_refused_before_any_security_write(self):
+        path, calls, failure = self.protect(attributes=0x400)
+        self.assert_hidden_failure(path, failure, 'unsafe_link')
+        self.assertFalse(any(call[0] == 'set' for call in calls))
+        self.assertEqual(calls[-1], ('close', 55))
 
-    def test_launch_failure_reports_fixed_code_without_os_text(self):
-        def missing(command, **_):
-            raise FileNotFoundError(2, 'secret launcher detail', command[0])
-        _, path, launched, failure = self.protect(missing)
-        self.assertEqual(launched.call_count, 1)
-        self.assert_hidden_failure(path, failure)
+    def test_token_open_or_security_write_failures_report_fixed_code(self):
+        for options in ({'token': 0}, {'handle': ctypes_invalid_handle()}, {'set_error': 5}):
+            with self.subTest(**options):
+                path, calls, failure = self.protect(**options)
+                self.assert_hidden_failure(path, failure)
+                if 'set_error' in options: self.assertEqual(calls[-1], ('close', 55))
+
+
+def ctypes_invalid_handle():
+    import ctypes
+    return ctypes.c_void_p(-1).value
 
 
 class LocalSetupErrorCodeTests(unittest.TestCase):
