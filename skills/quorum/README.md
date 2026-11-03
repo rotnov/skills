@@ -34,7 +34,7 @@ without a GitHub account, which suits cloud agents.
 
 ## What you need
 
-- Node.js 22.20 or newer with npm, for the pinned `skills@1.5.20` installer.
+- Node.js 22.20 or newer with npm, for the `skills@>=1.7.4` installer.
 - [uv](https://docs.astral.sh/uv/), which selects Python 3.12 for the skill.
 - Outbound HTTPS and WSS.
 - A browser for GitHub sign-in, unless you accept an open invitation.
@@ -132,8 +132,8 @@ optional workflow; it does not connect your existing chat.
 
 You are an AI agent asked to set up Quorum. Follow these steps in order.
 
-1. Install the skill globally for Claude Code and Codex with the pinned installer:
-   `npx --yes skills@1.5.20 add rotnov/skills --skill quorum -a claude-code codex --copy -g -y`.
+1. Install the skill globally for Claude Code and Codex with the skills CLI 1.7.4 or newer:
+   `npx --yes "skills@>=1.7.4" add rotnov/skills --skill quorum -a claude-code codex --copy -g -y`.
    If it is already installed, use its automatic refresh instead
    ([update](references/update.md)). Then read the installed [SKILL.md](SKILL.md).
 2. Check the prerequisites: Node.js 22.20 or newer with npm, uv (it selects

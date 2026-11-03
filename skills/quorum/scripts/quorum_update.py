@@ -81,7 +81,7 @@ def validate_source(root):
 
 
 def child_environment(stage):
-    # skills@1.5.20 also writes a global lock on project installs. Isolate it,
+    # The skills CLI (>=1.7.4) also writes a global lock on project installs. Isolate it,
     # Git/npm configuration and credentials from all installed client metadata.
     allowed = ('PATH', 'SystemRoot', 'SYSTEMROOT', 'COMSPEC', 'PATHEXT',
                'TEMP', 'TMP', 'TMPDIR', 'HTTPS_PROXY', 'HTTP_PROXY', 'NO_PROXY',
@@ -107,7 +107,7 @@ def child_environment(stage):
                GIT_ALLOW_PROTOCOL='https', GIT_SSH_COMMAND='exit 1',
                DISABLE_TELEMETRY='1', DO_NOT_TRACK='1',
                SKILLS_CLONE_TIMEOUT_MS='90000', UV_NO_PROGRESS='1', UV_PYTHON=sys.executable)
-    # The pinned installer widens GIT_ALLOW_PROTOCOL internally. Its SSH fallback
+    # The installer widens GIT_ALLOW_PROTOCOL internally. Its SSH fallback
     # preserves this command; Git runs only its shell's exit builtin, never SSH.
     return env
 
@@ -142,7 +142,7 @@ def refresh(current, cache, engine, *, run=subprocess.run):
         with tempfile.TemporaryDirectory(prefix='.staging-', dir=cache) as temporary:
             stage = Path(temporary)
             env = child_environment(stage)
-            checked_run(run, [tools['npx'], '--yes', 'skills@1.5.20', 'add', 'rotnov/skills',
+            checked_run(run, [tools['npx'], '--yes', 'skills@>=1.7.4', 'add', 'rotnov/skills',
                               '--skill', 'quorum', '-a', 'claude-code', 'codex', '--copy', '-y'],
                         stage, env, 'update_fetch_failed', 180)
             copies = [stage / relative for relative in dict.fromkeys(CLIENTS.values())]
