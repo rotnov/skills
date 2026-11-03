@@ -127,31 +127,52 @@ def probe_without_sacl_privilege(root):
 
     kernel = ctypes.WinDLL('kernel32', use_last_error=True)
     security = ctypes.WinDLL('advapi32', use_last_error=True)
+    pointer = w.LPVOID
     kernel.GetCurrentProcess.restype = w.HANDLE
     kernel.CloseHandle.argtypes = [w.HANDLE]
+    kernel.CreateFileW.argtypes = [w.LPCWSTR, w.DWORD, w.DWORD, pointer, w.DWORD, w.DWORD, w.HANDLE]
+    kernel.CreateFileW.restype = w.HANDLE
     security.OpenProcessToken.argtypes = [w.HANDLE, w.DWORD, ctypes.POINTER(w.HANDLE)]
     security.LookupPrivilegeValueW.argtypes = [w.LPCWSTR, w.LPCWSTR, ctypes.POINTER(Luid)]
     security.AdjustTokenPrivileges.argtypes = [w.HANDLE, w.BOOL, ctypes.POINTER(TokenPrivileges),
                                              w.DWORD, w.LPVOID, w.LPVOID]
+    security.GetTokenInformation.argtypes = [w.HANDLE, ctypes.c_int, pointer, w.DWORD, ctypes.POINTER(w.DWORD)]
+    security.SetTokenInformation.argtypes = [w.HANDLE, ctypes.c_int, pointer, w.DWORD]
+    security.GetLengthSid.argtypes, security.GetLengthSid.restype = [pointer], w.DWORD
+    security.InitializeAcl.argtypes = [pointer, w.DWORD, w.DWORD]
+    security.AddAccessAllowedAceEx.argtypes = [pointer, w.DWORD, w.DWORD, w.DWORD, pointer]
+    security.SetNamedSecurityInfoW.argtypes = [w.LPWSTR, ctypes.c_int, w.DWORD, pointer, pointer, pointer, pointer]
+    security.SetNamedSecurityInfoW.restype = w.DWORD
     token = w.HANDLE()
-    if not security.OpenProcessToken(kernel.GetCurrentProcess(), 0x28, ctypes.byref(token)):
+    # TOKEN_QUERY | TOKEN_ADJUST_PRIVILEGES | TOKEN_ADJUST_DEFAULT
+    if not security.OpenProcessToken(kernel.GetCurrentProcess(), 0xA8, ctypes.byref(token)):
         raise ctypes.WinError(ctypes.get_last_error())
     try:
-        update = TokenPrivileges()
-        update.count = 1
-        if not security.LookupPrivilegeValueW(None, 'SeSecurityPrivilege', ctypes.byref(update.privileges[0].luid)):
+        # SeTakeOwnership, SeRestore and SeBackup would grant WRITE_OWNER regardless of the DACL.
+        for name in ('SeSecurityPrivilege', 'SeTakeOwnershipPrivilege', 'SeRestorePrivilege', 'SeBackupPrivilege'):
+            update = TokenPrivileges()
+            update.count = 1
+            if not security.LookupPrivilegeValueW(None, name, ctypes.byref(update.privileges[0].luid)):
+                raise ctypes.WinError(ctypes.get_last_error())
+            update.privileges[0].attributes = 4  # SE_PRIVILEGE_REMOVED; cannot be re-enabled.
+            if not security.AdjustTokenPrivileges(token, False, ctypes.byref(update), 0, None, None):
+                raise ctypes.WinError(ctypes.get_last_error())
+            if ctypes.get_last_error() not in (0, 1300):  # Already absent is also suitable.
+                raise ctypes.WinError(ctypes.get_last_error())
+        needed = w.DWORD()
+        security.GetTokenInformation(token, 1, None, 0, ctypes.byref(needed))  # TokenUser
+        user = ctypes.create_string_buffer(needed.value)
+        if not needed.value or not security.GetTokenInformation(token, 1, user, needed, ctypes.byref(needed)):
             raise ctypes.WinError(ctypes.get_last_error())
-        update.privileges[0].attributes = 4  # SE_PRIVILEGE_REMOVED; cannot be re-enabled.
-        if not security.AdjustTokenPrivileges(token, False, ctypes.byref(update), 0, None, None):
-            raise ctypes.WinError(ctypes.get_last_error())
-        if ctypes.get_last_error() not in (0, 1300):  # Already absent is also suitable.
-            raise ctypes.WinError(ctypes.get_last_error())
-    finally:
+        sid = ctypes.cast(user, ctypes.POINTER(pointer)).contents
+    except BaseException:
         kernel.CloseHandle(token)
+        raise
     timings = []
     privileges = timed(timings, 'privileges', lambda: subprocess.check_output(
         ['whoami', '/priv'], text=True, timeout=CHECK_TIMEOUT))
-    assert 'SeSecurityPrivilege' not in privileges, 'SACL privilege was not removed'
+    for name in ('SeSecurityPrivilege', 'SeTakeOwnershipPrivilege', 'SeRestorePrivilege', 'SeBackupPrivilege'):
+        assert name not in privileges, f'{name} was not removed'
 
     sys.path.insert(0, str(SCRIPTS))
     from quorum_os import protect
@@ -163,13 +184,63 @@ def probe_without_sacl_privilege(root):
     for path, kind in ((directory, 'directory'), (file, 'file')):
         timed(timings, f'protect_{kind}', lambda: protect(path, directory=kind == 'directory'))
         results.append(timed(timings, f'inspect_{kind}', lambda: inspect_native_acl(path)))
-    print(json.dumps(results))
+
+    # On an elevated runner the objects above belonged to Administrators, so protect() took ownership.
+    # From here default to the user's own SID, as a standard user's token does (#83).
+    try:
+        owner = pointer(sid)
+        if not security.SetTokenInformation(token, 4, ctypes.byref(owner), ctypes.sizeof(owner)):  # TokenOwner
+            raise ctypes.WinError(ctypes.get_last_error())
+    finally:
+        kernel.CloseHandle(token)
+    # Like C:\tools under a drive root: the inherited rules give the owner everything but WRITE_OWNER.
+    parent = root / 'inherited without write owner'
+    parent.mkdir()
+    size = (8 + 8 + security.GetLengthSid(sid) + 3) & ~3
+    acl = ctypes.create_string_buffer(size)
+    if (not security.InitializeAcl(acl, size, 2)
+            or not security.AddAccessAllowedAceEx(acl, 2, 3, 0x1F01FF & ~0x00080000, sid)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    error = security.SetNamedSecurityInfoW(str(parent), 1, 0x80000005, sid, None, acl, None)
+    if error: raise ctypes.WinError(error)
+    state = parent / 'state'
+    state.mkdir()
+    message = parent / 'profile.json'
+    message.write_text('{}', encoding='utf-8')
+    for path in (state, message):
+        # The previous single READ_CONTROL|WRITE_DAC|WRITE_OWNER open is refused here.
+        handle = kernel.CreateFileW(str(path), 0x000E0000, 7, None, 3, 0x02200000, None)
+        if handle != ctypes.c_void_p(-1).value:
+            kernel.CloseHandle(handle)
+            raise AssertionError('WRITE_OWNER unexpectedly granted')
+        assert ctypes.get_last_error() == 5, 'expected ERROR_ACCESS_DENIED'
+    inherited = []
+    for path, kind in ((state, 'directory'), (message, 'file')):
+        timed(timings, f'inherited_protect_{kind}', lambda: protect(path, directory=kind == 'directory'))
+        inherited.append(timed(timings, f'inherited_inspect_{kind}', lambda: inspect_native_acl(path)))
+    timed(timings, 'winproof_verify', lambda: winproof_verify(state))
+    print(json.dumps({'default': results, 'inherited': inherited}))
     print('probe_ok ' + ' '.join(timings), file=sys.stderr)
+
+
+def winproof_verify(path):
+    """Walk to `path` through quorum_winproof's handle-anchored opens and require its 'private' proof."""
+    import quorum_winproof as proof
+    path = path.resolve()  # Long names: the runner's TEMP may be an 8.3 alias.
+    held = [proof.open_root(path.anchor)]
+    try:
+        for name in path.parts[1:]:
+            child = proof.open_at(held[-1], name, directory=True)
+            if child is None: raise FileNotFoundError(name)
+            held.append(child)
+        proof.verify(held[-1], 'private', 'claude')
+    finally:
+        for fd in reversed(held): os.close(fd)
 
 
 @unittest.skipUnless(os.name == 'nt', 'Real NTFS ACL check runs in the Windows CI job')
 class WindowsAclTests(unittest.TestCase):
-    def test_owner_only_directory_and_file_without_sacl_privilege(self):
+    def test_owner_only_directory_and_file_without_sacl_or_write_owner(self):
         sys.path.insert(0, str(SCRIPTS))
         # Exceed every bounded probe operation plus interpreter and token setup.
         deadline = 3 * CHECK_TIMEOUT + 30
@@ -178,8 +249,9 @@ class WindowsAclTests(unittest.TestCase):
                                     capture_output=True, text=True, timeout=deadline)
         self.assertEqual(result.returncode, 0, result.stderr)
         results = json.loads(result.stdout)
-        self.assertEqual(len(results), 2)
-        for acl, inheritance in zip(results, (3, 0)):
+        self.assertEqual(len(results['default']), 2)
+        self.assertEqual(len(results['inherited']), 2)
+        for acl, inheritance in zip(results['default'] + results['inherited'], (3, 0, 3, 0)):
             self.assertTrue(acl['protected'])
             self.assertEqual(acl['owner'], acl['current_user'])
             self.assertEqual(acl['rules'], [{'sid': acl['current_user'], 'rights': 2032127,
@@ -272,7 +344,10 @@ class NativePrivateAclTests(unittest.TestCase):
     """Synthetic Windows host: advapi32 calls, link refusal and hidden fixed failures."""
     USER = NativeAclViewTests.USER
 
-    def protect(self, directory=False, attributes=0x80, token=1, handle=55, set_error=0):
+    OTHER = NativeAclViewTests.OTHER
+
+    def protect(self, directory=False, attributes=0x80, token=1, handle=55, set_error=0, owner=None,
+                denied=()):
         import ctypes
         sys.path.insert(0, str(SCRIPTS))
         import quorum_os
@@ -280,7 +355,8 @@ class NativePrivateAclTests(unittest.TestCase):
         path = Path(temporary) / "hostile $(x) ' `n; & é"
         path.mkdir() if directory else path.touch()
         user = ctypes.create_string_buffer(self.USER)
-        calls = []
+        current_owner = ctypes.create_string_buffer(self.USER if owner is None else owner)
+        calls, last_error = [], [0]
 
         def value(output, kind, data):
             ctypes.cast(output, ctypes.POINTER(kind))[0] = data
@@ -303,6 +379,9 @@ class NativePrivateAclTests(unittest.TestCase):
 
         def create(name, access, share, attributes_, disposition, flags, template):
             calls.append(('open', name, access, share, disposition, flags))
+            if access in denied:
+                last_error[0] = 5  # ERROR_ACCESS_DENIED
+                return ctypes_invalid_handle()
             return handle
 
         def file_info(file, kind, output, size):
@@ -311,21 +390,33 @@ class NativePrivateAclTests(unittest.TestCase):
             return 1
 
         def set_info(file, kind, flags, owner, group, dacl, sacl):
-            calls.append(('set', file, kind, flags, ctypes.string_at(owner.value, len(self.USER)),
+            calls.append(('set', file, kind, flags, owner and ctypes.string_at(owner.value, len(self.USER)),
                           group, dacl is not None, sacl))
             return set_error
 
+        def get_info(file, kind, flags, owner_out, group, dacl, sacl, descriptor):
+            calls.append(('get', file, kind, flags, group, dacl, sacl))
+            value(owner_out, ctypes.c_void_p, ctypes.addressof(current_owner))
+            value(descriptor, ctypes.c_void_p, 88)
+            return 0
+
+        def equal(left, right):
+            return int(ctypes.string_at(left.value, len(self.USER)) == ctypes.string_at(right.value, len(self.USER)))
+
         kernel = SimpleNamespace(
             GetCurrentProcess=lambda: 1, CreateFileW=create, GetFileInformationByHandleEx=file_info,
-            CloseHandle=lambda item: calls.append(('close', getattr(item, 'value', item))))
+            CloseHandle=lambda item: calls.append(('close', getattr(item, 'value', item))),
+            LocalFree=lambda item: calls.append(('free', getattr(item, 'value', item))))
         security = SimpleNamespace(
             OpenProcessToken=open_token, GetTokenInformation=token_info,
             GetLengthSid=lambda sid: len(self.USER), InitializeAcl=lambda acl, size, revision: 1,
-            AddAccessAllowedAceEx=add_ace, SetSecurityInfo=set_info)
+            AddAccessAllowedAceEx=add_ace, SetSecurityInfo=set_info, GetSecurityInfo=get_info,
+            EqualSid=equal)
         host = SimpleNamespace(name='nt', environ=dict(os.environ))
         with patch.object(quorum_os, 'os', host), \
              patch.object(ctypes, 'WinDLL', side_effect=lambda name, **_: kernel if name == 'kernel32' else security,
                           create=True), \
+             patch.object(ctypes, 'get_last_error', lambda: last_error[0], create=True), \
              patch.object(subprocess, 'run', side_effect=AssertionError('no ACL subprocess')), \
              patch.object(subprocess, 'Popen', side_effect=AssertionError('no ACL subprocess')):
             try: quorum_os.protect(path, directory=directory)
@@ -342,17 +433,42 @@ class NativePrivateAclTests(unittest.TestCase):
         for leaked in (path.name, str(path), 'secret'):
             self.assertNotIn(leaked, rendered)
 
-    def test_file_gets_owner_and_one_protected_full_control_rule_in_process(self):
+    def test_owned_file_gets_one_protected_rule_without_requesting_write_owner(self):
         path, calls, failure = self.protect()
         self.assertIsNone(failure)
         self.assertEqual(calls, [
             ('token_access', 8), ('close', 77),
             ('ace', 2, 0, 0x1F01FF, self.USER),
-            # READ_CONTROL|WRITE_DAC|WRITE_OWNER, open existing link itself with backup semantics.
+            # READ_CONTROL|WRITE_DAC only: an inherited ACL may withhold WRITE_OWNER (#83).
+            ('open', str(path), 0x00060000, 7, 3, 0x02200000),
+            # SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION only; no group, DACL or SACL read.
+            ('get', 55, 1, 1, None, None, None), ('free', 88),
+            # DACL|PROTECTED_DACL; the matching owner is not rewritten and the SACL never touched.
+            ('set', 55, 1, 0x80000004, None, None, True, None),
+            ('close', 55)])
+        self.assertFalse(any(call[0] == 'open' and call[2] & 0x00080000 for call in calls))
+
+    def test_foreign_owner_is_replaced_through_a_second_write_owner_open(self):
+        path, calls, failure = self.protect(owner=self.OTHER)
+        self.assertIsNone(failure)
+        self.assertEqual(calls[2:], [
+            ('ace', 2, 0, 0x1F01FF, self.USER),
+            ('open', str(path), 0x00060000, 7, 3, 0x02200000),
+            ('get', 55, 1, 1, None, None, None), ('free', 88), ('close', 55),
+            # READ_CONTROL|WRITE_DAC|WRITE_OWNER, reopened on the link itself.
             ('open', str(path), 0x000E0000, 7, 3, 0x02200000),
             # OWNER|DACL|PROTECTED_DACL; no group and never the SACL.
             ('set', 55, 1, 0x80000005, self.USER, None, True, None),
             ('close', 55)])
+
+    def test_access_denied_open_reports_a_distinct_fixed_code(self):
+        for options in ({'denied': (0x00060000,)}, {'owner': self.OTHER, 'denied': (0x000E0000,)},
+                        {'set_error': 5}, {'owner': self.OTHER, 'set_error': 5}):
+            with self.subTest(**options):
+                path, calls, failure = self.protect(**options)
+                self.assert_hidden_failure(path, failure, 'private_acl_access_denied')
+                if 'denied' in options and 'owner' not in options:
+                    self.assertFalse(any(call[0] in ('get', 'set') for call in calls))
 
     def test_directory_rule_is_inherited_by_children(self):
         _, calls, failure = self.protect(directory=True)
@@ -366,7 +482,8 @@ class NativePrivateAclTests(unittest.TestCase):
         self.assertEqual(calls[-1], ('close', 55))
 
     def test_token_open_or_security_write_failures_report_fixed_code(self):
-        for options in ({'token': 0}, {'handle': ctypes_invalid_handle()}, {'set_error': 5}):
+        for options in ({'token': 0}, {'handle': ctypes_invalid_handle()}, {'set_error': 87},
+                        {'owner': self.OTHER, 'set_error': 87}):
             with self.subTest(**options):
                 path, calls, failure = self.protect(**options)
                 self.assert_hidden_failure(path, failure)
@@ -383,6 +500,7 @@ class LocalSetupErrorCodeTests(unittest.TestCase):
         sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'skills/quorum/scripts'))
         import quorum
         for error, expected in ((ValueError('private_acl_unavailable'), 'private_acl_unavailable'),
+                                (ValueError('private_acl_access_denied'), 'private_acl_access_denied'),
                                 (ValueError('unsafe_link'), 'unsafe_link'),
                                 (ValueError('login_timeout'), 'login_timeout'),
                                 (OSError('private_acl_unavailable'), 'operation_failed'),
