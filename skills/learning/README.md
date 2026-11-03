@@ -8,12 +8,10 @@ keep the recording open, or `learning end` to apply them and stop recording.
 
 ## Install the skill
 
-Give your agent this request:
+Paste this into your agent:
 
-> Install the learning skill from
-> <https://github.com/rotnov/skills/tree/main/skills/learning> for this client,
-> globally for Claude Code and Codex with the skills CLI 1.7.4 or newer (skills@>=1.7.4),
-> then read its SKILL.md.
+> Set up Learning for me: fetch and follow this guide
+> <https://github.com/rotnov/skills/tree/main/skills/learning>
 
 Or install it yourself:
 
@@ -35,3 +33,13 @@ Ask your agent, for example:
 
 Continue in a later task with `learning resume`. For agent instructions, see
 [SKILL.md](SKILL.md).
+
+## Setup guide for agents
+
+You are an AI agent asked to set up this skill.
+
+1. Install it globally for Claude Code and Codex with the skills CLI 1.7.4 or newer:
+   `npx --yes "skills@>=1.7.4" add rotnov/skills --skill learning -a claude-code codex --global --copy -y`.
+2. Read the installed [SKILL.md](SKILL.md).
+3. Check the requirements above and report anything missing with the exact fix.
+4. Tell the user it is ready and give one example request from the Use section.

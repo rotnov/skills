@@ -8,12 +8,10 @@ material are never published.
 
 ## Install the skill
 
-Give your agent this request:
+Paste this into your agent:
 
-> Install the propose-skill skill from
-> <https://github.com/rotnov/skills/tree/main/skills/propose-skill> for this
-> client, globally for Claude Code and Codex with the skills CLI 1.7.4 or newer (skills@>=1.7.4),
-> then read its SKILL.md.
+> Set up Propose Skill for me: fetch and follow this guide
+> <https://github.com/rotnov/skills/tree/main/skills/propose-skill>
 
 Or install it yourself:
 
@@ -34,3 +32,13 @@ Ask your agent, for example:
 > Propose a skill from the practice we just used in this session.
 
 For agent instructions, see [SKILL.md](SKILL.md).
+
+## Setup guide for agents
+
+You are an AI agent asked to set up this skill.
+
+1. Install it globally for Claude Code and Codex with the skills CLI 1.7.4 or newer:
+   `npx --yes "skills@>=1.7.4" add rotnov/skills --skill propose-skill -a claude-code codex --global --copy -y`.
+2. Read the installed [SKILL.md](SKILL.md).
+3. Check the requirements above and report anything missing with the exact fix.
+4. Tell the user it is ready and give one example request from the Use section.

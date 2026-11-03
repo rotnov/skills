@@ -15,15 +15,16 @@
   metadata to a skill: no `agents/` directory, `agents/openai.yaml`, or other
   Codex- or Claude-only presentation files. Skill identity and routing come
   only from the `SKILL.md` frontmatter.
-- Give every skill a `skills/<skill-name>/README.md` for humans. It must have
-  an `## Install the skill` section whose blockquote is a ready-to-paste LLM
-  prompt that names the skill, links
-  `https://github.com/rotnov/skills/tree/main/skills/<skill-name>`, asks for
-  a global Claude Code and Codex install with the newest skills CLI at or
-  above the tested minimum (`skills@>=1.7.4`), and ends with reading its
-  `SKILL.md`. Do not pin an exact CLI version in user-facing install
-  instructions. Keep requirements and example requests in the README; keep
-  agent instructions in `SKILL.md`.
+- Give every skill a `skills/<skill-name>/README.md` for humans. Its
+  `## Install the skill` section starts with a one-line blockquoted LLM prompt
+  (at most 200 characters) such as `Set up <Skill> for me: fetch and follow
+  this guide https://github.com/rotnov/skills/tree/main/skills/<skill-name>`.
+  Put the agent's steps in a `## Setup guide for agents` section of the same
+  README: a global Claude Code and Codex install with the newest skills CLI at
+  or above the tested minimum (`skills@>=1.7.4`), then reading its `SKILL.md`.
+  Do not pin an exact CLI version in user-facing install instructions. Keep
+  requirements and example requests in the README; keep agent workflow
+  instructions in `SKILL.md`.
 - Keep `SKILL.md` concise and move detailed material into one-level-deep
   `references/` files.
 - Make scripts non-interactive, self-contained where practical, safe for

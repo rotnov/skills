@@ -14,9 +14,16 @@ SKILLS_DIR = ROOT / "skills"
 NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 MARKDOWN_LINK_RE = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
 INSTALL_HEADING = "## Install the skill"
-INSTALL_SECTION_RE = re.compile(
-    rf"^{re.escape(INSTALL_HEADING)}[ \t]*\n(.*?)(?=^## |\Z)", re.M | re.S
-)
+AGENT_GUIDE_HEADING = "## Setup guide for agents"
+INSTALL_PROMPT_MAX_CHARS = 200
+
+
+def section_re(heading: str) -> re.Pattern[str]:
+    return re.compile(rf"^{re.escape(heading)}[ \t]*\n(.*?)(?=^## |\Z)", re.M | re.S)
+
+
+INSTALL_SECTION_RE = section_re(INSTALL_HEADING)
+AGENT_GUIDE_RE = section_re(AGENT_GUIDE_HEADING)
 SKILL_URL_PREFIX = "https://github.com/rotnov/skills/tree/main/skills/"
 
 
@@ -124,7 +131,8 @@ def validate_readme(skill_dir: Path) -> list[str]:
     if not path.is_file():
         return [f"{skill_dir}: missing README.md"]
 
-    match = INSTALL_SECTION_RE.search(path.read_text(encoding="utf-8"))
+    text = path.read_text(encoding="utf-8")
+    match = INSTALL_SECTION_RE.search(text)
     if not match:
         return [f"{path}: missing '{INSTALL_HEADING}' section"]
 
@@ -136,13 +144,25 @@ def validate_readme(skill_dir: Path) -> list[str]:
     if not prompt:
         return [f"{path}: '{INSTALL_HEADING}' needs a blockquoted LLM prompt"]
 
+    problems = []
     url = f"{SKILL_URL_PREFIX}{skill_dir.name}"
-    required = (url, "skills@>=1.7.4", "Claude Code", "Codex", "SKILL.md")
-    return [
-        f"{path}: install prompt must mention {item!r}"
-        for item in required
-        if item not in prompt
-    ]
+    if url not in prompt:
+        problems.append(f"{path}: install prompt must mention {url!r}")
+    if len(prompt) > INSTALL_PROMPT_MAX_CHARS:
+        problems.append(
+            f"{path}: install prompt must stay a short fetch-and-follow request "
+            f"(at most {INSTALL_PROMPT_MAX_CHARS} characters); move steps to "
+            f"'{AGENT_GUIDE_HEADING}'"
+        )
+
+    guide = AGENT_GUIDE_RE.search(text)
+    if not guide:
+        problems.append(f"{path}: missing '{AGENT_GUIDE_HEADING}' section")
+        return problems
+    for item in ("skills@>=1.7.4", "Claude Code", "Codex", "SKILL.md"):
+        if item not in guide.group(1):
+            problems.append(f"{path}: agent setup guide must mention {item!r}")
+    return problems
 
 
 def main() -> int:
