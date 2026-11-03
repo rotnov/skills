@@ -26,6 +26,12 @@ class GrokBindingError(ValueError):
         self.reason = reason
 
     def diagnostic(self):
+        if self.reason == 'leader_socket_missing' and sys.platform == 'win32':
+            return {'reason': 'leader_socket_missing', 'next_step':
+                    'No leader pipe is available for this chat. On Windows, Grok exports no leader '
+                    'endpoint unless it was started with --leader-socket <path>. Keep the chat open; '
+                    'its owner may later exit it and relaunch the same session with --leader '
+                    '--leader-socket <path> --resume as described in references/grok.md.'}
         if self.reason == 'leader_socket_missing':
             return {'reason': 'leader_socket_missing', 'next_step':
                     'No leader socket is available for this chat. An already-running standalone '
@@ -144,14 +150,23 @@ def windows_binding(session_id, cwd):
         entries = json.loads(raw)
     except (OSError, ValueError, TypeError, Unsafe):
         raise ValueError('grok_transport_unavailable') from None
-    entry = own_entry(entries, session_id, cwd)
-    pid, cwd = entry['pid'], str(Path(cwd).resolve())
-    try: tui = {**windows.process_identity(pid), 'pid': pid}
-    except OSError: raise ValueError('session_binding_denied') from None
-    # A closed TUI leaves its row behind; a reused PID is born after that row.
-    if tui['pid_start'] > opened_at(entry): raise ValueError('session_binding_denied')
+    installed = shutil.which('grok')
+    if not isinstance(entries, list) or not installed: raise ValueError('session_binding_denied')
+    # A killed TUI leaves its row behind, so a --resume relaunch shares its session ID with
+    # stale rows. Count only rows of a live TUI born no later than the row (a reused PID is newer).
+    live = []
+    for row in entries:
+        if not isinstance(row, dict) or row.get('session_id') != session_id: continue
+        try:
+            entry = own_entry([row], session_id, cwd)
+            tui = {**windows.process_identity(entry['pid']), 'pid': entry['pid']}
+            if tui['pid_start'] <= opened_at(entry): live.append(tui)
+        except (OSError, ValueError): continue
+    if len(live) != 1: raise ValueError('session_binding_denied')
+    tui, cwd = live[0], str(Path(cwd).resolve())
+    pid = tui['pid']
     verify_process(pid, tui['pid_start'], endpoint, session_id, cwd)
-    leader = windows.discover(tui, image(shutil.which('grok')))
+    leader = windows.discover(tui, image(installed))
     if leader is None: raise GrokBindingError('leader_socket_missing')
     return {'leader_socket': endpoint, 'leader_pipe': leader[0], 'leader_pid': leader[1],
             'leader_start': leader[2], 'tui_pid': pid, 'tui_start': tui['pid_start'], 'cwd': cwd}
@@ -160,7 +175,10 @@ def windows_binding(session_id, cwd):
 def local_binding(session_id, cwd):
     if os.environ.get('GROK_SESSION_ID') != session_id:
         raise ValueError('session_binding_denied')
-    if sys.platform == 'win32': return windows_binding(session_id, cwd)
+    if sys.platform == 'win32':
+        try: return windows_binding(session_id, cwd)
+        except ValueError: raise  # Fixed codes, including GrokBindingError.
+        except Exception: raise ValueError('session_binding_denied') from None
     if sys.platform != 'darwin' or not hasattr(socket, 'AF_UNIX'):
         raise ValueError('grok_transport_unavailable')
     home = Path(os.environ.get('GROK_HOME') or Path.home()/'.grok')
@@ -207,9 +225,11 @@ class Leader:
             self.socket.connect(endpoint)
             self.send({'type':'register', 'client_type':'quorum', 'mode':'stdio', 'capabilities':{}})
             registered = self.receive(time.monotonic()+5)
+            # Only 1.0.70 has been qualified on the Windows named-pipe leader.
+            versions = ('1.0.67', '1.0.70') if server is None else ('1.0.70',)
             if (registered.get('type') != 'registered'
                     or registered.get('leader_protocol_version') != 1
-                    or registered.get('leader_binary_version') not in ('1.0.67', '1.0.70')
+                    or registered.get('leader_binary_version') not in versions
                     or not isinstance(registered.get('ready'), bool)):
                 raise ValueError('grok_transport_unavailable')
             if not registered.get('ready', True):

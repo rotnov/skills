@@ -2,7 +2,8 @@
 
 Read this only for an owner-authorized connection of the current interactive
 Grok chat. This experimental route supports **Grok Build 1.0.67 and 1.0.70 on macOS**
-and, more narrowly, [Grok Build 1.0.70 on Windows](#windows-1070);
+and experimental on [Windows 1.0.70](#windows-1070) (binding and prompt submission only;
+peer receipt unverified);
 Linux Grok transports are not supported. Codex and Claude support
 is unchanged. Grok discovers the shared `.agents/skills` directory, including
 the portable copy returned by the [automatic refresh](update.md).
@@ -141,9 +142,14 @@ row, ACP handshake and resident-roster check, with these differences:
   the current user, with the installed image, born after the TUI. It re-checks
   that server PID and birth time on every opened handle and connects at
   identification impersonation level. Two candidate pipes for one TUI are refused.
-- 1.0.70 records no process birth time in `active_sessions.json`; a TUI born
-  after its row's `opened_at` is treated as a reused PID. Closed TUIs leave
-  stale rows behind, which are refused. The registry must pass the same owner
+- Only Grok 1.0.70 is accepted on Windows; 1.0.67 and newer builds are refused.
+  Discovery briefly opens each current-user `grok-leader-*` pipe at
+  identification level to learn its server, sends nothing on it, and refuses a
+  second candidate. A busy leader pipe reports `grok_transport_unavailable`.
+- 1.0.70 records no process birth time in `active_sessions.json`, and killed
+  TUIs leave stale rows behind. Only rows of a live TUI born no later than the
+  row's `opened_at` count (a newer process is a reused PID), and exactly one
+  such row must match this session and working directory. The registry must pass the same owner
   and ACL check as other private Windows files.
 - There is no controlling-terminal check. Grok asks to trust each new working
   directory, so keep one project folder per connected chat rather than creating

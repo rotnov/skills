@@ -17,6 +17,7 @@ GENERIC_RW, OPEN_EXISTING = 0x80000000 | 0x40000000, 3
 # Identification-level client: the leader may learn who we are but can never act as us.
 SQOS_IDENTIFICATION = 0x00100000 | 0x00010000
 BROKEN = (109, 232, 233)  # ERROR_BROKEN_PIPE, ERROR_NO_DATA, ERROR_PIPE_NOT_CONNECTED
+PIPE_BUSY, PIPE_NOWAIT = 231, 1
 EPOCH = 116444736000000000  # FILETIME of 1970-01-01, in 100 ns units
 
 
@@ -40,6 +41,8 @@ def _api():
     kernel.GetNamedPipeServerProcessId.argtypes = (w.HANDLE, ctypes.POINTER(w.ULONG))
     kernel.WriteFile.argtypes = (w.HANDLE, ctypes.c_char_p, w.DWORD, ctypes.POINTER(w.DWORD), ctypes.c_void_p)
     kernel.ReadFile.argtypes = (w.HANDLE, ctypes.c_void_p, w.DWORD, ctypes.POINTER(w.DWORD), ctypes.c_void_p)
+    kernel.WaitNamedPipeW.argtypes = (w.LPCWSTR, w.DWORD)
+    kernel.SetNamedPipeHandleState.argtypes = (w.HANDLE, ctypes.POINTER(w.DWORD), ctypes.c_void_p, ctypes.c_void_p)
     kernel.PeekNamedPipe.argtypes = (w.HANDLE, ctypes.c_void_p, w.DWORD, ctypes.c_void_p,
                                      ctypes.POINTER(w.DWORD), ctypes.c_void_p)
     advapi.OpenProcessToken.argtypes = (w.HANDLE, w.DWORD, ctypes.POINTER(w.HANDLE))
@@ -129,11 +132,19 @@ def process_identity(pid):
     finally: kernel.CloseHandle(process)
 
 
+class Busy(OSError):
+    """Every instance of the pipe is serving another client."""
+
+
 def _open(name):
     api = _api()
-    handle = api[2].CreateFileW(PIPES + name, GENERIC_RW, 0, None, OPEN_EXISTING, SQOS_IDENTIFICATION, None)
-    if handle in (None, api[1].HANDLE(-1).value): raise OSError('pipe_unavailable')
-    return api, handle
+    ctypes, w, kernel = api[:3]
+    for attempt in (0, 1):
+        handle = kernel.CreateFileW(PIPES + name, GENERIC_RW, 0, None, OPEN_EXISTING, SQOS_IDENTIFICATION, None)
+        if handle not in (None, w.HANDLE(-1).value): return api, handle
+        if ctypes.get_last_error() != PIPE_BUSY: raise OSError('pipe_unavailable')
+        if not attempt: kernel.WaitNamedPipeW(PIPES + name, 500)
+    raise Busy('pipe_busy')
 
 
 def _server(api, handle):
@@ -153,19 +164,28 @@ def is_leader(identity, tui, executable):
 
 
 def discover(tui, executable):
-    """(pipe name, leader pid, leader birth) for exactly one leader pipe of this TUI, else None."""
+    """(pipe name, leader pid, leader birth) for exactly one leader pipe of this TUI, else None.
+
+    Every grok-leader-* pipe is opened briefly at identification level to learn its server;
+    nothing is sent, and all are checked so that a second candidate is refused, not ignored.
+    """
     try: names = [name for name in os.listdir(PIPES) if PIPE_NAME.fullmatch(name)]
     except OSError: return None
-    found = []
+    found, busy = [], False
     for name in names:
         try:
             api, handle = _open(name)
             try: pid = _server(api, handle)
             finally: api[2].CloseHandle(handle)
             identity = process_identity(pid)
+        except Busy:
+            busy = True
+            continue
         except OSError: continue
         if is_leader(identity, tui, executable): found.append((name, pid, identity['pid_start']))
     if len(found) > 1: raise ValueError('session_binding_denied')
+    # A busy pipe may be this TUI's leader serving another client: unavailable, not missing.
+    if busy and not found: raise ValueError('grok_transport_unavailable')
     return found[0] if found else None
 
 
@@ -182,14 +202,22 @@ class Pipe:
         # Re-check the server on this handle: a replaced leader or reused PID is refused.
         if _server(self.api, self.handle) != self.pid or process_identity(self.pid)['pid_start'] != self.start:
             raise OSError('pipe_unavailable')
+        # Non-blocking writes, so a leader that stops reading cannot hang sendall.
+        ctypes, w, kernel = self.api[:3]
+        if not kernel.SetNamedPipeHandleState(self.handle, ctypes.byref(w.DWORD(PIPE_NOWAIT)), None, None):
+            raise OSError('pipe_unavailable')
 
     def sendall(self, data):
         ctypes, w, kernel = self.api[:3]
+        deadline = time.monotonic() + self.timeout
         while data:
             written = w.DWORD()
-            if not kernel.WriteFile(self.handle, data, len(data), ctypes.byref(written), None) or not written.value:
+            if not kernel.WriteFile(self.handle, data, len(data), ctypes.byref(written), None):
                 raise OSError('pipe_unavailable')
             data = data[written.value:]
+            if data and not written.value:
+                if time.monotonic() >= deadline: raise TimeoutError
+                time.sleep(.01)
 
     def recv(self, count):
         ctypes, w, kernel = self.api[:3]
