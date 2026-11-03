@@ -30,7 +30,7 @@ uv_bin=$(command -v uv)
 
 (
   cd "$install_root"
-  npx --yes skills@1.5.20 add "$repo_root" --list >/dev/null
+  npx --yes "skills@>=1.7.4" add "$repo_root" --list >/dev/null
 )
 
 # Verify global copy-install with an isolated home and npm/Git configuration.
@@ -48,7 +48,7 @@ stage = temporary / 'global-install'
 stage.mkdir(mode=0o700)
 env = child_environment(stage)
 env['QUORUM_PROFILE_ROOT'] = str(stage / 'machine-profiles')
-command = ['npx', '--yes', 'skills@1.5.20', 'add', str(repo), '--skill', 'quorum',
+command = ['npx', '--yes', 'skills@>=1.7.4', 'add', str(repo), '--skill', 'quorum',
            '-a', 'claude-code', 'codex', '--copy', '-g', '-y']
 subprocess.run(command, cwd=stage, env=env, check=True, stdout=subprocess.DEVNULL, timeout=180)
 for relative in ('.agents/skills/quorum', '.claude/skills/quorum'):
@@ -71,7 +71,7 @@ for skill_dir in "$repo_root"/skills/*; do
 
   (
     cd "$skill_install_root"
-    npx --yes skills@1.5.20 add "$repo_root" \
+    npx --yes "skills@>=1.7.4" add "$repo_root" \
       --skill "$skill_name" -a claude-code codex --copy -y >/dev/null
   )
 
@@ -194,7 +194,7 @@ from quorum_update import content_hash, refresh
 
 before = content_hash(installed)
 def local_source_run(command, **kwargs):
-    if command[1:4] == ['--yes', 'skills@1.5.20', 'add']:
+    if command[1:4] == ['--yes', 'skills@>=1.7.4', 'add']:
         assert command[4] == 'rotnov/skills'
         # Only the source locator is redirected to the candidate under review.
         # The pinned official CLI and uv staging/validation run unchanged.

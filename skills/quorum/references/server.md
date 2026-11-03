@@ -53,23 +53,20 @@ Review and apply the following in one administrator-controlled transaction:
    In the same transaction it advances the required release from skill `0.2.0` /
    protocol `1` to skill `0.3.0` / protocol `2`. Without it, every `0.3.0`
    client stops with `skill_update_required` before any send or reply.
-   Apply the mandatory
+   Then apply the mandatory
    [open access close serialization](../supabase/migrations/20261022180000_open_access_close_serialization.sql).
    It makes closing a quorum wait for, or be waited on by, any in-flight open
    invitation issue or acceptance, so no anonymous member or unused open
    invitation survives a close. It pins the priority release's bodies and fails
    closed the same way; it changes no grant or release requirement.
-   Then apply the
-   [Cursor Cloud engine extension](../supabase/migrations/20261023070000_native_cursor_session.sql).
-   It adds `cursor` to the existing exact-session, heartbeat, peer and private
-   notification checks. It grants no new creation, membership or table rights
-   and does not replace the dispatcher. It fails closed with
-   `reviewed_dispatcher_changed` before the close serialization, when reapplied,
-   or when a body it replaces differs from the reviewed one.
    Open access changes, open invite creation and open invite acceptance require
    PostgreSQL `READ COMMITTED` and fail closed with
    `open_access_requires_read_committed` at any other isolation level.
-6. Explicitly grant creation to the intended instance owner's verified immutable
+6. Apply [member task authority](../supabase/migrations/20261030141000_member_task_authority.sql).
+   It adds a read-only check for one addressed message, its current sender and
+   exact receiving binding. It grants no task permission; the receiving owner
+   must explicitly enable member intake locally. It changes no release requirement.
+7. Explicitly grant creation to the intended instance owner's verified immutable
    numeric GitHub ID. Look up `https://api.github.com/users/<login>`, check the
    returned `login` matches, and use the positive integer `id`.
    Never use an editable profile field.
@@ -113,3 +110,81 @@ OAuth login or cross-chat delivery from SQL success alone.
 The supplied SQL is tested in disposable PostgreSQL with synthetic Auth fixtures.
 Repository developers can run `npm ci --prefix tests/quorum-backend` followed by
 `npm test --prefix tests/quorum-backend`; these tests use no cloud credentials.
+
+## Owner maintenance extension
+
+Only after reviewing the concrete source and obtaining administrator deployment
+authorization, apply
+[`20261030140000_owner_update_maintenance.sql`](../supabase/migrations/20261030140000_owner_update_maintenance.sql)
+in one transaction after `20261022180000_open_access_close_serialization.sql`.
+The migration pins the reviewed inbox, receipt, dispatcher and required-release
+bodies and refuses drift or reapplication. It does not change the required release.
+Refresh PostgREST's schema cache after changing functions, using the service's
+supported administrator workflow.
+
+It adds private target/operation/notice/phase records and three authenticated,
+exact-binding RPCs: `session_update_request`, `session_update_status` and
+`session_update_report`. Inbox metadata is projected from private typed notices,
+never recognized from message-body claims. Receipt records consumption only;
+refresh and timestamped runtime self-reports are distinct. No table is exposed,
+no updater runs server-side and no receiving-owner installation or lifecycle
+permission is created. Deployment and a later change of required release are
+separate operations from [owner updates](update.md#explicit-owner-update).
+
+An offline, suspended or release-stopped client cannot be forced to consume a
+notice. The receiving owner's supported interaction/recovery path remains
+necessary. SQL tests and source preparation do not qualify real native clients
+or prove owner-chat quietness; perform that bounded acceptance separately.
+
+Maintenance fan-out, recipient reports and typed maintenance receipts require
+`READ COMMITTED`. They preserve the existing quorum-first close order, recheck
+exact session authority after protocol lock waits, and hold the current owned
+agent/device/membership rows through commit so revocation serializes with the
+operation. Ordinary receipt behavior and existing reviewed RPC bodies remain
+unchanged. Status reads remain point-in-time snapshots.
+
+## Optional Cursor Cloud engine extension
+
+Only for an explicit administrator request to admit experimental Cursor Cloud
+agents, review and apply the
+[Cursor Cloud engine extension](../supabase/migrations/20261103120000_native_cursor_session.sql)
+in one transaction after the close serialization. It is dated after every
+other migration here; none of them replaces a body it pins, so it can follow
+the optional extensions or precede them. It adds `cursor` to the existing
+exact-session, heartbeat, peer and private notification checks. It grants no
+new creation, membership or table rights, changes no required release and does
+not replace the dispatcher. It fails closed with `reviewed_dispatcher_changed`
+before the close serialization, when reapplied, or when a body it replaces
+differs from the reviewed one. The [Cursor transport](cursor.md) is not
+verified live.
+
+## Optional durable project knowledge
+
+For an explicit administrator request to deploy project knowledge, review
+[project knowledge](../supabase/migrations/20261030142000_project_knowledge.sql)
+after the native/open-access and required release migrations above. This source
+extension creates pgvector in `extensions`, private RLS spaces/grants/attachments,
+immutable revisions and optional derived vectors. It changes no required release,
+quorum permission or existing context record. Confirm the deployed extension
+version; hosted Supabase controls available versions. No provider is selected.
+For retained-source wiki support, review and apply
+[retained-source wiki](../supabase/migrations/20261103075741_llm_wiki.sql) after
+project knowledge. It adds immutable private sources, revision evidence/link
+arrays, source lifecycle operations and bounded catalog. Existing read callers
+retain compatible defaults; `include_history` only permits superseded current
+revisions for scoped readers. Both extensions remain optional and separately
+deployed; absent or rejected RPCs use the fixed unavailable diagnostic.
+Installation, joining and knowledge commands never apply DDL or create a model.
+
+The actual extension tests use a public pgvector `0.8.7-pg17-bookworm` image pinned
+to OCI digest `sha256:ac08538c6f8b9904c33c8224c5e5706dbe760aca29db1d096972b4052c22a75d`.
+After explicitly fetching that public test dependency, run
+`QUORUM_KNOWLEDGE_DOCKER=1 uv run --frozen python -m unittest discover -s tests -p test_quorum_knowledge_backend.py -v`.
+Also run
+`QUORUM_KNOWLEDGE_DOCKER=1 uv run --frozen python -m unittest discover -s tests -p test_quorum_wiki_backend.py -v`
+for retained-source immutability, permission/output suppression, lifecycle,
+concurrent CAS and source-withdrawal races. Fixtures apply both additive migrations.
+These tests use the local immutable image with `--pull never --network none`, no published
+ports and a uniquely named disposable container that is removed after the run.
+Auth fixtures and vectors are synthetic; no cloud configuration is read. The
+PGlite legacy backend suite does not substitute for actual pgvector tests.

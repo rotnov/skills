@@ -1,5 +1,6 @@
 -- Owner-applied engine extension. No new table, policy, grant or dispatcher.
--- Run in one transaction, after the close serialization (180000).
+-- Run in one transaction, after the close serialization (180000); it is dated after
+-- the 2026-10-30 and 2026-11-03 migrations, none of which touch the bodies it pins.
 -- Installation, invitation acceptance and the listener never apply this file.
 -- Each body below is its reviewed predecessor with only engine 'cursor' added.
 do $migration$

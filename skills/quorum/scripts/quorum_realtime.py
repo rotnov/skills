@@ -4,10 +4,12 @@ import logging
 import time
 from urllib.parse import urlencode
 import uuid
-from quorum_api import QuorumError
 
 # Frames inspected for an overdue heartbeat reply; exceeds the socket's max_queue.
 DRAIN_LIMIT = 32
+# Fixed denials end reception; reconnecting or polling must never mask them.
+TERMINAL = frozenset(('auth_required', 'coordination_unavailable', 'skill_update_required',
+                      'release_manifest_invalid', 'session_recovery_denied', 'session_binding_denied'))
 
 
 def connect_socket(uri, **options):
@@ -28,15 +30,34 @@ class RealtimeWait:
     No message body or delivery acknowledgement is carried by this transport.
     """
     def __init__(self, api, record, ledger, *, connect=None, clock=time.monotonic,
-                 sleep=time.sleep, keepalive=None):
+                 sleep=time.sleep, keepalive=None, stop_aware=False, authorize=None):
         self.api, self.ledger, self.clock, self.sleep = api, ledger, clock, sleep
+        self.authorize = authorize or (lambda:None)
         self.keepalive = keepalive
+        # Opt-in: pass `stopping` into keepalive calls (the legacy listener keeps calling them bare).
+        self.stop_aware = stop_aware
+        # Time spent in nested keepalive, token and reconnect work, so callers can budget idle waits only.
+        self.busy_seconds, self._busy_depth = 0.0, 0
         self.topic = 'realtime:quorum:agent:' + str(uuid.UUID(record['agent_id']))
         self.connect = connect
         self.socket, self.jwt, self.ref = None, None, 0
         self.retry_at, self.backoff = 0, 10
         self.heartbeat_at, self.pending_heartbeat, self.drain_left = 0, None, 0
         self.diagnostics = {'mode': 'polling_fallback', 'poll_seconds': 10, 'signals': 0}
+
+    def _busy(self, operation, *args):
+        """Run a nested service operation, counting its time once even when nested."""
+        self._busy_depth += 1
+        began = self.clock()
+        try: return operation(*args)
+        finally:
+            self._busy_depth -= 1
+            if not self._busy_depth: self.busy_seconds += max(0, self.clock() - began)
+
+    def _keep(self, name, stopping=None):
+        if not self.keepalive: return
+        method = getattr(self.keepalive, name)
+        self._busy(lambda: method(stopping) if self.stop_aware else method())
 
     def _status(self, **data):
         self.diagnostics.update(data)
@@ -45,8 +66,10 @@ class RealtimeWait:
     def _send(self, event, payload, *, topic=None):
         self.ref += 1
         ref = str(self.ref)
-        self.socket.send(json.dumps({'topic': topic or self.topic, 'event': event,
-            'payload': payload, 'ref': ref, 'join_ref': None if topic == 'phoenix' else self.join_ref}))
+        frame = json.dumps({'topic': topic or self.topic, 'event': event,
+            'payload': payload, 'ref': ref, 'join_ref': None if topic == 'phoenix' else self.join_ref})
+        self.authorize()  # Connection/token work may have outlived a recovery grant.
+        self.socket.send(frame)
         return ref
 
     def _receive(self, timeout):
@@ -99,30 +122,30 @@ class RealtimeWait:
                 self.backoff = 10
                 self._status(mode='realtime', poll_seconds=60, code=None,
                              last_connected_at=time.time(), last_wake='subscribed')
-                if self.keepalive: self.keepalive.connected()
+                self._keep('connected', stopping)
                 return
         raise ValueError('realtime_unavailable')
 
     def prepare(self, stopping):
         """Subscribe before the listener's initial authoritative inbox drain."""
         if stopping(): return
+        self._close_socket()  # A resubscription after an outage replaces, never leaks, the old socket.
         try: self._join(stopping)
-        except QuorumError as error:
-            if str(error) in ('auth_required', 'coordination_unavailable', 'skill_update_required', 'release_manifest_invalid'):
+        except Exception as error:
+            if str(error) in TERMINAL and isinstance(error, ValueError):
                 self._close_socket()
                 raise
             self._fallback()
-        except Exception:
-            self._fallback()
 
-    def pulse(self):
+    def pulse(self, stopping=None):
         """Keep health fresh during an active inbox drain as well as idle waits."""
-        if self.keepalive: self.keepalive.tick()
+        self._keep('tick', stopping)
 
     def _poll(self, stopping):
         for _ in range(10):
             if stopping(): return
-            if self.keepalive: self.keepalive.tick()
+            self._keep('tick', stopping)
+            if stopping(): return
             self.sleep(1)
         self._status(last_wake='fallback_poll')
 
@@ -130,7 +153,7 @@ class RealtimeWait:
         """Wake on a scoped signal, reconnect, safety scan, or requested stop."""
         if not self.socket:
             if self.clock() >= self.retry_at:
-                self.prepare(stopping)
+                self._busy(self.prepare, stopping)
                 if self.socket: return  # Catch up even if no new signal arrives.
             self._poll(stopping)
             return
@@ -138,9 +161,10 @@ class RealtimeWait:
         try:
             while not stopping() and self.clock() < deadline:
                 now = self.clock()
-                if self.keepalive: self.keepalive.tick()
+                self._keep('tick', stopping)
+                if stopping(): break
                 if now >= self.heartbeat_at and not self.pending_heartbeat:
-                    token = self.api.token()  # Existing private store refreshes an expiring JWT.
+                    token = self._busy(self.api.token)  # Existing private store refreshes an expiring JWT.
                     if token != self.jwt:
                         self._send('access_token', {'access_token': token})
                         self.jwt = token
@@ -176,13 +200,10 @@ class RealtimeWait:
                                  last_signal_at=time.time(), last_wake='signal')
                     return
             if not stopping(): self._status(last_wake='safety_poll')
-        except QuorumError as error:
-            if str(error) in ('auth_required', 'coordination_unavailable', 'skill_update_required', 'release_manifest_invalid'):
+        except Exception as error:
+            if str(error) in TERMINAL and isinstance(error, ValueError):
                 self._close_socket()
                 raise
-            self._fallback()
-            self._poll(stopping)
-        except Exception:
             self._fallback()
             self._poll(stopping)
 

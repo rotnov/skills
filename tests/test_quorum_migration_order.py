@@ -7,6 +7,8 @@ import unittest
 SKILL = Path(__file__).resolve().parents[1] / 'skills/quorum'
 MIGRATIONS = sorted((SKILL / 'supabase/migrations').glob('*.sql'))
 SERIALIZATION = '_open_access_close_serialization.sql'
+PRIORITY_PATH = next(path for path in MIGRATIONS if path.name.endswith('_urgent_message_priority.sql'))
+SERIALIZATION_PATH = next(path for path in MIGRATIONS if path.name.endswith(SERIALIZATION))
 REVIEWED_SOURCES = {
     '20261022150000_open_access_quorums.sql': 'd9d1e1b3409da29ba59574e90bd5d96946d965ec4fa240d6bb7b8290d1a16bab',
     '20261022160000_open_session_requirements.sql': '360665bd4ee5b918e5685fa99f4c1b7241ca61fc16bc906808c9b582ebb62a13',
@@ -24,6 +26,7 @@ SERIALIZATION_PINS = {
     'public.session_requirements()': '6e9752bcaedbbdfc4b2b8197cb44598306ee8d79044d654836017aab86031eef',
 }
 
+
 # prosrc hashes after 180000: the serialized dispatcher, the release gate and the
 # four bodies the Cursor engine extension replaces. The disposable harness recomputes them.
 CURSOR_PINS = {
@@ -34,10 +37,7 @@ CURSOR_PINS = {
     'public.session_heartbeat(uuid,text,uuid,integer,text)': '944211db94640dca91d75e007a4c5de8a1ee28511ea6c78a5b3fb2f7d96768c5',
     'public.session_peers(uuid,text)': 'e6bef8353f48cb6322f76dcb024eeb4972d2881eeb65b28c62023e2d2f8b31cd',
 }
-
-
-def migration(suffix):
-    return next(path for path in MIGRATIONS if path.name.endswith(suffix))
+CURSOR_PATH = next(path for path in MIGRATIONS if path.name.endswith('_native_cursor_session.sql'))
 
 
 def defining(signature):
@@ -78,11 +78,9 @@ class MigrationOrderTests(unittest.TestCase):
 
     def test_priority_release_precedes_close_serialization_and_pins_the_session_chain(self):
         names = [path.name for path in MIGRATIONS]
-        urgent = migration('_urgent_message_priority.sql')
-        serial = migration(SERIALIZATION)
-        self.assertEqual(names.index(serial.name), names.index(urgent.name) + 1)
-        self.assertGreater(urgent.name, next(name for name in names if name.endswith('_open_session_requirements.sql')))
-        body = urgent.read_text(encoding='utf-8')
+        self.assertLess(PRIORITY_PATH.name, SERIALIZATION_PATH.name)
+        self.assertGreater(PRIORITY_PATH.name, next(name for name in names if name.endswith('_open_session_requirements.sql')))
+        body = PRIORITY_PATH.read_text(encoding='utf-8')
         for signature in ('quorum_private.call(text,jsonb,text)', 'quorum_private.call_invite_core(text,jsonb,text)',
                           'quorum_private.call_legacy_core(text,jsonb,text)', 'quorum_private.verified_actor(uuid)',
                           'quorum_private.native_session(uuid,text)', 'quorum_private.owned_agent(uuid,uuid)',
@@ -90,7 +88,7 @@ class MigrationOrderTests(unittest.TestCase):
             self.assertRegex(body, re.escape(f"'{signature}','") + '[0-9a-f]{64}' + "'")
         self.assertIn("raise exception 'reviewed_release_changed'", body)
         guide = (SKILL / 'references/server.md').read_text(encoding='utf-8')
-        self.assertLess(guide.index('_open_session_requirements.sql'), guide.index(urgent.name))
+        self.assertLess(guide.index('_open_session_requirements.sql'), guide.index(PRIORITY_PATH.name))
 
     def test_reviewed_open_access_sources_stay_byte_identical(self):
         # Live servers applied these bytes; later pins hash the bodies they install.
@@ -98,28 +96,32 @@ class MigrationOrderTests(unittest.TestCase):
             data = (SKILL / 'supabase/migrations' / name).read_bytes()
             self.assertEqual(hashlib.sha256(data).hexdigest(), digest, name)
 
-    def test_close_serialization_pins_the_priority_release(self):
-        urgent = migration('_urgent_message_priority.sql')
-        serial = migration(SERIALIZATION)
-        body = serial.read_text(encoding='utf-8')
+    def test_close_serialization_precedes_extensions_and_pins_the_priority_release(self):
+        names = [path.name for path in MIGRATIONS]
+        member = next(name for name in names if name.endswith('_member_task_authority.sql'))
+        self.assertLess(SERIALIZATION_PATH.name, '20261030140000_owner_update_maintenance.sql')
+        self.assertIn('20261030140000_owner_update_maintenance.sql', names)
+        self.assertLess('20261030140000_owner_update_maintenance.sql', member)
+        self.assertLess(member, '20261030142000_project_knowledge.sql')
+        self.assertIn('20261030142000_project_knowledge.sql', names)
+        body = SERIALIZATION_PATH.read_text(encoding='utf-8')
         pins = dict(re.findall(r"'([a-z_.]+\([a-z,]*\))','([0-9a-f]{64})'", body))
         self.assertEqual(pins, SERIALIZATION_PINS)
         # The open-access wrapper keeps the exact body the priority release pinned.
-        priority = urgent.read_text(encoding='utf-8')
+        priority = PRIORITY_PATH.read_text(encoding='utf-8')
         self.assertIn("'quorum_private.call_priority_core(text,jsonb,text)'", body)
         self.assertIn("'quorum_private.call(text,jsonb,text)','" + SERIALIZATION_PINS[
             'quorum_private.call_priority_core(text,jsonb,text)'] + "'", priority)
         self.assertIn("raise exception 'reviewed_dispatcher_changed: %', f;", body)
         self.assertIn("raise exception 'serial_core_present'", body)
         guide = (SKILL / 'references/server.md').read_text(encoding='utf-8')
-        self.assertLess(guide.index(urgent.name), guide.index(serial.name))
+        self.assertLess(guide.index(PRIORITY_PATH.name), guide.index(SERIALIZATION_PATH.name))
 
     def test_cursor_engine_migration_is_last_and_does_not_redefine_the_dispatcher(self):
         names = [path.name for path in MIGRATIONS]
-        self.assertTrue(names[-1].endswith('_native_cursor_session.sql'), names)
-        serial = migration(SERIALIZATION)
-        self.assertLess(names.index(serial.name), len(names) - 1)
-        body = MIGRATIONS[-1].read_text(encoding='utf-8')
+        self.assertEqual(names[-1], CURSOR_PATH.name)
+        self.assertGreater(CURSOR_PATH.name, '20261103075741_llm_wiki.sql')
+        body = CURSOR_PATH.read_text(encoding='utf-8')
         self.assertIn("engine in ('claude','codex','grok','cursor')", body)
         # It runs only on the serialized chain and refuses drifted or already extended bodies.
         pins = dict(re.findall(r"'([a-z_.]+\([a-z,]*\))','([0-9a-f]{64})'", body))
@@ -133,10 +135,27 @@ class MigrationOrderTests(unittest.TestCase):
         self.assertNotIn('create function quorum_private.call(', lowered)
         self.assertNotIn('create or replace function quorum_private.call(', lowered)
         guide = (SKILL / 'references/server.md').read_text(encoding='utf-8')
-        self.assertLess(guide.index(serial.name), guide.index(names[-1]))
+        self.assertLess(guide.index(SERIALIZATION_PATH.name), guide.index(CURSOR_PATH.name))
+
+    def test_no_migration_after_serialization_changes_a_body_the_cursor_extension_pins(self):
+        # Its pins are prosrc hashes after 180000. Any later migration that replaced,
+        # renamed or moved one of these bodies would make the Cursor guard stale.
+        later = [path for path in MIGRATIONS
+                 if SERIALIZATION_PATH.name < path.name < CURSOR_PATH.name]
+        self.assertTrue(later)
+        for path in later:
+            text = path.read_text(encoding='utf-8').lower()
+            for signature in CURSOR_PINS:
+                name = signature.split('(', 1)[0]
+                self.assertNotRegex(text, r'(create (or replace )?|alter |drop )function ' + re.escape(name) + r'\(',
+                                    (path.name, signature))
+            self.assertNotIn('agents_engine_check', text, path.name)
+        # The maintenance extension pins the same serialized dispatcher body.
+        maintenance = next(path for path in later if path.name.endswith('_owner_update_maintenance.sql'))
+        self.assertIn(CURSOR_PINS['quorum_private.call(text,jsonb,text)'], maintenance.read_text(encoding='utf-8'))
 
     def test_close_serialization_locks_the_quorum_row_before_any_other_row(self):
-        body = migration(SERIALIZATION).read_text(encoding='utf-8')
+        body = SERIALIZATION_PATH.read_text(encoding='utf-8')
         wrapper = body.split('create function quorum_private.call(', 1)[1]
         # Close conflicts with issue and accept, but not with foreign-key KEY SHARE checks.
         self.assertIn('for no key update', wrapper)
@@ -152,7 +171,7 @@ class MigrationOrderTests(unittest.TestCase):
 
     def test_close_serialization_refuses_other_isolation_before_any_lock(self):
         # Stale REPEATABLE READ/SERIALIZABLE snapshots skip the core's rereads.
-        wrapper = migration(SERIALIZATION).read_text(encoding='utf-8').split('create function quorum_private.call(', 1)[1]
+        wrapper = SERIALIZATION_PATH.read_text(encoding='utf-8').split('create function quorum_private.call(', 1)[1]
         guard = wrapper.index("if current_setting('transaction_isolation')<>'read committed' then")
         self.assertLess(wrapper.index('return quorum_private.call_serial_core(op,p,req);'), guard)
         self.assertLess(guard, wrapper.index("raise exception 'open_access_requires_read_committed';"))

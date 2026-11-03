@@ -13,6 +13,19 @@ ROOT = Path(__file__).resolve().parents[1]
 SKILLS_DIR = ROOT / "skills"
 NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 MARKDOWN_LINK_RE = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
+INSTALL_HEADING = "## Install the skill"
+AGENT_GUIDE_HEADING = "## Setup guide for agents"
+INSTALL_PROMPT_MAX_CHARS = 200
+
+
+def section_re(heading: str) -> re.Pattern[str]:
+    return re.compile(rf"^{re.escape(heading)}[ \t]*\n(.*?)(?=^## |\Z)", re.M | re.S)
+
+
+INSTALL_SECTION_RE = section_re(INSTALL_HEADING)
+AGENT_GUIDE_RE = section_re(AGENT_GUIDE_HEADING)
+INSTALL_PROMPT_RE = re.compile(r"^```text[ \t]*\n(.*?)^```[ \t]*$", re.M | re.S)
+SKILL_URL_PREFIX = "https://github.com/rotnov/skills/blob/main/skills/"
 
 
 def parse_frontmatter(path: Path) -> tuple[dict[str, str], str]:
@@ -105,6 +118,49 @@ def validate_skill(skill_dir: Path) -> list[str]:
         normalized_target = target.split("#", 1)[0]
         if normalized_target and not (skill_dir / normalized_target).exists():
             problems.append(f"{path}: broken local reference {target!r}")
+
+    if (skill_dir / "agents").exists():
+        problems.append(
+            f"{skill_dir}: client-specific agents/ metadata is not allowed"
+        )
+    problems.extend(validate_readme(skill_dir))
+    return problems
+
+
+def validate_readme(skill_dir: Path) -> list[str]:
+    path = skill_dir / "README.md"
+    if not path.is_file():
+        return [f"{skill_dir}: missing README.md"]
+
+    text = path.read_text(encoding="utf-8")
+    match = INSTALL_SECTION_RE.search(text)
+    if not match:
+        return [f"{path}: missing '{INSTALL_HEADING}' section"]
+
+    # A fenced block, unlike a blockquote, gets GitHub's copy button.
+    block = INSTALL_PROMPT_RE.search(match.group(1))
+    prompt = " ".join(block.group(1).split()) if block else ""
+    if not prompt:
+        return [f"{path}: '{INSTALL_HEADING}' needs the LLM prompt in a ```text code block"]
+
+    problems = []
+    url = f"{SKILL_URL_PREFIX}{skill_dir.name}/README.md"
+    if url not in prompt:
+        problems.append(f"{path}: install prompt must mention {url!r}")
+    if len(prompt) > INSTALL_PROMPT_MAX_CHARS:
+        problems.append(
+            f"{path}: install prompt must stay a short fetch-and-follow request "
+            f"(at most {INSTALL_PROMPT_MAX_CHARS} characters); move steps to "
+            f"'{AGENT_GUIDE_HEADING}'"
+        )
+
+    guide = AGENT_GUIDE_RE.search(text)
+    if not guide:
+        problems.append(f"{path}: missing '{AGENT_GUIDE_HEADING}' section")
+        return problems
+    for item in ("skills@>=1.7.4", "Claude Code", "Codex", "SKILL.md"):
+        if item not in guide.group(1):
+            problems.append(f"{path}: agent setup guide must mention {item!r}")
     return problems
 
 

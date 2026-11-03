@@ -35,6 +35,40 @@ def installed_release():
     return read_release(Path(__file__).resolve().parents[1] / 'assets/release.json')
 
 
+def source_identity(value):
+    """Only inert, bounded source identity fields may cross maintenance RPCs."""
+    release = versions(value)
+    digest = value.get('content_sha256') if isinstance(value, dict) else None
+    if release is None or not isinstance(digest, str) or not re.fullmatch('[0-9a-f]{64}', digest):
+        return None
+    return {**release, 'content_sha256':digest}
+
+
+@lru_cache(maxsize=1)
+def installed_source():
+    """Snapshot this process's source at runtime startup, separately from compatibility."""
+    from quorum_update import content_hash
+    try:
+        return {**installed_release(), 'content_sha256':content_hash(Path(__file__).resolve().parents[1])}
+    except (OSError, ValueError):
+        raise QuorumError('runtime_source_unavailable') from None
+
+
+def runtime_evidence(ledger):
+    """A new helper observes the resident run's marker, never its own source bytes."""
+    from quorum_listener import locked
+    running = locked(ledger.root/'listener.lock')
+    rows = ledger.db.execute("select key,data from settings where key in ('listener','listener-source')")
+    saved = {key:json.loads(raw) for key,raw in rows}
+    run_id = (saved.get('listener') or {}).get('run_id')
+    marker = saved.get('listener-source') or {}
+    source = source_identity(marker)
+    verified = bool(running and run_id and marker.get('run_id') == run_id and source
+                    and locked(ledger.root/'listener.lock'))
+    return {'state':'running' if running else 'offline', 'run_id':run_id,
+            'verified':verified, 'source':source if verified else None}
+
+
 class ReleaseMismatch(QuorumError):
     def __init__(self, diagnostic):
         super().__init__('skill_update_required')

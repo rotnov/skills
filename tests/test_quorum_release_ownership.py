@@ -73,7 +73,7 @@ class ReleaseOwnershipTests(unittest.TestCase):
             class Idle:
                 def reconcile(self): pass
                 def run_once(self): Control(ledger).request_stop(); return 'idle'
-            def make(*args):
+            def make(*args, **options):
                 observations.append((ledger.setting('listener-release'), ledger.setting('listener')['run_id'],
                                      locked(ledger.root / 'listener.lock'), locked(ledger.root / 'supervisor.lock')))
                 return Idle()

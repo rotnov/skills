@@ -3,8 +3,9 @@
 Identity is this process's CURSOR_CONVERSATION_ID. The metadata socket is read
 only to confirm that id; the prompt and API key never go there. A follow-up is
 POST /v1/agents/<id>/runs on the fixed Cloud Agents host, which continues this
-same agent. A busy run or a rate-limited key is deferred and retried. The key
-stays in the environment.
+same agent. A busy run or a rate-limited key is deferred and retried; a
+definite refusal (a bad request, key or agent id, or a redirect) is a fixed
+failure. The key stays in the environment.
 """
 import json
 import os
@@ -28,6 +29,10 @@ DEFAULT_SOCKET = '/run/cursor/api.sock'
 # value (absent, or an HTTP-date) waits this long rather than hammering the key.
 _RATE_LIMIT_WAIT = 30
 _MAX_WAIT = 3600
+# Statuses that refuse the request before any run exists. 3xx is a refused redirect.
+_REFUSED = frozenset((300, 301, 302, 303, 307, 308, 400, 401, 403, 404))
+# Child exit codes: 2 deferred (stdout carries the wait), 3 refused before any run.
+_EXIT_DEFERRED, _EXIT_REFUSED = 2, 3
 
 
 class DeliveryDeferred(Exception):
@@ -35,6 +40,12 @@ class DeliveryDeferred(Exception):
     def __init__(self, retry_after=0):
         super().__init__()
         self.retry_after = retry_after
+
+
+class IngressRefused(ValueError):
+    """Cursor definitively refused before creating a run; nothing was submitted."""
+    def __init__(self):
+        super().__init__('cursor_ingress_unavailable')
 
 
 def _seconds(value, default):
@@ -146,11 +157,8 @@ def post_followup(session_id, content, key, *, urlopen=_urlopen):
                  'Accept': 'application/json'})
     headers = None
     try:
-        # A refused redirect returns no response, so the key stays on this host.
-        response = urlopen(request, timeout=10)
-        if response is None:
-            raise ValueError('session_delivery_unknown')
-        with response:
+        # _NoRedirect turns any 3xx into an HTTPError, so the key stays on this host.
+        with urlopen(request, timeout=10) as response:
             status = getattr(response, 'status', None)
             headers = getattr(response, 'headers', None)
             response.read(256)
@@ -165,6 +173,9 @@ def post_followup(session_id, content, key, *, urlopen=_urlopen):
         raise DeliveryDeferred(_retry_after(headers, 0))
     if status == 429:
         raise DeliveryDeferred(_retry_after(headers, _RATE_LIMIT_WAIT))
+    # A bad request, key or agent id, or a redirect: retrying the same post cannot help.
+    if status in _REFUSED:
+        raise IngressRefused()
     if status not in (200, 201, 202):
         raise ValueError('session_delivery_unknown')
     return 'submitted'
@@ -182,8 +193,10 @@ def submit(record, message_id, content):
                                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
     except (OSError, subprocess.TimeoutExpired):
         raise ValueError('session_delivery_unknown') from None
-    if result.returncode == 2:
+    if result.returncode == _EXIT_DEFERRED:
         raise DeliveryDeferred(_seconds(result.stdout, 0))
+    if result.returncode == _EXIT_REFUSED:
+        raise IngressRefused()
     if result.returncode:
         raise ValueError('session_delivery_unknown')
 
@@ -202,7 +215,9 @@ def main():
     except DeliveryDeferred as deferred:
         # Only the bounded wait crosses back to the listener.
         print(int(deferred.retry_after), flush=True)
-        return 2
+        return _EXIT_DEFERRED
+    except IngressRefused:
+        return _EXIT_REFUSED
     except Exception:
         return 1
 

@@ -158,8 +158,10 @@ class DispatchModeTests(unittest.TestCase):
         record['delegation'] = grant(record, 'coordinator', 'lead', dispatch_mode='native-subagent')
         message = dict(id=message_id, sender_id='coordinator', recipient_id='receiver', body='Task')
         piped = []
-        env = {'CLAUDE_CODE_SESSION_ID': sid, 'CLAUDE_CODE_MESSAGING_SOCKET': '/synthetic.sock'}
+        env = {'CLAUDE_CODE_SESSION_ID': sid, 'CLAUDE_CODE_MESSAGING_SOCKET': '/synthetic.sock',
+               'CLAUDE_CODE_MESSAGING_TOKEN': 'synthetic-only'}
         with patch.dict(os.environ, env, clear=True), \
+                patch('quorum_claude_pipe.binding', return_value='/synthetic.sock'), \
                 patch('quorum_claude_pipe.submit', side_effect=lambda *args: piped.append(args[2])):
             for changed in ({}, {'notification': True}, {'reply_to': 'previous'}):
                 enqueue(record, {**message, **changed}, Path('/private/synthetic-state'))
@@ -187,7 +189,7 @@ class DispatchModeTests(unittest.TestCase):
         self.assertIsNone(echo.search(instruction(record, message)))
         self.assertIn('exact bound chat', instruction(record, message))
 
-    def test_generated_invite_requires_receiving_owner_paste_and_native_flags(self):
+    def test_generated_invite_requires_receiving_owner_paste_and_member_inline_scope(self):
         from quorum_invitations import create_id_invitation
         from quorum_api import ServiceConfig
         class Api:
@@ -201,10 +203,11 @@ class DispatchModeTests(unittest.TestCase):
                                       'team', '123', 'request', coordinator_role='project-lead')
         for key in ('session_prompt', 'configured_machine_prompt'):
             text = result[key]
-            for required in ('--accept-tasks-from project-lead --dispatch-mode native-subagent',
-                             'I authorize built-in native subagents', 'matching project coordinator tasks',
+            for required in ('--accept-tasks-from-members --dispatch-mode inline',
+                             'current or future member', 'including anonymous members',
                              'receiving human', 'paste this prompt as my own instruction',
-                             'at most two active task workers', 'keep the task pending',
+                             'task-check <message-id>', 'An unavailable backend leaves the task pending',
+                             'always require the receiving owner',
                              'owning-server steer', '#35', 'queued input',
                              'Codex active-turn ingress', 'accepted inbox messages between tool calls',
                              'Do not start a model, another session, headless pilot',

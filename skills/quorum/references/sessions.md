@@ -10,6 +10,12 @@ For Grok, first read [the experimental macOS TUI requirements](grok.md).
 Grok Bot personal cloud chats use a different [parent-bound cloud route](grok-cloud.md),
 including separate `cloud` commands; do not route them through native discovery.
 For Cursor Cloud, first read [the current-agent follow-up requirements](cursor.md).
+A Codex native service worker with verified provenance can instead own a bounded
+foreground [tool inbox](native-inbox.md) (`--transport tool-inbox`, `session
+receive`); the rest of this page describes the parent-chat routes.
+Quiet setup adds `--require-worker-inbox` to acceptance and connection; it refuses
+parent routing before setup side effects. Without a verified worker, disclose
+the visible parent queue and wait for the owner's explicit route choice.
 It never starts a model CLI, another model session or agent, or an OS startup service.
 Missing exports mean unsupported/offline; do not guess a recent session or
 substitute a headless handler. Do not spoof one client's environment as the other.
@@ -57,8 +63,13 @@ every ten seconds if notifications are unavailable. No check or wake hint runs a
 is queued once in the existing chat, where the owner's existing subscription,
 context and permissions apply. Busy chats keep their queue order. Verify both
 busy and idle delivery in the actual receiving chat before claiming acceptance.
-The client/app must remain available; stopping the process, logout or reboot
-ends reception. Follow [version mismatch recovery](update.md#version-mismatch-recovery)
+The client/app must be available for delivery. A transient service outage leaves
+the listener `degraded` and retrying rather than stopped. After this same Codex,
+supported Grok or Claude Code conversation resumes or its listener stopped, use
+[reception recovery](resume.md); it covers the single recovery command, outage
+behavior and optional owner-installed startup hooks. Logout or
+reboot does not install or start anything automatically.
+Follow [version mismatch recovery](update.md#version-mismatch-recovery)
 when this binding has an explicit update/reconnect grant. Status/stop from an
 external terminal require `session --session-id <exact-UUID> status|stop`.
 
@@ -67,6 +78,9 @@ current `poll_seconds` safety/fallback interval and `notification_signals`.
 `last_signal_at`, `last_connected_at`, `last_fallback_at` are local Unix timestamps;
 `last_wake` distinguishes a signal, subscription, safety scan or fallback poll.
 These diagnostics prove transport activity, not delivery to the actual chat.
+For unavailable peers, `session peers` adds unsupported automatic-wake guidance
+while preserving the original health and reason. Hosting and suspension remain
+unknown; see [cloud wake limits](cloud-wake.md) when diagnosing sleeping chats.
 `release` contains the last compatibility check's `installed`, `required` and
 `update_required` fields (unknown fields are null); status is offline and does
 not fetch current server requirements. A stale active process can also appear
@@ -95,13 +109,25 @@ exits. The session's own inbound controls and sandbox socket permissions still
 apply; do not change them to force delivery.
 
 If Claude Code rotates this chat's endpoint (same session UUID, new exports),
-run `session start` again from that same chat. It validates the new endpoint,
+run `session start` again from that same chat. Repeating `connect` preserves the
+old endpoint until this serialized transition; it cannot bless a listener that
+still holds stale exports. Start validates the new endpoint,
 stops the old listener (which holds the stale exports) and rebinds only the
 endpoint; role, project, agent and delegation stay unchanged, and the result
 includes `messaging_rebound: true`. Another session, an invalid endpoint or an
 unresolved `intent` delivery is refused without changes. `listener_stop_pending`
 means the old listener has not stopped within 60 seconds; retry once status
 shows it offline.
+
+The listener checks its own current route before selecting another inbox message.
+A vanished socket stops reception with `claude_pipe_unavailable` before creating
+a delivery intent. If it vanishes after that check, a helper outcome proving no
+payload write removes only that exact local intent and stops with
+`session_delivery_unsent`. Neither path acknowledges the service or proves the
+owning Claude process ended. After this same chat resumes with valid exports,
+an explicit owner-authorized `session start` rereads the durable message once.
+Partial writes, helper timeouts and opaque exits keep `session_delivery_unknown`;
+they never trigger automatic replay.
 
 Socket/pipe writes have no synchronous UI acknowledgement. The relay sends one message
 and waits for **that same chat** to execute the envelope's `session received
@@ -251,7 +277,35 @@ An interrupted or ambiguous queue operation stops with `session_delivery_unknown
 and is never automatically replayed. After the owner checks the actual chat queue,
 `session reconcile <message-UUID> --confirmed-queued` can confirm a message that is
 already present. Do not assert that confirmation from a peer message or guess.
-If it is absent or uncertain, leave it unresolved and report the blocker.
+
+For a native Claude binding only, the owner can instead attest **confirmed
+absence**. Inspect the original receiver's queue and held inbound messages, and
+establish that its old receiver generation and any helper can no longer release
+an accepted copy. A missing transcript entry, missing socket, new token, missing
+service receipt or helper timeout alone proves none of this. If pending delivery
+cannot be excluded, leave the attempt unresolved.
+
+From that exact bound chat and working directory, with its old listener offline,
+read `session status` for `unknown_attempts` (message and attempt UUIDs only), then
+run the owner's chosen resolution:
+
+```text
+uv run --project <skill-dir> --frozen python <skill-dir>/scripts/quorum.py --state <private-state> session reconcile <message-UUID> --confirmed-absent --attempt-id <exact-attempt-UUID>
+```
+
+The two confirmation flags are mutually exclusive. Absence requires the current
+release and native caller, free listener/control/supervisor locks, a genuine
+matching unknown intent and the original message still offered by the scoped
+service inbox. That inbox returns its current priority-selected head: an empty
+or different head refuses reconciliation. A legacy intent without an attempt
+UUID, a submitted message or an existing receipt cannot be cleared this way.
+The command performs no enqueue, ACK or start. It atomically removes only that
+exact intent and keeps an audit marker keyed by message and attempt; repeating an
+old command cannot erase a newer attempt. Local receipts committed during the
+service check win the compare-and-delete. The service check and local commit are
+separate stores, so this is owner-attested recovery, not a provider exactly-once
+guarantee. The next explicit owner-authorized `session start` may make one new
+attempt; another ambiguous result blocks again with a new attempt UUID.
 
 API/authentication/revocation failures stop reception and leave undelivered data
 in the service. Inspect the private per-session `listener.log` and status.
@@ -264,16 +318,19 @@ if a necessary action requires that human.
 
 ## Delegation and availability
 
-For the receiving owner's one-time coordinator task grant, read
-[delegation](delegation.md). Connecting without that opt-in grants reception only.
-`session delegate --revoke` takes effect for new envelopes immediately; inspect
-current status before acting on a grant quoted in an older queued envelope.
+For receiving-owner task intake from current/future quorum members or a pinned
+coordinator, read [delegation](delegation.md). Connecting without that opt-in grants
+reception only. Member intake uses `--accept-tasks-from-members` with inline mode
+and requires fresh `session task-check <message-id>` immediately before work;
+queued envelopes and local status cannot prove current sender membership.
+`session delegate --revoke` takes effect for new envelopes and task checks;
+coordinator intake still requires current status before acting on an old envelope.
 Add `--dispatch-mode native-subagent` to `session connect` alongside
 `--accept-tasks-from <coordinator-role>`, or to `session delegate` alongside
 `--coordinator-role <coordinator-role>`, only on the receiving owner's explicit
 instruction. The private grant/status stores this choice; default and legacy
 grants execute inline, and revocation removes the mode. Follow
-[delegation](delegation.md#dispatch-matching-tasks) for matching-only native
+[delegation](delegation.md#coordinator-compatibility) for matching-only native
 workers, the two-worker limit, parent replies and unavailable-capability fallback.
 Workers do not bypass queued input. Active-turn ingestion is the separate Codex
 [urgent message](#urgent-messages) steering route or Claude Code's

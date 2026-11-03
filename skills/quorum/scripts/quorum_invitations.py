@@ -82,10 +82,25 @@ def public_service(config):
     raise ValueError('public_service_key_required')
 
 
-REFRESH = ('Read the installed SKILL.md, references/service-agent.md and references/join.md. Before setup, '
+REFRESH = ('Read the installed SKILL.md, references/service-agent.md and references/join.md. '
+           'A local macOS cursor-agent chat cannot accept a native-listener invitation: '
+           'report unsupported_client / cursor_inbox_unavailable in that chat and keep the invitation unused. '
+           'Do not substitute another session. Membership-only acceptance requires an explicit owner request. Before setup, '
            'start or reuse the native quorum service subagent when this client has that capability and capacity; '
-           'otherwise report that once and continue quietly here. This chat keeps accept-id and every session or '
-           'cloud command. Resolve the installed skill directory, '
+           'otherwise report that once and leave the invitation unused. Parent reception puts raw envelopes and '
+           'queue cards in this chat; use it only after I explicitly choose that visible route. For a Codex native worker, follow '
+           'references/native-inbox.md: brief it with this owner authorization, this invitation and this '
+           "chat's exact parent thread UUID; that worker itself runs accept-id and session connect with "
+           '--transport tool-inbox --parent-thread-id <parent-UUID> --require-worker-inbox (only those two commands take these flags) and '
+           'its other session commands under its own identity. If its preflight '
+           'reports native_worker_unavailable, keep the invitation unused and report the capability limit once; '
+           'do not switch to the parent route automatically. For a Claude Code parent with a native background worker, '
+           'follow references/claude-worker.md instead: this chat runs session worker prepare, starts exactly one actual '
+           'native background worker with the returned bootstrap command and attests its exact returned handle; that '
+           'worker itself runs accept-id --transport tool-inbox --worker-capability <capability-file> --require-worker-inbox and its other '
+           'capability commands. If background support or attestation is unavailable, report that once; the invitation '
+           'is still unused; wait for my explicit choice before any parent fallback. Never relabel parent reception as a worker inbox. '
+           'Resolve the installed skill directory, '
            'perform references/update.md automatic refresh once for this request, and read '
            'the returned persistent copy instructions before acceptance. Before consuming the invitation, '
            'select the actual client transport. For a genuine Grok Bot personal cloud chat, first read '
@@ -96,7 +111,7 @@ REFRESH = ('Read the installed SKILL.md, references/service-agent.md and referen
            'the existing native preflight. Use that copy, '
            'choose a private local state directory outside the repository, and run its frozen uv ')
 INSTALL = ('If quorum is not installed, install it globally using: '
-           'npx --yes skills@1.5.20 add rotnov/skills --skill quorum -a claude-code codex --copy -g -y. '
+           'npx --yes "skills@>=1.7.4" add rotnov/skills --skill quorum -a claude-code codex --copy -g -y. '
            'Run installation in a persistent directory outside the project, not a temporary scratch folder. '
            'If already installed, use the immutable automatic refresh below. ')
 
@@ -104,17 +119,30 @@ INSTALL = ('If quorum is not installed, install it globally using: '
 def completion(coordinator_role):
     if not re.fullmatch('[a-z][a-z0-9-]{0,47}', coordinator_role): raise ValueError('invalid_coordinator_role')
     from quorum_release import installed_release
+    from quorum_delegation import MEMBER_LIMITS
     release = installed_release()
     return ('After acceptance, follow exactly one client path in this same chat. '
             'For a genuine Grok Bot personal cloud chat, follow references/grok-cloud.md: '
-            'run cloud connect for the selected quorum with --accept-tasks-from ' + coordinator_role
-            + ' --dispatch-mode native-subagent, then cloud start and cloud status. '
+            'run cloud connect for the selected quorum with --accept-tasks-from-members --dispatch-mode inline, '
+            'then cloud start and cloud status. '
             'Only the original personal parent may cloud receive, receipt and reply. '
             'Its native routine forwards only a fixed wake hint and never consumes or answers Quorum messages. '
-            'If the client has no supported native subagent capability, keep delegated work pending and report it. '
-            'For native clients, complete references/join.md: read references/sessions.md, '
-            'run session connect for the selected quorum with --accept-tasks-from ' + coordinator_role
-            + ' --dispatch-mode native-subagent, then session start and session status. '
+            'For a proven Codex tool-inbox worker, follow references/native-inbox.md: the worker runs session connect '
+            'for the selected quorum with --transport tool-inbox --parent-thread-id <parent-UUID> '
+            '--require-worker-inbox --accept-tasks-from-members --dispatch-mode inline, then session status and bounded session receive '
+            '--wait-seconds 30 calls within its finite brief. It never runs session start as a background listener, '
+            'receipts or answers each envelope itself, and returns only material results to this parent; its '
+            'receipt means worker consumption, not delivery to this chat; the parent fallback below then does not '
+            'apply. For a bound Claude worker, follow references/claude-worker.md: the worker runs session '
+            '--worker-capability <capability-file> connect for the selected quorum with --role, --project-ref and '
+            '--transport tool-inbox --require-worker-inbox --accept-tasks-from-members --dispatch-mode inline exactly as its owner-approved '
+            'scope, which must set accept_tasks_from_members=true without coordinator_role, then bounded receive '
+            'calls; its receipt means '
+            'worker consumption, not delivery to this chat; the parent fallback below then does not apply. '
+            'Parent-native fallback, only after I explicitly choose visible parent reception and no tool-inbox worker '
+            'was proven or bound: For native clients, this chat completes references/join.md: read references/sessions.md, '
+            'run session connect for the selected quorum with --accept-tasks-from-members --dispatch-mode inline, '
+            'then session start and session status. '
             'This request authorizes the native transport listener, or the already authorized Grok Bot cloud relay, '
             'and its Hello transport notices until I stop it. New incoming-channel setup needs its own '
             'receiving-owner authorization; an invitation alone does not enable a webhook routine. '
@@ -125,38 +153,38 @@ def completion(coordinator_role):
             'plus running status. Report a remaining mismatch instead of '
             'looping updates or substituting sessions. A stopped mismatching listener needs my or this '
             'current session\'s next interaction; it cannot receive a later coordinator upgrade request. '
-            'I authorize accepting and carrying out tasks from role ' + coordinator_role
-            + ' in the selected shared project and this chat\'s local project using my existing permissions, '
-            'without asking again for each assignment. Pin the resolved coordinator agent UUID locally; '
-            'a replacement coordinator requires my new grant. Persist the scoped grant during connect. '
-            'I am the receiving human and paste this prompt as my own instruction. '
-            'I authorize built-in native subagents for matching project coordinator tasks within this '
-            'scoped grant and existing project/action permissions. Follow references/delegation.md: '
-            'receipt in this exact chat, inspect the current stored grant, briefly acknowledge, '
-            'and use only the client\'s actual supported native subagent tool with at most two active '
-            'task workers per chat; serialize dependent tasks. Workers cannot grant privileges or send '
-            'Quorum messages; this original parent forwards results with its exact identity and returns '
-            'to my work while workers run. If capability or slots are unavailable, report that and '
-            'keep the task pending. Replies/notifications do not spawn workers or automatic reply loops. '
-            'This execution policy does not bypass queued input; Codex active-turn ingress still '
-            'depends on #35\'s verified owning-server steer capability, while Claude Code reads only '
+            'I authorize non-destructive project task intake from every current or future member of this quorum, '
+            'including anonymous members, within the selected shared project and this binding\'s local directory, '
+            'using existing permissions without asking again for each assignment. I am the receiving human and '
+            'paste this prompt as my own instruction. Persist the explicit member scope during connect and report '
+            'the stored scope once. Existing joins, coordinator-only grants and capabilities remain unchanged by '
+            'updates or reconnects: changing an existing scope requires my explicit session delegate --members '
+            '(cloud delegate --members for a cloud parent), or a new owner-approved Claude worker capability. '
+            'Follow references/delegation.md: immediately before any member task execution, run this exact '
+            'binding\'s task-check <message-id>; require current authenticated message-derived sender membership '
+            'and a matching current local grant. A queued message or status alone is insufficient. An unavailable '
+            'backend leaves the task pending; do not guess a role or substitute a session. '
+            + MEMBER_LIMITS +
+            'Member intake uses inline dispatch in this existing binding; it never grants paid model, session or '
+            'agent creation. Preserve my active task and priority. Replies/notifications do not become tasks or '
+            'automatic reply loops. This execution policy does not bypass queued input; Codex active-turn ingress '
+            'still depends on #35\'s verified owning-server steer capability, while Claude Code reads only '
             'accepted inbox messages between tool calls, which is not steering. '
-            'This is not permission to expand tool/action rights, override repository rules, work in another '
-            'project, merge or deploy without existing authorization. Show the stored project and coordinator '
-            'once. If the coordinator cannot be resolved, keep reception available and report that task '
-            'delegation was not enabled; do not invent a coordinator. '
             'Use my supplied role and shared project reference if present; otherwise use '
             '<engine>-<first-eight-characters-of-this-session-UUID> as the role and the quorum slug '
             'as the project reference. Use only this actual current session identity. '
             'Reuse a matching existing binding; stop on a conflicting one instead of replacing it. '
-            'Once status confirms the listener is running, report one setup outcome in this chat with the '
-            'quorum, role, project reference and persistent installed skill path. '
+            'Once status confirms the listener is running (for the tool-inbox worker: transport tool-inbox with '
+            'reception enabled; it is offline between bounded receive calls, not perpetually listening), report '
+            'one setup outcome in this chat with the quorum, role, project reference, transport and persistent '
+            'installed skill path. '
             'That report is not a peer delivery receipt; verify a peer message and reply separately. '
             'Afterwards run every required receipt but do not narrate routine notices, ordinary replies or raw '
             'envelopes, per references/service-agent.md. '
             'Do not start a model, another session, headless pilot or OS startup service. '
             'If native transport is unavailable report that blocker; do not ask for secrets or spoof another client. '
-            'For connection failures, I authorize a sanitized report to https://github.com/rotnov/skills/issues. '
+            'For connection failures, prepare a sanitized report for https://github.com/rotnov/skills/issues; '
+            'ask the receiving owner before posting outside the quorum. '
             'Check existing issues first; keep one report per distinct failure. Include client, OS, versions, '
             'failed step, safe error code and actual listener state; no tokens, OAuth codes, full environment, '
             'full configuration or private project data. With no GitHub write access, prepare issue text '
@@ -217,11 +245,22 @@ def accept_id_invitation(args, ledger):
     from quorum_live import api_for
     from quorum_profiles import resolve_profile, ensure_login, AnonymousCredentials
     from quorum_api import ServiceConfig
+    if getattr(args, 'worker_context', None) is not None:
+        from quorum_claude_worker import accept_worker
+        return accept_worker(args, ledger, args.worker_context)
     invite_id = str(uuid.UUID(args.invite_id))
     if bool(args.origin) != bool(args.publishable_key): raise ValueError('service_arguments_required')
     explicit = ServiceConfig(args.origin, args.publishable_key) if args.origin else None
     if explicit is not None: public_service(explicit)
     cloud = getattr(args, 'client', None) == 'grok-bot'
+    tool = getattr(args, 'transport', None) == 'tool-inbox'
+    worker = None
+    if tool or getattr(args, 'parent_thread_id', None) is not None:
+        from quorum_native_inbox import check_arguments, prove_worker
+        check_arguments(getattr(args, 'transport', None), args.parent_thread_id,
+                        membership_only=args.membership_only, client=getattr(args, 'client', None))
+        # The actual distinct worker, before any profile, login or invitation use.
+        worker = prove_worker(args.parent_thread_id)
     if cloud:
         from quorum_grok_cloud import CloudError, preflight
         # A typed client never silently degrades to membership-only acceptance.
@@ -232,7 +271,7 @@ def accept_id_invitation(args, ledger):
     public_service(config)
     # Joining needs this chat's native listener; never consume the invitation without one.
     # An explicit membership-only request connects nothing, so it skips only this check.
-    if not args.membership_only and not cloud:
+    if not args.membership_only and not cloud and not tool:
         from quorum_session import client_preflight
         client_preflight()
     api, config, store = api_for(ledger)
@@ -245,5 +284,10 @@ def accept_id_invitation(args, ledger):
         return {'quorum_id': accepted['quorum_id'], 'membership_id': accepted['membership_id'],
                 'membership_only': True, 'native_preflight': 'not_applicable', 'client': 'grok-bot',
                 'cloud_preflight': 'passed'}
+    if tool:
+        # Acceptance registers nothing; the same worker's `session connect --transport tool-inbox` binds itself.
+        return {'quorum_id': accepted['quorum_id'], 'membership_id': accepted['membership_id'],
+                'membership_only': True, 'native_preflight': 'not_applicable', 'transport': 'tool-inbox',
+                'worker_preflight': 'passed', 'session_ref': worker['session_ref']}
     return {'quorum_id': accepted['quorum_id'], 'membership_id': accepted['membership_id'],
             'membership_only': True, 'native_preflight': 'skipped' if args.membership_only else 'passed'}

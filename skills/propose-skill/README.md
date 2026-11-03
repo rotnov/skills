@@ -1,0 +1,45 @@
+# Propose Skill
+
+Extract a demonstrated practice from the current session, decide whether it is
+specific and reusable enough to become an Agent Skill, check for duplicates,
+and draft a structured proposal issue for `rotnov/skills`. Public issue writes
+require an exact preview and explicit approval; raw conversation and private
+material are never published.
+
+## Install the skill
+
+Paste this into your agent:
+
+```text
+Set up Propose Skill for me: fetch and follow this guide https://github.com/rotnov/skills/blob/main/skills/propose-skill/README.md
+```
+
+Or install it yourself:
+
+```bash
+npx --yes "skills@>=1.7.4" add rotnov/skills --skill propose-skill -a claude-code codex --global --copy -y
+```
+
+## Requirements
+
+Drafting works locally. Duplicate search requires public GitHub read access;
+publishing requires an authenticated GitHub tool and explicit approval of the
+exact public payload.
+
+## Use
+
+Ask your agent, for example:
+
+> Propose a skill from the practice we just used in this session.
+
+For agent instructions, see [SKILL.md](SKILL.md).
+
+## Setup guide for agents
+
+You are an AI agent asked to set up this skill.
+
+1. Install it globally for Claude Code and Codex with the skills CLI 1.7.4 or newer:
+   `npx --yes "skills@>=1.7.4" add rotnov/skills --skill propose-skill -a claude-code codex --global --copy -y`.
+2. Read the installed [SKILL.md](SKILL.md).
+3. Check the requirements above and report anything missing with the exact fix.
+4. Tell the user it is ready and give one example request from the Use section.

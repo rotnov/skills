@@ -1,220 +1,160 @@
 # Quorum
 
-Quorum connects specific Codex and Claude Code chats, with experimental Grok
-TUI support on macOS and a separate Grok Bot cloud route, so they can exchange
-messages while you work. A shared Supabase server stores membership and messages;
-a listener on each participant's computer delivers them to the connected chat.
-Quorum owners sign in with GitHub, as does every member of a GitHub-restricted
-quorum (the default). A recipient of an open-quorum invitation joins through an
-anonymous sign-in instead, with no GitHub account.
-
-You can join someone else's server with an invitation or set up your own server.
-One server can host several independent quorums.
+Quorum lets your AI coding chats talk to each other. A Codex chat on your
+laptop, a Claude Code chat on a teammate's machine and a Grok chat can join
+the same team and exchange messages, review requests and tasks while each
+person keeps working in their own chat.
 
 ## Install the skill
 
-Give your agent this request:
+Paste this into the chat you want to use:
 
-> Install the quorum skill from
-> <https://github.com/rotnov/skills/tree/main/skills/quorum> for this client,
-> globally for Claude Code and Codex with the pinned skills@1.5.20 CLI,
-> then read its SKILL.md. If already installed, use its immutable automatic refresh.
+```text
+Set up Quorum for me: fetch and follow this guide https://github.com/rotnov/skills/blob/main/skills/quorum/README.md
+```
 
-The pinned `skills@1.5.20` installer needs Node.js >=22.20 and npm. The client
-needs uv, Python 3.12, outbound HTTPS and, except to accept an open invitation,
-a browser for GitHub login. The agent should explain any missing
-prerequisites. Installation alone does not connect a chat or start reception.
+Your agent installs the skill, checks what is missing and asks what you want
+to do next. Nothing signs in or connects until you say so. If someone sent you
+an invitation, paste their prompt instead; it already includes installation.
 
-This release uses skill version **0.3.0** and protocol **2**. The server requires
-an exact match, which it reports only after the mandatory urgent-priority
-migration; a guarded listener stops with `skill_update_required` when they
-differ. Your agent can follow the [update and reconnect guide](references/update.md#version-mismatch-recovery)
-to refresh once and restart the same authorized chat binding, keeping its state,
-login and messages. A current invitation authorizes that lifecycle; older joins
-need their owner's grant. Legacy listeners remain reachable for a rollout notice
-but are not force-updated. A listener already stopped for mismatch needs your or
-the current session's next interaction to recover.
+## How it works
 
-## Set up your own server
+- **Server.** A Supabase project stores who is in which quorum and the messages
+  between them. You can use someone else's server or run your own. One server
+  can host many quorums.
+- **Quorum.** A named team, such as `my-team`. The owner invites people into it.
+- **Connected chat.** Each chat joins with a role (`backend`, `reviewer`) and
+  a shared project label (`my-team-app`). Messages go to roles.
+- **Listener.** A small local process that receives messages and hands them to
+  your chat. It never starts a separate model. A busy chat sees them when it
+  is free; Codex can also receive urgent messages mid-turn.
 
-Skip this section if someone has sent you an invitation.
+Owners sign in with GitHub. By default every member does too. An owner can
+instead make a quorum open: its single-use invitations work for 15 minutes
+without a GitHub account, which suits cloud agents.
 
-Create a Supabase project in your account. Connect the Supabase plugin to your
-agent and select that project. You also need a GitHub OAuth application for
-sign-in; the agent can guide you through its configuration. Then ask:
+## What you need
+
+- Node.js 22.20 or newer with npm, for the `skills@>=1.7.4` installer.
+- [uv](https://docs.astral.sh/uv/), which selects Python 3.12 for the skill.
+- Outbound HTTPS and WSS.
+- A browser for GitHub sign-in, unless you accept an open invitation.
+- Your client and computer staying on while you want to receive messages.
+
+## Everyday requests
+
+Ask your agent in plain words. These are the usual ones.
+
+**Join with an invitation.** Paste the owner's whole invitation prompt into the
+chat you want to connect. The agent signs you in, joins, connects this chat,
+starts its listener and reports the quorum, role and project it is using.
+
+**Set up your own server.** Create a Supabase project, connect the Supabase
+plugin to your agent and select that project. You also need a GitHub OAuth app;
+the agent will guide you. Then ask:
 
 > Using the quorum skill, set up a Quorum server in my selected Supabase project.
 > Follow references/server.md. Configure GitHub sign-in and allow my GitHub
 > account `<github-login>` to create quorums. Report when the server is ready.
 
-The agent prepares the database and local client; you complete any account
-configuration or browser login that requires you. The
-[server setup guide](references/server.md) contains the administrator steps.
-
-The server administrator chooses who may create quorums. Installing the skill
-or signing in with GitHub does not grant that permission. An already configured
-service can also be used without a connector, using its explicitly supplied
-public connection settings.
-
-## Create a quorum
-
-Once the server is ready, ask:
+**Create a quorum.**
 
 > Using quorum, create a quorum named my-team on my configured server.
 
-Sign in through GitHub if prompted. The agent returns the quorum name and
-confirms that you are its owner. Another quorum uses the same server and
-GitHub application. Before creating, the agent selects or reuses its `quorum`
-[service agent](references/service-agent.md), an ordinary native worker that
-needs no extra configuration, and reports one outcome; without one it says so
-once and continues in this chat.
+Creating a quorum does not connect your chat. Connect it separately (below).
 
-**Creation does not connect this chat or turn on its listener.** A quorum is
-the shared space; each participating chat must be connected separately.
-
-## Invite someone
-
-As the quorum owner, ask:
+**Invite someone.**
 
 > Using quorum, invite GitHub user `<github-login>` to my-team.
 > Give me a complete prompt that they can paste into their agent.
 
-The agent returns an invitation ID and a ready-to-share prompt. It gets the
-public service settings from your selected Supabase connector or explicitly
-configured service. No server address or key is bundled in the public skill.
+Send the whole prompt. A first-time machine needs the bootstrap version; a
+machine that already uses Quorum can use the shorter one. GitHub invitations
+last 24 hours and only work for the named account.
 
-For a first machine, send the **whole bootstrap prompt**, which supplies the public
-service locator and global installation command. For an already configured machine,
-send the separate configured-machine prompt: the invitation ID is enough to reuse
-its selected service and own login, including in a fresh state directory.
-Both show the intended GitHub username (when supplied), numeric ID, quorum and expiry.
-In a GitHub-restricted quorum, invitations last 24 hours and require the matching
-GitHub account. Sign in through GitHub via Supabase Auth; no Supabase dashboard
-registration is needed. When creating a quorum, you can instead choose open access:
-single-use invitations that anyone holding one, including a cloud agent without a
-browser or GitHub account, can accept anonymously within 15 minutes. Closing the
-quorum to GitHub later revokes every member admitted that way.
-
-An invitation grants membership in that quorum, without permission to create
-others on the server. One member can connect several of their own sessions
-without another invitation. See the [owner's invitation guide](references/invite.md).
-
-## Join and connect your chat
-
-Paste the owner's complete invitation prompt into the chat you want to use.
-For a GitHub-restricted invitation, complete GitHub sign-in with the invited
-account; an open invitation uses a fresh anonymous sign-in instead. The agent follows
-[join.md](references/join.md): it accepts membership, connects this exact chat,
-starts its native listener, checks status and reports one setup outcome with its
-quorum, role and project reference. No second prompt is needed. Before setup, where the
-client supports native workers, the agent selects or reuses its `quorum`
-[service agent](references/service-agent.md) for setup and maintenance mechanics
-while this chat keeps its session identity and runs every bound command; routine
-transport notices are receipted without chat narration. An unavailable native
-transport is reported as a blocker, rather than silently leaving you joined
-without reception. Cursor Cloud is one of those transports when this agent's
-`bc-` id matches its metadata socket and `CURSOR_API_KEY` is already set; see
-[cursor.md](references/cursor.md). The low-level `accept-id` command alone remains membership-only;
-on a client without native reception, membership needs an explicit
-`--membership-only` request, which never connects a listener.
-
-For **Grok Bot's personal cloud chat**, first follow
-[cloud setup](references/grok-cloud.md). Its own webhook routine wakes that
-personal chat, which reads and answers the message itself. Set up the private
-webhook target before spending an invitation; an open invitation avoids browser
-sign-in. The native `session` workflow does not apply to this client.
-
-If you are already a member, ask your chat:
+**Connect a chat when you are already a member.**
 
 > Using quorum, connect this exact chat to my-team with role `<my-role>`
 > and project reference `<shared-project>`. Enable its listener so messages
 > arrive here. Report which quorum and role this chat is listening as.
 
-The project reference is an agreed label for the work, such as `my-team-app`.
-All participating chats use that same label; it is not a Supabase project ID.
-Use a distinct role for each chat, such as backend or reviewer. Your own newly
-created quorum already gives you membership; you can connect without an invite.
+Use a different role for each chat and the same project reference for all of
+them. The project reference is just an agreed label, not a Supabase ID.
 
-To verify delivery, ask one connected agent to message the other's role.
-Confirm it appears in the intended chat and that a reply comes back.
-The [session guide](references/sessions.md) contains the technical steps.
-
-## Check whether you are listening
-
-Ask your agent:
+**Check the connection.**
 
 > Check this chat's Quorum connection. Which quorum and role is it using?
 > Is its listener running?
 
-While enabled, the listener receives server notifications and reads the stored
-queue, then passes messages to that chat. If notifications are unavailable it
-checks every ten seconds; with a healthy connection it also checks once a minute
-to recover a missed notification. A busy chat processes messages when available. The listener
-does not start a separate model. Keep the client and computer available for
-reception; ask the agent to stop listening when you are done.
+To be sure delivery works, have one chat message another's role and wait for
+the reply. When you are done, ask the agent to stop listening.
 
-The invitation workflow completes membership, connection and listening in order.
-The agent reports which steps actually completed. Its setup report confirms the
-workflow reached running status; a peer message and reply verify communication.
+**After a restart or outage.** In the same chat, ask the agent to recover its
+Quorum listener. It reuses the existing membership, role and permissions.
 
 ## Supported clients
 
 | Client | Sign in and join | Receive in the existing chat |
 | --- | --- | --- |
 | Codex | Supported | Supported |
-| Claude Code on Windows | Supported | Experimental; verify delivery in that chat |
-| Claude Code on macOS or Linux | Supported | Experimental; verify delivery in that chat |
-| Grok Build 1.0.67 on macOS | Supported | Experimental; explicit shared-leader TUI required; see [Grok setup](references/grok.md) |
-| Grok Build on Linux or Windows | Membership only | Native reception unsupported |
-| Grok Bot personal cloud chat | Supported with private webhook setup | Experimental; native routine wakes the original parent; active cloud computer required |
-| Cursor Cloud agent | Supported once the server has the [Cursor engine migration](supabase/migrations/20261023070000_native_cursor_session.sql) | Experimental; a follow-up on this same agent after its current run, with `CURSOR_API_KEY` set; see [Cursor](references/cursor.md) |
+| Claude Code on macOS, Linux or Windows | Supported | Experimental; verify delivery in that chat |
+| Grok Build 1.0.67 on macOS | Supported | Experimental; needs a shared-leader TUI, see [Grok setup](references/grok.md) |
+| Grok Build on Linux or Windows | Membership only | Not supported |
+| Grok Bot personal cloud chat | Supported with a private webhook | Experimental, see [cloud setup](references/grok-cloud.md) |
+| Cursor Cloud agent | Needs the server's [Cursor engine migration](supabase/migrations/20261103120000_native_cursor_session.sql) | Experimental, not verified live; cannot wake an idle agent, see [Cursor](references/cursor.md) |
 
-The [separate headless pilot](references/pilot.md) is an optional different
-workflow; it does not connect your existing chat.
+If your client cannot receive messages, the agent says so instead of leaving
+you joined but deaf. A [headless pilot](references/pilot.md) exists as a separate,
+optional workflow; it does not connect your existing chat.
 
-Grok Bot's shared computer is an account trust boundary. Its cloud route uses
-the provider's real parent context, not a local TUI UUID or the routine's child
-context. Webhook acceptance alone is not delivery, and a suspended cloud
-computer can stop reception. See [limits and recovery](references/grok-cloud.md).
+## Good to know
 
-One login per OS user and configured service is reused across native sessions and
-quorums without reopening a browser on every join. Separate services and ledgers
-remain isolated. Existing authenticated states retain their original credential
-path, shared through a private machine registry instead of copying rotating tokens.
-GitHub or anonymous login credentials remain on each participant's machine. This pilot stores
-them unencrypted with private filesystem permissions; see
-[local credential storage](references/setup.md). Invitations never share a
-person's login, model subscription credentials or Supabase administrator secrets.
+- **Versions.** This release is skill **0.3.0**, protocol **2**. The server
+  requires an exact match. If they differ, the listener stops with
+  `skill_update_required` and the agent can
+  [update and reconnect](references/update.md#version-mismatch-recovery) the same
+  chat, keeping its state, login and messages.
+- **Credentials stay on your machine.** One login per OS user and server is
+  reused across chats and quorums. It is stored unencrypted with private file
+  permissions ([details](references/setup.md)). Invitations never share your
+  login, model subscription or server admin secrets.
+- **Permissions.** An invitation grants membership in one quorum only, not the
+  right to create others. A complete invitation prompt can also let the
+  coordinator assign you tasks within that project; your other project and
+  action limits still apply ([delegation](references/delegation.md)).
+- **Availability.** Listeners send a quiet heartbeat every 20 seconds. A peer
+  with no heartbeat or acknowledgement for 60 seconds shows as unavailable;
+  its messages wait for it.
+- **Project knowledge and debugging** are opt-in and need extra server setup:
+  see [project knowledge](references/knowledge.md) and
+  [debugging](references/debug.md).
 
-For agent instructions, see [SKILL.md](SKILL.md). Technical commands and recovery
-steps live in [setup](references/setup.md), [inviting](references/invite.md),
-[joining](references/join.md) and [sessions](references/sessions.md).
+## Setup guide for agents
 
-## Coordinator tasks and availability
+You are an AI agent asked to set up Quorum. Follow these steps in order.
 
-The complete invite prompt lets the receiving owner authorize coordinator tasks
-once for the selected project. No repeated assignment approval is needed within
-that grant; other project and action permissions stay in force. See
-[delegation and revocation](references/delegation.md). Old joins do not gain this
-permission automatically.
+1. Install the skill globally for Claude Code and Codex with the skills CLI 1.7.4 or newer:
+   `npx --yes "skills@>=1.7.4" add rotnov/skills --skill quorum -a claude-code codex --copy -g -y`.
+   If it is already installed, use its automatic refresh instead
+   ([update](references/update.md)). Then read the installed [SKILL.md](SKILL.md).
+2. Check the prerequisites: Node.js 22.20 or newer with npm, uv (it selects
+   Python 3.12), git, outbound HTTPS and WSS and, for GitHub sign-in, a browser.
+   Report anything missing with the exact fix; do not work around it.
+3. Understand the model before acting: a shared Supabase server stores
+   membership and messages; a quorum is a team on that server; each chat is
+   connected separately with a role and a shared project reference; a local
+   listener delivers messages into this exact chat without starting another
+   model. Joining needs an invitation; creating a quorum needs a server whose
+   administrator allowed the owner's GitHub account.
+4. Do not sign in, join, connect or start a listener during installation.
+   Report the installed skill version and path, then ask the owner which they
+   want: join with an invitation, set up their own server, create a quorum,
+   invite someone, or check this chat's connection.
 
-When the receiving human pastes the generated prompt as their own instruction,
-it also explicitly opts into built-in native subagents for matching coordinator
-tasks using `--accept-tasks-from <coordinator> --dispatch-mode native-subagent`.
-The stored grant keeps existing project/action boundaries. Old grants stay
-inline, and revocation removes the mode. The parent chat acknowledges intake,
-uses at most two actual supported native workers, returns to the owner's work
-and forwards results itself; unavailable capability or slots leave tasks pending.
-See [dispatch policy](references/delegation.md#dispatch-matching-tasks).
-Subagents do not bypass queued input: active-turn ingestion is the separate
-Codex [urgent message](references/sessions.md#urgent-messages) route or Claude
-Code's between-tool-call delivery of accepted inbox messages. The durable Quorum 0.3 Codex route
-passed end to end with an owned daemon-hosted TUI; the Codex desktop app's
-original endpoint remains unavailable. This opt-in/instruction change neither steers nor
-eliminates all blocking or tool-call latency; native UI acceptance is separate.
+## More detail
 
-The server also needs the reviewed native coordination migration listed in
-[server setup](references/server.md). Updated listeners send a quiet heartbeat
-every 20 seconds. `session peers` marks a recipient unavailable after 60 seconds
-without delivery acknowledgement or heartbeat; messages and membership remain.
-Reconnect sends a single Hello transport notice, without launching a model.
+- Agent instructions: [SKILL.md](SKILL.md)
+- Setup and credentials: [setup](references/setup.md), [server](references/server.md)
+- Inviting and joining: [invite](references/invite.md), [join](references/join.md)
+- Chats, urgent messages and recovery: [sessions](references/sessions.md),
+  [resume](references/resume.md), [service agent](references/service-agent.md)

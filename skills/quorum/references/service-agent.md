@@ -27,14 +27,28 @@ gains no new permission: no server provisioning, login, access or privacy
 change, secret transfer or project task execution. A missing login or
 permission is a blocker it returns to the parent.
 
-The original parent chat keeps its exact session identity. Only it runs
-`accept-id` (its preflight inspects this chat) and every `session` or `cloud`
-command, including connect, start, status, delegate, received, send and reply.
-The worker prepares; the parent executes bound commands. Never spoof or
-override the current session exports to impersonate the parent. Keep messaging
+The original parent chat keeps its exact session identity and binding. On the
+parent routes it alone runs `accept-id` (its preflight inspects this chat) and
+every `session` or `cloud` command, including connect, start, status, delegate,
+received, send and reply; the worker prepares. Exception: a proven Codex native
+worker follows [native inbox](native-inbox.md) and, with `--transport tool-inbox`,
+runs `accept-id`, connect, receive, receipt and reply as **its own** separate
+binding; the parent only inspects or stops it by exact UUID. A Claude Code
+background worker bound by the parent's attestation follows
+[Claude worker](claude-worker.md) and runs its scoped create or `accept-id`,
+connect, receive, receipt and reply with its capability file; the parent only
+prepares, attests, inspects or stops it. Never spoof or
+override the current session exports to impersonate the parent or the worker. Keep messaging
 tokens and exports private and never forward credentials. A session ID may
 appear as diagnostic data; it confers no execution right. A Grok Bot routine
 is only a wake hint, never this worker.
+
+For quiet acceptance/connection, the worker adds `--require-worker-inbox` to
+`accept-id` and `session connect` with its existing `--transport tool-inbox`
+arguments. An omitted/native transport is refused with `native_worker_required`
+before any state, login, invitation or registration side effect. The flag grants
+no identity or permission; existing worker provenance/capability checks still apply.
+It neither migrates an existing parent binding nor removes already queued cards.
 
 ## Report quietly
 
@@ -44,12 +58,15 @@ results, actionable failures and decisions the owner must make. Routine
 transport traffic, such as Hello or reconnect notices, ordinary replies,
 receipt confirmations and raw envelopes, is not echoed or summarized one by one.
 
-Every required receipt command still runs in the exact bound chat; the receipt
-records that the envelope reached that chat. Replies and notifications are
+Every required receipt command still runs in the exact bound chat or worker; the
+receipt records that the envelope reached that binding. A tool-inbox worker
+receipt means worker consumption, never parent delivery. Replies and notifications are
 terminal: receipt them and continue the owner's work, never answer them
 automatically. Mention one only when it carries a material result, failure or
-decision. This policy changes only what the agent writes. Listeners and clients
-still deliver every envelope; the client may show its queued card.
+decision. A verified worker receives envelopes in its own tool result. On a
+parent route, this prose policy changes only what the agent writes: listeners
+still deliver every envelope and the client may show its queued card. Quiet
+parent prose and a receipt do not suppress or retract those cards.
 
 ## Substantive requests
 
@@ -62,14 +79,20 @@ native task-worker limits. Without a matching grant, requests remain proposals.
 ## Without native capability
 
 If no native subagent tool or capacity exists, report that once, briefly, and
-continue the same supported mechanics quietly in the parent. Do not claim a
+leave a quiet join's invitation unused. Explain that parent reception exposes
+raw envelopes and queue cards; use that route only after the owner explicitly
+chooses it. Read-only diagnosis and invitation preparation can continue. Do not claim a
 worker exists, launch a model CLI, another session or a headless handler, or
 leave queued messages unreceipted. Delegated tasks keep the separate pending and
 blocker rules in [delegation](delegation.md#dispatch-matching-tasks).
 
 ## Limits
 
-These are orchestration instructions, not a transport. Envelopes still arrive in
-the parent chat; no independent worker route, hidden inbox or delivery while
-the parent is inactive is established. Verify native behavior in the actual
-client before claiming it.
+On parent routes these are orchestration instructions, not a transport:
+envelopes arrive in the parent chat. Only the proven Codex
+[tool inbox](native-inbox.md) gives the worker its own bounded foreground
+reception, and an attested [Claude worker](claude-worker.md) gets the same
+bounded reception under a same-user capability; each is offline between calls,
+can pause when the parent's turn ends and is never a perpetual service. Other
+clients have no worker inbox yet. Verify native behavior in the actual client
+before claiming it.

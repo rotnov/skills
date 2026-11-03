@@ -16,7 +16,7 @@ For a first installation, use the owner's selected global default without anothe
 global-versus-project question:
 
 ```text
-npx --yes skills@1.5.20 add rotnov/skills --skill quorum -a claude-code codex --copy -g -y
+npx --yes "skills@>=1.7.4" add rotnov/skills --skill quorum -a claude-code codex --copy -g -y
 ```
 
 This places the Codex skill at `~/.agents/skills/quorum` and the Claude Code

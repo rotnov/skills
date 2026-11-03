@@ -1,7 +1,7 @@
 """Experimental existing Grok TUI IPC. Never spawn/resume a provider agent.
 
 Protocol1: four-byte big-endian JSON, Register then session-scoped ACP. Verified
-with installed Grok1.0.67 and xai-org/grok-build. Queue admission is not UI receipt.
+with installed Grok1.0.67/1.0.70 and xai-org/grok-build. Queue admission is not UI receipt.
 """
 import json
 import ctypes
@@ -140,7 +140,7 @@ class Leader:
             registered = self.receive(time.monotonic()+5)
             if (registered.get('type') != 'registered'
                     or registered.get('leader_protocol_version') != 1
-                    or registered.get('leader_binary_version') != '1.0.67'
+                    or registered.get('leader_binary_version') not in ('1.0.67', '1.0.70')
                     or not isinstance(registered.get('ready'), bool)):
                 raise ValueError('grok_transport_unavailable')
             if not registered.get('ready', True):

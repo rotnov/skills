@@ -12,8 +12,11 @@ An [open invitation](#open-quorum-invitations) is a short-lived bearer secret in
 Before configuration or `invite-id`, select or reuse the native `quorum` worker
 per [service agent](service-agent.md) and assign it these owner-authorized
 invitation mechanics when that capability and capacity exist; it needs no new
-global or custom-agent setup. Otherwise give one concise capability/capacity
-diagnostic and continue this same flow quietly in this chat. Identity and owner
+global or custom-agent setup. Generated prompts route a recipient's proven Codex
+worker through [native inbox](native-inbox.md) with `--require-worker-inbox`.
+If unavailable, the recipient leaves its invitation unused and gives one concise
+capability/capacity diagnostic; visible parent reception requires its owner's
+explicit choice. Invitation preparation can continue here. Identity and owner
 permission rules below are unchanged; this grants no new right.
 
 Prefer automatic retrieval of only the public project URL and publishable key
@@ -47,7 +50,7 @@ ID, quorum and expiry. GitHub is required; the recipient signs in through GitHub
 via Supabase Auth and does not register for the Supabase dashboard.
 
 Share `session_prompt` for a first machine: it includes only the public `service`
-locator and installs from `rotnov/skills` globally with the pinned CLI. An already
+locator and installs from `rotnov/skills` globally with the skills CLI 1.7.4 or newer. An already
 installed copy uses immutable automatic refresh. For a configured machine, share
 `configured_machine_prompt`, which only needs `invite_id` and reuses its selected
 machine profile/login, including in a new state directory. Missing/ambiguous
@@ -57,13 +60,18 @@ unless the owner explicitly requests delivery. Reuse a request ID only for an
 identical retry; the server returns the same invitation. The prompt requests the
 full join workflow: the [service agent](service-agent.md) where available,
 membership, this exact chat's native listener, Hello notices and one-time
-coordinator task intake for the chosen project. The recipient
-authorizes this by pasting the prompt as their own instruction; issuing an invite
-alone grants no task permissions. Default role is `coordinator`; select a different
-registered role with `--coordinator-role <role>`. Scope and revocation are described
-in [delegation](delegation.md). Read [join](join.md) for default role/project selection and delivery checks.
-Both prompts authorize sanitized connection-failure reporting to the repository
-issue tracker; follow [the failure-reporting procedure](join.md#connection-failures),
+member task intake for the chosen project, including anonymous members and future
+joins. The recipient authorizes it by pasting the prompt as their own instruction;
+issuing an invite alone grants no task permissions. New grants use explicit
+`--accept-tasks-from-members` and inline dispatch. They require a fresh
+message-scoped task check before work and keep every owner-held exclusion in
+[delegation](delegation.md), including paid starts and external publication.
+Existing coordinator grants and worker capabilities are never expanded by an
+update or reconnect. The legacy `--coordinator-role` invitation argument remains
+accepted as a coordination label; it no longer limits member task intake.
+Read [join](join.md) for default role/project selection and delivery checks.
+Both prompts request a sanitized connection-failure report prepared for the owner;
+posting outside the quorum needs the receiving owner's confirmation. Follow [the failure-reporting procedure](join.md#connection-failures),
 including duplicate checks and the no-write-access fallback.
 
 The prompt selects the actual client before consuming the invitation. A Grok Bot

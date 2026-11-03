@@ -1,0 +1,241 @@
+{
+  "corpus_sha256": "1b32aa6c646a404853e35bde346e6199b61e3ba3e93ad75428d6410cd9a1d151",
+  "image": "pgvector/pgvector@sha256:ac08538c6f8b9904c33c8224c5e5706dbe760aca29db1d096972b4052c22a75d",
+  "questions": [
+    {
+      "kind": "exact",
+      "query": "content_sha256",
+      "expected_prs": [
+        77
+      ],
+      "raw": {
+        "found_prs": [
+          77
+        ],
+        "expected_found": true,
+        "unexpected_prs": [],
+        "serialized_chars": 1617,
+        "utf8_bytes": 1617,
+        "truncated": false,
+        "ranking": "lexical",
+        "page_fetches": 1,
+        "source_fetches": 0,
+        "total_chars": 3583,
+        "total_utf8_bytes": 3583
+      },
+      "wiki": {
+        "found_prs": [
+          77
+        ],
+        "expected_found": true,
+        "unexpected_prs": [],
+        "serialized_chars": 1920,
+        "utf8_bytes": 1920,
+        "truncated": false,
+        "ranking": "lexical",
+        "page_fetches": 1,
+        "source_fetches": 1,
+        "total_chars": 5494,
+        "total_utf8_bytes": 5494
+      }
+    },
+    {
+      "kind": "paraphrase",
+      "query": "Why did knowledge index fail before HTTP?",
+      "expected_prs": [
+        77
+      ],
+      "raw": {
+        "found_prs": [],
+        "expected_found": false,
+        "unexpected_prs": [],
+        "serialized_chars": 155,
+        "utf8_bytes": 155,
+        "truncated": false,
+        "ranking": "lexical",
+        "page_fetches": 0,
+        "source_fetches": 0,
+        "total_chars": 155,
+        "total_utf8_bytes": 155
+      },
+      "wiki": {
+        "found_prs": [],
+        "expected_found": false,
+        "unexpected_prs": [],
+        "serialized_chars": 155,
+        "utf8_bytes": 155,
+        "truncated": false,
+        "ranking": "lexical",
+        "page_fetches": 0,
+        "source_fetches": 0,
+        "total_chars": 155,
+        "total_utf8_bytes": 155
+      }
+    },
+    {
+      "kind": "paraphrase",
+      "query": "Why does quiet setup refuse parent reception?",
+      "expected_prs": [
+        71
+      ],
+      "raw": {
+        "found_prs": [],
+        "expected_found": false,
+        "unexpected_prs": [],
+        "serialized_chars": 155,
+        "utf8_bytes": 155,
+        "truncated": false,
+        "ranking": "lexical",
+        "page_fetches": 0,
+        "source_fetches": 0,
+        "total_chars": 155,
+        "total_utf8_bytes": 155
+      },
+      "wiki": {
+        "found_prs": [],
+        "expected_found": false,
+        "unexpected_prs": [],
+        "serialized_chars": 155,
+        "utf8_bytes": 155,
+        "truncated": false,
+        "ranking": "lexical",
+        "page_fetches": 0,
+        "source_fetches": 0,
+        "total_chars": 155,
+        "total_utf8_bytes": 155
+      }
+    },
+    {
+      "kind": "paraphrase",
+      "query": "How can a later quorum read project history?",
+      "expected_prs": [
+        76
+      ],
+      "raw": {
+        "found_prs": [],
+        "expected_found": false,
+        "unexpected_prs": [],
+        "serialized_chars": 155,
+        "utf8_bytes": 155,
+        "truncated": false,
+        "ranking": "lexical",
+        "page_fetches": 0,
+        "source_fetches": 0,
+        "total_chars": 155,
+        "total_utf8_bytes": 155
+      },
+      "wiki": {
+        "found_prs": [],
+        "expected_found": false,
+        "unexpected_prs": [],
+        "serialized_chars": 155,
+        "utf8_bytes": 155,
+        "truncated": false,
+        "ranking": "lexical",
+        "page_fetches": 0,
+        "source_fetches": 0,
+        "total_chars": 155,
+        "total_utf8_bytes": 155
+      }
+    },
+    {
+      "kind": "paraphrase",
+      "query": "Does joining a quorum grant project knowledge?",
+      "expected_prs": [
+        76
+      ],
+      "raw": {
+        "found_prs": [],
+        "expected_found": false,
+        "unexpected_prs": [],
+        "serialized_chars": 155,
+        "utf8_bytes": 155,
+        "truncated": false,
+        "ranking": "lexical",
+        "page_fetches": 0,
+        "source_fetches": 0,
+        "total_chars": 155,
+        "total_utf8_bytes": 155
+      },
+      "wiki": {
+        "found_prs": [
+          76
+        ],
+        "expected_found": true,
+        "unexpected_prs": [],
+        "serialized_chars": 1953,
+        "utf8_bytes": 1953,
+        "truncated": false,
+        "ranking": "lexical",
+        "page_fetches": 1,
+        "source_fetches": 1,
+        "total_chars": 7354,
+        "total_utf8_bytes": 7354
+      }
+    },
+    {
+      "kind": "paraphrase",
+      "query": "Do embeddings invoke a paid model automatically?",
+      "expected_prs": [
+        76
+      ],
+      "raw": {
+        "found_prs": [],
+        "expected_found": false,
+        "unexpected_prs": [],
+        "serialized_chars": 155,
+        "utf8_bytes": 155,
+        "truncated": false,
+        "ranking": "lexical",
+        "page_fetches": 0,
+        "source_fetches": 0,
+        "total_chars": 155,
+        "total_utf8_bytes": 155
+      },
+      "wiki": {
+        "found_prs": [],
+        "expected_found": false,
+        "unexpected_prs": [],
+        "serialized_chars": 155,
+        "utf8_bytes": 155,
+        "truncated": false,
+        "ranking": "lexical",
+        "page_fetches": 0,
+        "source_fetches": 0,
+        "total_chars": 155,
+        "total_utf8_bytes": 155
+      }
+    },
+    {
+      "kind": "unanswerable",
+      "query": "How many watts does the device consume?",
+      "expected_prs": [],
+      "raw": {
+        "found_prs": [],
+        "expected_found": true,
+        "unexpected_prs": [],
+        "serialized_chars": 155,
+        "utf8_bytes": 155,
+        "truncated": false,
+        "ranking": "lexical",
+        "page_fetches": 0,
+        "source_fetches": 0,
+        "total_chars": 155,
+        "total_utf8_bytes": 155
+      },
+      "wiki": {
+        "found_prs": [],
+        "expected_found": true,
+        "unexpected_prs": [],
+        "serialized_chars": 155,
+        "utf8_bytes": 155,
+        "truncated": false,
+        "ranking": "lexical",
+        "page_fetches": 0,
+        "source_fetches": 0,
+        "total_chars": 155,
+        "total_utf8_bytes": 155
+      }
+    }
+  ]
+}

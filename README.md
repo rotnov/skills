@@ -64,6 +64,22 @@ Use it without installing:
 npx skills use rotnov/skills@propose-skill
 ```
 
+### `next-milestone`
+
+Plan and drive a project's roadmap as GitHub milestones. It picks the first
+open milestone whose numbered acceptance checklist is not met with verified
+evidence, adopts it as the standing goal, decomposes the gaps into milestone
+issues, ticks criteria only with inline evidence, records honest dated notes
+for unmet or amended criteria, and closes the milestone out. Releasing stays
+the project's own procedure; open-ended directives continue to the next
+milestone, defining at most one ahead.
+
+Install it with the [skills CLI](https://skills.sh/):
+
+```bash
+npx skills add rotnov/skills --skill next-milestone
+```
+
 ### `quorum`
 
 Join an authenticated team quorum and exchange durable messages between Claude
@@ -71,7 +87,7 @@ Code and Codex clients through a configured Supabase backend. Install the shared
 skill directly from this repository:
 
 ```bash
-npx --yes skills@1.5.20 add rotnov/skills --skill quorum -a claude-code codex --global --copy -y
+npx --yes "skills@>=1.7.4" add rotnov/skills --skill quorum -a claude-code codex --global --copy -y
 ```
 
 The client carries an independent uv project selecting Python 3.12. GitHub login
@@ -91,8 +107,9 @@ Codex execution are not included.
 ## Compatibility
 
 The canonical behavior lives in standard `SKILL.md` files and works with
-Agent Skills-compatible clients, including Codex and Claude Code. Optional
-client metadata does not change the behavior contract.
+Agent Skills-compatible clients, including Codex and Claude Code. Skills ship
+no client-specific metadata. Each skill's own `README.md` carries a
+ready-to-paste installation prompt for your agent.
 
 `learning` requires Git, `uv`, and a platform with safe no-follow
 directory-descriptor operations for recording mutations. Recorder commands explicitly
@@ -117,6 +134,11 @@ public searches but raises GitHub API limits.
 `propose-skill` can draft locally. Duplicate search requires public GitHub
 read access; publishing requires an authenticated GitHub tool and explicit
 approval of the exact public payload.
+
+`next-milestone` requires Git, network access, and an authenticated `gh` CLI
+(or an equivalent GitHub connector) with permission to edit milestones and
+issues. Without GitHub access it stops and reports instead of falling back to
+a local roadmap file.
 
 ## Evolution
 

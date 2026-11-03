@@ -2,12 +2,36 @@
 import os
 from pathlib import Path
 
-# One Windows PowerShell 5.1 launch per protect(); 15 s was exceeded on a hosted runner.
-PRIVATE_ACL_TIMEOUT = 30
+FILE_ALL_ACCESS = 0x1F01FF
+
+
+class AnchoredPath(type(Path())):
+    """A verified directory whose direct children are reached through its held descriptor.
+
+    Path-based helpers (locks, logs, existence checks) then cannot be redirected by a later rename
+    or link of an ancestor. Deeper paths and other operations keep ordinary path semantics.
+    """
+    def __init__(self, *segments, held=None):
+        super().__init__(*segments)
+        self.held = held  # (verified directory descriptor, its path string)
+
+    def with_segments(self, *segments):
+        return type(self)(*segments, held=self.held)
+
+    def anchored_child(self):
+        """(name, directory descriptor) for a direct child of the anchored directory, else None."""
+        if self.held is None or self.name in ('', '.', '..'): return None
+        directory, base = self.held
+        return (self.name, directory) if str(self.parent) == base else None
+
+    def stat(self, *, follow_symlinks=True):
+        child = self.anchored_child()
+        if child is None: return super().stat(follow_symlinks=follow_symlinks)
+        return os.stat(child[0], dir_fd=child[1], follow_symlinks=follow_symlinks)
 
 
 def reject_link(path):
-    path = Path(path)
+    path = path if isinstance(path, Path) else Path(path)
     try: info = path.lstat()
     except FileNotFoundError: return
     if path.is_symlink() or getattr(info, 'st_file_attributes', 0) & 0x400:
@@ -21,37 +45,74 @@ def protect(path, directory=False):
     if os.name != 'nt':
         os.chmod(path, 0o700 if directory else 0o600)
         return
-    import base64
-    import subprocess
-    # The path is data in an environment variable, never interpolated into code.
-    script = r'''
-$ErrorActionPreference = 'Stop'
-$p = $env:QUORUM_ACL_PATH
-$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
-if ($env:QUORUM_ACL_DIRECTORY -eq '1') {
-  $acl = New-Object System.Security.AccessControl.DirectorySecurity
-  $rule = New-Object System.Security.AccessControl.FileSystemAccessRule($sid, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
-} else {
-  $acl = New-Object System.Security.AccessControl.FileSecurity
-  $rule = New-Object System.Security.AccessControl.FileSystemAccessRule($sid, 'FullControl', 'Allow')
-}
-$acl.SetOwner($sid)
-$acl.SetAccessRuleProtection($true, $false)
-$acl.AddAccessRule($rule)
-# Persist changed sections only; writing the SACL would require SeSecurityPrivilege.
-(Get-Item -LiteralPath $p -Force).SetAccessControl($acl)
-'''
-    env = dict(os.environ, QUORUM_ACL_PATH=str(path.resolve()), QUORUM_ACL_DIRECTORY='1' if directory else '0')
-    system = Path(os.environ['SystemRoot']) / 'System32/WindowsPowerShell/v1.0/powershell.exe'
-    encoded = base64.b64encode(script.encode('utf-16-le')).decode('ascii')
     try:
-        # subprocess.run kills and reaps PowerShell when the deadline expires.
-        result = subprocess.run([str(system), '-NoProfile', '-NonInteractive', '-EncodedCommand', encoded],
-                                env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                timeout=PRIVATE_ACL_TIMEOUT, creationflags=subprocess.CREATE_NO_WINDOW)
-    except (OSError, subprocess.SubprocessError):
+        _protect_windows(path, directory)
+    except ValueError as error:
+        if str(error) == 'unsafe_link': raise ValueError('unsafe_link') from None
         raise ValueError('private_acl_unavailable') from None
-    if result.returncode != 0: raise ValueError('private_acl_unavailable')
+    except Exception:
+        raise ValueError('private_acl_unavailable') from None
+
+
+def _protect_windows(path, directory):
+    """Owner and a protected DACL granting only the current user, set in-process.
+
+    advapi32 replaces a PowerShell launch per call: no child process, console or
+    deadline. The SACL is never written, so SeSecurityPrivilege is not needed.
+    """
+    import ctypes
+    from ctypes import wintypes as w
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    security = ctypes.WinDLL('advapi32', use_last_error=True)
+    pointer = w.LPVOID
+    kernel.GetCurrentProcess.restype = w.HANDLE
+    kernel.CloseHandle.argtypes = [w.HANDLE]
+    kernel.CreateFileW.argtypes = [w.LPCWSTR, w.DWORD, w.DWORD, pointer, w.DWORD, w.DWORD, w.HANDLE]
+    kernel.CreateFileW.restype = w.HANDLE
+    kernel.GetFileInformationByHandleEx.argtypes = [w.HANDLE, ctypes.c_int, pointer, w.DWORD]
+    security.OpenProcessToken.argtypes = [w.HANDLE, w.DWORD, ctypes.POINTER(w.HANDLE)]
+    security.GetTokenInformation.argtypes = [w.HANDLE, ctypes.c_int, pointer, w.DWORD, ctypes.POINTER(w.DWORD)]
+    security.GetLengthSid.argtypes, security.GetLengthSid.restype = [pointer], w.DWORD
+    security.InitializeAcl.argtypes = [pointer, w.DWORD, w.DWORD]
+    security.AddAccessAllowedAceEx.argtypes = [pointer, w.DWORD, w.DWORD, w.DWORD, pointer]
+    security.SetSecurityInfo.argtypes = [w.HANDLE, ctypes.c_int, w.DWORD, pointer, pointer, pointer, pointer]
+    security.SetSecurityInfo.restype = w.DWORD
+
+    token, needed = w.HANDLE(), w.DWORD()
+    if not security.OpenProcessToken(kernel.GetCurrentProcess(), 8, ctypes.byref(token)):  # TOKEN_QUERY
+        raise OSError('token_unavailable')
+    try:
+        security.GetTokenInformation(token, 1, None, 0, ctypes.byref(needed))  # TokenUser
+        if not needed.value: raise OSError('token_unavailable')
+        user = ctypes.create_string_buffer(needed.value)
+        if not security.GetTokenInformation(token, 1, user, needed, ctypes.byref(needed)):
+            raise OSError('token_unavailable')
+    finally:
+        kernel.CloseHandle(token)
+    sid = ctypes.cast(user, ctypes.POINTER(pointer)).contents  # TOKEN_USER.User.Sid
+    length = security.GetLengthSid(sid)
+    if not length: raise OSError('token_unavailable')
+    size = (8 + 8 + length + 3) & ~3  # ACL header, one ACCESS_ALLOWED_ACE, DWORD aligned.
+    acl = ctypes.create_string_buffer(size)
+    inheritance = 3 if directory else 0  # OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE
+    if (not security.InitializeAcl(acl, size, 2)
+            or not security.AddAccessAllowedAceEx(acl, 2, inheritance, FILE_ALL_ACCESS, sid)):
+        raise OSError('acl_unavailable')
+    # READ_CONTROL | WRITE_DAC | WRITE_OWNER on the link itself; directories need backup semantics.
+    handle = kernel.CreateFileW(str(path), 0x000E0000, 7, None, 3, 0x02200000, None)
+    if handle is None or handle == ctypes.c_void_p(-1).value: raise OSError('private_file_unavailable')
+    try:
+        class Attributes(ctypes.Structure):
+            _fields_ = [('attributes', w.DWORD), ('tag', w.DWORD)]
+        attrs = Attributes()
+        if not kernel.GetFileInformationByHandleEx(handle, 9, ctypes.byref(attrs), ctypes.sizeof(attrs)):
+            raise OSError('private_file_unavailable')
+        if attrs.attributes & 0x400: raise ValueError('unsafe_link')
+        # OWNER | DACL | PROTECTED_DACL: drop inherited rules, never touch the SACL.
+        if security.SetSecurityInfo(handle, 1, 0x80000005, sid, None, acl, None):
+            raise OSError('acl_unavailable')
+    finally:
+        kernel.CloseHandle(handle)
 
 
 def background_flags(extra=0):
@@ -71,6 +132,8 @@ def open_private(path, flags, mode=0o600):
     """Open the link itself on Windows, then reject reparse points before use."""
     reject_link(path)
     if os.name != 'nt':
+        child = path.anchored_child() if isinstance(path, AnchoredPath) else None
+        if child is not None: return os.open(child[0], flags | os.O_NOFOLLOW, mode, dir_fd=child[1])
         return os.open(path, flags | os.O_NOFOLLOW, mode)
     import ctypes
     import msvcrt
@@ -110,7 +173,7 @@ def open_private(path, flags, mode=0o600):
 
 
 class FileLock:
-    def __init__(self, path): self.path = Path(path)
+    def __init__(self, path): self.path = path if isinstance(path, Path) else Path(path)
     def __enter__(self):
         self.fd = open_private(self.path, os.O_CREAT | os.O_RDWR)
         try:

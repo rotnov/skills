@@ -15,9 +15,12 @@ from quorum_state import LocalLedger
 from quorum_grok_leader import GrokBindingError
 from quorum_session import UnsupportedClient
 from quorum_grok_cloud import CloudError
+from quorum_native_inbox import NativeInboxError
+from quorum_debug import DebugError
+from quorum_knowledge import KnowledgeError
 
 
-def register_agent(api, ledger, slug, role, data, *, device_key="device"):
+def register_agent(api, ledger, slug, role, data, *, device_key="device", expected_quorum_id=None):
     required = {'engine', 'project_ref', 'session_ref', 'cwd'}
     if set(data) != required or data['engine'] not in ('claude', 'codex', 'grok', 'cursor') or not Path(data['cwd']).is_absolute():
         raise ValueError('invalid_registration')
@@ -25,6 +28,9 @@ def register_agent(api, ledger, slug, role, data, *, device_key="device"):
     # Registration is not permission to stop a different binding's listener.
     ReleaseGuard(api, ledger, stop_on_mismatch=False).check()
     quorum = api.call('quorum_lookup', {'slug': slug})['quorum_id']
+    # A pinned worker target is compared before any device or agent side effect.
+    if expected_quorum_id is not None and quorum != expected_quorum_id:
+        raise NativeInboxError('native_worker_binding_denied', 'target_mismatch')
     binding_key = [quorum, role, data] + ([] if device_key == 'device' else [device_key])
     identity = hashlib.sha256(json.dumps(binding_key, sort_keys=True).encode()).hexdigest()
     saved = ledger.setting('agent:' + identity)
@@ -64,18 +70,55 @@ def main(argv=None):
         if name == 'create':
             sub.add_argument('--access', choices=('github', 'open'), default='github',
                              help='open: also allow single-use 15-minute invitations without GitHub')
+            sub.add_argument('--worker-capability', type=Path,
+                             help='Generated Claude worker capability file; slug, access and request ID come from its scope')
     from quorum_live import add_commands
     add_commands(commands)
+    from quorum_updates import add_commands as add_update_commands
+    add_update_commands(commands)
+    from quorum_knowledge import add_commands as add_knowledge_commands
+    add_knowledge_commands(commands)
     args = parser.parse_args(argv)
     ledger = None
     try:
+        # A quiet setup request must never fall through to visible parent reception.
+        # This is only a route constraint; worker provenance/capabilities are still checked below.
+        if getattr(args, 'require_worker_inbox', False) and getattr(args, 'transport', None) != 'tool-inbox':
+            raise NativeInboxError('native_worker_required', 'parent_route_visible')
         if args.command == 'version':
             from quorum_release import installed_release
             print(json.dumps({'ok':True, 'code':'ok', 'data':installed_release()}))
             return 0
-        ledger = LocalLedger(args.state)
+        if getattr(args, 'worker_capability', None) is not None or args.command == 'session':
+            import quorum_claude_worker as claude_worker
+            # A Claude worker route validates its capability and arguments before the root ledger exists.
+            if claude_worker.selected(args):
+                value = claude_worker.manage(args)
+                if value is not None:
+                    print(json.dumps({'ok': True, 'code': 'ok', 'data': value}))
+                    return 0
+                args.worker_context = claude_worker.preflight(args)
+                # Capability metadata and stop use the verified slot only, never the root ledger.
+                if args.command == 'session' and args.action in ('status', 'stop'):
+                    value = claude_worker.session_dispatch(args, None, register_agent, args.worker_context)
+                    print(json.dumps({'ok': True, 'code': 'ok', 'data': value}))
+                    return 0
+        if getattr(args, 'worker_context', None) is not None:
+            from quorum_claude_worker import root_ledger
+            ledger = root_ledger(args.state)
+        else: ledger = LocalLedger(args.state)
         config_path = ledger.root / 'config.json'
+        if args.command == 'update':
+            from quorum_updates import dispatch as update_dispatch
+            value = update_dispatch(args, ledger)
+            print(json.dumps({'ok':True, 'code':'ok', 'data':value}))
+            return 0
         from quorum_live import dispatch, LIVE_COMMANDS
+        if args.command == 'knowledge':
+            from quorum_knowledge import dispatch as knowledge_dispatch
+            value = knowledge_dispatch(args, ledger)
+            print(json.dumps({'ok': True, 'code': 'ok', 'data': value}))
+            return 0
         if args.command in LIVE_COMMANDS:
             value = dispatch(args, ledger, register_agent)
             if args.command == 'mcp': return 0
@@ -93,6 +136,11 @@ def main(argv=None):
                      'configured': config_path.exists()}
         elif args.command == 'worker':
             raise QuorumError('live_agents_disabled')
+        elif args.command == 'create' and getattr(args, 'worker_context', None) is not None:
+            from quorum_claude_worker import create_worker
+            from quorum_profiles import resolve_profile
+            value = create_worker(args, args.worker_context, resolve_profile,
+                                  lambda config, store: QuorumApi(config, token_provider(config, store)))
         elif args.command == 'doctor':
             from quorum_acp import validate_manifest
             manifest = json.loads((Path(__file__).resolve().parents[1] / 'assets/engines.lock.json').read_text())
@@ -135,15 +183,21 @@ def main(argv=None):
                                               'access:' + value['quorum_id']))
         print(json.dumps({'ok': True, 'code': 'ok', 'data': value}))
         return 0
+    except KnowledgeError as error:
+        print(json.dumps({'ok': False, 'code': error.code, 'data': {}}))
+        return 3
     except QuorumError as error:
         codes = {'skill_update_required': 4, 'release_manifest_invalid': 4, 'auth_required': 3, 'service_not_configured': 4, 'live_agents_disabled': 4,
                  'engine_acceptance_pending': 4, 'service_profile_ambiguous': 4, 'machine_profile_unavailable': 4,
                  'auth_profile_conflict': 3, 'service_config_conflict': 4, 'service_unavailable': 5, 'service_error': 5,
-                 'response_too_large': 5, 'invalid_response': 5, 'listener_start_failed': 5, 'listener_stop_failed': 5,
+                 'response_too_large': 5, 'invalid_response': 5, 'listener_start_failed': 5, 'listener_stop_failed': 5, 'listener_not_ready': 5,
                  'anonymous_login_unavailable': 4, 'open_invite_required': 3}
+        codes.update({'update_extension_unavailable':4, 'runtime_source_unavailable':4})
         code = str(error) if str(error) in codes else 'operation_failed'
         from quorum_release import ReleaseMismatch
+        from quorum_updates import UpdateFailure
         data = {'release':error.diagnostic} if isinstance(error, ReleaseMismatch) else {}
+        if isinstance(error, UpdateFailure): data = {'update':error.diagnostic}
         print(json.dumps({'ok': False, 'code': code, 'data': data}))
         return codes.get(code, 3)
     except GrokBindingError as error:
@@ -156,16 +210,31 @@ def main(argv=None):
         # Fixed cloud codes and reasons only; never a webhook target or peer text.
         print(json.dumps({'ok': False, 'code': error.code, 'data': error.diagnostic()}))
         return 3
+    except NativeInboxError as error:
+        # Fixed worker codes and reasons only; never a rollout path, transcript or peer text.
+        print(json.dumps({'ok': False, 'code': error.code, 'data': error.diagnostic()}))
+        return 3
+    except DebugError as error:
+        # Fixed debug codes only; never a path, transcript, token, or peer body.
+        print(json.dumps({'ok': False, 'code': error.code, 'data': error.data}))
+        return 3
     except (ValueError, OSError, KeyError, TypeError, subprocess.SubprocessError) as error:
         # Allow only fixed local codes; arbitrary exception text may contain secrets.
         safe = {'machine_profile_unavailable', 'service_profile_ambiguous', 'auth_profile_conflict',
                 'service_config_conflict', 'github_identity_required', 'auth_lock_timeout',
                 'browser_unavailable', 'login_timeout', 'anonymous_state_conflict'}
         if isinstance(error, ValueError):
+            safe.update({'update_request_invalid', 'update_notice_denied', 'update_target_changed',
+                         'update_fetch_failed', 'update_tool_missing', 'update_invalid_copy',
+                         'update_validation_failed', 'update_cache_conflict', 'update_unsafe_cache',
+                         'update_in_progress', 'session_not_connected'})
             safe.update({'grok_transport_unavailable', 'session_binding_denied', 'coordinator_changed',
                          'claude_pipe_unavailable', 'listener_stop_pending', 'session_delivery_unknown',
+                         'session_delivery_unsent', 'session_reconcile_denied',
+                         'session_recovery_denied', 'delegation_scope_changed', 'member_intake_requires_inline',
                          'private_acl_unavailable', 'unsafe_link', 'browser_unavailable', 'login_timeout',
-                         'cursor_identity_unavailable', 'cursor_ingress_unavailable', 'cursor_session_invalid'})
+                         'worker_already_running', 'cursor_identity_unavailable', 'cursor_ingress_unavailable',
+                         'cursor_session_invalid'})
         code = str(error) if str(error) in safe else 'operation_failed'
         data = error.diagnostic() if code == 'auth_profile_conflict' and hasattr(error, 'diagnostic') else {}
         print(json.dumps({'ok': False, 'code': code, 'data': data}))
