@@ -95,6 +95,11 @@ class Control:
             if waiting.get('code'): result['notification_code'] = waiting['code']
         presence = self.ledger.setting('presence')
         if presence: result['presence'] = presence if result['listener'] == 'running' else {'state':'offline'}
+        # What the current (or, when offline, the last) connection's Hello reached; one setup-outcome line.
+        hello = self.ledger.setting('hello')
+        if hello: result['hello'] = {**hello, 'connection':'current' if result['listener'] == 'running' else 'last'}
+        elif result['listener'] == 'running':
+            result['hello'] = {'summary':'Hello pending: no heartbeat acknowledged yet', 'connection':'current'}
         release = self.ledger.setting('release')
         if release: result['release'] = release
         result['stop_requested'] = bool(record.get('run_id') and self.stopping(record['run_id']))

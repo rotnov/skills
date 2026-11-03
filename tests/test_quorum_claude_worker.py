@@ -1401,6 +1401,8 @@ class DeliveryTests(Bound):
         self.assertNotIn('session_ack', api.ops())
         with claude(): status = worker.slot_status(self.root, self.slot)
         self.assertEqual((status['state'], status['session']['pending_receipts']), ('terminal', 1))
+        # The worker's bounded receive persisted its Hello outcome; an old server reports none.
+        self.assertIn('not reported by the server', status['session']['hello'])
 
     @isolated_profiles
     def test_claude_stop_terminal_no_start_or_regrant(self):

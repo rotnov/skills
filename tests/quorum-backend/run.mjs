@@ -20,6 +20,8 @@ const maintenance = all.find(name => name.endsWith('_owner_update_maintenance.sq
 // pgvector contracts run separately on real digest-pinned PostgreSQL, not PGlite.
 const knowledge = '20261030142000_project_knowledge.sql';
 const wiki = '20261103075741_llm_wiki.sql';
+// Portable additive Hello reporting and newcomer roster (#88), after the reviewed tail.
+const hello = '20261103180000_hello_roster_visibility.sql';
 // Installations that deployed native coordination before open access apply the
 // older-dated open access file late; the final session requirements must match.
 const late = name => name.endsWith('_open_access_quorums.sql');
@@ -123,6 +125,8 @@ async function released(order) {
     await db.exec(suite('quorum_coordination_only_backend.sql'));
     await db.exec(read(migrations + priority));
     await db.exec(read(migrations + serialization));
+    // Every later suite runs through the additive Hello wrapper.
+    await db.exec(read(migrations + hello));
     await release(db, current);
     // Session and Realtime rerun on the upgraded schema.
     await db.exec(suite('quorum_session_backend.sql'));
@@ -201,7 +205,7 @@ try {
     await drifted(fn, 'reviewed_dispatcher_changed: ' + fn, [...fresh, priority], serialization, unserialized);
   }
   const portableTail = [priority, serialization, maintenance, memberAuthority];
-  const reviewedTail = [...portableTail, knowledge, wiki];
+  const reviewedTail = [...portableTail, knowledge, wiki, hello];
   if (JSON.stringify(all.filter(name => name >= priority)) !== JSON.stringify(reviewedTail)) {
     throw new Error('unreviewed migration after the close serialization');
   }
@@ -225,9 +229,27 @@ try {
     await memberDb.exec('rollback');
     await memberDb.close();
   }
+  // The Hello wrapper pins the reviewed heartbeat and refuses drift or reapplication.
+  await gated([...fresh, ...portableTail, hello], read(migrations + hello), 'hello_extension_present', 'hello reapplied');
+  await drifted('public.session_heartbeat(uuid,text,uuid,integer,text)',
+    'reviewed_dispatcher_changed: public.session_heartbeat(uuid,text,uuid,integer,text)',
+    [...fresh, ...portableTail], hello, async (db, label) => {
+      const result = await db.query(`select to_regclass('quorum_private.session_hellos') t`);
+      if (result.rows[0].t !== null) throw new Error(label + ': partial hello apply');
+    });
+  for (const order of [[...fresh, ...portableTail, hello], [...fresh, priority, serialization, hello]]) {
+    const helloDb = await database(order);
+    try {
+      await release(helloDb, current);
+      await helloDb.exec(suite('quorum_hello_backend.sql'));
+    } finally {
+      await helloDb.exec('rollback');
+      await helloDb.close();
+    }
+  }
   if (!coordination(upgraded[3]) || !late(upgraded[4])) throw new Error('upgraded order is not coordination first');
   console.log('Invitation, session, Realtime, open-access, coordination, open-session, coordination-only refusal, '
-    + 'mandatory priority release, close serialization, member authority ACLs, open-member priority and pinned-chain drift regression '
+    + 'mandatory priority release, close serialization, member authority ACLs, open-member priority, Hello reporting/roster and pinned-chain drift regression '
     + '(fresh and coordination-first upgraded order): PASS (disposable PostgreSQL)');
 } catch (error) {
   console.error(error.message, error.where || '');

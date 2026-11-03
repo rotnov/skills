@@ -559,7 +559,8 @@ def _session_status(root, record):
     with _components(root, names, ACTOR_KINDS[:2]) as fds:
         if fds is None: return None
         rows = _read_db(fds[-1], root.joinpath(*names, 'ledger.sqlite'), lambda db: db.execute(
-            "select key,data from settings where key in ('listener', ?) or key like 'delivery:%'", (CONTROL,)).fetchall(),
+            "select key,data from settings where key in ('listener', 'hello', ?) or key like 'delivery:%'",
+            (CONTROL,)).fetchall(),
                         ledger='actor')
         if rows is None: return None
         running = _held(fds[-1], 'listener.lock')
@@ -571,7 +572,9 @@ def _session_status(root, record):
     return {'listener': 'running' if running else 'offline', 'state': state, 'run_id': listener.get('run_id'),
             'reception': 'enabled' if (settings.get(CONTROL) or {}).get('enabled') is True else 'disabled',
             'pending_receipts': sum(value.get('state') == 'offered' for key, value in settings.items()
-                                    if key.startswith('delivery:'))}
+                                    if key.startswith('delivery:')),
+            # The last connection's Hello outcome; a summary string only, never a message body.
+            'hello': (settings.get('hello') or {}).get('summary') if isinstance(settings.get('hello'), dict) else None}
 
 
 def _bootstrap(root, slot_id):
