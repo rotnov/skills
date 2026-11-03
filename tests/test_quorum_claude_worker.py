@@ -33,6 +33,24 @@ if os.name == 'nt':  # TEMPORARY CI diagnostic: where does path_unsafe arise on 
                   + ' ctx=' + repr(_sys.exc_info()[1]), file=_sys.stderr)
         return _original(reason)
     _worker._unavailable = _traced
+    import quorum_winproof as _proof
+    _verify, _open_at = _proof.verify, _proof.open_at
+    def _verify_traced(fd, kind, policy):
+        try: return _verify(fd, kind, policy)
+        except _proof.Unsafe:
+            try:
+                api = _proof._api()
+                detail = _proof.parse(_proof.descriptor_of(api, _proof._handle(fd)))
+                print(f'VERIFY_REFUSED kind={kind} attrs={_proof._attributes(api, _proof._handle(fd))} '
+                      f'descriptor={detail} owners={api["owners"]}', file=sys.stderr)
+            except Exception as error: print(f'VERIFY_REFUSED kind={kind} undecodable={error!r}', file=sys.stderr)
+            raise
+    def _open_traced(parent, name, **options):
+        try: return _open_at(parent, name, **options)
+        except _proof.Unsafe:
+            print(f'OPEN_REFUSED name={name} options={options}', file=sys.stderr)
+            raise
+    _proof.verify, _proof.open_at = _verify_traced, _open_traced
 SID = '5b0c1c39-6c2e-4a4f-9a51-2f8d3c1e7a10'
 OTHER_SID = '0e9d6f1a-3b7c-4d2e-8f10-1a2b3c4d5e6f'
 HANDLE = 'agent_01 quorum · ünicode'
