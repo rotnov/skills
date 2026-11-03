@@ -20,6 +20,9 @@ const maintenance = all.find(name => name.endsWith('_owner_update_maintenance.sq
 // pgvector contracts run separately on real digest-pinned PostgreSQL, not PGlite.
 const knowledge = '20261030142000_project_knowledge.sql';
 const wiki = '20261103075741_llm_wiki.sql';
+// Optional owner-applied engine extension, dated after every reviewed migration.
+// It pins only bodies that no migration after the close serialization touches.
+const cursor = all.find(name => name.endsWith('_native_cursor_session.sql'));
 // Installations that deployed native coordination before open access apply the
 // older-dated open access file late; the final session requirements must match.
 const late = name => name.endsWith('_open_access_quorums.sql');
@@ -104,12 +107,21 @@ async function regression(order) {
     // The mandatory 0.3.0/2 migrations upgrade this populated database.
     await db.exec(read(migrations + priority));
     await db.exec(read(migrations + serialization));
+    await db.exec(read(migrations + cursor));
     await release(db, current);
     await db.exec(suite('quorum_priority_open_member_backend.sql'));
     await db.exec('rollback');
   } finally {
     await db.close();
   }
+}
+
+async function uncursored(db, label) {
+  const result = await db.query(`select pg_get_constraintdef(oid) engines,
+    pg_get_functiondef('quorum_private.native_session(uuid,text)'::regprocedure) session
+    from pg_constraint where conname='agents_engine_check'`);
+  const row = result.rows[0];
+  if (row.engines.includes('cursor') || row.session.includes('cursor')) throw new Error(label + ': partial cursor apply');
 }
 
 async function released(order) {
@@ -123,7 +135,10 @@ async function released(order) {
     await db.exec(suite('quorum_coordination_only_backend.sql'));
     await db.exec(read(migrations + priority));
     await db.exec(read(migrations + serialization));
+    await db.exec(read(migrations + cursor));
     await release(db, current);
+    // The bc- session contract, before any suite below revokes a fixture member.
+    await db.exec(suite('quorum_cursor_backend.sql'));
     // Session and Realtime rerun on the upgraded schema.
     await db.exec(suite('quorum_session_backend.sql'));
     await db.exec(suite('quorum_realtime_backend.sql'));
@@ -155,6 +170,10 @@ const serialized = ['quorum_private.call(text,jsonb,text)', 'quorum_private.call
   'quorum_private.call_invite_core(text,jsonb,text)', 'quorum_private.call_legacy_core(text,jsonb,text)',
   'public.quorum_set_access(uuid,text,text)', 'public.invite_create_open(uuid,text)',
   'public.invite_accept_id(uuid,text)', 'public.session_requirements()'];
+// The serialized chain and each body the Cursor extension replaces.
+const cursorPins = ['quorum_private.call(text,jsonb,text)', 'public.session_requirements()',
+  'quorum_private.native_session(uuid,text)', 'quorum_private.receive_wakeup(text)',
+  'public.session_heartbeat(uuid,text,uuid,integer,text)', 'public.session_peers(uuid,text)'];
 const pinned = ['quorum_private.call(text,jsonb,text)', 'quorum_private.call_invite_core(text,jsonb,text)',
   'quorum_private.call_legacy_core(text,jsonb,text)', 'quorum_private.verified_actor(uuid)',
   'quorum_private.native_session(uuid,text)', 'quorum_private.owned_agent(uuid,uuid)',
@@ -201,7 +220,7 @@ try {
     await drifted(fn, 'reviewed_dispatcher_changed: ' + fn, [...fresh, priority], serialization, unserialized);
   }
   const portableTail = [priority, serialization, maintenance, memberAuthority];
-  const reviewedTail = [...portableTail, knowledge, wiki];
+  const reviewedTail = [...portableTail, knowledge, wiki, cursor];
   if (JSON.stringify(all.filter(name => name >= priority)) !== JSON.stringify(reviewedTail)) {
     throw new Error('unreviewed migration after the close serialization');
   }
@@ -225,9 +244,28 @@ try {
     await memberDb.exec('rollback');
     await memberDb.close();
   }
+  // The Cursor extension accepts only the reviewed serialized chain, once, and
+  // also applies on top of the later portable maintenance and authority tail.
+  const portableChain = [...fresh, ...portableTail];
+  await gated([...fresh, priority], read(migrations + cursor), /^reviewed_dispatcher_changed: /,
+    'cursor without serialization', uncursored);
+  await gated([...portableChain, cursor], read(migrations + cursor), /^reviewed_dispatcher_changed: /,
+    'cursor reapplied');
+  for (const fn of cursorPins) {
+    await drifted(fn, 'reviewed_dispatcher_changed: ' + fn, portableChain, cursor, uncursored);
+  }
+  const cursorDb = await database([...portableChain, cursor]);
+  try {
+    // The maintenance suite seeds its own members; then the bc- contract on that chain.
+    await cursorDb.exec(suite('quorum_updates_backend.sql'));
+  } finally {
+    await cursorDb.exec('rollback');
+    await cursorDb.close();
+  }
   if (!coordination(upgraded[3]) || !late(upgraded[4])) throw new Error('upgraded order is not coordination first');
   console.log('Invitation, session, Realtime, open-access, coordination, open-session, coordination-only refusal, '
-    + 'mandatory priority release, close serialization, member authority ACLs, open-member priority and pinned-chain drift regression '
+    + 'mandatory priority release, close serialization, member authority ACLs, open-member priority, Cursor engine extension '
+    + 'and pinned-chain drift regression '
     + '(fresh and coordination-first upgraded order): PASS (disposable PostgreSQL)');
 } catch (error) {
   console.error(error.message, error.where || '');

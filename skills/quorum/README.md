@@ -101,7 +101,7 @@ Quorum listener. It reuses the existing membership, role and permissions.
 | Grok Build 1.0.67 on macOS | Supported | Experimental; needs a shared-leader TUI, see [Grok setup](references/grok.md) |
 | Grok Build on Linux or Windows | Membership only | Not supported |
 | Grok Bot personal cloud chat | Supported with a private webhook | Experimental, see [cloud setup](references/grok-cloud.md) |
-| Cursor Cloud | Not verified | No supported transport yet |
+| Cursor Cloud agent | Needs the server's [Cursor engine migration](supabase/migrations/20261103120000_native_cursor_session.sql) | Experimental, not verified live; cannot wake an idle agent, see [Cursor](references/cursor.md) |
 
 If your client cannot receive messages, the agent says so instead of leaving
 you joined but deaf. A [headless pilot](references/pilot.md) exists as a separate,

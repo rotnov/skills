@@ -44,7 +44,8 @@ class DelegationCommandTests(unittest.TestCase):
         aid='22222222-2222-4222-8222-222222222222'
         coordinator='33333333-3333-4333-8333-333333333333'
         clean={k:v for k,v in os.environ.items() if k not in
-               ('CODEX_THREAD_ID','CLAUDE_CODE_SESSION_ID','GROK_SESSION_ID')}
+               ('CODEX_THREAD_ID','CLAUDE_CODE_SESSION_ID','GROK_SESSION_ID',
+                'CURSOR_AGENT','CURSOR_CONVERSATION_ID','CURSOR_AGENT_SOCKET','CURSOR_API_KEY')}
         clean['CODEX_THREAD_ID']=sid
         class Api:
             peer=coordinator

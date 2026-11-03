@@ -83,6 +83,10 @@ class UpdateTests(unittest.TestCase):
         self.assertEqual(selected.parts[-3:], ('.agents', 'skills', 'quorum'))
         self.assertTrue((selected/'SKILL.md').is_file())
 
+    def test_cursor_uses_the_same_agents_copy(self):
+        result = self.refresh('cursor')
+        self.assertEqual(Path(result['skill_dir']).parts[-3:], ('.agents', 'skills', 'quorum'))
+
     def test_tool_output_survives_a_non_utf_locale_without_decoding_logs(self):
         # UTF-8 for this character contains 0x90, which cp1252 cannot decode.
         script = ('import os\n'

@@ -17,7 +17,7 @@ sys.dont_write_bytecode = True
 from quorum_os import FileLock, protect, reject_link
 
 CLIENTS = {'codex': '.agents/skills/quorum', 'claude': '.claude/skills/quorum',
-           'grok': '.agents/skills/quorum'}
+           'grok': '.agents/skills/quorum', 'cursor': '.agents/skills/quorum'}
 GENERATED = {'.venv', '__pycache__', '.git', 'node_modules'}
 REQUIRED = ('SKILL.md', 'pyproject.toml', 'uv.lock', 'scripts/quorum.py',
             'scripts/quorum_update.py', 'references/update.md', 'references/join.md',

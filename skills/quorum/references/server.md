@@ -143,6 +143,21 @@ agent/device/membership rows through commit so revocation serializes with the
 operation. Ordinary receipt behavior and existing reviewed RPC bodies remain
 unchanged. Status reads remain point-in-time snapshots.
 
+## Optional Cursor Cloud engine extension
+
+Only for an explicit administrator request to admit experimental Cursor Cloud
+agents, review and apply the
+[Cursor Cloud engine extension](../supabase/migrations/20261103120000_native_cursor_session.sql)
+in one transaction after the close serialization. It is dated after every
+other migration here; none of them replaces a body it pins, so it can follow
+the optional extensions or precede them. It adds `cursor` to the existing
+exact-session, heartbeat, peer and private notification checks. It grants no
+new creation, membership or table rights, changes no required release and does
+not replace the dispatcher. It fails closed with `reviewed_dispatcher_changed`
+before the close serialization, when reapplied, or when a body it replaces
+differs from the reviewed one. The [Cursor transport](cursor.md) is not
+verified live.
+
 ## Optional durable project knowledge
 
 For an explicit administrator request to deploy project knowledge, review

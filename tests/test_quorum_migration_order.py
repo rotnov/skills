@@ -27,6 +27,19 @@ SERIALIZATION_PINS = {
 }
 
 
+# prosrc hashes after 180000: the serialized dispatcher, the release gate and the
+# four bodies the Cursor engine extension replaces. The disposable harness recomputes them.
+CURSOR_PINS = {
+    'quorum_private.call(text,jsonb,text)': 'ca718afbcda8682ade19ea6b246ccc2f1bfd5523eb7d1076cf4e9583e24f3ab7',
+    'public.session_requirements()': SERIALIZATION_PINS['public.session_requirements()'],
+    'quorum_private.native_session(uuid,text)': '60778eaf4fde7ce50980d5bf328f21c85d9db23f0947ed1554e0052a8654615c',
+    'quorum_private.receive_wakeup(text)': '2f82e7bad7cedc81609fab91f8b4d680fe40a71216ce89c90fa66317ac24eb64',
+    'public.session_heartbeat(uuid,text,uuid,integer,text)': '944211db94640dca91d75e007a4c5de8a1ee28511ea6c78a5b3fb2f7d96768c5',
+    'public.session_peers(uuid,text)': 'e6bef8353f48cb6322f76dcb024eeb4972d2881eeb65b28c62023e2d2f8b31cd',
+}
+CURSOR_PATH = next(path for path in MIGRATIONS if path.name.endswith('_native_cursor_session.sql'))
+
+
 def defining(signature):
     pattern = re.compile(r'create (?:or replace )?function ' + re.escape(signature), re.I)
     return [path for path in MIGRATIONS if pattern.search(path.read_text(encoding='utf-8'))]
@@ -103,6 +116,43 @@ class MigrationOrderTests(unittest.TestCase):
         self.assertIn("raise exception 'serial_core_present'", body)
         guide = (SKILL / 'references/server.md').read_text(encoding='utf-8')
         self.assertLess(guide.index(PRIORITY_PATH.name), guide.index(SERIALIZATION_PATH.name))
+
+    def test_cursor_engine_migration_is_last_and_does_not_redefine_the_dispatcher(self):
+        names = [path.name for path in MIGRATIONS]
+        self.assertEqual(names[-1], CURSOR_PATH.name)
+        self.assertGreater(CURSOR_PATH.name, '20261103075741_llm_wiki.sql')
+        body = CURSOR_PATH.read_text(encoding='utf-8')
+        self.assertIn("engine in ('claude','codex','grok','cursor')", body)
+        # It runs only on the serialized chain and refuses drifted or already extended bodies.
+        pins = dict(re.findall(r"'([a-z_.]+\([a-z,]*\))','([0-9a-f]{64})'", body))
+        self.assertEqual(pins, CURSOR_PINS)
+        self.assertNotEqual(pins['quorum_private.call(text,jsonb,text)'],
+                            SERIALIZATION_PINS['quorum_private.call(text,jsonb,text)'])
+        self.assertIn("raise exception 'reviewed_dispatcher_changed: %', f;", body)
+        self.assertLess(body.index('end $migration$;'), body.index('alter table'))
+        self.assertIn('quorum_private.verified_actor(auth.uid())', body)
+        lowered = body.lower()
+        self.assertNotIn('create function quorum_private.call(', lowered)
+        self.assertNotIn('create or replace function quorum_private.call(', lowered)
+        guide = (SKILL / 'references/server.md').read_text(encoding='utf-8')
+        self.assertLess(guide.index(SERIALIZATION_PATH.name), guide.index(CURSOR_PATH.name))
+
+    def test_no_migration_after_serialization_changes_a_body_the_cursor_extension_pins(self):
+        # Its pins are prosrc hashes after 180000. Any later migration that replaced,
+        # renamed or moved one of these bodies would make the Cursor guard stale.
+        later = [path for path in MIGRATIONS
+                 if SERIALIZATION_PATH.name < path.name < CURSOR_PATH.name]
+        self.assertTrue(later)
+        for path in later:
+            text = path.read_text(encoding='utf-8').lower()
+            for signature in CURSOR_PINS:
+                name = signature.split('(', 1)[0]
+                self.assertNotRegex(text, r'(create (or replace )?|alter |drop )function ' + re.escape(name) + r'\(',
+                                    (path.name, signature))
+            self.assertNotIn('agents_engine_check', text, path.name)
+        # The maintenance extension pins the same serialized dispatcher body.
+        maintenance = next(path for path in later if path.name.endswith('_owner_update_maintenance.sql'))
+        self.assertIn(CURSOR_PINS['quorum_private.call(text,jsonb,text)'], maintenance.read_text(encoding='utf-8'))
 
     def test_close_serialization_locks_the_quorum_row_before_any_other_row(self):
         body = SERIALIZATION_PATH.read_text(encoding='utf-8')

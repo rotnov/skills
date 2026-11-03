@@ -136,7 +136,7 @@ def error_code(error):
                'pilot_agent_required', 'worker_already_running', 'session_delivery_unknown', 'session_delivery_unsent',
                'session_binding_denied', 'session_not_connected', 'claude_pipe_unavailable',
                'grok_transport_unavailable', 'coordination_unavailable', 'skill_update_required', 'release_manifest_invalid',
-               'session_recovery_denied'}
+               'session_recovery_denied', 'cursor_ingress_unavailable'}
     return str(error) if str(error) in allowed else 'listener_failed'
 
 

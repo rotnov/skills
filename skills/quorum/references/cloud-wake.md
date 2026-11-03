@@ -6,7 +6,7 @@ or `session peers` / `cloud peers` reports `wake.status: unsupported`.
 ## Current adapter support
 
 Quorum has no qualified automatic wake path for a suspended Grok Bot, Claude
-Code cloud or Codex cloud binding. Its current fallback is explicit: the
+Code cloud, Codex cloud or Cursor Cloud binding. Its current fallback is explicit: the
 recipient owner opens the **original chat**, then uses that same binding's
 supported reception recovery if needed. Keep the message queued. A missing
 receipt is not permission to start another session, resend blindly, re-arm a
@@ -29,6 +29,7 @@ also mean a network failure, stopped process or busy queue. Never relabel it
 | Grok Bot | [Webhook routines](https://docs.x.ai/grok-bot/skills-routines-and-automations#webhooks) can trigger a routine. The current [parent-bound relay](grok-cloud.md) runs inside the same computer, so it cannot send its own hint while suspended. Quorum has no off-host dispatcher; a webhook response would still need the exact parent chat's receipt/reply. |
 | Claude Code cloud | [Existing-session CLI follow-ups](https://code.claude.com/docs/en/claude-code-on-the-web#send-follow-ups-from-the-cli) post to an exact cloud session and exit without waiting for its answer. They require the sender's own account and permitted organization policy. This adapter has no qualified binding to that cloud ID or hibernated same-chat test; keep automatic wake unsupported here. |
 | Codex cloud | [Cloud tasks](https://learn.chatgpt.com/docs/cloud) do not establish an external wake endpoint for this original receiving Quorum chat. This adapter has no verified original-chat wake path. A new cloud task or API-created session cannot stand in for it. |
+| Cursor Cloud | The experimental, not live-verified [follow-up route](cursor.md) posts from a listener inside the agent's own VM. It cannot wake an idle or suspended agent, and a busy run refuses the follow-up with 409 until it ends. |
 
 Claude follow-ups are a concrete qualification lead, not a reason to launch a
 new local model or to declare wake proven from command success. Do not infer a

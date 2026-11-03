@@ -32,7 +32,8 @@ class DispatchModeTests(unittest.TestCase):
                     return {'agent_id': 'coordinator-id'}
                 raise AssertionError(operation)
         clean = {key: value for key, value in os.environ.items() if key not in
-                 ('CODEX_THREAD_ID', 'CLAUDE_CODE_SESSION_ID', 'GROK_SESSION_ID')}
+                 ('CODEX_THREAD_ID', 'CLAUDE_CODE_SESSION_ID', 'GROK_SESSION_ID',
+                  'CURSOR_AGENT', 'CURSOR_CONVERSATION_ID', 'CURSOR_AGENT_SOCKET', 'CURSOR_API_KEY')}
         clean['CODEX_THREAD_ID'] = sid
         with tempfile.TemporaryDirectory() as root, patch.dict(os.environ, clean, clear=True), \
                 patch('quorum_live.api_for', return_value=(Api(), None, None)), \

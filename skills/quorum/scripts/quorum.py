@@ -22,7 +22,7 @@ from quorum_knowledge import KnowledgeError
 
 def register_agent(api, ledger, slug, role, data, *, device_key="device", expected_quorum_id=None):
     required = {'engine', 'project_ref', 'session_ref', 'cwd'}
-    if set(data) != required or data['engine'] not in ('claude', 'codex', 'grok') or not Path(data['cwd']).is_absolute():
+    if set(data) != required or data['engine'] not in ('claude', 'codex', 'grok', 'cursor') or not Path(data['cwd']).is_absolute():
         raise ValueError('invalid_registration')
     from quorum_release import ReleaseGuard
     # Registration is not permission to stop a different binding's listener.
@@ -233,7 +233,8 @@ def main(argv=None):
                          'session_delivery_unsent', 'session_reconcile_denied',
                          'session_recovery_denied', 'delegation_scope_changed', 'member_intake_requires_inline',
                          'private_acl_unavailable', 'unsafe_link', 'browser_unavailable', 'login_timeout',
-                         'worker_already_running'})
+                         'worker_already_running', 'cursor_identity_unavailable', 'cursor_ingress_unavailable',
+                         'cursor_session_invalid'})
         code = str(error) if str(error) in safe else 'operation_failed'
         data = error.diagnostic() if code == 'auth_profile_conflict' and hasattr(error, 'diagnostic') else {}
         print(json.dumps({'ok': False, 'code': code, 'data': data}))

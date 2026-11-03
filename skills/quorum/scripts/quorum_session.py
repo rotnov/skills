@@ -19,7 +19,9 @@ SUPPORTED_TRANSPORTS = (
     {'client':'codex', 'requires':'Local Codex chat exporting CODEX_THREAD_ID, with the codex CLI on PATH for codex queue'},
     {'client':'claude', 'requires':'Local Claude Code chat exporting CLAUDE_CODE_SESSION_ID and its private messaging socket/token'},
     {'client':'grok', 'requires':'Grok TUI on macOS started with --leader in this chat (GROK_SESSION_ID); '
-                                 'hosted or cloud Grok has no native Quorum transport'})
+                                 'hosted or cloud Grok has no native Quorum transport'},
+    {'client':'cursor', 'requires':'This Cursor Cloud agent: CURSOR_AGENT=1, its own bc- conversation id, '
+                                   'a matching metadata socket, and CURSOR_API_KEY for a follow-up on that same agent'})
 
 
 class UnsupportedClient(ValueError):
@@ -42,18 +44,34 @@ class UnsupportedClient(ValueError):
                 'next_step':next_step}
 
 
+_CLIENTS = (('codex','CODEX_THREAD_ID'), ('claude','CLAUDE_CODE_SESSION_ID'), ('grok','GROK_SESSION_ID'))
+
+
+def cursor_cloud_session():
+    """This Cursor Cloud agent's bc- id, or None. Weaker than any supported export.
+
+    A Codex, Claude Code or Grok session launched from a Cursor-hosted shell
+    inherits these markers, so they never override that session's own identity.
+    """
+    if os.environ.get('CURSOR_AGENT') != '1': return None
+    from quorum_cursor import canonical_id
+    try: return canonical_id(os.environ.get('CURSOR_CONVERSATION_ID', ''))
+    except ValueError: return None
+
+
 def current_engine():
-    engines = [engine for engine, key in (('codex','CODEX_THREAD_ID'), ('claude','CLAUDE_CODE_SESSION_ID'),
-                                        ('grok','GROK_SESSION_ID'))
-               if os.environ.get(key)]
+    engines = [engine for engine, key in _CLIENTS if os.environ.get(key)]
     if len(engines) > 1: raise ValueError('ambiguous_current_session')
-    return engines[0] if engines else 'codex'
+    if engines: return engines[0]
+    return 'cursor' if cursor_cloud_session() else 'codex'
 
 
 def current_session():
     value = (os.environ.get('CODEX_THREAD_ID') or os.environ.get('CLAUDE_CODE_SESSION_ID')
              or os.environ.get('GROK_SESSION_ID'))
     if not value:
+        cloud = cursor_cloud_session()
+        if cloud: return cloud
         # Only the evidenced local Cursor context gets this diagnostic. These
         # markers identify no inbox and never supply a supported session UUID.
         if (sys.platform == 'darwin' and os.environ.get('CURSOR_AGENT') == '1'
@@ -88,6 +106,13 @@ def client_preflight():
         except ValueError as error:
             if str(error) != 'claude_pipe_unavailable': raise
             raise UnsupportedClient('claude_inbox_unavailable', engine) from None
+    if engine == 'cursor':
+        from quorum_cursor import binding
+        try: binding(sid)
+        except ValueError as error:
+            if str(error) not in ('cursor_identity_unavailable', 'cursor_ingress_unavailable'):
+                raise UnsupportedClient('cursor_identity_unavailable', engine) from None
+            raise UnsupportedClient(str(error), engine) from None
     return engine
 
 
@@ -190,6 +215,12 @@ def enqueue(record, message, auth_state):
         # turn for every priority; it is not turn-ID steering.
         submit(record['session_ref'], message['id'], prompt)
         return 'submitted'
+    if engine == 'cursor':
+        from quorum_cursor import submit
+        require_caller(record['session_ref'], 'cursor')
+        # A follow-up continues this agent after the run is idle. It is not steering.
+        submit(record, message['id'], prompt_for('piped'))
+        return 'submitted'
     executable = shutil.which('codex')
     if not executable: raise ValueError('engine_missing')
     if priority == 'urgent':
@@ -218,6 +249,7 @@ class Relay:
         self.route_check = route_check or (lambda:None)
         self.awaiting = []
         self.release = ReleaseGuard(api, ledger)
+        self.retry_at, self.clock = 0.0, time.monotonic
 
     def scope(self):
         return {'agent_id': self.record['agent_id'], 'session_ref': self.record['session_ref']}
@@ -233,6 +265,7 @@ class Relay:
 
     def run_once(self):
         from quorum_claude_pipe import DeliveryUnsent
+        from quorum_cursor import DeliveryDeferred, IngressRefused
         self.release.check()
         self.authorize()
         # The chat's `received`/`reply` acknowledges submitted messages itself,
@@ -254,6 +287,8 @@ class Relay:
         previous = self.ledger.setting(key)
         if previous and previous['state'] == 'intent': raise ValueError('session_delivery_unknown')
         if not previous:
+            # A deferred refusal asked us to wait; nothing was submitted meanwhile.
+            if self.clock() < self.retry_at: return 'idle'
             self.release.check()
             self.authorize()
             intent = {'state':'intent', 'attempt_id':str(uuid.uuid4())}
@@ -267,9 +302,19 @@ class Relay:
                                            (key, json.dumps(intent)))
                 raise
             try: result = self.queue(message)
-            except DeliveryUnsent:
+            except DeliveryDeferred as deferred:
+                # Cursor refused before creating a run: busy, or a rate-limited key.
+                # Drop only this attempt's intent; nothing, including a later
+                # message, is posted before any Retry-After has passed.
+                self.retry_at = self.clock() + deferred.retry_after
+                with self.ledger.db:
+                    self.ledger.db.execute('delete from settings where key=? and data=?',
+                                           (key, json.dumps(intent)))
+                return 'idle'
+            except (DeliveryUnsent, IngressRefused):
                 # The helper (or our pre-helper guards) proved no payload
-                # write began. Never ACK; preserve any racing receipt/attempt.
+                # write began, or Cursor definitively refused before a run.
+                # Never ACK; preserve any racing receipt/attempt.
                 with self.ledger.db:
                     self.ledger.db.execute('delete from settings where key=? and data=?',
                                            (key, json.dumps(intent)))
@@ -303,9 +348,12 @@ def sequence(value):
 
 
 def session_selector(value):
-    """A provider UUID keeps its existing parsing; only the exact logical Claude form is added."""
+    """A provider UUID keeps its existing parsing; only the exact logical Claude and Cursor bc- forms are added."""
     from quorum_claude_worker import PREFIX
     from quorum_native_inbox import CANONICAL
+    if value.startswith('bc-'):
+        from quorum_cursor import canonical_id
+        return canonical_id(value)
     if value.startswith(PREFIX):
         if not CANONICAL.fullmatch(value[len(PREFIX):]): raise ValueError('invalid_session_selector')
         return value
@@ -683,6 +731,9 @@ def dispatch(args, auth_ledger, register_agent):
             if engine == 'grok':
                 from quorum_grok_leader import binding
                 transport = binding(sid, data['cwd'])
+            if engine == 'cursor':
+                from quorum_cursor import binding
+                transport = binding(sid)
             old=ledger.setting('session-agent')
             if old and (old['registration']!=data or old['role']!=args.role or old['quorum']!=args.quorum):
                 raise ValueError('binding_conflict')
@@ -695,7 +746,8 @@ def dispatch(args, auth_ledger, register_agent):
             # Reconnect must not hide an old generation's endpoint from start.
             # start alone owns the serialized stop-before-rebind transition.
             if endpoint is not None: record['messaging_socket']=old.get('messaging_socket', endpoint) if old else endpoint
-            if transport is not None: record['grok_transport']=transport
+            if engine == 'grok' and transport is not None: record['grok_transport']=transport
+            if engine == 'cursor' and transport is not None: record['cursor_transport']=transport
             if tool: record.update(transport=inbox.TRANSPORT, worker_binding=proved)
             if old and old.get('delegation'): record['delegation'] = old['delegation']
             coordinator = getattr(args, 'accept_tasks_from', None)
@@ -761,6 +813,10 @@ def dispatch(args, auth_ledger, register_agent):
             from quorum_grok_leader import binding
             transport = binding(sid, record['cwd'])
             if args.action == 'run' and transport != record['grok_transport']:
+                raise ValueError('session_binding_denied')
+        if engine == 'cursor' and args.action in ('start','run'):
+            from quorum_cursor import binding
+            if binding(sid) != record.get('cursor_transport'):
                 raise ValueError('session_binding_denied')
         if args.action in ('start','recover'):
             if tool: return {**inbox.arm(ledger,record),'session_id':sid}
