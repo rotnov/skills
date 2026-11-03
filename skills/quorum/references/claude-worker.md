@@ -23,7 +23,8 @@ other-accessible; they are never chmodded. On Windows the same proof reads the
 owner and DACL from handles opened relative to their verified parent, never
 through a junction or other reparse point: private directories need a protected
 DACL with no inherited rule, and they and their files may grant access only to
-the current user, SYSTEM or Administrators. Ancestors must be owned by the user,
+the current user (directly or through OWNER RIGHTS, as Python's `mkdir(mode=0o700)`
+writes), SYSTEM or Administrators. Ancestors must be owned by the user,
 SYSTEM, Administrators or TrustedInstaller, and nobody else may delete, rename
 or re-permission them; AppContainer package and capability rules count as the
 user's own, but another account (such as a sandbox user group) does not, so
