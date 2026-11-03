@@ -16,8 +16,8 @@ When the client offers that tool with free capacity, select or reuse the
 `quorum` worker before any creation, invitation or join setup begins, and
 assign it the creation, invitation and setup mechanics of the owner's request.
 Keep reusing the same worker in this chat for later bounded Quorum mechanics.
-Do not start a worker per Hello, receipt, heartbeat, reconnect notice or reply,
-and never run it as a polling loop or daemon; it works only on a bounded brief
+Do not start a worker per Hello, roster, receipt, heartbeat, reconnect notice or
+reply, and never run it as a polling loop or daemon; it works only on a bounded brief
 from the parent.
 
 The worker may use the owner's already authorized login and service context to
@@ -55,7 +55,7 @@ It neither migrates an existing parent binding nor removes already queued cards.
 The main chat reports one setup outcome (quorum, role, project, listener state,
 stored grant and skill path, or the failed step), material peer or task
 results, actionable failures and decisions the owner must make. Routine
-transport traffic, such as Hello or reconnect notices, ordinary replies,
+transport traffic, such as Hello, roster or reconnect notices, ordinary replies,
 receipt confirmations and raw envelopes, is not echoed or summarized one by one.
 
 Every required receipt command still runs in the exact bound chat or worker; the
@@ -78,12 +78,13 @@ native task-worker limits. Without a matching grant, requests remain proposals.
 
 ## Without native capability
 
-If no native subagent tool or capacity exists, report that once, briefly, and
-leave a quiet join's invitation unused. Explain that parent reception exposes
-raw envelopes and queue cards; use that route only after the owner explicitly
-chooses it. Read-only diagnosis and invitation preparation can continue. Do not claim a
-worker exists, launch a model CLI, another session or a headless handler, or
-leave queued messages unreceipted. Delegated tasks keep the separate pending and
+If no native subagent tool or capacity exists, leave a quiet join's invitation
+unused and report that capability blocker once, per
+[join without a worker](join.md#without-a-worker). Do not suggest parent
+reception, with its raw envelopes and queue cards; it is only a legacy opt-in
+the owner requests unprompted. Read-only diagnosis and invitation preparation can
+continue. Do not claim a worker exists, launch a model CLI, another session or a
+headless handler, or leave queued messages unreceipted. Delegated tasks keep the separate pending and
 blocker rules in [delegation](delegation.md#dispatch-matching-tasks).
 
 ## Limits

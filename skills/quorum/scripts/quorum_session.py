@@ -497,6 +497,8 @@ def start(auth_state, ledger, sid, *, api, endpoint=None, grok_transport=None, r
                 if not recovery: enable(ledger, ledger.setting('session-agent'))
                 return status
         run_id = str(uuid.uuid4())
+        # The new child announces a new connection; never report the previous run's Hello as this one.
+        with ledger.db: ledger.db.execute("delete from settings where key='hello'")
         control.begin(run_id, 0)
         command=[sys.executable,str(Path(__file__).with_name('quorum.py')),'--state',str(auth_state),
                  'session','--session-id',sid,'run','--run-id',run_id]

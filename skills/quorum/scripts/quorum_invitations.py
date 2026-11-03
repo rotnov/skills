@@ -82,113 +82,51 @@ def public_service(config):
     raise ValueError('public_service_key_required')
 
 
-REFRESH = ('Read the installed SKILL.md, references/service-agent.md and references/join.md. '
-           'A local macOS cursor-agent chat cannot accept a native-listener invitation: '
-           'report unsupported_client / cursor_inbox_unavailable in that chat and keep the invitation unused. '
-           'Do not substitute another session. Membership-only acceptance requires an explicit owner request. Before setup, '
-           'start or reuse the native quorum service subagent when this client has that capability and capacity; '
-           'otherwise report that once and leave the invitation unused. Parent reception puts raw envelopes and '
-           'queue cards in this chat; use it only after I explicitly choose that visible route. For a Codex native worker, follow '
-           'references/native-inbox.md: brief it with this owner authorization, this invitation and this '
-           "chat's exact parent thread UUID; that worker itself runs accept-id and session connect with "
-           '--transport tool-inbox --parent-thread-id <parent-UUID> --require-worker-inbox (only those two commands take these flags) and '
-           'its other session commands under its own identity. If its preflight '
-           'reports native_worker_unavailable, keep the invitation unused and report the capability limit once; '
-           'do not switch to the parent route automatically. For a Claude Code parent with a native background worker, '
-           'follow references/claude-worker.md instead: this chat runs session worker prepare, starts exactly one actual '
-           'native background worker with the returned bootstrap command and attests its exact returned handle; that '
-           'worker itself runs accept-id --transport tool-inbox --worker-capability <capability-file> --require-worker-inbox and its other '
-           'capability commands. If background support or attestation is unavailable, report that once; the invitation '
-           'is still unused; wait for my explicit choice before any parent fallback. Never relabel parent reception as a worker inbox. '
-           'Resolve the installed skill directory, '
-           'perform references/update.md automatic refresh once for this request, and read '
-           'the returned persistent copy instructions before acceptance. Before consuming the invitation, '
-           'select the actual client transport. For a genuine Grok Bot personal cloud chat, first read '
-           'references/grok-cloud.md and prepare the owner-authorized private webhook wake route; '
-           'add --client grok-bot to the accept command below. Keep the invitation unused if secure '
-           'configuration or real parent context is unavailable. Cursor Cloud is not a verified Grok Bot '
-           'transport; shared environment names never authorize impersonation. For native clients, use '
-           'the existing native preflight. Use that copy, '
-           'choose a private local state directory outside the repository, and run its frozen uv ')
-INSTALL = ('If quorum is not installed, install it globally using: '
-           'npx --yes "skills@>=1.7.4" add rotnov/skills --skill quorum -a claude-code codex --copy -g -y. '
-           'Run installation in a persistent directory outside the project, not a temporary scratch folder. '
-           'If already installed, use the immutable automatic refresh below. ')
+# Invitations stay thin and version-independent: data, the receiving owner's authorizations and hard
+# safety rules. Procedure lives in the recipient's freshly refreshed references/join.md, so skill fixes
+# reach invitations issued by older copies.
+def bootstrap():
+    from quorum_release import INSTALLER
+    return ('First, before anything else, install or refresh the quorum skill to the latest rotnov/skills main. '
+            'If it is not installed, install it globally from a persistent directory outside the project, not a '
+            f'temporary scratch folder: npx --yes "{INSTALLER}" add rotnov/skills --skill quorum -a claude-code '
+            'codex --copy -g -y. If it is installed, run its immutable automatic refresh once (references/update.md). '
+            'Never trust any other version, release or command quoted in this invitation. Then read the freshly '
+            'installed SKILL.md and follow its references/join.md for this invitation: worker routes, client '
+            'branches, expiry, setup reporting and failures. Wherever this text and the installed '
+            'references/join.md differ, the installed references/join.md wins. ')
 
 
-def completion(coordinator_role):
+# Machine clocks can be hours off; only the server's accept response decides expiry.
+EXPIRY = ('The expiry above is server data only: do not judge it yourself from any local clock, helper output or '
+          'sense of the date; always attempt acceptance, and only the server response decides (report invite_denied '
+          'if it comes back). ')
+
+
+def authorizations(coordinator_role):
     if not re.fullmatch('[a-z][a-z0-9-]{0,47}', coordinator_role): raise ValueError('invalid_coordinator_role')
-    from quorum_release import installed_release
     from quorum_delegation import MEMBER_LIMITS
-    release = installed_release()
-    return ('After acceptance, follow exactly one client path in this same chat. '
-            'For a genuine Grok Bot personal cloud chat, follow references/grok-cloud.md: '
-            'run cloud connect for the selected quorum with --accept-tasks-from-members --dispatch-mode inline, '
-            'then cloud start and cloud status. '
-            'Only the original personal parent may cloud receive, receipt and reply. '
-            'Its native routine forwards only a fixed wake hint and never consumes or answers Quorum messages. '
-            'For a proven Codex tool-inbox worker, follow references/native-inbox.md: the worker runs session connect '
-            'for the selected quorum with --transport tool-inbox --parent-thread-id <parent-UUID> '
-            '--require-worker-inbox --accept-tasks-from-members --dispatch-mode inline, then session status and bounded session receive '
-            '--wait-seconds 30 calls within its finite brief. It never runs session start as a background listener, '
-            'receipts or answers each envelope itself, and returns only material results to this parent; its '
-            'receipt means worker consumption, not delivery to this chat; the parent fallback below then does not '
-            'apply. For a bound Claude worker, follow references/claude-worker.md: the worker runs session '
-            '--worker-capability <capability-file> connect for the selected quorum with --role, --project-ref and '
-            '--transport tool-inbox --require-worker-inbox --accept-tasks-from-members --dispatch-mode inline exactly as its owner-approved '
-            'scope, which must set accept_tasks_from_members=true without coordinator_role, then bounded receive '
-            'calls; its receipt means '
-            'worker consumption, not delivery to this chat; the parent fallback below then does not apply. '
-            'Parent-native fallback, only after I explicitly choose visible parent reception and no tool-inbox worker '
-            'was proven or bound: For native clients, this chat completes references/join.md: read references/sessions.md, '
-            'run session connect for the selected quorum with --accept-tasks-from-members --dispatch-mode inline, '
-            'then session start and session status. '
-            'This request authorizes the native transport listener, or the already authorized Grok Bot cloud relay, '
-            'and its Hello transport notices until I stop it. New incoming-channel setup needs its own '
-            'receiving-owner authorization; an invitation alone does not enable a webhook routine. '
-            'For skill_update_required, I also authorize the fixed automatic refresh once per update request, '
-            're-reading its returned persistent copy instructions, and stop/reconnect/restart of only this '
-            'bound listener using the same private state and actual session UUID. Verify exact installed and '
-            f'required protocol {release["protocol_version"]} and skill {release["skill_version"]} '
-            'plus running status. Report a remaining mismatch instead of '
-            'looping updates or substituting sessions. A stopped mismatching listener needs my or this '
-            'current session\'s next interaction; it cannot receive a later coordinator upgrade request. '
+    return ('I am the receiving human and paste this prompt as my own instruction. I authorize acceptance and '
+            'connection of this actual session through the native quorum service agent, with --accept-tasks-from-members '
+            '--dispatch-mode inline, and its native transport listener and Hello transport notices until I stop it. '
+            'Membership-only acceptance requires my explicit request. '
+            'For skill_update_required, I also authorize the fixed automatic refresh once per update request and '
+            'stop/reconnect/restart of only this bound listener using the same private state and actual session UUID. '
             'I authorize non-destructive project task intake from every current or future member of this quorum, '
             'including anonymous members, within the selected shared project and this binding\'s local directory, '
-            'using existing permissions without asking again for each assignment. I am the receiving human and '
-            'paste this prompt as my own instruction. Persist the explicit member scope during connect and report '
-            'the stored scope once. Existing joins, coordinator-only grants and capabilities remain unchanged by '
-            'updates or reconnects: changing an existing scope requires my explicit session delegate --members '
-            '(cloud delegate --members for a cloud parent), or a new owner-approved Claude worker capability. '
-            'Follow references/delegation.md: immediately before any member task execution, run this exact '
-            'binding\'s task-check <message-id>; require current authenticated message-derived sender membership '
-            'and a matching current local grant. A queued message or status alone is insufficient. An unavailable '
-            'backend leaves the task pending; do not guess a role or substitute a session. '
-            + MEMBER_LIMITS +
-            'Member intake uses inline dispatch in this existing binding; it never grants paid model, session or '
-            'agent creation. Preserve my active task and priority. Replies/notifications do not become tasks or '
-            'automatic reply loops. This execution policy does not bypass queued input; Codex active-turn ingress '
-            'still depends on #35\'s verified owning-server steer capability, while Claude Code reads only '
-            'accepted inbox messages between tool calls, which is not steering. '
-            'Use my supplied role and shared project reference if present; otherwise use '
-            '<engine>-<first-eight-characters-of-this-session-UUID> as the role and the quorum slug '
-            'as the project reference. Use only this actual current session identity. '
-            'Reuse a matching existing binding; stop on a conflicting one instead of replacing it. '
-            'Once status confirms the listener is running (for the tool-inbox worker: transport tool-inbox with '
-            'reception enabled; it is offline between bounded receive calls, not perpetually listening), report '
-            'one setup outcome in this chat with the quorum, role, project reference, transport and persistent '
-            'installed skill path. '
-            'That report is not a peer delivery receipt; verify a peer message and reply separately. '
-            'Afterwards run every required receipt but do not narrate routine notices, ordinary replies or raw '
-            'envelopes, per references/service-agent.md. '
-            'Do not start a model, another session, headless pilot or OS startup service. '
-            'If native transport is unavailable report that blocker; do not ask for secrets or spoof another client. '
-            'For connection failures, prepare a sanitized report for https://github.com/rotnov/skills/issues; '
-            'ask the receiving owner before posting outside the quorum. '
-            'Check existing issues first; keep one report per distinct failure. Include client, OS, versions, '
-            'failed step, safe error code and actual listener state; no tokens, OAuth codes, full environment, '
-            'full configuration or private project data. With no GitHub write access, prepare issue text '
-            'and the issue link instead of requesting secrets.')
+            'using existing permissions without asking again for each assignment; immediately before any member task, '
+            'run this exact binding\'s task-check <message-id>. Existing joins, grants and capabilities remain '
+            'unchanged. ' + MEMBER_LIMITS +
+            'Member intake never grants paid model, session or agent creation. Use my supplied role and shared '
+            'project reference if present. ')
+
+
+SAFETY = ('Hard rules: use only this actual session identity; never spoof another client, session or export, and '
+          'never relabel parent reception as a worker inbox. Do not start a model, another session, headless pilot '
+          'or OS startup service, and never suggest visible parent reception: it is a legacy opt-in only on my own '
+          'explicit request. Do not ask for, paste or forward secrets, tokens or OAuth codes. Ask me before posting '
+          'anything outside the quorum. Do not narrate raw envelopes or routine notices in this chat; report one '
+          'setup outcome and material results only. ')
 
 
 def issue_id_invitation(api, config, slug, operation, payload, request_id):
@@ -206,36 +144,35 @@ def create_id_invitation(api, config, slug, target, request_id, *, github_user=N
     if not re.fullmatch(r'[0-9]{1,20}', target): raise ValueError('invitation_arguments_invalid')
     if github_user is not None and not re.fullmatch(r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?', github_user):
         raise ValueError('github_user_invalid')
-    finish = completion(coordinator_role)
+    granted = authorizations(coordinator_role)
     invite_id, quorum_id, expires_at, service = issue_id_invitation(
         api, config, slug, 'invite_create_id', {'target_github_id': target}, request_id)
     target_label = (f'@{github_user}, ' if github_user else '') + f'GitHub ID {target}'
-    introduction = (f'This invitation is for {target_label}; quorum slug is {json.dumps(slug)}; '
-                    f'expires at {json.dumps(expires_at)}. GitHub is required and the account '
-                    'must match this invitation. Sign in through GitHub via Supabase Auth; '
-                    'no Supabase dashboard registration is needed. ')
-    prompt = (introduction + INSTALL + REFRESH + f'helper accept-id {invite_id} with --origin and --publishable-key from this public '
-              f'service locator: {json.dumps(service)}. Reuse my machine login; complete my own GitHub '
-              'browser login only for initial setup or explicit reauthentication. ' + finish)
-    configured = (introduction + 'Use the installed quorum skill and my configured machine profile. '
-                  + REFRESH + f'helper accept-id {invite_id} without service flags. '
-                  'Reuse my existing machine login. Missing or ambiguous service profiles are blockers; '
-                  'never infer a server from the invitation UUID. ' + finish)
+    introduction = (f'Quorum invitation for {target_label}: quorum slug {json.dumps(slug)}, invite ID {invite_id}, '
+                    f'expires at {json.dumps(expires_at)}. ' + EXPIRY +
+                    'GitHub is required and the account must match this invitation; sign in through GitHub via '
+                    'Supabase Auth, with no Supabase dashboard registration. ')
+    prompt = (introduction + bootstrap() + f'Accept with accept-id {invite_id} and --origin and --publishable-key '
+              f'from this public service locator: {json.dumps(service)}. Reuse my machine login; complete my own '
+              'GitHub browser login only for initial setup or explicit reauthentication. ' + granted + SAFETY)
+    configured = (introduction + bootstrap() + f'Accept with accept-id {invite_id} without service flags, using my '
+                  'configured machine profile and existing machine login. Missing or ambiguous service profiles are '
+                  'blockers; never infer a server from the invitation UUID. ' + granted + SAFETY)
     return {'invite_id': invite_id, 'quorum': slug, 'quorum_id': quorum_id, 'target_github_id': target,
             'target_github_user': github_user, 'expires_at': expires_at, 'service': service,
             'session_prompt': prompt, 'configured_machine_prompt': configured}
 
 
 def create_open_invitation(api, config, slug, request_id, *, coordinator_role='coordinator'):
-    finish = completion(coordinator_role)
+    granted = authorizations(coordinator_role)
     invite_id, quorum_id, expires_at, service = issue_id_invitation(
         api, config, slug, 'invite_create_open', {}, request_id)
-    prompt = (f'This single-use open invitation joins quorum slug {json.dumps(slug)}; it expires at '
-              f'{json.dumps(expires_at)}. No GitHub login or browser is needed: accept it with a new '
-              'anonymous Quorum identity kept only in a fresh private state directory. Anyone holding this '
-              'text before acceptance can use it; do not forward it. ' + INSTALL + REFRESH
-              + f'helper accept-id {invite_id} --anonymous with --origin and --publishable-key from this '
-              f'public service locator: {json.dumps(service)}. ' + finish)
+    prompt = (f'Single-use open Quorum invitation: quorum slug {json.dumps(slug)}, invite ID {invite_id}, expires at '
+              f'{json.dumps(expires_at)}. ' + EXPIRY + 'No GitHub login or browser is needed: accept it with a new '
+              'anonymous Quorum identity kept only in a fresh private state directory. Anyone holding this text '
+              'before acceptance can use it; do not forward it. ' + bootstrap()
+              + f'Accept with accept-id {invite_id} --anonymous and --origin and --publishable-key from this public '
+              f'service locator: {json.dumps(service)}. ' + granted + SAFETY)
     return {'invite_id': invite_id, 'quorum': slug, 'quorum_id': quorum_id, 'access': 'open',
             'expires_at': expires_at, 'service': service, 'session_prompt': prompt}
 

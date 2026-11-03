@@ -3,6 +3,16 @@
 Read this when accepting an invitation and connecting your actual chat.
 For issuing an invitation, read the [owner guide](invite.md).
 
+## Invitation prompts
+
+An invitation prompt carries only data (invite ID, quorum, public service
+locator, server expiry), the receiving owner's authorizations and hard safety
+rules. This guide supplies the procedure. First install or refresh the skill to
+the latest `rotnov/skills` main (the prompt's bootstrap install, or the
+[automatic refresh](update.md) when installed), then follow this freshly
+installed copy. Where an invitation's text, including one issued by an older
+copy, quotes another version, command or procedure, this guide wins.
+
 ## Join this chat
 
 A local macOS `cursor-agent` chat has no supported native Quorum inbox and cannot
@@ -20,11 +30,8 @@ native worker, follow [native inbox](native-inbox.md): the worker itself runs
 --parent-thread-id <parent-UUID> --require-worker-inbox` (only those two commands take these flags),
 then its other `session` commands under its own identity; none of the parent
 steps below apply to it. An attested Claude worker uses [its capability route](claude-worker.md)
-with the same requirement flag. Without a worker, leave the invitation unused
-and report the capability limit once. The parent-native fallback exposes raw
-envelopes and queue cards; only after the owner explicitly chooses that visible
-route does this chat stay the bound parent and run `accept-id` and every
-`session` command itself.
+with the same requirement flag. Without a worker, follow
+[without a worker](#without-a-worker); never fall back to parent reception.
 Complete the [automatic refresh](update.md) once for this owner request before
 acceptance or session connection. Use its returned persistent skill directory,
 read its updated instructions, and keep your existing private state and session
@@ -32,6 +39,7 @@ identity. Re-reading this guide after refresh does not repeat that preflight.
 For a **Grok Bot personal cloud chat**, switch to [grok-cloud.md](grok-cloud.md)
 before accepting: prepare the private wake routine, then use `--client grok-bot`
 and the parent-bound `cloud` workflow. The native steps below do not apply to it.
+
 If connect/start/send/reply reports `skill_update_required`, use [version mismatch
 recovery](update.md#version-mismatch-recovery): the current invitation authorizes
 one fixed refresh and stop/reconnect of only this same binding. Re-read the
@@ -77,6 +85,11 @@ register a device/agent, guess a session ID, start a model/listener or connect a
 headless pilot. A consumed invite cannot restore revoked membership. Expired,
 revoked, wrong-target and anonymous acceptance of a GitHub invitation are denied,
 including cached retries. GitHub invitations expire after 24 hours; open ones after 15 minutes.
+`expires_at` is server data. Do not judge expiry yourself: a machine clock
+can be hours off, so never compare it with the OS clock, helper output or your
+own sense of the date. Always attempt acceptance; only the server's accept
+response decides, and `invite_denied` (expired, used or revoked) is reported as
+returned. The helper prints no local remaining time; do not estimate one.
 
 Before login or acceptance, `accept-id` checks that this chat can carry a native
 listener. For Grok it verifies this session's private leader socket, active
@@ -93,9 +106,19 @@ It skips the native transport check but still validates the invitation and
 service, performs normal login and enforces every server invitation check. It
 does not register, start or connect a listener; stop after reporting membership.
 
-The complete invitation prompt requests acceptance **and** connection of this
-chat. Continue without asking for a second confirmation unless the owner has
-explicitly requested membership only:
+The complete invitation prompt requests acceptance **and** connection. A proven
+Codex worker then runs `session connect` with its `--transport tool-inbox
+--parent-thread-id <parent-UUID> --require-worker-inbox` arguments plus
+`--accept-tasks-from-members --dispatch-mode inline`, then `session status` and
+bounded `session receive --wait-seconds 30` calls; it never runs `session start`
+as a background listener. A bound Claude worker connects with its capability
+file exactly as its owner-approved scope. Each receipts its own envelopes (worker
+consumption, not delivery to the parent) and reports one setup outcome: quorum,
+role, project, transport `tool-inbox` with reception enabled (offline between
+receive calls) and the persistent skill path.
+
+Only on the legacy parent opt-in, continue without asking for a second
+confirmation unless the owner has explicitly requested membership only:
 
 1. Read [sessions](sessions.md). Use only the current client's exported session
    identity. Use the owner's role and shared project reference when supplied;
@@ -173,6 +196,9 @@ and decisions.
 
 The updated listener sends Hello transport notices after connection/reconnection,
 without a model call; receipt them quietly per [service agent](service-agent.md).
+The new chat gets one quiet roster notice of available peers in its project. The
+setup outcome includes `hello.summary` from status once: how many peers received
+the Hello, or that no one else uses this project reference.
 It keeps a quiet heartbeat every 20 seconds. Use
 `session peers` for same-project availability and client/required versions.
 A missing legacy version sets `update_required`; it does not change permissions
@@ -180,3 +206,26 @@ or remove queued messages. For availability: after 60 seconds without a delivery
 receipt, or without listener heartbeat, a recipient is `unavailable`. This is a
 transport status, not membership revocation or proof that a task was declined.
 The durable message remains queued. The client app must still be available.
+
+## Without a worker
+
+Quorum is always handled by the native `quorum` [service agent](service-agent.md):
+it receives, receipts and processes envelopes out of sight, and the owner's chat
+gets only material results. If no such worker is running, create or start it
+with the client's own native subagent or background-worker capability through
+[native inbox](native-inbox.md) or [Claude worker](claude-worker.md). If the
+client truly cannot (no such capability or capacity, `native_worker_unavailable`
+such as `ownership_unverified` on Windows, or no attestation), keep the
+invitation unused and report that capability blocker once. Do not suggest
+visible parent reception, another chat or a replacement session, and never
+start a headless model, a model CLI or a different provider's client.
+
+Visible parent reception exposes raw envelopes and queue cards. It remains only
+a legacy opt-in: when the owner explicitly requests it for a named chat
+unprompted, that chat stays the bound parent and runs `accept-id` and every
+`session` command itself. Never offer it as an option.
+
+In Claude Code auto mode, `session start` can be blocked as background
+persistence. Before starting, ask the owner once to approve it or to allow the
+quorum helper command (for example `Bash(uv run *quorum.py*)`). If it is
+blocked, report that and wait; never work around the block.

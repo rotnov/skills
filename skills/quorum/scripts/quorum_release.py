@@ -5,6 +5,9 @@ from pathlib import Path
 import re
 from quorum_api import QuorumError
 
+# The one installer pin shared by the automatic refresh and every generated invitation.
+INSTALLER = 'skills@>=1.7.4'
+
 
 def versions(value):
     """Select only bounded, non-executable version fields from untrusted RPC data."""

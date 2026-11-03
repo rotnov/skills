@@ -205,10 +205,8 @@ class DispatchModeTests(unittest.TestCase):
             for required in ('--accept-tasks-from-members --dispatch-mode inline',
                              'current or future member', 'including anonymous members',
                              'receiving human', 'paste this prompt as my own instruction',
-                             'task-check <message-id>', 'An unavailable backend leaves the task pending',
-                             'always require the receiving owner',
-                             'owning-server steer', '#35', 'queued input',
-                             'Codex active-turn ingress', 'accepted inbox messages between tool calls',
+                             'task-check <message-id>', 'always require the receiving owner',
                              'Do not start a model, another session, headless pilot',
+                             'never suggest visible parent reception',
                              'native transport listener', 'same private state and actual session UUID'):
                 self.assertIn(required, text)

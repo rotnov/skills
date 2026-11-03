@@ -26,6 +26,7 @@ QUORUM = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
 M1 = '99999999-9999-4999-8999-999999999991'
 M2 = '99999999-9999-4999-8999-999999999992'
 M3 = '99999999-9999-4999-8999-999999999993'
+ROSTER = '99999999-9999-4999-8999-999999999988'
 BODY_MARKER = 'private-transcript-body-marker'
 # The suite may run inside a real client chat; every test supplies synthetic identity explicitly.
 EXPORTS = ('CODEX_THREAD_ID', 'CODEX_HOME', 'CLAUDE_CODE_SESSION_ID', 'CLAUDE_CODE_HOST_SESSION_ID',
@@ -1398,3 +1399,51 @@ class EpochTests(Harness):
 
 
 if __name__ == '__main__': unittest.main()
+
+
+@POSIX_PROOF
+class HelloVisibilityTests(Harness):
+    """#88: a bounded worker surfaces its Hello outcome once and receipts the roster quietly."""
+    def setUp(self):
+        super().setUp()
+        rollout(self.home)
+
+    class HelloApi(Api):
+        fresh = True
+        def answer(self, operation, payload):
+            if operation == 'session_heartbeat':
+                new, type(self).fresh = type(self).fresh, False
+                return {'online': True, 'new_connection': new, 'hello': {
+                    'peers': 2, 'roles': ['alpha', 'zeta'], 'available': 1, 'available_roles': ['alpha'],
+                    'roster_message_id': ROSTER}}
+            return super().answer(operation, payload)
+
+    @isolated_profiles
+    def test_hello_outcome_once_then_reuse_once_and_roster_is_terminal(self):
+        self.HelloApi.fresh = True
+        roster = message(ROSTER, body='Quorum roster: 1 peer(s) available in project team/project: alpha. '
+                                      'Transport notice; no reply required.', notification=True,
+                         sender_id=AGENT, sender_role='quorum-worker')
+        api = self.HelloApi(inbox=[roster])
+        with caller(self.home):
+            self.connect(api)
+            _, first, _ = self.receive(api)
+            self.assertEqual(first['data']['message_id'], ROSTER)
+            self.assertEqual(first['data']['hello'],
+                             'Hello sent to 2 peers in team/project (alpha, zeta); roster: 1 available')
+            # The roster is a notification: never answered, receipted quietly.
+            code, result, _ = self.cli(api, 'session', 'reply', ROSTER, '--text-stdin', stdin=b'thanks')
+            self.assertEqual((code, result['code']), (3, 'native_inbox_reply_loop_denied'))
+            self.assertEqual(self.cli(api, 'session', 'received', ROSTER)[0], 0)
+            # The next bounded call reuses the persisted connection: reported once, explicitly.
+            _, second, _ = self.receive(api)
+            self.assertEqual(second['data']['state'], 'timeout')
+            self.assertTrue(second['data']['hello'].startswith('Reused connection '))
+            self.assertIn(': no new Hello was sent; earlier: Hello sent to 2 peers', second['data']['hello'])
+            _, third, _ = self.receive(api)
+            self.assertNotIn('hello', third['data'])
+            _, status, _ = self.cli(api, 'session', 'status')
+        self.assertEqual(status['data']['hello']['summary'], second['data']['hello'])
+        self.assertEqual(status['data']['hello']['sent'], 2)
+        self.assertNotIn('session_reply', api.ops())
+        self.assertEqual(api.acked, [ROSTER])

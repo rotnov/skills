@@ -128,5 +128,27 @@ class MigrationOrderTests(unittest.TestCase):
         self.assertLess(guard, min(wrapper.index('for share'), wrapper.index('for no key update')))
 
 
+    def test_hello_visibility_follows_the_reviewed_tail_and_pins_the_heartbeat(self):
+        names = [path.name for path in MIGRATIONS]
+        hello = next(name for name in names if name.endswith('_hello_roster_visibility.sql'))
+        self.assertGreater(hello, '20261103075741_llm_wiki.sql')
+        self.assertGreater(hello, SERIALIZATION_PATH.name)
+        body = (SKILL / 'supabase/migrations' / hello).read_text(encoding='utf-8')
+        pins = dict(re.findall(r"'([a-z_.]+\([a-z,]*\))','([0-9a-f]{64})'", body))
+        self.assertEqual(pins['public.session_requirements()'], SERIALIZATION_PINS['public.session_requirements()'])
+        self.assertIn('public.session_heartbeat(uuid,text,uuid,integer,text)', pins)
+        self.assertIn("raise exception 'hello_extension_present'", body)
+        self.assertIn("raise exception 'reviewed_dispatcher_changed: %',f;", body)
+        # Additive only: the release, older heartbeat body and table access stay unchanged.
+        self.assertNotIn('function public.session_requirements', body)
+        self.assertEqual(defining('public.session_heartbeat(')[-1].name, hello)
+        self.assertNotRegex(body.lower(), r'grant [^;]* to [^;]*(anon|public|service_role)')
+        self.assertNotRegex(body.lower(), r'grant [^;]* on (table )?quorum_private\.')
+        self.assertIn('requires_handler=false', body)
+        guide = (SKILL / 'references/server.md').read_text(encoding='utf-8')
+        section = guide.split('## Hello reporting extension', 1)[1].split('\n## ', 1)[0]
+        self.assertIn(hello, section)
+        self.assertIn('after `20261022180000_open_access_close_serialization.sql`', section)
+
 if __name__ == '__main__':
     unittest.main()

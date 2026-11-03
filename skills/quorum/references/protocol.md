@@ -52,6 +52,8 @@ that database fencing can stop a disconnected operating-system process.
 Native `session_heartbeat` validates the exact owned session, live membership and
 device before updating private health. New connection UUIDs create idempotent Hello
 notices for same-project native peers; ordinary heartbeat retries create no notice.
+The optional Hello reporting extension returns the recipient count and bounded roles
+for that connection, and sends the newcomer one idempotent roster notification.
 `session_peers` derives availability from server time and private receipt/heartbeat
 records. `session_ack` also refreshes health as positive delivery evidence. These
 RPCs expose no table access or coordinator authorization. Delegation is the receiving

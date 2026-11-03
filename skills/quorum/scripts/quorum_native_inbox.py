@@ -16,7 +16,7 @@ import time
 import uuid
 from quorum_api import QuorumError, guarded_call
 from quorum_os import FileLock
-from quorum_presence import Presence
+from quorum_presence import Presence, hello_once
 from quorum_realtime import RealtimeWait
 from quorum_release import ReleaseGuard, installed_release
 
@@ -595,8 +595,9 @@ def receive(api, auth_ledger, ledger, record, wait_seconds, *, waiter=None, pres
     clock = clock or time.monotonic
     control = Control(ledger)
     def result(state, run_id):
+        # A bounded worker reports its connection's Hello outcome once, never per call.
         return {'state': state, 'message': None, 'run_id': run_id, 'session_ref': record['session_ref'],
-                'transport': TRANSPORT, 'wait_seconds': wait_seconds}
+                'transport': TRANSPORT, 'wait_seconds': wait_seconds, **hello_once(ledger)}
     with LocalSupervisorLock(ledger.root), FileLock(ledger.root / 'listener.lock'):
         with control_lock(ledger):
             if not enabled(ledger): return result('stopped', None)
@@ -624,7 +625,8 @@ def receive(api, auth_ledger, ledger, record, wait_seconds, *, waiter=None, pres
                 if envelope is not None:
                     if authorize is not None: api.check()
                     handled = 1
-                    disclosed = {**envelope, 'run_id': run_id, 'session_ref': record['session_ref']}
+                    disclosed = {**envelope, 'run_id': run_id, 'session_ref': record['session_ref'],
+                                 **hello_once(ledger)}
                     break
                 if not waiter or idle_left <= 0: return result('timeout', run_id)
                 control.update(run_id, 'waiting', 0, timeout=wait_seconds)
