@@ -239,10 +239,21 @@ class NtfsTests(unittest.TestCase):
     def chain(self, path, policy='claude'):
         """The verified ancestor chain of `path`, from its drive root."""
         parent = self.keep(proof.open_root(path.parts[0]))
-        proof.verify(parent, 'ancestor', policy)
-        for name in path.parts[1:]:
-            parent = self.keep(proof.open_verified(parent, name, 'ancestor', policy))
+        self.diagnosed(parent, path.parts[0], policy)
+        for depth, name in enumerate(path.parts[1:], 2):
+            parent = self.keep(proof.open_at(parent, name, directory=True))
+            self.diagnosed(parent, str(Path(*path.parts[:depth])), policy)
         return parent
+
+    def diagnosed(self, fd, where, policy):
+        """Verify an ancestor; on refusal name this test's own path and its decoded owner and rules."""
+        try: proof.verify(fd, 'ancestor', policy)
+        except proof.Unsafe:
+            api = proof._api()
+            owner, protected, aces = proof.parse(proof.descriptor_of(api, proof._handle(fd)))
+            self.fail(f'ancestor refused: {where} owner={owner} protected={protected} '
+                      f'aces={[(kind, hex(flags), hex(mask), sid) for kind, flags, mask, sid in aces]} '
+                      f'token={api["owners"]}')
 
     def private(self, name='state'):
         """A directory created by the proof's own owner-only creation, under the verified temp chain."""
