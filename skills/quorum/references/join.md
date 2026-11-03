@@ -214,8 +214,9 @@ it receives, receipts and processes envelopes out of sight, and the owner's chat
 gets only material results. If no such worker is running, create or start it
 with the client's own native subagent or background-worker capability through
 [native inbox](native-inbox.md) or [Claude worker](claude-worker.md). If the
-client truly cannot (no such capability or capacity, `native_worker_unavailable`
-such as `ownership_unverified` on Windows, or no attestation), keep the
+client truly cannot (no such capability or capacity, no attestation, or a
+`native_worker_unavailable` that the [Claude worker](claude-worker.md#trust-and-identity)
+steps, such as the Windows state-directory repair, do not clear), keep the
 invitation unused and report that capability blocker once. Do not suggest
 visible parent reception, another chat or a replacement session, and never
 start a headless model, a model CLI or a different provider's client.
