@@ -118,7 +118,15 @@ class DescriptorDecisionTests(unittest.TestCase):
         self.assertTrue(accepted(descriptor(ADMINS, [(0, 3, FULL, SYSTEM), (0, 3, FULL, ADMINS), (0, 3, FULL, owner_rights)]),
                                  'ancestor'))
         self.assertFalse(accepted(descriptor(OTHER, [(0, 3, FULL, owner_rights)]), 'ancestor'))
-        self.assertFalse(accepted(descriptor(USER, [(0, 3, FULL, USER), (0, 3, FULL, owner_rights)]), 'private'))
+        # CPython's Windows mkdir(mode=0o700): user-owned, protected {SYSTEM, Administrators, OWNER RIGHTS}.
+        cpython = [(0, 3, FULL, SYSTEM), (0, 3, FULL, ADMINS), (0, 3, FULL, owner_rights)]
+        self.assertTrue(accepted(descriptor(USER, cpython), 'private'))
+        self.assertTrue(accepted(descriptor(USER, [(0, 0, FULL, owner_rights)], protected=False), 'file'))
+        self.assertTrue(accepted(descriptor(USER, cpython), 'private', 'codex'))
+        for kind, policy in (('private', 'claude'), ('file', 'claude'), ('private', 'codex')):
+            with self.subTest(kind=kind, policy=policy):
+                self.assertFalse(accepted(descriptor(OTHER, cpython), kind, policy))
+        self.assertFalse(accepted(descriptor(USER, cpython + [(0, 0, READ, OTHER)]), 'private'))
         # A sandbox user group or another account with Modify (seen on real %TEMP%) stays refused.
         self.assertFalse(accepted(descriptor(USER, windows_root + [(0, 3, MODIFY, OTHER)]), 'ancestor'))
         for right in (0x10000, 0x40000, 0x80000, 0x40, 0x10000000, MODIFY):

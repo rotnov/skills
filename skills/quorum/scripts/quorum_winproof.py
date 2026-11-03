@@ -104,8 +104,8 @@ def evaluate(descriptor, kind, policy, user, owners):
 
     - 'ancestor': owned by the user, SYSTEM, Administrators or TrustedInstaller; no other principal may
       delete, rename or re-permission it (others may only add entries, like a sticky directory).
-      AppContainer package/capability rules count as the user's own (see `APP_CONTAINER`), and an
-      OWNER RIGHTS rule grants only the already trusted owner.
+      AppContainer package/capability rules count as the user's own (see `APP_CONTAINER`).
+    - Every kind: an OWNER RIGHTS rule grants only the owner, which each kind has already checked.
     - 'claude' 'private' directory: owned by the user; a protected DACL with no inherited ACE whose allow
       ACEs name only the user, SYSTEM or Administrators (POSIX 0700).
     - 'claude' 'file': owned by the user; allow ACEs name only the user, SYSTEM or Administrators (POSIX
@@ -118,10 +118,12 @@ def evaluate(descriptor, kind, policy, user, owners):
     if kind == 'ancestor':
         trusted, limit = {user, *owners, *administrators, TRUSTED_INSTALLER}, REPLACE
         if owner not in trusted: raise Unsafe()
-        trusted.add(OWNER_RIGHTS)
     else:
         trusted, limit = {user, *administrators}, WRITE
         if owner not in {user, *owners}: raise Unsafe()
+    # The owner was just required to be trusted, so OWNER RIGHTS reaches no one else. CPython's
+    # os.mkdir(mode=0o700) on Windows writes exactly {SYSTEM, Administrators, OWNER RIGHTS}.
+    trusted.add(OWNER_RIGHTS)
     strict = policy == 'claude' and kind != 'ancestor'
     for ace_type, flags, mask, sid in aces:
         if ace_type != ALLOWED or sid in trusted: continue
