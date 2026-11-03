@@ -78,12 +78,14 @@ native task-worker limits. Without a matching grant, requests remain proposals.
 
 ## Without native capability
 
-If no native subagent tool or capacity exists, report that once, briefly, and
-leave a quiet join's invitation unused. Explain that parent reception exposes
-raw envelopes and queue cards; use that route only after the owner explicitly
-chooses it. Read-only diagnosis and invitation preparation can continue. Do not claim a
-worker exists, launch a model CLI, another session or a headless handler, or
-leave queued messages unreceipted. Delegated tasks keep the separate pending and
+If no native subagent tool or capacity exists, leave a quiet join's invitation
+unused in this chat and follow [join without a worker](join.md#without-a-worker):
+hand it to a dedicated Quorum session the client itself can start, or ask the
+owner to paste it into a dedicated chat. Parent reception, with its raw envelopes
+and queue cards, runs only in that dedicated chat or one the owner explicitly
+names. Read-only diagnosis and invitation preparation can continue. Do not claim a
+worker exists, launch a model CLI, a headless handler or any session other than
+that dedicated one, or leave queued messages unreceipted. Delegated tasks keep the separate pending and
 blocker rules in [delegation](delegation.md#dispatch-matching-tasks).
 
 ## Limits

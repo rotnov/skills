@@ -43,7 +43,7 @@ Failures leave the invitation unused and print only fixed codes:
 ambiguous, unsafe, oversized or non-spawn metadata) or
 `native_worker_binding_denied` (wrong parent, the parent itself as caller, or a
 changed binding). Report one capability limitation and leave the invitation
-unused; the parent fallback below needs an explicit owner choice. Never borrow,
+unused; the parent fallback below moves to a dedicated chat. Never borrow,
 copy or spoof exports.
 
 ## Setup by the worker
@@ -155,9 +155,9 @@ inbox or receipts. Never claim perpetual service.
 
 If the provider lacks verified worker identity or capacity, the supported parent
 routes in [join](join.md) and [sessions](sessions.md) expose raw envelopes and
-queue cards in the owner chat. Keep the invitation unused and report that limit
-once. Only after the owner explicitly chooses visible parent reception may it
-retry without `--require-worker-inbox`. Report it as parent reception, never as a worker inbox, and
+queue cards. Keep the invitation unused and follow
+[join without a worker](join.md#without-a-worker): only a dedicated Quorum chat,
+or one the owner explicitly names, retries without `--require-worker-inbox`. Report it as parent reception, never as a worker inbox, and
 do not transfer secrets or change auth or provider configuration to force
 support.
 

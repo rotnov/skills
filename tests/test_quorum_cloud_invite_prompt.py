@@ -85,9 +85,28 @@ class CloudInvitationPromptTests(unittest.TestCase):
                 # The worker route and its exact parent relationship are chosen before the invitation is spent.
                 self.assertLess(prompt.index('references/native-inbox.md'), prompt.index('helper accept-id'))
                 self.assertLess(prompt.index('--transport tool-inbox --parent-thread-id'), prompt.index('helper accept-id'))
-                self.assertIn('native_worker_unavailable, keep the invitation unused', prompt)
+                self.assertIn('native_worker_unavailable (for example ownership_unverified on Windows), keep the invitation unused', prompt)
                 self.assertIn('--require-worker-inbox', prompt)
-                self.assertIn('only after I explicitly choose visible parent reception', prompt)
+                # Tier 2/3: no worker moves Quorum to a dedicated session or chat, never this one by default.
+                self.assertIn('follow the no-worker route below', prompt)
+                self.assertIn('never use this chat for it by default', prompt)
+                self.assertIn('create a dedicated Quorum session', prompt)
+                self.assertIn('hand it this full invitation unchanged', prompt)
+                self.assertIn('reports only one setup outcome', prompt)
+                self.assertIn('Use only capabilities this client actually exposes', prompt)
+                self.assertIn('never start a headless model, a model CLI or a different provider client', prompt)
+                self.assertIn('ask me once to open a dedicated chat for Quorum and paste this invitation there', prompt)
+                self.assertIn('"This chat is my dedicated Quorum chat."', prompt)
+                self.assertIn('does not delegate again', prompt)
+                self.assertNotIn('wait for my explicit choice before any parent fallback', prompt)
+                self.assertNotIn('only after I explicitly choose that visible route', prompt)
+                no_worker = prompt.index('No-worker route')
+                self.assertLess(no_worker, prompt.index('helper accept-id'))
+                self.assertLess(no_worker, prompt.index('Parent-native fallback'))
+                # Auto mode may block the listener start; the owner approves, nothing works around it.
+                self.assertIn('In Claude Code auto mode, session start can be blocked as background persistence', prompt)
+                self.assertIn('Bash(uv run *quorum.py*)', prompt)
+                self.assertIn('never work around the block', prompt)
                 self.assertIn('session receive', prompt)
                 self.assertIn('never runs session start as a background listener', prompt)
                 self.assertIn('not delivery to this chat', prompt)
@@ -100,10 +119,36 @@ class CloudInvitationPromptTests(unittest.TestCase):
                 self.assertNotIn('every session command with --transport', prompt)
                 self.assertIn('only those two commands take these flags', prompt)
                 worker = prompt.index('For a proven Codex tool-inbox worker')
-                fallback = prompt.index('Parent-native fallback, only after I explicitly choose visible parent reception')
+                fallback = prompt.index('Parent-native fallback, only in a dedicated Quorum chat or after I explicitly choose visible parent reception naming this chat')
                 self.assertLess(worker, fallback)
                 self.assertIn('the parent fallback below then does not apply', prompt[worker:fallback])
                 self.assertNotIn('session start', prompt[worker:fallback].replace('never runs session start', ''))
+
+
+    def test_references_move_a_workerless_join_to_a_dedicated_session_or_chat(self):
+        root = Path(__file__).resolve().parents[1] / 'skills/quorum'
+        join = ' '.join((root / 'references/join.md').read_text().split())
+        section = join[join.index('## Without a worker'):]
+        for required in ('keep the invitation unused here', 'create a dedicated Quorum session',
+                         'hand it the full invitation unchanged', '`This chat is my dedicated Quorum chat.`',
+                         'reports one setup outcome', 'never envelopes',
+                         'Use only capabilities the client actually exposes',
+                         "never start a headless model, a model CLI or a different provider's client",
+                         'ask the owner once to open a dedicated chat for Quorum',
+                         'explicitly chooses visible parent reception naming that chat', 'does not delegate again',
+                         'In Claude Code auto mode, `session start` can be blocked as background persistence',
+                         '`Bash(uv run *quorum.py*)`', 'never work around the block'):
+            self.assertIn(required, section)
+        self.assertIn('never fall back to parent reception in the owner\'s current chat by default', join)
+        for name in ('service-agent.md', 'claude-worker.md', 'native-inbox.md', 'invite.md', 'sessions.md'):
+            with self.subTest(reference=name):
+                text = ' '.join((root / 'references' / name).read_text().split())
+                self.assertIn('join.md#without-a-worker', text)
+                self.assertNotIn("owner's explicit choice before retrying", text)
+                self.assertNotIn('wait for the owner\'s explicit route choice', text)
+        skill = ' '.join((root / 'SKILL.md').read_text().split())
+        self.assertIn('references/join.md#without-a-worker', skill)
+        self.assertNotIn("requires the owner's explicit choice", skill)
 
 
 if __name__ == '__main__': unittest.main()

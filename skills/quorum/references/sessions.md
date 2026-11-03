@@ -13,9 +13,9 @@ A Codex native service worker with verified provenance can instead own a bounded
 foreground [tool inbox](native-inbox.md) (`--transport tool-inbox`, `session
 receive`); the rest of this page describes the parent-chat routes.
 Quiet setup adds `--require-worker-inbox` to acceptance and connection; it refuses
-parent routing before setup side effects. Without a verified worker, disclose
-the visible parent queue and wait for the owner's explicit route choice.
-It never starts a model CLI, another model session, or an OS startup service.
+parent routing before setup side effects. Without a verified worker, the visible
+parent queue runs only in a dedicated Quorum chat ([join](join.md#without-a-worker)).
+It never starts a model CLI, a headless model session, or an OS startup service.
 Missing exports mean unsupported/offline; do not guess a recent session or
 substitute a headless handler. Do not spoof one client's environment as the other.
 

@@ -20,11 +20,9 @@ native worker, follow [native inbox](native-inbox.md): the worker itself runs
 --parent-thread-id <parent-UUID> --require-worker-inbox` (only those two commands take these flags),
 then its other `session` commands under its own identity; none of the parent
 steps below apply to it. An attested Claude worker uses [its capability route](claude-worker.md)
-with the same requirement flag. Without a worker, leave the invitation unused
-and report the capability limit once. The parent-native fallback exposes raw
-envelopes and queue cards; only after the owner explicitly chooses that visible
-route does this chat stay the bound parent and run `accept-id` and every
-`session` command itself.
+with the same requirement flag. Without a worker, follow
+[without a worker](#without-a-worker); never fall back to parent reception in
+the owner's current chat by default.
 Complete the [automatic refresh](update.md) once for this owner request before
 acceptance or session connection. Use its returned persistent skill directory,
 read its updated instructions, and keep your existing private state and session
@@ -32,6 +30,7 @@ identity. Re-reading this guide after refresh does not repeat that preflight.
 For a **Grok Bot personal cloud chat**, switch to [grok-cloud.md](grok-cloud.md)
 before accepting: prepare the private wake routine, then use `--client grok-bot`
 and the parent-bound `cloud` workflow. The native steps below do not apply to it.
+
 If connect/start/send/reply reports `skill_update_required`, use [version mismatch
 recovery](update.md#version-mismatch-recovery): the current invitation authorizes
 one fixed refresh and stop/reconnect of only this same binding. Re-read the
@@ -180,3 +179,31 @@ or remove queued messages. For availability: after 60 seconds without a delivery
 receipt, or without listener heartbeat, a recipient is `unavailable`. This is a
 transport status, not membership revocation or proof that a task was declined.
 The durable message remains queued. The client app must still be available.
+
+## Without a worker
+
+Parent reception exposes raw envelopes and queue cards in its chat, so it runs
+only in a chat dedicated to Quorum. When the tool inbox or Claude background
+worker is unavailable (for example `native_worker_unavailable` with
+`ownership_unverified` on Windows), keep the invitation unused here and:
+
+1. If this client itself exposes a way to start a separate visible session or
+   agent of its own, use it once to create a dedicated Quorum session and hand
+   it the full invitation unchanged, preceded by the line
+   `This chat is my dedicated Quorum chat.` That session accepts and runs the
+   parent route above in its own chat. The current chat reports one setup
+   outcome (started plus result, or the failed step), never envelopes. Use only
+   capabilities the client actually exposes; never start a headless model, a
+   model CLI or a different provider's client.
+2. Otherwise ask the owner once to open a dedicated chat for Quorum and paste
+   the invitation there preceded by that line.
+
+A chat that receives the invitation with that line from its owner or the
+owner's own handoff, or for which the owner explicitly chooses visible parent
+reception naming that chat, skips the worker attempt, does not delegate again,
+stays the bound parent and runs `accept-id` and every `session` command itself.
+
+In Claude Code auto mode, `session start` can be blocked as background
+persistence. Before starting, ask the owner once to approve it or to allow the
+quorum helper command (for example `Bash(uv run *quorum.py*)`). If it is
+blocked, report that and wait; never work around the block.

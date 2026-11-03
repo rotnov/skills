@@ -209,6 +209,8 @@ class DispatchModeTests(unittest.TestCase):
                              'always require the receiving owner',
                              'owning-server steer', '#35', 'queued input',
                              'Codex active-turn ingress', 'accepted inbox messages between tool calls',
-                             'Do not start a model, another session, headless pilot',
+                             'Do not start a model, headless pilot, OS startup service or any session other than the one dedicated',
+                             'Quorum session of the no-worker route', 'create a dedicated Quorum session',
+                             'paste this invitation there', 'never use this chat for it by default',
                              'native transport listener', 'same private state and actual session UUID'):
                 self.assertIn(required, text)
