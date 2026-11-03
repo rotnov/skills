@@ -15,6 +15,7 @@ import re
 import struct
 
 SYSTEM, ADMINISTRATORS = 'S-1-5-18', 'S-1-5-32-544'
+OWNER_RIGHTS = 'S-1-3-4'  # Grants its rights to the object's current owner, which must already be trusted.
 TRUSTED_INSTALLER = 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464'
 
 DELETE, READ_CONTROL, WRITE_DAC, WRITE_OWNER, SYNCHRONIZE = 0x10000, 0x20000, 0x40000, 0x80000, 0x100000
@@ -28,9 +29,11 @@ REPLACE = DELETE | WRITE_DAC | WRITE_OWNER | FILE_DELETE_CHILD | GENERIC_ALL
 # Group/other-writable (POSIX 0o022) for the Codex rollout tree.
 WRITE = REPLACE | FILE_WRITE_DATA | FILE_APPEND_DATA | FILE_WRITE_EA | FILE_WRITE_ATTRIBUTES | GENERIC_WRITE
 
-# AppContainer package (S-1-15-2-) and capability (S-1-15-3-) SIDs match only AppContainer tokens, and
-# Windows grants such a token only access its user and groups also receive (a dual access check), so
-# a rule naming one never reaches beyond the user's own access: same-user, like a sandboxed process.
+# AppContainer package (S-1-15-2-) and capability (S-1-15-3-) SIDs match only AppContainer or LPAC
+# tokens, never an ordinary one. For those tokens Windows grants the intersection of a user/group pass
+# and a package/capability pass (a dual access check), so a rule naming one can never grant access the
+# token's own user or groups do not already receive from other rules, which are checked anyway:
+# same-user, like a sandboxed process of that user.
 APP_CONTAINER = ('S-1-15-2-', 'S-1-15-3-')
 
 ALLOWED, DENIED = 0, 1
@@ -101,7 +104,8 @@ def evaluate(descriptor, kind, policy, user, owners):
 
     - 'ancestor': owned by the user, SYSTEM, Administrators or TrustedInstaller; no other principal may
       delete, rename or re-permission it (others may only add entries, like a sticky directory).
-      AppContainer package/capability rules count as the user's own (see `APP_CONTAINER`).
+      AppContainer package/capability rules count as the user's own (see `APP_CONTAINER`), and an
+      OWNER RIGHTS rule grants only the already trusted owner.
     - 'claude' 'private' directory: owned by the user; a protected DACL with no inherited ACE whose allow
       ACEs name only the user, SYSTEM or Administrators (POSIX 0700).
     - 'claude' 'file': owned by the user; allow ACEs name only the user, SYSTEM or Administrators (POSIX
@@ -114,6 +118,7 @@ def evaluate(descriptor, kind, policy, user, owners):
     if kind == 'ancestor':
         trusted, limit = {user, *owners, *administrators, TRUSTED_INSTALLER}, REPLACE
         if owner not in trusted: raise Unsafe()
+        trusted.add(OWNER_RIGHTS)
     else:
         trusted, limit = {user, *administrators}, WRITE
         if owner not in {user, *owners}: raise Unsafe()

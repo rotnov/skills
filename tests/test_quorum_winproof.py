@@ -109,6 +109,16 @@ class DescriptorDecisionTests(unittest.TestCase):
             self.assertTrue(accepted(descriptor(ADMINS, windows_root + [(0, 0, FULL, sid)]), 'ancestor'))
             self.assertFalse(accepted(descriptor(USER, [(0, 3, FULL, USER), (0, 0, FULL, sid)]), 'private'))
             self.assertFalse(accepted(descriptor(USER, [(0, 0, FULL, USER), (0, 0, FULL, sid)]), 'file', 'codex'))
+        # Beside a capability with full control, another account's write still refuses.
+        self.assertFalse(accepted(descriptor(ADMINS, windows_root + [(0, 0, FULL, capability), (0, 0, MODIFY, OTHER)]),
+                                  'ancestor'))
+        # OWNER RIGHTS grants only the trusted owner (seen on an elevated runner's profile directories);
+        # an untrusted owner still refuses, and private paths never accept it.
+        owner_rights = sid_bytes(proof.OWNER_RIGHTS)
+        self.assertTrue(accepted(descriptor(ADMINS, [(0, 3, FULL, SYSTEM), (0, 3, FULL, ADMINS), (0, 3, FULL, owner_rights)]),
+                                 'ancestor'))
+        self.assertFalse(accepted(descriptor(OTHER, [(0, 3, FULL, owner_rights)]), 'ancestor'))
+        self.assertFalse(accepted(descriptor(USER, [(0, 3, FULL, USER), (0, 3, FULL, owner_rights)]), 'private'))
         # A sandbox user group or another account with Modify (seen on real %TEMP%) stays refused.
         self.assertFalse(accepted(descriptor(USER, windows_root + [(0, 3, MODIFY, OTHER)]), 'ancestor'))
         for right in (0x10000, 0x40000, 0x80000, 0x40, 0x10000000, MODIFY):
