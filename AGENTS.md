@@ -16,9 +16,10 @@
   Codex- or Claude-only presentation files. Skill identity and routing come
   only from the `SKILL.md` frontmatter.
 - Give every skill a `skills/<skill-name>/README.md` for humans. Its
-  `## Install the skill` section starts with a one-line blockquoted LLM prompt
-  (at most 200 characters) such as `Set up <Skill> for me: fetch and follow
-  this guide https://github.com/rotnov/skills/tree/main/skills/<skill-name>`.
+  `## Install the skill` section starts with a one-line LLM prompt (at most
+  200 characters) in a ` ```text ` code block, so GitHub shows a copy button,
+  such as `Set up <Skill> for me: fetch and follow this guide
+  https://github.com/rotnov/skills/blob/main/skills/<skill-name>/README.md`.
   Put the agent's steps in a `## Setup guide for agents` section of the same
   README: a global Claude Code and Codex install with the newest skills CLI at
   or above the tested minimum (`skills@>=1.7.4`), then reading its `SKILL.md`.

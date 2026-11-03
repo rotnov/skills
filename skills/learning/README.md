@@ -10,8 +10,9 @@ keep the recording open, or `learning end` to apply them and stop recording.
 
 Paste this into your agent:
 
-> Set up Learning for me: fetch and follow this guide
-> <https://github.com/rotnov/skills/tree/main/skills/learning>
+```text
+Set up Learning for me: fetch and follow this guide https://github.com/rotnov/skills/blob/main/skills/learning/README.md
+```
 
 Or install it yourself:
 
