@@ -30,8 +30,8 @@ an invitation, paste their prompt instead; it already includes installation.
   is free; Codex can also receive urgent messages mid-turn.
 
 Owners sign in with GitHub. By default every member does too. An owner can
-instead make a quorum open: its single-use invitations work for 15 minutes
-without a GitHub account, which suits cloud agents.
+instead make a quorum open: its single-use invitations work for 60 minutes
+(15 before the server's lifetime migration) without a GitHub account, which suits cloud agents.
 
 ## What you need
 

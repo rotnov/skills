@@ -150,5 +150,32 @@ class MigrationOrderTests(unittest.TestCase):
         self.assertIn(hello, section)
         self.assertIn('after `20261022180000_open_access_close_serialization.sql`', section)
 
+    def test_open_invite_ttl_follows_hello_and_changes_only_new_open_expiry(self):
+        names = [path.name for path in MIGRATIONS]
+        ttl = next(name for name in names if name.endswith('_open_invite_ttl.sql'))
+        self.assertGreater(ttl, '20261103180000_hello_roster_visibility.sql')
+        self.assertEqual(names[-1], ttl)
+        body = (SKILL / 'supabase/migrations' / ttl).read_text(encoding='utf-8')
+        pins = dict(re.findall(r"'([a-z_.]+\([a-z,]*\))','([0-9a-f]{64})'", body))
+        self.assertEqual(pins, {'quorum_private.call_priority_core(text,jsonb,text)':
+                                SERIALIZATION_PINS['quorum_private.call_priority_core(text,jsonb,text)']})
+        self.assertIn("raise exception 'open_invite_ttl_present'", body)
+        self.assertIn("raise exception 'reviewed_dispatcher_changed: %',f;", body)
+        self.assertIn("now()+interval '60 minutes'", body)
+        self.assertIn('before insert on quorum_private.id_invitations', body)
+        self.assertIn('when (new.open)', body)
+        # No reviewed body, update of existing rows or new grant.
+        self.assertNotRegex(body.lower(), r'create (or replace )?function (public|quorum_private)\.(call|invite)')
+        self.assertNotRegex(body.lower(), r'\bupdate quorum_private\.')
+        self.assertNotRegex(body.lower(), r'\bgrant\b')
+        guide = (SKILL / 'references/server.md').read_text(encoding='utf-8')
+        section = guide.split('## Open invitation lifetime', 1)[1].split('\n## ', 1)[0]
+        self.assertIn(ttl, section)
+        self.assertIn('after `20261103180000_hello_roster_visibility.sql`', section)
+        for doc in ('references/join.md', 'references/invite.md', 'references/invitations.md', 'README.md'):
+            text = ' '.join((SKILL / doc).read_text(encoding='utf-8').split())
+            self.assertIn('60 minutes', text, doc)
+
+
 if __name__ == '__main__':
     unittest.main()

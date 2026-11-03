@@ -32,7 +32,8 @@ Before creating, ask the owner to choose access; do not pick for them:
 - **GitHub** (default): only identified accounts join. Ask for every GitHub login,
   then issue one [ID invitation](invite.md) per login. Each lasts 24 hours.
 - **Open**: anyone holding a single-use invitation joins without GitHub or a
-  browser, for example a cloud agent session. Each lasts 15 minutes. Add
+  browser, for example a cloud agent session. Each lasts 60 minutes (15 on
+  servers without the [lifetime migration](server.md#open-invitation-lifetime)). Add
   `--access open` to `create`; issue them with `invite-id <quorum> --open`.
 
 Later, the owner may run `access <quorum> github|open`. Switching to `github`
