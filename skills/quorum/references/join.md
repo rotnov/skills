@@ -84,7 +84,8 @@ whether to issue an open invitation instead.
 register a device/agent, guess a session ID, start a model/listener or connect a
 headless pilot. A consumed invite cannot restore revoked membership. Expired,
 revoked, wrong-target and anonymous acceptance of a GitHub invitation are denied,
-including cached retries. GitHub invitations expire after 24 hours; open ones after 15 minutes.
+including cached retries. GitHub invitations expire after 24 hours; open ones after 60 minutes (15 on servers
+without the [open invitation lifetime](server.md#open-invitation-lifetime) migration).
 `expires_at` is server data. Do not judge expiry yourself: a machine clock
 can be hours off, so never compare it with the OS clock, helper output or your
 own sense of the date. Always attempt acceptance; only the server's accept

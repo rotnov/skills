@@ -95,7 +95,9 @@ issue one invitation per intended session:
 uv run --project <skill-dir> --frozen python <skill-dir>/scripts/quorum.py --state <private-state> invite-id <quorum> --open --request-id <stable-id>
 ```
 
-It is single-use, expires after 15 minutes and needs no GitHub account or browser.
+It is single-use, expires after 60 minutes (15 on servers without the
+[open invitation lifetime](server.md#open-invitation-lifetime) migration) and
+needs no GitHub account or browser.
 Until accepted or expired, anyone holding `session_prompt` can join, so give it
 only to the intended recipient and issue a new one after expiry. A GitHub-access
 quorum refuses open invitations. Joined members can use member operations only.

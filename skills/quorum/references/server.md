@@ -143,6 +143,17 @@ agent/device/membership rows through commit so revocation serializes with the
 operation. Ordinary receipt behavior and existing reviewed RPC bodies remain
 unchanged. Status reads remain point-in-time snapshots.
 
+## Open invitation lifetime
+
+After reviewing the source and obtaining administrator deployment authorization,
+apply
+[`20261103190000_open_invite_ttl.sql`](../supabase/migrations/20261103190000_open_invite_ttl.sql)
+in one transaction after `20261103180000_hello_roster_visibility.sql`. New open
+invitations then expire 60 minutes after issue instead of 15. A row trigger sets
+only that expiry; it pins the reviewed open-access core, refuses drift or
+reapplication, and leaves GitHub invitations, existing rows, acceptance and
+grants unchanged.
+
 ## Hello reporting extension
 
 After reviewing the source and obtaining administrator deployment authorization,

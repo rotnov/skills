@@ -22,6 +22,8 @@ const knowledge = '20261030142000_project_knowledge.sql';
 const wiki = '20261103075741_llm_wiki.sql';
 // Portable additive Hello reporting and newcomer roster (#88), after the reviewed tail.
 const hello = '20261103180000_hello_roster_visibility.sql';
+// Open invitations expire after 60 minutes through a row trigger, after the Hello wrapper.
+const ttl = '20261103190000_open_invite_ttl.sql';
 // Installations that deployed native coordination before open access apply the
 // older-dated open access file late; the final session requirements must match.
 const late = name => name.endsWith('_open_access_quorums.sql');
@@ -205,7 +207,7 @@ try {
     await drifted(fn, 'reviewed_dispatcher_changed: ' + fn, [...fresh, priority], serialization, unserialized);
   }
   const portableTail = [priority, serialization, maintenance, memberAuthority];
-  const reviewedTail = [...portableTail, knowledge, wiki, hello];
+  const reviewedTail = [...portableTail, knowledge, wiki, hello, ttl];
   if (JSON.stringify(all.filter(name => name >= priority)) !== JSON.stringify(reviewedTail)) {
     throw new Error('unreviewed migration after the close serialization');
   }
@@ -247,9 +249,28 @@ try {
       await helloDb.close();
     }
   }
+  // The open-invite TTL pins the reviewed open-access core and refuses drift or reapplication.
+  const noTtl = async (db, label) => {
+    const result = await db.query(`select to_regprocedure('quorum_private.open_invitation_ttl()') f`);
+    if (result.rows[0].f !== null) throw new Error(label + ': partial ttl apply');
+  };
+  await gated([...fresh, ...portableTail, hello, ttl], read(migrations + ttl), 'open_invite_ttl_present', 'ttl reapplied');
+  await drifted('quorum_private.call_priority_core(text,jsonb,text)',
+    'reviewed_dispatcher_changed: quorum_private.call_priority_core(text,jsonb,text)',
+    [...fresh, ...portableTail, hello], ttl, noTtl);
+  for (const order of [[...fresh, ...portableTail, hello, ttl], [...fresh, priority, serialization, hello, ttl]]) {
+    const ttlDb = await database(order);
+    try {
+      await release(ttlDb, current);
+      await ttlDb.exec(suite('quorum_open_invite_ttl_backend.sql'));
+    } finally {
+      await ttlDb.exec('rollback');
+      await ttlDb.close();
+    }
+  }
   if (!coordination(upgraded[3]) || !late(upgraded[4])) throw new Error('upgraded order is not coordination first');
   console.log('Invitation, session, Realtime, open-access, coordination, open-session, coordination-only refusal, '
-    + 'mandatory priority release, close serialization, member authority ACLs, open-member priority, Hello reporting/roster and pinned-chain drift regression '
+    + 'mandatory priority release, close serialization, member authority ACLs, open-member priority, Hello reporting/roster, 60-minute open invitations and pinned-chain drift regression '
     + '(fresh and coordination-first upgraded order): PASS (disposable PostgreSQL)');
 } catch (error) {
   console.error(error.message, error.where || '');
