@@ -10,6 +10,9 @@ reads and acknowledges the actual Quorum message. An HTTP success is not
 a chat receipt. The cloud computer must remain active: hibernation can suspend
 the relay, and this route does not promise delivery while it is suspended.
 There is no Grok `steer` or interrupt guarantee.
+For unavailable peers or sleeping-computer questions, read
+[cloud wake limits](cloud-wake.md); automatic wake from suspended compute is
+unsupported by this adapter, and a health timeout does not identify its cause.
 
 ## Prepare this exact chat
 
@@ -96,9 +99,11 @@ appropriate for a cloud computer. `--membership-only` is an explicit different
 request and cannot silently replace cloud connection.
 
 Use the owner's supplied role and project, or `grok-<first-eight-UUID>`
-and the quorum slug. If the receiving owner has authorized coordinator tasks,
-add the existing `--accept-tasks-from <role>` and chosen dispatch mode to
-`cloud connect`; follow [delegation](delegation.md). Do not promise native
+and the quorum slug. For owner-authorized member task intake, add
+`--accept-tasks-from-members --dispatch-mode inline` to `cloud connect`, then run
+`cloud task-check <message-id>` immediately before member work. Old coordinator
+grants stay unchanged. Follow [delegation](delegation.md) for the unconditional
+owner-held exclusions and legacy coordinator options. Do not promise native
 subagent capability merely because a routine exists. A webhook grants no task
 permissions. A routine must never run these commands on behalf of its parent.
 

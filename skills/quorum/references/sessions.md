@@ -12,6 +12,9 @@ including separate `cloud` commands; do not route them through native discovery.
 A Codex native service worker with verified provenance can instead own a bounded
 foreground [tool inbox](native-inbox.md) (`--transport tool-inbox`, `session
 receive`); the rest of this page describes the parent-chat routes.
+Quiet setup adds `--require-worker-inbox` to acceptance and connection; it refuses
+parent routing before setup side effects. Without a verified worker, disclose
+the visible parent queue and wait for the owner's explicit route choice.
 It never starts a model CLI, another model session, or an OS startup service.
 Missing exports mean unsupported/offline; do not guess a recent session or
 substitute a headless handler. Do not spoof one client's environment as the other.
@@ -74,6 +77,9 @@ current `poll_seconds` safety/fallback interval and `notification_signals`.
 `last_signal_at`, `last_connected_at`, `last_fallback_at` are local Unix timestamps;
 `last_wake` distinguishes a signal, subscription, safety scan or fallback poll.
 These diagnostics prove transport activity, not delivery to the actual chat.
+For unavailable peers, `session peers` adds unsupported automatic-wake guidance
+while preserving the original health and reason. Hosting and suspension remain
+unknown; see [cloud wake limits](cloud-wake.md) when diagnosing sleeping chats.
 `release` contains the last compatibility check's `installed`, `required` and
 `update_required` fields (unknown fields are null); status is offline and does
 not fetch current server requirements. A stale active process can also appear
@@ -311,16 +317,19 @@ if a necessary action requires that human.
 
 ## Delegation and availability
 
-For the receiving owner's one-time coordinator task grant, read
-[delegation](delegation.md). Connecting without that opt-in grants reception only.
-`session delegate --revoke` takes effect for new envelopes immediately; inspect
-current status before acting on a grant quoted in an older queued envelope.
+For receiving-owner task intake from current/future quorum members or a pinned
+coordinator, read [delegation](delegation.md). Connecting without that opt-in grants
+reception only. Member intake uses `--accept-tasks-from-members` with inline mode
+and requires fresh `session task-check <message-id>` immediately before work;
+queued envelopes and local status cannot prove current sender membership.
+`session delegate --revoke` takes effect for new envelopes and task checks;
+coordinator intake still requires current status before acting on an old envelope.
 Add `--dispatch-mode native-subagent` to `session connect` alongside
 `--accept-tasks-from <coordinator-role>`, or to `session delegate` alongside
 `--coordinator-role <coordinator-role>`, only on the receiving owner's explicit
 instruction. The private grant/status stores this choice; default and legacy
 grants execute inline, and revocation removes the mode. Follow
-[delegation](delegation.md#dispatch-matching-tasks) for matching-only native
+[delegation](delegation.md#coordinator-compatibility) for matching-only native
 workers, the two-worker limit, parent replies and unavailable-capability fallback.
 Workers do not bypass queued input. Active-turn ingestion is the separate Codex
 [urgent message](#urgent-messages) steering route or Claude Code's

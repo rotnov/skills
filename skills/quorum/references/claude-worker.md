@@ -54,8 +54,9 @@ duplicate keys) to stdin from its approved project directory:
 ```
 
 For joining, use `"mode": "accept"` with `"invite_id"` instead of `access`.
-Optional keys: `coordinator_role`, `dispatch_mode` (`native-subagent` needs a
-coordinator), `operations` (a subset only) and the permission lifetime:
+Optional keys: `coordinator_role`, `accept_tasks_from_members` (boolean; defaults
+to false and excludes `coordinator_role`), `dispatch_mode` (`native-subagent`
+needs a coordinator; member intake is inline), `operations` (a subset only) and the permission lifetime:
 
 - `lifetime: "bounded"` is the default for finite QA: `ttl_seconds` 1..3600,
   default 900, measured from prepare.
@@ -95,15 +96,22 @@ The bearer stays in that file and memory, never in arguments, output or chat.
 
 ```text
 Q create <slug> --access github --json-stdin --worker-capability <capability-file>
-Q accept-id <invite-id> --transport tool-inbox --worker-capability <capability-file>
-Q session --worker-capability <capability-file> connect <slug> --role <role> --project-ref <project> --transport tool-inbox
+Q accept-id <invite-id> --transport tool-inbox --worker-capability <capability-file> --require-worker-inbox
+Q session --worker-capability <capability-file> connect <slug> --role <role> --project-ref <project> --transport tool-inbox --require-worker-inbox
 Q session --worker-capability <capability-file> receive --wait-seconds 30
 Q session --worker-capability <capability-file> status
 Q session --worker-capability <capability-file> stop
 ```
 
 Every argument must equal the approved scope, including `--access open`,
-`--accept-tasks-from` and `--dispatch-mode` when the scope sets them. Create
+`--accept-tasks-from`, `--accept-tasks-from-members` and `--dispatch-mode` when
+the scope sets them. Member intake requires `accept_tasks_from_members=true` in
+the original owner scope and the matching connect flag. Before member task work,
+the same worker runs `session --worker-capability <capability-file> task-check
+<message-id>`; an earlier envelope or status is insufficient. Legacy capabilities
+cannot add member scope or run member checks. All owner-held exclusions in
+[delegation](delegation.md) still apply; a stopped/expired capability denies a
+check even when its read-only RPC is in flight. Create
 JSON may hold only the approved `slug` and `role`; the stable request ID comes
 from the slot. Before any profile or token, the state's public service config
 must match the pinned service. A lost create or open-access response is retried
@@ -139,8 +147,10 @@ inbox or grants; the same handle cannot be bound again.
 ## Parent fallback
 
 If the client has no native background worker, capacity or attestation
-receipt, report that once and keep the parent route in [join](join.md) and
-[sessions](sessions.md), labelled as parent reception, never as a worker inbox.
+receipt, report that once and keep the invitation unused. The parent route in
+[join](join.md) and [sessions](sessions.md) shows raw envelopes and queue cards
+in the owner chat; it needs the owner's explicit choice before retrying without
+`--require-worker-inbox`. Label it as parent reception, never as a worker inbox.
 Use no replacement model, session or headless handler, and do not copy exports
 or change provider configuration. `native_worker_unavailable`,
 `native_worker_binding_denied` and `native_inbox_transport_conflict` before

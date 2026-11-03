@@ -62,14 +62,19 @@ public side effects. Write "No external writes" when applicable. -->
 ```text
 skills/<skill-name>/
 ├── SKILL.md
-├── agents/
-│   └── openai.yaml
+├── README.md
 └── evals/
     └── evals.json
 ```
 
 <!-- Add references/, scripts/, or assets/ only when justified. Never attach a
 ZIP as the primary review artifact. -->
+
+<!-- README.md must include an "## Install the skill" section with a blockquoted
+LLM prompt naming the skill, linking
+https://github.com/rotnov/skills/tree/main/skills/<skill-name>, requesting a global
+Claude Code and Codex install using skills@>=1.7.4, and ending with reading
+SKILL.md. Keep the bundle free of client-specific metadata. -->
 
 <details>
 <summary>Optional short proposed files</summary>

@@ -77,7 +77,7 @@ LIMITATIONS = (
     'Parent-history quietness is not proved by metadata.',
     'Token totals use only authorized client-reported usage; message length is not model usage.',
     'Cache tokens are added only when the report says they are disjoint. Cache-inclusive input is not added again.',
-    'The same usage measurement is stored once. A conflicting same-source window is rejected. A later shared-parent window is excluded.',
+    'The same usage measurement is stored once. A conflicting nonshared same-source window is rejected. Shared reports are provisional until a nonshared report covers the same model and exact window; they are then excluded in either arrival order.',
     'Attributed coordination usage is not a counterfactual cost saving.',
     'Duplicate side effects are not inferred from the local ledger.',
     'No server export or service-role observation is used.',
@@ -259,9 +259,11 @@ class DebugService:
                 self._save(run)
             return self._report_view(run)
 
-    def collect(self, publish=True):
+    def collect(self, publish=True, *, watch_origin=None):
         with self._lock():
             run = self._require()
+            if watch_origin is not None and not self._owns_host(run, watch_origin):
+                return {'run_id': watch_origin[0], 'state': 'ended', 'collected': False, 'publication': 'ended'}
             self._expire(run)
             self._note_host_failure(run)
             if run['state'] != 'active':
@@ -277,9 +279,14 @@ class DebugService:
             self._count(run)
             self._save(run)
             events_added = len(run['events']) - before
-        publication = self._publish_pending() if publish else 'skipped'
+        publication = self._publish_pending(watch_origin=watch_origin) if publish else 'skipped'
         with self._lock():
-            run = self._require()
+            if watch_origin is None:
+                run = self._require()
+            else:
+                run, _place = self._origin(watch_origin[0])
+                if run is None:
+                    raise DebugError('debug_grant_ended')
             return {
                 'state': run['state'], 'collected': True,
                 'live_observation': run['collection']['live_observation'],
@@ -333,7 +340,9 @@ class DebugService:
             self._save(run)
             return self._token_view(run)
 
-    def analyze(self, finding_id, conclusion, confidence):
+    def analyze(self, finding_id, conclusion, confidence, *, run_id):
+        if not isinstance(run_id, str) or not RUN_RE.fullmatch(run_id):
+            raise DebugError('debug_invalid_scope', field='run_id')
         if confidence not in ('low', 'medium', 'high') or not isinstance(conclusion, str):
             raise DebugError('debug_conclusion_rejected')
         text = conclusion.strip()
@@ -344,15 +353,23 @@ class DebugService:
             raise DebugError('debug_conclusion_rejected')
         with self._lock():
             run = self._require()
+            if run['run_id'] != run_id:
+                raise DebugError('debug_invalid_scope', field='run_id')
+            if self._expire(run):
+                self._save(run)
+            if run['state'] != 'active':
+                raise DebugError('debug_grant_ended')
             found = next((item for item in run['findings'] if item['finding_id'] == finding_id), None)
             if found is None:
                 raise DebugError('debug_finding_unknown')
+            if found.get('analysis') != 'pending' or found.get('actionable') is not True:
+                raise DebugError('debug_conclusion_rejected')
             found['analysis'] = 'recorded'
             found['conclusion'] = text
             found['confidence'] = confidence
             self._count(run)
             self._save(run)
-            return {'finding_id': finding_id, 'analysis': 'recorded'}
+            return {'run_id': run_id, 'finding_id': finding_id, 'analysis': 'recorded'}
 
     def publish(self):
         with self._lock():
@@ -379,25 +396,26 @@ class DebugService:
         if cycles is not None and (type(cycles) is not int or not 1 <= cycles <= 100000):
             raise DebugError('debug_invalid_scope', field='cycles')
         sleeper = sleeper or self.sleeper
-        self._attach_host(interval)
+        origin = self._attach_host(interval)
         completed = 0
         try:
             while cycles is None or completed < cycles:
-                if not self._heartbeat():
+                if not self._heartbeat(origin):
                     break
                 if on_cycle is not None:
                     on_cycle()
-                if not self._grant_running():
+                if not self._grant_running(origin):
                     break
-                self.collect(publish=True)
+                if not self.collect(publish=True, watch_origin=origin)['collected']:
+                    break
                 completed += 1
                 if cycles is not None and completed >= cycles:
                     break
-                if not self._sleep_until(interval, sleeper):
+                if not self._sleep_until(interval, sleeper, origin):
                     break
         finally:
-            self._detach_host('cycle_limit' if cycles is not None and completed >= (cycles or 0) else 'stopped')
-        view = self.status()
+            self._detach_host('cycle_limit' if cycles is not None and completed >= (cycles or 0) else 'stopped', origin)
+        view = self._watch_result(origin)
         view['cycles_completed'] = completed
         return view
 
@@ -462,6 +480,7 @@ class DebugService:
             'host': {'pid': None, 'token': None, 'heartbeat_at': None, 'interval_seconds': None, 'state': 'handoff'},
             'coverage': {
                 'participants': [], 'unavailable_bindings': [], 'engines': [], 'unreadable': [],
+                'unreadable_unscoped': [],
                 'metadata_only': True, 'task_acceptance': 'unavailable', 'task_completion': 'unavailable',
                 'definite_non_delivery': 'not_inferable_from_local_metadata', 'other_owners': 'unavailable',
             },
@@ -469,7 +488,7 @@ class DebugService:
             'events': [], 'events_dropped': 0, 'findings': [], 'findings_dropped': 0,
             'observations': [], 'gaps': [], 'publication': [], 'pending': [],
             'usage': {
-                'totals': {}, 'reported_sources': [], 'windows': [], 'records': [],
+                'totals': {}, 'reported_sources': [], 'windows': [], 'records': [], 'excluded_records': [],
                 'excluded': 0, 'debugger_invocations': 0,
             },
         }
@@ -477,13 +496,14 @@ class DebugService:
     def _observe(self, run, *, baseline):
         now = iso(self.clock())
         snapshots = read_local(self.root, run['scope'])
-        participants, unavailable, unreadable, engines = [], [], [], []
+        participants, unavailable, unreadable, unscoped, engines = [], [], [], [], []
         seen, seen_keys = set(), set()
         for snapshot in snapshots:
             binding = snapshot.get('binding')
             if snapshot.get('unreadable'):
-                if binding not in unreadable:
-                    unreadable.append(binding)
+                bucket = unscoped if snapshot.get('unreadable_unscoped') else unreadable
+                if binding not in bucket:
+                    bucket.append(binding)
                 continue
             if not in_scope(snapshot, run['scope']):
                 continue
@@ -503,10 +523,10 @@ class DebugService:
                 unavailable.append(binding)
         self._refresh_source_freshness(run, seen, seen_keys, now)
         run['coverage'].update(participants=participants, unavailable_bindings=unavailable,
-                               unreadable=unreadable, engines=sorted(set(engines)))
+                               unreadable=unreadable, unreadable_unscoped=unscoped, engines=sorted(set(engines)))
         if seen:
             collection_state, live = 'attached', True
-        elif unreadable:
+        elif unreadable or unscoped:
             collection_state, live = 'unreadable', False
         else:
             collection_state, live = 'no_source', False
@@ -966,36 +986,54 @@ class DebugService:
         return (
             record['source'], record['model'], record['window_start'], record['window_end'],
             record['category'], record['quality'], record['cache_semantics'],
-            *(record[field] for field in TOKEN_FIELDS),
+            *(record[field] for field in TOKEN_FIELDS), record.get('shared_parent_sid', False),
         )
 
     def _store_usage(self, run, record):
-        records = run['usage'].setdefault('records', [])
-        if any(self._measurement(item) == self._measurement(record) for item in records):
-            return
+        usage = run['usage']
+        records = usage.setdefault('records', [])
+        excluded = usage.setdefault('excluded_records', [])
+        known = records + excluded
         same_window = [
-            item for item in records
+            item for item in known
             if item['model'] == record['model'] and item['window_start'] == record['window_start']
             and item['window_end'] == record['window_end']
         ]
-        if record['shared_parent_sid'] and same_window:
-            run['usage']['excluded'] += 1
-            return
-        if any(item['source'] == record['source'] for item in same_window):
-            raise DebugError('debug_usage_rejected', reason='conflicting_window')
-        records.append(record)
-        window = [record['source'], record['model'], record['window_start'], record['window_end']]
-        if window not in run['usage']['windows']:
-            run['usage']['windows'].append(window)
-        if record['source'] not in run['usage']['reported_sources']:
-            run['usage']['reported_sources'].append(record['source'])
-        totals = run['usage']['totals'].setdefault(record['category'], {})
-        totals[record['quality']] = totals.get(record['quality'], 0) + record['tokens']
+        if not any(self._measurement(item) == self._measurement(record) for item in known):
+            if not record['shared_parent_sid'] and any(
+                    item['source'] == record['source'] and not item.get('shared_parent_sid') for item in same_window):
+                raise DebugError('debug_usage_rejected', reason='conflicting_window')
+            records.append(record)
+        parents = {
+            (item['model'], item['window_start'], item['window_end'])
+            for item in records if not item.get('shared_parent_sid')
+        }
+        counted = []
+        for item in records:
+            window = (item['model'], item['window_start'], item['window_end'])
+            if item.get('shared_parent_sid') and window in parents:
+                excluded.append(item)
+                usage['excluded'] += 1
+            else:
+                counted.append(item)
+        usage['records'] = counted
+        usage['totals'] = {}
+        for item in counted:
+            totals = usage['totals'].setdefault(item['category'], {})
+            totals[item['quality']] = totals.get(item['quality'], 0) + item['tokens']
+        for item in counted + excluded:
+            window = [item['source'], item['model'], item['window_start'], item['window_end']]
+            if window not in usage['windows']:
+                usage['windows'].append(window)
+            if item['source'] not in usage['reported_sources']:
+                usage['reported_sources'].append(item['source'])
 
-    def _publish_pending(self):
+    def _publish_pending(self, *, watch_origin=None):
         with self._lock():
             run = self._load()
             if run is None:
+                return 'ended'
+            if watch_origin is not None and not self._owns_host(run, watch_origin):
                 return 'ended'
             self._expire(run)
             if run['state'] != 'active':
@@ -1011,16 +1049,19 @@ class DebugService:
             probed = self.publisher.probe()
         except (OSError, subprocess.SubprocessError):
             probed = {'available': False, 'tool': 'gh', 'blocker': 'gh_auth_unavailable'}
-        probe_result = self._record_probe(origin_id, repo, probed)
+        probe_result = self._record_probe(origin_id, repo, probed, watch_origin)
         if probe_result != 'continue':
             return probe_result
         seen = set()
         for _step in range(8 * (MAX_FINDINGS + 1)):
             with self._lock():
                 run, place = self._origin(origin_id)
-                if run is None or not self._origin_can_mutate(run, place, repo):
-                    if run is not None:
+                if run is None or not self._origin_can_mutate(run, place, repo, watch_origin):
+                    if run is not None and watch_origin is None:
                         self._save_origin(run, place)
+                    return 'ended'
+                if self._expire(run):
+                    self._save_origin(run, place)
                     return 'ended'
                 step = self._next_step(run, seen)
                 self._save_origin(run, place)
@@ -1031,21 +1072,27 @@ class DebugService:
             with self._lock():
                 run, place = self._origin(origin_id)
                 if run is None or run['scope'].get('report_repository') != repo:
-                    if run is not None:
+                    if run is not None and watch_origin is None:
                         self._save_origin(run, place)
                     return 'ended'
-                if place == 'current':
+                owns_watch = watch_origin is None or self._owns_host(run, watch_origin)
+                if place == 'current' and owns_watch:
                     self._touch_host(run)
-                self._expire(run)
+                if watch_origin is None or (place == 'current' and owns_watch):
+                    self._expire(run)
+                # Settle only this already-dispatched operation on its pinned origin.
+                # Losing watch ownership cannot authorize another external step.
                 self._apply_outcome(run, step, outcome)
                 self._save_origin(run, place)
-                if not self._origin_can_mutate(run, place, repo):
+                if not self._origin_can_mutate(run, place, repo, watch_origin):
                     return 'ended'
         return 'uncertain'
 
-    def _record_probe(self, origin_id, repo, probed):
+    def _record_probe(self, origin_id, repo, probed, watch_origin=None):
         with self._lock():
             run, place = self._origin(origin_id)
+            if watch_origin is not None and (run is None or not self._origin_can_mutate(run, place, repo, watch_origin)):
+                return 'ended'
             if run is None or run['scope'].get('report_repository') != repo:
                 if run is not None:
                     self._save_origin(run, place)
@@ -1065,8 +1112,9 @@ class DebugService:
             self._save_origin(run, place)
             return 'continue'
 
-    def _origin_can_mutate(self, run, place, repo):
-        return place == 'current' and run.get('state') == 'active' and run['scope'].get('report_repository') == repo
+    def _origin_can_mutate(self, run, place, repo, watch_origin=None):
+        return (place == 'current' and run.get('state') == 'active' and run['scope'].get('report_repository') == repo
+                and (watch_origin is None or self._owns_host(run, watch_origin)))
 
     def _origin(self, run_id):
         current = self._load()
@@ -1442,15 +1490,23 @@ class DebugService:
             }
             run['collection']['collector'] = 'bounded_local_watch'
             self._save(run)
+            return run['run_id'], token
 
-    def _heartbeat(self):
+    def _owns_host(self, run, origin=None):
+        token = origin[1] if origin is not None else self._host_token
+        return bool(token and run and (run.get('host') or {}).get('token') == token
+                    and (origin is None or run.get('run_id') == origin[0]))
+
+    def _heartbeat(self, origin=None):
         with self._lock():
             run = self._load()
             if run is None:
                 return False
-            self._expire(run)
             host = run.get('host') or {}
-            if host.get('token') != self._host_token or run.get('state') != 'active':
+            if not self._owns_host(run, origin):
+                return False
+            self._expire(run)
+            if run.get('state') != 'active':
                 self._save(run)
                 return False
             host['heartbeat_at'] = iso(self.clock())
@@ -1459,34 +1515,36 @@ class DebugService:
             self._save(run)
             return True
 
-    def _grant_running(self):
+    def _grant_running(self, origin=None):
         with self._lock():
             run = self._load()
             if run is None:
                 return False
-            self._expire(run)
-            host = run.get('host') or {}
-            running = run.get('state') == 'active' and host.get('token') == self._host_token
-            self._save(run)
+            if not self._owns_host(run, origin):
+                return False
+            expired = self._expire(run)
+            running = run.get('state') == 'active'
+            if expired:
+                self._save(run)
             return running
 
-    def _sleep_until(self, interval, sleeper):
+    def _sleep_until(self, interval, sleeper, origin=None):
         remaining = interval
         while remaining > 0:
-            if not self._grant_running():
+            if not self._grant_running(origin):
                 return False
             step = 1 if remaining >= 1 else remaining
             sleeper(step)
             remaining -= step
-        return self._grant_running()
+        return self._grant_running(origin)
 
-    def _detach_host(self, reason):
+    def _detach_host(self, reason, origin=None):
         with self._lock():
             run = self._load()
             if not run:
                 return
             host = run.setdefault('host', {})
-            if host.get('token') != self._host_token:
+            if not self._owns_host(run, origin):
                 return
             if run.get('state') == 'expired':
                 reason = 'expired'
@@ -1495,6 +1553,15 @@ class DebugService:
             host.update(state='stopped', pid=None, token=None, stopped_reason=reason,
                         heartbeat_at=iso(self.clock()))
             self._save(run)
+
+    def _watch_result(self, origin):
+        with self._lock():
+            run, _place = self._origin(origin[0])
+            if run is None:
+                raise DebugError('debug_grant_ended')
+            # Derive expiry in this local view, without rewriting current or archive.
+            self._expire(run)
+            return self._status_view(run, probe_github=False)
 
     def _touch_host(self, run):
         host = run.get('host') or {}
@@ -1517,18 +1584,23 @@ class DebugService:
     def _count(self, run):
         run['usage']['debugger_invocations'] += 1
 
-    def _github_view(self, run):
+    def _github_view(self, run, *, probe=True):
         repo = run['scope'].get('report_repository')
         if not repo:
             return {'tool': 'gh', 'available': False, 'authorized': False, 'blocker': 'not_authorized',
                     'writes': 'none'}
-        probed = run.get('github') or self.publisher.probe()
-        run['github'] = probed
+        probed = run.get('github')
+        if not probed:
+            if probe:
+                probed = self.publisher.probe()
+                run['github'] = probed
+            else:
+                probed = {'available': False, 'blocker': 'github_status_unknown'}
         return {'tool': 'gh', 'available': bool(probed.get('available')), 'authorized': True,
                 'blocker': probed.get('blocker'), 'repository': repo,
                 'writes': 'issue_create_and_material_update' if probed.get('available') else 'pending'}
 
-    def _blockers(self, run):
+    def _blockers(self, run, *, probe_github=True):
         blockers = []
         state = run['collection']['state']
         if 'local-ledger' not in run['scope']['sources']:
@@ -1544,7 +1616,9 @@ class DebugService:
             blockers.append('collector_not_supervising')
         if run['coverage']['unavailable_bindings'] or run['coverage']['unreadable']:
             blockers.append('bindings_not_observed')
-        github = self._github_view(run)
+        if run['coverage'].get('unreadable_unscoped'):
+            blockers.append('unreadable_unscoped')
+        github = self._github_view(run, probe=probe_github)
         if github['authorized'] and not github['available']:
             blockers.append('github_unavailable')
         return blockers, github
@@ -1567,8 +1641,8 @@ class DebugService:
             'coverage': self._coverage_view(run), 'github': github, 'limitations': list(LIMITATIONS),
         }
 
-    def _status_view(self, run):
-        blockers, github = self._blockers(run)
+    def _status_view(self, run, *, probe_github=True):
+        blockers, github = self._blockers(run, probe_github=probe_github)
         return {
             'run_id': run['run_id'], 'state': run['state'], 'activation': 'ready' if run['state'] == 'active' and not blockers else 'partial',
             'complete': run['state'] == 'active' and not blockers, 'blockers': blockers, 'expires_at': run['expires_at'],
@@ -1588,6 +1662,7 @@ class DebugService:
         return {
             'metadata_only': True, 'participants': coverage['participants'],
             'unavailable_bindings': coverage['unavailable_bindings'], 'unreadable_bindings': coverage['unreadable'],
+            'unreadable_unscoped': coverage.get('unreadable_unscoped', []),
             'other_owners': 'unavailable', 'task_acceptance': coverage['task_acceptance'],
             'task_completion': coverage['task_completion'],
             'definite_non_delivery': coverage['definite_non_delivery'],
@@ -1625,7 +1700,13 @@ class DebugService:
             'accounting': {
                 'repeat': 'idempotent',
                 'same_source_window_conflict': 'rejected',
-                'parent_child': 'shared_parent_sid_excludes_later_window',
+                'parent_child': 'shared_model_window_reconciled_when_parent_reported',
+                'provisional_shared_windows': len({
+                    (item['model'], item['window_start'], item['window_end'])
+                    for item in run['usage'].get('records', []) if item.get('shared_parent_sid')
+                }),
+                'unidentified_legacy_exclusions': max(
+                    0, run['usage']['excluded'] - len(run['usage'].get('excluded_records', []))),
                 'cache': 'disjoint_added_or_cache_inclusive_not_added',
             },
             'records': [
@@ -1746,6 +1827,7 @@ def add_commands(commands):
     imported.add_argument('--file', type=Path, required=True)
     actions.add_parser('usage')
     analyze = actions.add_parser('analyze')
+    analyze.add_argument('--run-id', required=True)
     analyze.add_argument('--finding-id', required=True)
     analyze.add_argument('--conclusion', required=True)
     analyze.add_argument('--confidence', choices=('low', 'medium', 'high'), required=True)
@@ -1786,7 +1868,7 @@ def dispatch(args, ledger):
             raise DebugError('debug_usage_rejected') from error
         return service.add_usage(data)
     if action == 'analyze':
-        return service.analyze(args.finding_id, args.conclusion, args.confidence)
+        return service.analyze(args.finding_id, args.conclusion, args.confidence, run_id=args.run_id)
     if action == 'publish':
         return service.publish()
     raise DebugError('debug_invalid_scope', field='action')

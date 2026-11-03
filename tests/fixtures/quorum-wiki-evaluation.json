@@ -1,0 +1,100 @@
+{
+  "questions": [
+    {
+      "kind": "exact",
+      "query": "content_sha256",
+      "expected_prs": [
+        77
+      ]
+    },
+    {
+      "kind": "paraphrase",
+      "query": "Why did knowledge index fail before HTTP?",
+      "expected_prs": [
+        77
+      ]
+    },
+    {
+      "kind": "paraphrase",
+      "query": "Why does quiet setup refuse parent reception?",
+      "expected_prs": [
+        71
+      ]
+    },
+    {
+      "kind": "paraphrase",
+      "query": "How can a later quorum read project history?",
+      "expected_prs": [
+        76
+      ]
+    },
+    {
+      "kind": "paraphrase",
+      "query": "Does joining a quorum grant project knowledge?",
+      "expected_prs": [
+        76
+      ]
+    },
+    {
+      "kind": "paraphrase",
+      "query": "Do embeddings invoke a paid model automatically?",
+      "expected_prs": [
+        76
+      ]
+    },
+    {
+      "kind": "unanswerable",
+      "query": "How many watts does the device consume?",
+      "expected_prs": []
+    }
+  ],
+  "pages": [
+    {
+      "pr": 71,
+      "title": "Quiet onboarding and worker inboxes",
+      "body": "Quiet onboarding requires a worker inbox. Parent reception queues raw envelopes in the owner chat, so --require-worker-inbox refuses that route before authentication, invitation consumption or registration. Visible parent reception needs an explicit owner choice. The local Cursor diagnostic reports cursor_inbox_unavailable; it does not add a Cursor transport. Existing queued cards are not removed."
+    },
+    {
+      "pr": 76,
+      "title": "Project knowledge authorization and retrieval",
+      "body": "Project knowledge uses stable spaces, explicit quorum attachments and individual read/write grants. Joining a quorum does not grant historical project access. A later quorum needs an attachment and the reader needs a grant. Immutable revisions preserve attribution, conflicts and expected-revision CAS. Lexical retrieval remains available without vectors. Vectors are derived, tied to the revision, model, dimensions and content hash. No embedding provider or model is invoked automatically. Source validation is distinct from live acceptance."
+    },
+    {
+      "pr": 77,
+      "title": "Digest argument validation in Quorum RPC requests",
+      "body": "The content_sha256 RPC argument was rejected locally because the argument-name validator disallowed digits. Both quorum update and knowledge index failed with operation_failed before HTTP. PR #77 allows ASCII digits after the first character while retaining the operation allowlist and rejecting malformed names before credential resolution. Regression tests use complete owner-update and knowledge-index payloads through the real encoder. This correction changes no SQL, permissions or listener lifecycle."
+    }
+  ],
+  "limit": 5,
+  "context_budget": 3000,
+  "sources": [
+    {
+      "pr": 77,
+      "title": "fix(quorum): allow digest argument names in RPC requests",
+      "body": "Calling `quorum update` failed locally with `operation_failed` before HTTP because the RPC argument validator rejected the required `content_sha256` field. `knowledge index` used the same field and had the same failure. Allow ASCII digits after the first character of an argument name, preserving the operation allowlist and rejecting malformed names before credential resolution.\n\nAdd regressions that run complete owner-update and knowledge-index payloads through the real transport encoder, plus malformed-name rejection checks. The original failure was reproduced offline from the finite live QA journal with zero token and HTTP callbacks. No SQL, live retry, resident lifecycle or permission changes.\n\nValidation: all seven repository gates passed; 917 tests OK (26 platform/opt-in skips), official pinned skills-ref validation, individual Codex/Claude CLI installs, and `pre-commit run --all-files`. The regressions failed on the original transport.\n\nRefs #69, #59. Live fan-out, dedupe and runtime-upgrade acceptance remain open.\n",
+      "url": "https://github.com/rotnov/skills/pull/77",
+      "author": "rotnov",
+      "source_date": "2026-11-02T08:47:50Z",
+      "merged_at": "2026-11-02T08:47:50Z"
+    },
+    {
+      "pr": 71,
+      "title": "quorum: require a worker inbox for quiet onboarding",
+      "body": "Quiet onboarding could silently fall back to parent reception, which queues each raw envelope in the owner's chat. Add `--require-worker-inbox` to acceptance/connection and generated Codex/Claude worker setup: a parent route now refuses before state, authentication, invitation or registration effects. Existing worker provenance/capabilities still apply; visible parent reception requires an explicit owner choice.\n\nAlso provide the narrow local macOS cursor-agent diagnostic (`cursor_inbox_unavailable`) before authentication or invite consumption. It preserves supported native identities and adds no Cursor transport.\n\nValidation: behavioral RED→GREEN tests; 793 unit tests OK (11 platform/opt-in skips); all seven required gates passed, including pinned official skills-ref, individual Codex/Claude copy-install smoke tests and pre-commit. Independent source review found no blockers. The initial full run exposed obsolete automatic-fallback prompt assertions; these now enforce the explicit visible-route choice, and the final complete run passed.\n\nRefs #68 and #46. These issues stay open pending actual Codex busy/idle UI quietness and original local Cursor qualification. Existing queued parent cards are not removed by this change. No backend, release, credentials or listener lifecycle change.",
+      "url": "https://github.com/rotnov/skills/pull/71",
+      "author": "rotnov",
+      "source_date": "2026-10-30T14:34:31Z",
+      "merged_at": "2026-10-30T14:34:31Z"
+    },
+    {
+      "pr": 76,
+      "title": "quorum: integrate scoped task intake, owner updates and project knowledge",
+      "body": "Quorum now supports three explicit owner workflows: scoped task intake from current/future members, updating an initiator with one typed maintenance notice per peer, and durable project knowledge with individually authorized retrieval. Existing grants do not expand when clients update or reconnect; routine maintenance is excluded from project task delegation.\n\nReferences #52, #59 and #69. This is the final integrated source change; the separate reviewed source components are recorded in #74 and #75. Live acceptance remains open for all three issues.\n\n- Member intake derives the sender from the addressed message and checks current membership and exact binding. Replies, transport notices and maintenance are excluded. Atomic local compare/save prevents reconnect or delayed role resolution from restoring revoked authority. Seven categories of consequential actions remain owner-held.\n- Owner update refreshes the initiating copy before fan-out, uses typed deduplicated notices and requires separate recipient-owner permission to apply them. Notice-scoped journals preserve refresh/report dedupe across invocation IDs. Installed bytes and timestamped active-runtime evidence are separate; offline/unverified participants remain visible.\n- Knowledge uses stable project spaces, explicit attachments and individual read/write grants. Immutable revisions preserve proposals, verification, conflicts and lifecycle/CAS. Exact native binding, cwd, current worker proof, release and space authority are checked around transport. Lexical/hybrid results and full-text pages have strict serialized budgets. Derived vectors are revision/model/dimension/hash bound; no provider or model is invoked.\n\nSQL adds private RLS records and authenticated exact-binding RPCs in separately deployable migrations; joining/installing never applies DDL, ingests old conversations or changes the required release. PGlite exercises the complete portable chain; mandatory real pgvector CI exercises every predecessor plus knowledge. Quiet routing and explicit parent-route consent remain intact.\n\nValidation: independent component and integration reviews; all seven pinned gates on the final main-integrated tree (914 tests,26 platform/opt-in skips), official skills-ref, individual Codex/Claude installs and full pre-commit. Actual isolated portable SQL14/14, pgvector0.8.7 full fixture/CAS, and unchanged full fixture/CAS on pgvector0.8.2/PG17.10 pass. Exact live PG17.11 remains untested. Required exact-head Linux/macOS/Windows CI must pass before merge.\n\nLive schema application, actual member-task/revocation acceptance, real later-quorum knowledge retrieval, embedding policy/quality and resident-runtime upgrade/no-flood proof remain outstanding. Passing source checks does not complete those criteria or the milestone.\n",
+      "url": "https://github.com/rotnov/skills/pull/76",
+      "author": "rotnov",
+      "source_date": "2026-10-30T16:12:05Z",
+      "merged_at": "2026-10-30T16:12:05Z"
+    }
+  ],
+  "scope": "Public PR title/description snapshots fetched 2026-11-03; three-source smoke evaluation, not broad semantic quality."
+}

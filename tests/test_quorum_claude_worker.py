@@ -619,6 +619,23 @@ def actor(handle=HANDLE):
 
 @POSIX_PROOF
 class CliTests(Harness):
+    @isolated_profiles
+    def test_required_worker_preserves_attested_capability_scope(self):
+        api = Api()
+        slot, cap = self.active(self.accept_scope())
+        self.configure()
+        code, result, text = self.cli(api, 'accept-id', INVITE, '--transport', 'tool-inbox',
+                                      '--require-worker-inbox', '--worker-capability', str(cap))
+        self.assertEqual(code, 0, text)
+        code, result, text = self.connect(api, cap, '--require-worker-inbox')
+        self.assertEqual(code, 0, text)
+        self.assertEqual(result['data']['transport'], 'tool-inbox')
+        self.assertEqual(self.worker_ledger(slot).setting('session-agent')['session_ref'], actor())
+        before = len(api.calls)
+        code, result, text = self.connect(api, cap, '--require-worker-inbox', '--project-ref', 'other/project')
+        self.assertEqual((code, result['code']), (3, 'native_worker_binding_denied'), text)
+        self.assertEqual(len(api.calls), before)
+
     def test_cli_worker_management_and_capability_grammar(self):
         code, prepared, text = self.cli(None, 'session', 'worker', 'prepare', '--json-stdin',
                                         stdin=json.dumps(self.scope()).encode())
@@ -2497,7 +2514,8 @@ class PromptTests(unittest.TestCase):
                 self.assertIn('attests', prompt)
                 self.assertIn('session --worker-capability <capability-file> connect', prompt)
                 self.assertIn('the parent fallback below then does not apply', prompt)
-                self.assertIn('Parent-native fallback, only when no tool-inbox worker was proven or bound', prompt)
+                self.assertIn('Parent-native fallback, only after I explicitly choose visible parent reception', prompt)
+                self.assertIn('--require-worker-inbox', prompt)
                 self.assertNotIn('Claude and other clients have no worker inbox', prompt)
         text = self.reference()
         for required in ('session worker prepare --json-stdin', 'session worker attest <slot-uuid> --native-handle',

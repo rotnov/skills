@@ -11,7 +11,10 @@ OPERATIONS = frozenset(('quorum_create invite_create invite_accept device_regist
     'work_register work_admit work_transition agent_status agent_leave conversation_read '
     'quorum_lookup quorum_check_owner resolve_role session_inbox session_ack session_reply '
     'invite_create_id invite_accept_id invite_revoke_id invite_create_open quorum_set_access '
-    'session_heartbeat session_peers session_requirements').split())
+    'session_heartbeat session_peers session_requirements session_task_authority '
+    'session_update_request session_update_status session_update_report '
+    'knowledge_admin knowledge_write knowledge_search knowledge_read knowledge_index '
+    'knowledge_source_write knowledge_source_read knowledge_catalog').split())
 
 
 # Gateway/overload statuses only; missing RPCs, denials and client errors stay terminal.
@@ -94,7 +97,7 @@ class QuorumApi:
     def call(self, operation, payload, request_id=None):
         if operation not in OPERATIONS or not isinstance(payload, dict):
             raise ValueError('invalid_operation')
-        if any(not re.fullmatch('[a-z_]+', key) for key in payload):
+        if any(not re.fullmatch('[a-z_][a-z0-9_]*', key) for key in payload):
             raise ValueError('invalid_argument')
         data = {'p_' + key: value for key, value in payload.items()}
         if request_id is not None:

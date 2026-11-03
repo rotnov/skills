@@ -219,13 +219,18 @@ def read_scoped(path, binding, scope):
         if snapshot.get('unreadable'):
             if scope['bindings'] and binding not in scope['bindings']:
                 return None
+            snapshot['unreadable_unscoped'] = not bool(scope['bindings'])
             return snapshot
         if not in_scope(snapshot, scope):
             return None
-        _settings_metadata(db, snapshot)
-        snapshot['deliveries'] = _deliveries(db)
-        _attempts(db, snapshot)
-        _events(db, snapshot)
+        try:
+            _settings_metadata(db, snapshot)
+            snapshot['deliveries'] = _deliveries(db)
+            _attempts(db, snapshot)
+            _events(db, snapshot)
+        except (OSError, sqlite3.Error, UnicodeError, ValueError):
+            # Identity already proved this ledger is in scope before metadata failed.
+            return {'binding': binding, 'unreadable': True, 'unreadable_unscoped': False}
         return snapshot
     finally:
         db.close()
@@ -246,7 +251,8 @@ def _iter_ledgers(directory, scope, binding_for, refuse_links):
         try:
             snapshot = read_scoped(database, binding, scope)
         except (OSError, sqlite3.Error, UnicodeError, ValueError):
-            snapshot = {'binding': binding, 'unreadable': True} if not scope['bindings'] or binding in scope['bindings'] else None
+            snapshot = ({'binding': binding, 'unreadable': True, 'unreadable_unscoped': not bool(scope['bindings'])}
+                        if not scope['bindings'] or binding in scope['bindings'] else None)
         if snapshot is not None:
             found.append(snapshot)
     return found

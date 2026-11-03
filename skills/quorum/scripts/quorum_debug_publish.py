@@ -116,7 +116,7 @@ class GhCliPublisher:
         if getattr(proc, 'returncode', 1) != 0:
             return {'status': 'uncertain'}
         match = re.search(r'https://github.com/([^/\s]+)/([^/\s]+)/issues/(\d+)', proc.stdout or '')
-        if not match or f'{match.group(1)}/{match.group(2)}' != repo:
+        if not match or f'{match.group(1)}/{match.group(2)}'.casefold() != repo.casefold():
             return {'status': 'uncertain'}
         return {'status': 'created', 'number': int(match.group(3)), 'url': match.group(0)}
 
