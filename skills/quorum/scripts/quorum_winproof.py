@@ -369,7 +369,7 @@ def rename_at(directory, source, target):
     try:
         encoded = component(target).encode('utf-16-le')
         offset = api['Rename'].name.offset
-        buffer = ctypes.create_string_buffer(offset + len(encoded) + 2)
+        buffer = ctypes.create_string_buffer(max(ctypes.sizeof(api['Rename']), offset + len(encoded) + 2))
         header = api['Rename'].from_buffer(buffer)
         header.replace, header.root, header.length = 1, parent, len(encoded)
         ctypes.memmove(ctypes.addressof(buffer) + offset, encoded, len(encoded))
