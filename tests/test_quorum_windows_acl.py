@@ -188,7 +188,7 @@ def probe_without_sacl_privilege(root):
     # On an elevated runner the objects above belonged to Administrators, so protect() took ownership.
     # From here default to the user's own SID, as a standard user's token does (#83).
     try:
-        owner = pointer(sid)
+        owner = pointer(sid.value)  # TOKEN_OWNER: a single PSID
         if not security.SetTokenInformation(token, 4, ctypes.byref(owner), ctypes.sizeof(owner)):  # TokenOwner
             raise ctypes.WinError(ctypes.get_last_error())
     finally:
