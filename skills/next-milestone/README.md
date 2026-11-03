@@ -11,8 +11,9 @@ Releasing stays the project's own procedure.
 
 Paste this into your agent:
 
-> Set up Next Milestone for me: fetch and follow this guide
-> <https://github.com/rotnov/skills/tree/main/skills/next-milestone>
+```text
+Set up Next Milestone for me: fetch and follow this guide https://github.com/rotnov/skills/blob/main/skills/next-milestone/README.md
+```
 
 Or install it yourself:
 

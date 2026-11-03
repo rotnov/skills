@@ -24,7 +24,8 @@ def section_re(heading: str) -> re.Pattern[str]:
 
 INSTALL_SECTION_RE = section_re(INSTALL_HEADING)
 AGENT_GUIDE_RE = section_re(AGENT_GUIDE_HEADING)
-SKILL_URL_PREFIX = "https://github.com/rotnov/skills/tree/main/skills/"
+INSTALL_PROMPT_RE = re.compile(r"^```text[ \t]*\n(.*?)^```[ \t]*$", re.M | re.S)
+SKILL_URL_PREFIX = "https://github.com/rotnov/skills/blob/main/skills/"
 
 
 def parse_frontmatter(path: Path) -> tuple[dict[str, str], str]:
@@ -136,16 +137,14 @@ def validate_readme(skill_dir: Path) -> list[str]:
     if not match:
         return [f"{path}: missing '{INSTALL_HEADING}' section"]
 
-    prompt = " ".join(
-        line.lstrip(">").strip()
-        for line in match.group(1).splitlines()
-        if line.startswith(">")
-    )
+    # A fenced block, unlike a blockquote, gets GitHub's copy button.
+    block = INSTALL_PROMPT_RE.search(match.group(1))
+    prompt = " ".join(block.group(1).split()) if block else ""
     if not prompt:
-        return [f"{path}: '{INSTALL_HEADING}' needs a blockquoted LLM prompt"]
+        return [f"{path}: '{INSTALL_HEADING}' needs the LLM prompt in a ```text code block"]
 
     problems = []
-    url = f"{SKILL_URL_PREFIX}{skill_dir.name}"
+    url = f"{SKILL_URL_PREFIX}{skill_dir.name}/README.md"
     if url not in prompt:
         problems.append(f"{path}: install prompt must mention {url!r}")
     if len(prompt) > INSTALL_PROMPT_MAX_CHARS:

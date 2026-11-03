@@ -52,8 +52,9 @@ description: >-
 
 ## Install the skill
 
-> Set up Demo for me: fetch and follow this guide
-> <https://github.com/rotnov/skills/tree/main/skills/demo>
+```text
+Set up Demo for me: fetch and follow this guide https://github.com/rotnov/skills/blob/main/skills/demo/README.md
+```
 
 ## Use
 
@@ -80,14 +81,28 @@ description: >-
         with tempfile.TemporaryDirectory() as directory:
             skill_dir = self._make_skill(Path(directory), readme)
             problems = validate_skills.validate_skill(skill_dir)
-        self.assertTrue(any("blockquoted LLM prompt" in p for p in problems))
+        self.assertTrue(any("```text code block" in p for p in problems))
 
     def test_install_prompt_must_link_its_own_skill(self) -> None:
-        readme = self.VALID_README.replace("skills/demo>", "skills/other>")
+        readme = self.VALID_README.replace("skills/demo/README.md", "skills/other/README.md")
+        self.assertNotEqual(readme, self.VALID_README)
         with tempfile.TemporaryDirectory() as directory:
             skill_dir = self._make_skill(Path(directory), readme)
             problems = validate_skills.validate_skill(skill_dir)
         self.assertTrue(any("skills/demo" in p for p in problems))
+
+    def test_blockquoted_prompt_without_copyable_code_block_is_rejected(self) -> None:
+        readme = self.VALID_README.replace(
+            "```text\nSet up Demo for me: fetch and follow this guide "
+            "https://github.com/rotnov/skills/blob/main/skills/demo/README.md\n```",
+            "> Set up Demo for me: fetch and follow this guide\n"
+            "> <https://github.com/rotnov/skills/blob/main/skills/demo/README.md>",
+        )
+        self.assertNotEqual(readme, self.VALID_README)
+        with tempfile.TemporaryDirectory() as directory:
+            skill_dir = self._make_skill(Path(directory), readme)
+            problems = validate_skills.validate_skill(skill_dir)
+        self.assertTrue(any("```text code block" in p for p in problems))
 
     def test_long_install_prompt_is_rejected(self) -> None:
         readme = self.VALID_README.replace(

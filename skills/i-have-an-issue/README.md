@@ -9,8 +9,9 @@ version-aware prevention or diagnosis brief.
 
 Paste this into your agent:
 
-> Set up I Have an Issue for me: fetch and follow this guide
-> <https://github.com/rotnov/skills/tree/main/skills/i-have-an-issue>
+```text
+Set up I Have an Issue for me: fetch and follow this guide https://github.com/rotnov/skills/blob/main/skills/i-have-an-issue/README.md
+```
 
 Or install it yourself:
 

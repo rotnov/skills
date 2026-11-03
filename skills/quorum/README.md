@@ -9,8 +9,9 @@ person keeps working in their own chat.
 
 Paste this into the chat you want to use:
 
-> Set up Quorum for me: fetch and follow this guide
-> <https://github.com/rotnov/skills/tree/main/skills/quorum>
+```text
+Set up Quorum for me: fetch and follow this guide https://github.com/rotnov/skills/blob/main/skills/quorum/README.md
+```
 
 Your agent installs the skill, checks what is missing and asks what you want
 to do next. Nothing signs in or connects until you say so. If someone sent you

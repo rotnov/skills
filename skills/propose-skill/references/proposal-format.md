@@ -70,10 +70,10 @@ skills/<skill-name>/
 <!-- Add references/, scripts/, or assets/ only when justified. Never attach a
 ZIP as the primary review artifact. -->
 
-<!-- README.md must include an "## Install the skill" section whose blockquote is
-a one-line prompt of at most 200 characters, such as "Set up <Skill> for me:
-fetch and follow this guide
-https://github.com/rotnov/skills/tree/main/skills/<skill-name>", and a
+<!-- README.md must include an "## Install the skill" section whose ```text code
+block (copyable on GitHub) is a one-line prompt of at most 200 characters, such
+as "Set up <Skill> for me: fetch and follow this guide
+https://github.com/rotnov/skills/blob/main/skills/<skill-name>/README.md", and a
 "## Setup guide for agents" section that requests a global Claude Code and Codex
 install using skills@>=1.7.4 and then reading SKILL.md. Keep the bundle free of
 client-specific metadata. -->

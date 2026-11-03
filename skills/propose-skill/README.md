@@ -10,8 +10,9 @@ material are never published.
 
 Paste this into your agent:
 
-> Set up Propose Skill for me: fetch and follow this guide
-> <https://github.com/rotnov/skills/tree/main/skills/propose-skill>
+```text
+Set up Propose Skill for me: fetch and follow this guide https://github.com/rotnov/skills/blob/main/skills/propose-skill/README.md
+```
 
 Or install it yourself:
 
