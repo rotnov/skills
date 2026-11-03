@@ -33,10 +33,10 @@ configuring credentials.
    leave the invitation unused and report the blocker once per
    [join](references/join.md#without-a-worker); never suggest parent reception
    (raw envelopes/queue cards), a legacy opt-in only on the owner's own request.
-   Only for creating, accepting,
-   joining or connecting, then read [update](references/update.md) and run its
-   automatic refresh once per owner request; issuing an invitation alone does
-   not trigger it. Read the returned persistent copy's instructions,
+   For creating, issuing an invitation (so the prompt carries the current
+   installer), accepting, joining or connecting, then read
+   [update](references/update.md) and run its automatic refresh once per owner
+   request. Read the returned persistent copy's instructions,
    then use that copy and the same private state/session binding to continue.
    Do not repeat the preflight while re-reading within this request. On
    `skill_update_required`, follow that reference's bounded update/reconnect

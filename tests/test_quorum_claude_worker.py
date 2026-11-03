@@ -2505,18 +2505,16 @@ class PromptTests(unittest.TestCase):
         return text if raw else ' '.join(text.split())
 
     def test_claude_prompt_pending_background_attest_is_exclusive_with_parent_fallback(self):
+        # Thin invitations defer every route to the recipient's installed join guide, which names this one.
         for name, prompt in prompts():
             with self.subTest(name=name):
-                self.assertIn('references/claude-worker.md', prompt, 'missing_claude_worker_prompt_route')
-                self.assertLess(prompt.index('references/claude-worker.md'), prompt.index('helper accept-id'))
-                self.assertIn('For a Claude Code parent with a native background worker', prompt)
-                self.assertIn('exactly one actual native background', prompt)
-                self.assertIn('attests', prompt)
-                self.assertIn('session --worker-capability <capability-file> connect', prompt)
-                self.assertIn('the parent fallback below then does not apply', prompt)
-                self.assertIn('Legacy parent-native opt-in, only when I explicitly request visible parent reception for this chat myself', prompt)
-                self.assertIn('--require-worker-inbox', prompt)
+                self.assertIn('follow its references/join.md for this invitation', prompt)
+                self.assertLess(prompt.index('references/join.md wins'), prompt.index('Accept with accept-id'))
                 self.assertNotIn('Claude and other clients have no worker inbox', prompt)
+        join = ' '.join((SKILL / 'references/join.md').read_text().split())
+        for required in ('[its capability route](claude-worker.md)', 'A bound Claude worker connects with its capability',
+                         '--require-worker-inbox', 'Only on the legacy parent opt-in'):
+            self.assertIn(required, join)
         text = self.reference()
         for required in ('session worker prepare --json-stdin', 'session worker attest <slot-uuid> --native-handle',
                          'session worker await-binding <slot-uuid>', 'exactly one actual native background',

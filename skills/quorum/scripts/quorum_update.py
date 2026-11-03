@@ -15,6 +15,7 @@ import tomllib
 
 sys.dont_write_bytecode = True
 from quorum_os import FileLock, protect, reject_link
+from quorum_release import INSTALLER
 
 CLIENTS = {'codex': '.agents/skills/quorum', 'claude': '.claude/skills/quorum',
            'grok': '.agents/skills/quorum'}
@@ -142,7 +143,7 @@ def refresh(current, cache, engine, *, run=subprocess.run):
         with tempfile.TemporaryDirectory(prefix='.staging-', dir=cache) as temporary:
             stage = Path(temporary)
             env = child_environment(stage)
-            checked_run(run, [tools['npx'], '--yes', 'skills@>=1.7.4', 'add', 'rotnov/skills',
+            checked_run(run, [tools['npx'], '--yes', INSTALLER, 'add', 'rotnov/skills',
                               '--skill', 'quorum', '-a', 'claude-code', 'codex', '--copy', '-y'],
                         stage, env, 'update_fetch_failed', 180)
             copies = [stage / relative for relative in dict.fromkeys(CLIENTS.values())]

@@ -3,6 +3,16 @@
 Read this when accepting an invitation and connecting your actual chat.
 For issuing an invitation, read the [owner guide](invite.md).
 
+## Invitation prompts
+
+An invitation prompt carries only data (invite ID, quorum, public service
+locator, server expiry), the receiving owner's authorizations and hard safety
+rules. This guide supplies the procedure. First install or refresh the skill to
+the latest `rotnov/skills` main (the prompt's bootstrap install, or the
+[automatic refresh](update.md) when installed), then follow this freshly
+installed copy. Where an invitation's text, including one issued by an older
+copy, quotes another version, command or procedure, this guide wins.
+
 ## Join this chat
 
 A local macOS `cursor-agent` chat has no supported native Quorum inbox and cannot
@@ -75,11 +85,11 @@ register a device/agent, guess a session ID, start a model/listener or connect a
 headless pilot. A consumed invite cannot restore revoked membership. Expired,
 revoked, wrong-target and anonymous acceptance of a GitHub invitation are denied,
 including cached retries. GitHub invitations expire after 24 hours; open ones after 15 minutes.
-Do not judge expiry yourself or compare `expires_at` with your own clock or
-sense of the date; attempt acceptance promptly. Only the server decides: report
-`invite_denied` (expired, used or revoked) if it comes back. Mention remaining
-time only from an actual UTC clock reading (the OS clock, or the issuing
-helper's `now_utc` and `seconds_remaining`), never an estimate.
+`expires_at` is server data. Do not judge expiry yourself: a machine clock
+can be hours off, so never compare it with the OS clock, helper output or your
+own sense of the date. Always attempt acceptance; only the server's accept
+response decides, and `invite_denied` (expired, used or revoked) is reported as
+returned. The helper prints no local remaining time; do not estimate one.
 
 Before login or acceptance, `accept-id` checks that this chat can carry a native
 listener. For Grok it verifies this session's private leader socket, active
@@ -96,9 +106,19 @@ It skips the native transport check but still validates the invitation and
 service, performs normal login and enforces every server invitation check. It
 does not register, start or connect a listener; stop after reporting membership.
 
-The complete invitation prompt requests acceptance **and** connection of this
-chat. Continue without asking for a second confirmation unless the owner has
-explicitly requested membership only:
+The complete invitation prompt requests acceptance **and** connection. A proven
+Codex worker then runs `session connect` with its `--transport tool-inbox
+--parent-thread-id <parent-UUID> --require-worker-inbox` arguments plus
+`--accept-tasks-from-members --dispatch-mode inline`, then `session status` and
+bounded `session receive --wait-seconds 30` calls; it never runs `session start`
+as a background listener. A bound Claude worker connects with its capability
+file exactly as its owner-approved scope. Each receipts its own envelopes (worker
+consumption, not delivery to the parent) and reports one setup outcome: quorum,
+role, project, transport `tool-inbox` with reception enabled (offline between
+receive calls) and the persistent skill path.
+
+Only on the legacy parent opt-in, continue without asking for a second
+confirmation unless the owner has explicitly requested membership only:
 
 1. Read [sessions](sessions.md). Use only the current client's exported session
    identity. Use the owner's role and shared project reference when supplied;

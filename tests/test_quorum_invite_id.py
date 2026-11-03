@@ -37,12 +37,9 @@ class IdInvitationTests(unittest.TestCase):
             self.assertEqual(result['invite_id'], INVITE)
             self.assertIn(INVITE, result['session_prompt'])
             self.assertEqual(result['quorum'], 'team')
-            self.assertIn('quorum slug is \"team\"', result['session_prompt'])
+            self.assertIn('quorum slug \"team\"', result['session_prompt'])
             self.assertIn('references/join.md', result['session_prompt'])
             self.assertIn('rotnov/skills', result['session_prompt'])
-            self.assertIn('session connect', result['session_prompt'])
-            self.assertIn('session start', result['session_prompt'])
-            self.assertIn('session status', result['session_prompt'])
             self.assertIn('Hello', result['session_prompt'])
             self.assertIn('not a temporary scratch folder', result['session_prompt'])
             self.assertNotIn('Accept membership only', result['session_prompt'])
@@ -69,15 +66,10 @@ class IdInvitationTests(unittest.TestCase):
             prompt = result[key]
             for required in ('@Octocat', 'GitHub ID 123', '2026-10-23T12:00:00Z',
                              'via Supabase Auth', 'no Supabase dashboard registration',
-                             'session connect', 'session start', 'session status', 'Hello',
-                             '--accept-tasks-from-members', 'without asking again for each assignment',
-                             'Persist the explicit member scope during connect'):
+                             'Hello', '--accept-tasks-from-members', 'without asking again for each assignment',
+                             'references/join.md wins', 'Ask me before posting anything outside the quorum'):
                 self.assertIn(required, prompt)
             self.assertIn('GitHub is required', prompt)
-            for required in ('https://github.com/rotnov/skills/issues', 'Check existing issues',
-                             'one report per distinct failure', 'safe error code', 'actual listener state',
-                             'no tokens', 'no GitHub write access'):
-                self.assertIn(required, prompt)
         full, short = result['session_prompt'], result['configured_machine_prompt']
         self.assertIn('--copy -g -y', full)
         self.assertIn('--origin', full)
@@ -86,7 +78,8 @@ class IdInvitationTests(unittest.TestCase):
         self.assertNotIn('--origin', short)
         self.assertNotIn('--publishable-key', short)
         self.assertNotIn('https://example.com', short)
-        self.assertNotIn('skills@', short)
+        # Both prompts refresh first, so even a configured machine runs the current skill.
+        self.assertIn('install or refresh the quorum skill', short)
         self.assertEqual(result['target_github_user'], 'Octocat')
 
     @isolated_profiles
@@ -135,12 +128,12 @@ class IdInvitationTests(unittest.TestCase):
         self.assertEqual(calls[-1], ('invite_create_open', {'quorum_id': 'q'}, 'r'))
         prompt = result['session_prompt']
         for required in (f'accept-id {INVITE} --anonymous', 'sb_publishable_synthetic', '2026-10-22T15:15:00Z',
-                         'single-use', 'No GitHub login', 'fresh private state', 'session connect', 'Hello',
-                         'https://github.com/rotnov/skills/issues',
-                         f'protocol {release["protocol_version"]} and skill {release["skill_version"]}',
-                         '--accept-tasks-from-members --dispatch-mode inline',
+                         'Single-use', 'No GitHub login', 'fresh private state', 'Hello',
+                         'references/join.md wins', '--accept-tasks-from-members --dispatch-mode inline',
                          'paste this prompt as my own instruction'):
             self.assertIn(required, prompt)
+        # A version frozen at issuance would pin old behavior; the installed guide checks versions instead.
+        self.assertNotIn(f'protocol {release["protocol_version"]} and skill {release["skill_version"]}', prompt)
         self.assertNotIn('GitHub is required', prompt)
         self.assertNotIn('token', result)
         self.assertNotIn('unexpected', json.dumps(result))

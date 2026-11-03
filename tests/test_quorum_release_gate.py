@@ -91,14 +91,18 @@ class MandatoryReleaseTests(Gate):
         manifest = json.loads((ROOT / 'skills/quorum/assets/release.json').read_text(encoding='utf-8'))
         self.assertEqual(manifest, CURRENT)
         self.assertIn('version = "0.3.0"', (ROOT / 'skills/quorum/pyproject.toml').read_text(encoding='utf-8'))
-        # Owner-facing guidance and the invitation grant name the same exact tuple.
+        # Owner-facing guidance names the exact tuple.
         for name in ('README.md', 'references/update.md', 'references/sessions.md'):
             text = (ROOT / 'skills/quorum' / name).read_text(encoding='utf-8')
             self.assertIn('0.3.0', text, name)
             self.assertNotIn('0.2.0', text, name)
-        # Invitation grants derive the tuple from the installed release manifest.
-        from quorum_invitations import completion
-        self.assertIn('required protocol 2 and skill 0.3.0 plus running status', completion('coordinator'))
+        # Invitations freeze no version: the recipient's refreshed join guide verifies the exact tuple.
+        from quorum_invitations import SAFETY, authorizations, bootstrap
+        for text in (authorizations('coordinator'), bootstrap(), SAFETY):
+            self.assertNotIn('0.3.0', text)
+            self.assertNotIn('protocol 2', text)
+        join = ' '.join((ROOT / 'skills/quorum/references/join.md').read_text(encoding='utf-8').split())
+        self.assertIn('verify exact installed/required versions', join)
         source = (ROOT / 'skills/quorum/scripts/quorum_invitations.py').read_text(encoding='utf-8')
         self.assertNotIn('0.2.0', source)
 

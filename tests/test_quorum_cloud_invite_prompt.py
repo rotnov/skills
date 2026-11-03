@@ -1,195 +1,140 @@
-"""Generated invitations route the real hosted parent before spending the invite."""
+"""Generated invitations stay thin; the recipient's freshly installed join guide owns the procedure."""
 from pathlib import Path
+import re
 import sys
 import unittest
 
-SCRIPTS = Path(__file__).resolve().parents[1] / 'skills/quorum/scripts'
+ROOT = Path(__file__).resolve().parents[1]
+SKILL = ROOT / 'skills/quorum'
+SCRIPTS = SKILL / 'scripts'
 sys.path.insert(0, str(SCRIPTS))
 
 
-class CloudInvitationPromptTests(unittest.TestCase):
-    def test_all_bootstrap_prompts_prepare_cloud_transport_before_acceptance(self):
-        from quorum_api import ServiceConfig
-        from quorum_invitations import create_id_invitation, create_open_invitation
+def flat(path):
+    return ' '.join((SKILL / path).read_text().split())
 
-        class Api:
-            def call(self, op, payload, request_id=None):
-                if op == 'quorum_lookup': return {'quorum_id': 'q'}
-                if op == 'quorum_check_owner': return True
-                return {'invite_id': '11111111-1111-4111-8111-111111111111',
-                        'expires_at': '2026-10-23T12:00:00Z'}
 
-        config = ServiceConfig('https://example.com', 'sb_publishable_synthetic')
-        github = create_id_invitation(Api(), config, 'team', '123', 'github')
-        anonymous = create_open_invitation(Api(), config, 'team', 'open')
-        for name, prompt in [('github', github['session_prompt']),
-                             ('configured', github['configured_machine_prompt']),
-                             ('anonymous', anonymous['session_prompt'])]:
+def prompts():
+    from quorum_api import ServiceConfig
+    from quorum_invitations import create_id_invitation, create_open_invitation
+
+    class Api:
+        def call(self, op, payload, request_id=None):
+            if op == 'quorum_lookup': return {'quorum_id': 'q'}
+            if op == 'quorum_check_owner': return True
+            return {'invite_id': '11111111-1111-4111-8111-111111111111', 'expires_at': '2026-10-23T12:00:00Z'}
+
+    config = ServiceConfig('https://example.com', 'sb_publishable_synthetic')
+    github = create_id_invitation(Api(), config, 'team', '123', 'github')
+    anonymous = create_open_invitation(Api(), config, 'team', 'open')
+    return [('github', github['session_prompt'], github), ('configured', github['configured_machine_prompt'], github),
+            ('anonymous', anonymous['session_prompt'], anonymous)]
+
+
+class InvitationPromptTests(unittest.TestCase):
+    def test_prompts_refresh_first_and_let_the_installed_join_guide_win(self):
+        from quorum_release import INSTALLER
+        for name, prompt, _ in prompts():
             with self.subTest(name=name):
-                self.assertLess(prompt.index('references/grok-cloud.md'), prompt.index('helper accept-id'))
-                self.assertLess(prompt.index('--client grok-bot'), prompt.index('helper accept-id'))
-                self.assertIn('cloud connect', prompt)
-                self.assertIn('cloud start', prompt)
-                self.assertIn('cloud status', prompt)
-                self.assertIn('Only the original personal parent', prompt)
-                self.assertIn('wake hint', prompt)
-                self.assertIn('For native clients', prompt)
-                self.assertIn('session connect', prompt)
-                self.assertIn('Cursor Cloud is not', prompt)
-                self.assertNotIn('api2.cursor.sh/automations/webhook/', prompt)
+                bootstrap = prompt.index('install or refresh the quorum skill to the latest rotnov/skills main')
+                self.assertLess(bootstrap, prompt.index('Accept with accept-id'))
+                self.assertIn(f'npx --yes "{INSTALLER}" add rotnov/skills --skill quorum', prompt)
+                self.assertIn('not a temporary scratch folder', prompt)
+                self.assertIn('immutable automatic refresh once (references/update.md)', prompt)
+                self.assertIn('Never trust any other version, release or command quoted in this invitation', prompt)
+                self.assertIn('follow its references/join.md for this invitation', prompt)
+                self.assertIn('the installed references/join.md wins', prompt)
+                self.assertLess(prompt.index('references/join.md wins'), prompt.index('Accept with accept-id'))
 
-    def test_all_bootstrap_prompts_select_service_agent_before_setup_without_local_hello(self):
-        import re
-        from quorum_api import ServiceConfig
-        from quorum_invitations import create_id_invitation, create_open_invitation
-
-        class Api:
-            def call(self, op, payload, request_id=None):
-                if op == 'quorum_lookup': return {'quorum_id': 'q'}
-                if op == 'quorum_check_owner': return True
-                return {'invite_id': '11111111-1111-4111-8111-111111111111',
-                        'expires_at': '2026-10-23T12:00:00Z'}
-
-        config = ServiceConfig('https://example.com', 'sb_publishable_synthetic')
-        github = create_id_invitation(Api(), config, 'team', '123', 'github')
-        anonymous = create_open_invitation(Api(), config, 'team', 'open')
-        for name, prompt in [('github', github['session_prompt']),
-                             ('configured', github['configured_machine_prompt']),
-                             ('anonymous', anonymous['session_prompt'])]:
+    def test_prompts_carry_only_data_authorizations_and_hard_rules(self):
+        for name, prompt, _ in prompts():
             with self.subTest(name=name):
-                self.assertIn('references/service-agent.md', prompt)
-                self.assertLess(prompt.index('references/service-agent.md'), prompt.index('helper accept-id'))
-                # A local greeting is not required; the transport Hello grant is unchanged.
+                for data in ('"team"', '11111111-1111-4111-8111-111111111111', '"2026-10-23T12:00:00Z"'):
+                    self.assertIn(data, prompt)
+                for grant in ('paste this prompt as my own instruction', 'native transport listener',
+                              'Hello transport notices', '--accept-tasks-from-members --dispatch-mode inline',
+                              'including anonymous members', 'task-check <message-id>',
+                              'same private state and actual session UUID', 'always require the receiving owner',
+                              'Membership-only acceptance requires my explicit request'):
+                    self.assertIn(grant, prompt)
+                for rule in ('use only this actual session identity', 'never relabel parent reception as a worker inbox',
+                             'Do not start a model, another session, headless pilot or OS startup service',
+                             'never suggest visible parent reception', 'legacy opt-in only on my own explicit request',
+                             'Ask me before posting anything outside the quorum', 'report one setup outcome'):
+                    self.assertIn(rule, prompt)
+                # Procedure and version detail live only in the installed guide, so fixes reach old invites.
+                for procedure in ('native-inbox.md', 'claude-worker.md', 'grok-cloud.md', 'service-agent.md',
+                                  '--transport tool-inbox', '--client grok-bot', 'session start', 'session connect',
+                                  'cursor', 'Bash(uv run', 'protocol 2', 'skill 0.', 'No-worker route', 'Parent-native'):
+                    self.assertNotIn(procedure, prompt)
                 self.assertIsNone(re.search(r'\bsay Hello\b|\bgreet', prompt))
-                self.assertIn('Hello transport notices', prompt)
-                self.assertIsNone(re.search(r'\b[Ss]how/receipt\b|receive, show', prompt))
+                self.assertLess(len(prompt), 4500)
 
-    def test_all_bootstrap_prompts_require_a_worker_or_explicit_visible_parent_choice(self):
-        from quorum_api import ServiceConfig
-        from quorum_invitations import create_id_invitation, create_open_invitation
-
-        class Api:
-            def call(self, op, payload, request_id=None):
-                if op == 'quorum_lookup': return {'quorum_id': 'q'}
-                if op == 'quorum_check_owner': return True
-                return {'invite_id': '11111111-1111-4111-8111-111111111111',
-                        'expires_at': '2026-10-23T12:00:00Z'}
-
-        config = ServiceConfig('https://example.com', 'sb_publishable_synthetic')
-        github = create_id_invitation(Api(), config, 'team', '123', 'github')
-        anonymous = create_open_invitation(Api(), config, 'team', 'open')
-        for name, prompt in [('github', github['session_prompt']),
-                             ('configured', github['configured_machine_prompt']),
-                             ('anonymous', anonymous['session_prompt'])]:
+    def test_expiry_is_server_data_and_no_local_clock_decides(self):
+        for name, prompt, result in prompts():
             with self.subTest(name=name):
-                # The worker route and its exact parent relationship are chosen before the invitation is spent.
-                self.assertLess(prompt.index('references/native-inbox.md'), prompt.index('helper accept-id'))
-                self.assertLess(prompt.index('--transport tool-inbox --parent-thread-id'), prompt.index('helper accept-id'))
-                self.assertIn('native_worker_unavailable (for example ownership_unverified on Windows), keep the invitation unused', prompt)
-                self.assertIn('--require-worker-inbox', prompt)
-                # No worker: start the native quorum agent, else one blocker; parent reception is never suggested.
-                self.assertIn('follow the no-worker route below', prompt)
-                self.assertIn('Quorum is always handled by the native quorum service agent', prompt)
-                self.assertIn('out of sight while this chat gets only material results', prompt)
-                self.assertIn('create or start it with this client', prompt)
-                self.assertIn('keep the invitation unused and report that capability blocker once', prompt)
-                self.assertIn('do not suggest visible parent reception, another chat or a replacement session', prompt)
-                self.assertIn('legacy opt-in only when I explicitly request it myself for this chat; never offer it', prompt)
-                for steering in ('dedicated Quorum session', 'dedicated chat', 'paste this invitation there',
-                                 'wait for my explicit choice before any parent fallback',
-                                 'only after I explicitly choose'):
-                    self.assertNotIn(steering, prompt)
-                no_worker = prompt.index('No-worker route')
-                self.assertLess(no_worker, prompt.index('helper accept-id'))
-                self.assertLess(no_worker, prompt.index('Legacy parent-native opt-in'))
-                # Auto mode may block the listener start; the owner approves, nothing works around it.
-                self.assertIn('In Claude Code auto mode, session start can be blocked as background persistence', prompt)
-                self.assertIn('Bash(uv run *quorum.py*)', prompt)
-                self.assertIn('never work around the block', prompt)
-                self.assertIn('session receive', prompt)
-                self.assertIn('never runs session start as a background listener', prompt)
-                self.assertIn('not delivery to this chat', prompt)
-                self.assertIn('--accept-tasks-from-members --dispatch-mode inline', prompt)
-                # The supported parent fallback stays intact and truthfully labelled.
-                self.assertIn('then session start and session status', prompt)
-                self.assertIn('Never relabel parent reception as a worker inbox', prompt)
-                self.assertIn('Only the original personal parent', prompt)
-                # Flags belong only to accept/connect, and the worker and parent branches are exclusive.
-                self.assertNotIn('every session command with --transport', prompt)
-                self.assertIn('only those two commands take these flags', prompt)
-                worker = prompt.index('For a proven Codex tool-inbox worker')
-                fallback = prompt.index('Legacy parent-native opt-in, only when I explicitly request visible parent reception for this chat myself')
-                self.assertLess(worker, fallback)
-                self.assertIn('the parent fallback below then does not apply', prompt[worker:fallback])
-                self.assertNotIn('session start', prompt[worker:fallback].replace('never runs session start', ''))
+                rule = prompt.index('The expiry above is server data only')
+                self.assertLess(rule, prompt.index('install or refresh'))
+                for required in ('do not judge it yourself from any local clock, helper output or sense of the date',
+                                 'always attempt acceptance', 'only the server response decides',
+                                 'report invite_denied'):
+                    self.assertIn(required, prompt)
+                # The helper prints no locally computed remaining time that a skewed clock could falsify.
+                self.assertNotIn('now_utc', result)
+                self.assertNotIn('seconds_remaining', result)
+        join = flat('references/join.md')
+        for required in ('`expires_at` is server data', 'a machine clock can be hours off',
+                         'never compare it with the OS clock, helper output or your own sense of the date',
+                         'Always attempt acceptance', "only the server's accept response decides", '`invite_denied`',
+                         'The helper prints no local remaining time; do not estimate one'):
+            self.assertIn(required, join)
 
+    def test_installer_pin_has_one_source(self):
+        from quorum_release import INSTALLER
+        self.assertEqual(INSTALLER, 'skills@>=1.7.4')
+        for script in SCRIPTS.glob('*.py'):
+            if script.name != 'quorum_release.py':
+                with self.subTest(script=script.name):
+                    self.assertNotRegex(script.read_text(), r"['\"]skills@")
+        self.assertIn('INSTALLER', (SCRIPTS / 'quorum_update.py').read_text())
+        skill = flat('SKILL.md')
+        self.assertIn('issuing an invitation (so the prompt carries the current installer)', skill)
+
+    def test_join_guide_owns_the_moved_procedure(self):
+        join = flat('references/join.md')
+        intro = join[join.index('## Invitation prompts'):join.index('## Join this chat')]
+        for required in ('carries only data', "receiving owner's authorizations", 'hard safety rules',
+                         'latest `rotnov/skills` main', 'issued by an older copy', 'this guide wins'):
+            self.assertIn(required, intro)
+        for required in ('grok-cloud.md', '--client grok-bot', 'cursor_inbox_unavailable', 'native-inbox.md',
+                         'claude-worker.md', '--require-worker-inbox', '--accept-tasks-from-members --dispatch-mode inline',
+                         'session receive --wait-seconds 30', 'never runs `session start` as a background listener',
+                         'worker consumption, not delivery to the parent', 'Only on the legacy parent opt-in',
+                         '`session start` can be blocked as background persistence', '`Bash(uv run *quorum.py*)`',
+                         'never work around the block', 'https://github.com/rotnov/skills/issues'):
+            self.assertIn(required, join)
 
     def test_references_route_a_workerless_join_to_the_agent_or_a_blocker(self):
-        root = Path(__file__).resolve().parents[1] / 'skills/quorum'
-        join = ' '.join((root / 'references/join.md').read_text().split())
+        join = flat('references/join.md')
         section = join[join.index('## Without a worker'):]
         for required in ('Quorum is always handled by the native `quorum`', 'out of sight',
                          'create or start it', 'keep the invitation unused and report that capability blocker once',
                          'Do not suggest visible parent reception, another chat or a replacement session',
                          "never start a headless model, a model CLI or a different provider's client",
-                         'legacy opt-in', 'Never offer it as an option',
-                         'In Claude Code auto mode, `session start` can be blocked as background persistence',
-                         '`Bash(uv run *quorum.py*)`', 'never work around the block'):
+                         'legacy opt-in', 'Never offer it as an option'):
             self.assertIn(required, section)
         self.assertNotIn('dedicated chat', section)
         self.assertIn('never fall back to parent reception', join)
         for name in ('service-agent.md', 'claude-worker.md', 'native-inbox.md', 'invite.md', 'sessions.md'):
             with self.subTest(reference=name):
-                text = ' '.join((root / 'references' / name).read_text().split())
+                text = flat('references/' + name)
                 self.assertIn('join.md#without-a-worker', text)
                 self.assertNotIn("owner's explicit choice before retrying", text)
-                self.assertNotIn('wait for the owner\'s explicit route choice', text)
+                self.assertNotIn("wait for the owner's explicit route choice", text)
                 self.assertNotIn('dedicated Quorum chat', text)
-        skill = ' '.join((root / 'SKILL.md').read_text().split())
+        skill = flat('SKILL.md')
         self.assertIn('references/join.md#without-a-worker', skill)
-        self.assertNotIn("requires the owner's explicit choice", skill)
         self.assertIn('never suggest parent reception', skill)
-
-
-    def test_prompts_leave_expiry_to_the_server_and_helper_reports_a_real_clock(self):
-        from datetime import datetime, timezone
-        from quorum_api import ServiceConfig
-        from quorum_invitations import clock, create_id_invitation, create_open_invitation
-
-        class Api:
-            def call(self, op, payload, request_id=None):
-                if op == 'quorum_lookup': return {'quorum_id': 'q'}
-                if op == 'quorum_check_owner': return True
-                return {'invite_id': '11111111-1111-4111-8111-111111111111',
-                        'expires_at': '2026-10-23T12:00:00+00:00'}
-
-        config = ServiceConfig('https://example.com', 'sb_publishable_synthetic')
-        github = create_id_invitation(Api(), config, 'team', '123', 'github')
-        anonymous = create_open_invitation(Api(), config, 'team', 'open')
-        for name, prompt in [('github', github['session_prompt']),
-                             ('configured', github['configured_machine_prompt']),
-                             ('anonymous', anonymous['session_prompt'])]:
-            with self.subTest(name=name):
-                for required in ('Do not judge expiry yourself',
-                                 'never compare expires_at with your own clock or sense of the date',
-                                 'attempt acceptance promptly', 'Only the server response decides',
-                                 'invite_denied', 'report that code',
-                                 'Mention remaining time only from an actual UTC clock reading', 'never an estimate'):
-                    self.assertIn(required, prompt)
-                self.assertLess(prompt.index('Do not judge expiry yourself'), prompt.index('helper accept-id'))
-        for result in (github, anonymous):
-            self.assertRegex(result['now_utc'], r'^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$')
-            self.assertIn('seconds_remaining', result)
-        now = datetime(2026, 10, 23, 11, 45, tzinfo=timezone.utc)
-        self.assertEqual(clock('2026-10-23T12:00:00Z', now), {'now_utc': '2026-10-23T11:45:00Z', 'seconds_remaining': 900})
-        self.assertEqual(clock('2026-10-23T12:00:00.5+00:00', now)['seconds_remaining'], 900)
-        self.assertEqual(clock('2026-10-23T11:00:00Z', now)['seconds_remaining'], 0)
-        self.assertIsNone(clock('tomorrow', now)['seconds_remaining'])
-        self.assertIsNone(clock(None, now)['seconds_remaining'])
-        join = ' '.join((Path(__file__).resolve().parents[1] / 'skills/quorum/references/join.md').read_text().split())
-        for required in ('Do not judge expiry yourself', 'compare `expires_at` with your own clock',
-                         'attempt acceptance promptly', '`invite_denied`', 'never an estimate'):
-            self.assertIn(required, join)
 
 
 if __name__ == '__main__': unittest.main()
