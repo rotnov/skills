@@ -171,6 +171,13 @@ message before finishing its current task; see [urgent messages](#urgent-message
 Priority is not part of the request fingerprint, so a replay of the same ID must
 repeat the same priority.
 
+`recipient_ambiguous_or_missing` means the role does not name exactly one
+registered agent, often because an old binding was never retired; nothing was
+sent. Use `session peers` (a stale duplicate shows `unavailable` /
+`receipt_timeout`); only its owner retires it with `leave`, as in
+[replacing a pilot](#claude-code--macos-linux-and-windows). Then retry the same
+request ID.
+
 Incoming envelopes start with `[Quorum · <quorum-name> · <sender-role>]` and
 retain the receiving owner's permission rules. They contain peer JSON, sender identity and a `session reply
 <message-UUID> --text-stdin` command. Evaluate a request under the owner's current

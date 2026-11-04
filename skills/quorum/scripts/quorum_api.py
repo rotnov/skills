@@ -20,6 +20,9 @@ OPERATIONS = frozenset(('quorum_create invite_create invite_accept device_regist
 # Gateway/overload statuses only; missing RPCs, denials and client errors stay terminal.
 TRANSIENT_HTTP = frozenset((408, 429, 500, 502, 503, 504))
 
+# Fixed server exception names a client may act on. Any other error body stays `service_error`.
+SERVER_CODES = frozenset(('recipient_ambiguous_or_missing',))
+
 
 class QuorumError(ValueError):
     """Stable error codes only: never include a response body or credentials."""
@@ -66,8 +69,10 @@ def _open(request):
         with build_opener(NoRedirect).open(request, timeout=20) as response:
             raw = response.read(262145)
     except HTTPError as error:
-        code = 'auth_required' if error.code in (401, 403) else 'service_error'
-        raise QuorumError(code, transient=error.code in TRANSIENT_HTTP) from None
+        if error.code in (401, 403): raise QuorumError('auth_required') from None
+        code = _server_code(error) if error.code == 400 else None
+        if code: raise QuorumError(code) from None
+        raise QuorumError('service_error', transient=error.code in TRANSIENT_HTTP) from None
     except (URLError, OSError):
         raise QuorumError('service_unavailable', transient=True) from None
     if len(raw) > 262144:
@@ -76,6 +81,17 @@ def _open(request):
         return json.loads(raw)
     except (ValueError, UnicodeError):
         raise QuorumError('invalid_response') from None
+
+
+def _server_code(error):
+    """Return an allow-listed exception name from a bounded error body; never the body itself."""
+    try:
+        raw = error.read(4097)
+        body = json.loads(raw) if len(raw) <= 4096 else None
+    except Exception:
+        return None
+    message = body.get('message') if isinstance(body, dict) else None
+    return message if isinstance(message, str) and message in SERVER_CODES else None
 
 
 class QuorumApi:

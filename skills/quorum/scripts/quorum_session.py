@@ -8,6 +8,7 @@ import subprocess
 import sys
 import time
 import uuid
+from quorum_api import QuorumError
 from quorum_listener import Control, abandon_start, locked, run_listener, spawn_background, stop_listener
 from quorum_os import FileLock
 from quorum_state import LocalLedger
@@ -41,6 +42,23 @@ class UnsupportedClient(ValueError):
         return {'reason':self.reason, 'detected_client':self.detected, 'platform':sys.platform,
                 'supported_transports':[dict(row) for row in SUPPORTED_TRANSPORTS],
                 'next_step':next_step}
+
+
+class RecipientUnresolved(ValueError):
+    """A role that does not name exactly one live agent; carries only the caller's role and fixed guidance."""
+    code = 'recipient_ambiguous_or_missing'
+
+    def __init__(self, role):
+        super().__init__(self.code)
+        self.role = role
+
+    def diagnostic(self):
+        return {'role':self.role, 'next_step':(
+            'Nothing was sent. This role does not resolve to exactly one registered agent in this '
+            'quorum and project. Run `session peers` to see the agents that hold it; a stale duplicate '
+            'usually shows `unavailable` / `receipt_timeout`. The stale agent\'s owner retires it with '
+            '`leave --request-id <stable-ID> --json-stdin` and {"agent_id":"<old-agent-UUID>"}; then '
+            'retry this send with the same request ID. If no agent holds the role, check the role name.')}
 
 
 def current_engine():
@@ -844,7 +862,11 @@ def dispatch(args, auth_ledger, register_agent):
                     api.call('session_ack',{**scope,'message_id':args.message_id})
                     ledger.setting('delivery:'+args.message_id,{'state':'acked'})
                 return result
-            peer=api.call('resolve_role',{'quorum_id':record['quorum_id'],'role':args.to_role,'project_ref':record['project_ref']})
+            try:
+                peer=api.call('resolve_role',{'quorum_id':record['quorum_id'],'role':args.to_role,'project_ref':record['project_ref']})
+            except QuorumError as error:
+                if str(error)==RecipientUnresolved.code: raise RecipientUnresolved(args.to_role) from None
+                raise
             conv=str(uuid.uuid5(uuid.NAMESPACE_URL,record['agent_id']+':'+args.request_id))
             result=api.call('message_send',{'quorum_id':record['quorum_id'],'sender_agent_id':record['agent_id'],
                  'recipient_agent_id':peer['agent_id'],'conversation_id':conv,'body':text,'reply_to':None,
