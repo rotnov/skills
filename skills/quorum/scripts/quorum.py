@@ -13,7 +13,7 @@ from quorum_api import QuorumApi, ServiceConfig, QuorumError
 from quorum_auth import token_provider
 from quorum_state import LocalLedger
 from quorum_grok_leader import GrokBindingError
-from quorum_session import UnsupportedClient
+from quorum_session import RecipientUnresolved, UnsupportedClient
 from quorum_grok_cloud import CloudError
 from quorum_native_inbox import NativeInboxError
 from quorum_debug import DebugError
@@ -191,7 +191,7 @@ def main(argv=None):
                  'engine_acceptance_pending': 4, 'service_profile_ambiguous': 4, 'machine_profile_unavailable': 4,
                  'auth_profile_conflict': 3, 'service_config_conflict': 4, 'service_unavailable': 5, 'service_error': 5,
                  'response_too_large': 5, 'invalid_response': 5, 'listener_start_failed': 5, 'listener_stop_failed': 5, 'listener_not_ready': 5,
-                 'anonymous_login_unavailable': 4, 'open_invite_required': 3}
+                 'anonymous_login_unavailable': 4, 'open_invite_required': 3, 'recipient_ambiguous_or_missing': 3}
         codes.update({'update_extension_unavailable':4, 'runtime_source_unavailable':4})
         code = str(error) if str(error) in codes else 'operation_failed'
         from quorum_release import ReleaseMismatch
@@ -205,6 +205,10 @@ def main(argv=None):
         return 3
     except UnsupportedClient as error:
         print(json.dumps({'ok': False, 'code': 'unsupported_client', 'data': error.diagnostic()}))
+        return 3
+    except RecipientUnresolved as error:
+        # The caller's own role and fixed guidance only; never agent IDs or a server body.
+        print(json.dumps({'ok': False, 'code': error.code, 'data': error.diagnostic()}))
         return 3
     except CloudError as error:
         # Fixed cloud codes and reasons only; never a webhook target or peer text.
