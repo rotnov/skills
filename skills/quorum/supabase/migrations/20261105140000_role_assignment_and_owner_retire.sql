@@ -142,7 +142,9 @@ begin
    select i.quorum_id into q from quorum_private.invitations i
     where i.token_hash=encode(sha256(convert_to(p->>'token','UTF8')),'hex');
   end if;
-  if q is null then return quorum_private.call_role_core(op,p,req); end if;
+  -- Fail closed: an invitation that this read did not see is refused here, never left
+  -- for the core to find later without the reactivation checks below.
+  if q is null then raise insufficient_privilege using message='invite_denied'; end if;
   -- Lock order, shared with close serialization and maintenance: quorum row, then
   -- agent rows (ascending ID), then the membership row. One key per accepting identity
   -- and quorum first serializes its acceptances; only acceptances take that key, so a
@@ -182,10 +184,10 @@ begin
   supersede:=coalesce((p->>'supersede')::boolean,false);
   keep:=(p->>'keep_agent_id')::uuid;
   core:=p-'supersede'-'keep_agent_id';
-  if not exists(select 1 from quorum_private.memberships m where m.quorum_id=q and m.user_id=who and not m.revoked)
-     or not quorum_private.verified_actor(who) then
-   -- Non-members never learn who holds a role: the core refuses them.
-   return quorum_private.call_role_core(op,core,req); end if;
+  -- Every path to the core's insert runs the checks below under the locks; a refusal is
+  -- raised here with the core's own codes and never delegated after an unlocked read.
+  if not quorum_private.verified_actor(who) then
+   raise insufficient_privilege using message='github_identity_required'; end if;
   -- One key per quorum, project and role serializes concurrent claims; it is
   -- always taken before the core's request lock.
   perform pg_advisory_xact_lock(hashtextextended(q::text||'/'||coalesce(p->>'project_ref','')||'/'
@@ -196,9 +198,11 @@ begin
   -- revoked or reactivated before the core inserts the agent.
   perform a.id from quorum_private.agents a where a.quorum_id=q and a.owner_id=who
    and a.role=p->>'role' and a.project_ref=p->>'project_ref' and not a.revoked order by a.id for update of a;
-  select * into membership from quorum_private.memberships m where m.quorum_id=q and m.user_id=who and not m.revoked
-   for share;
-  if not found then return quorum_private.call_role_core(op,core,req); end if;
+  -- The row is locked whatever its state, so a reactivation in flight is waited for and
+  -- its committed result is read here (a revoked filter would skip the row unlocked).
+  select * into membership from quorum_private.memberships m where m.quorum_id=q and m.user_id=who for share;
+  -- Non-members never learn who holds a role.
+  if not found or membership.revoked then raise insufficient_privilege using message='membership_required'; end if;
   if not (exists(select 1 from quorum_private.agents a where a.quorum_id=q
      and a.device_id=(p->>'device_id')::uuid and a.session_ref=p->>'session_ref')
      or exists(select 1 from quorum_private.requests r where r.actor=who and r.operation=op and r.request_id=req)) then

@@ -130,7 +130,8 @@ class RoleClaimRaceTests(unittest.TestCase):
 
     def alice_holds(self, role, session):
         # Alice is a live member with a live agent holding `role`; returns that agent's ID.
-        self.rejoin_sql(f"update quorum_private.memberships set revoked=false where quorum_id='{REJOIN}';")
+        self.rejoin_sql(f"update quorum_private.memberships set revoked=false,assigned_role=null,assigned_project_ref=null "
+                        f"where quorum_id='{REJOIN}';")
         return self.rejoin_sql(
             f"select set_config('request.jwt.claim.sub','{ALICE}',false) is null;"
             f"select public.agent_join('{REJOIN}','{ALICE_DEVICE}','p','{role}','claude','{session}','{session}')"
@@ -187,6 +188,31 @@ class RoleClaimRaceTests(unittest.TestCase):
         self.assertEqual(self.rejoin_sql(
             f"select set_config('request.jwt.claim.sub','{OWNER}',false) is null;"
             f"select public.resolve_role('{REJOIN}','lead','p')->>'agent_id';").splitlines()[-1], bob)
+
+    def test_join_overlapping_a_reactivation_waits_then_runs_the_guarded_checks(self):
+        self.rejoin_sql(self.revoke_alice('rejoin-revoke-3').replace(',true)', ',false)'))
+        invite = self.rejoin_sql(
+            f"select set_config('request.jwt.claim.sub','{OWNER}',false) is null;"
+            f"select public.invite_create_id('{REJOIN}','9000000000202','rejoin-invite-3','assigned-x')"
+            "->>'invite_id';").splitlines()[-1]
+        join = (f"select set_config('request.jwt.claim.sub','{ALICE}',true);"
+                f"select public.agent_join('{REJOIN}','{ALICE_DEVICE}','p','other-x','claude','rejoin-s3','rejoin-j3');")
+        # The join may not slip past the wrapper while the acceptance is uncommitted: it waits on the
+        # membership, then sees the reactivated membership and its assignment, and refuses the other role.
+        code, out, error = self.race(self.accept_alice(invite, 'rejoin-accept-3'), join, first_statement='invite_accept_id')
+        self.assertNotEqual(code, 0, out)
+        self.assertIn('role_assignment_mismatch', error)
+        self.assertEqual(self.rejoin_sql("select count(*) from quorum_private.agents where session_ref='rejoin-s3'"), '0')
+        self.assertEqual(self.rejoin_sql(f"select assigned_role from quorum_private.memberships where quorum_id='{REJOIN}' "
+                                         f"and user_id='{ALICE}'"), 'assigned-x')
+
+    def test_join_after_a_revoked_membership_is_refused_without_the_core(self):
+        self.rejoin_sql(self.revoke_alice('rejoin-revoke-4').replace(',true)', ',false)'))
+        with self.assertRaisesRegex(RuntimeError, 'membership_required'):
+            self.rejoin_sql(f"select set_config('request.jwt.claim.sub','{ALICE}',false) is null;"
+                            f"select public.agent_join('{REJOIN}','{ALICE_DEVICE}','p','late','claude','rejoin-s4',"
+                            "'rejoin-j4');")
+        self.assertEqual(self.rejoin_sql("select count(*) from quorum_private.agents where session_ref='rejoin-s4'"), '0')
 
 
 if __name__ == '__main__':
