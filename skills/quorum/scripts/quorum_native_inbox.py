@@ -47,6 +47,7 @@ class NativeInboxError(ValueError):
                'scope_invalid', 'slot_invalid', 'slot_pending', 'stopped', 'await_timeout', 'pending_expired',
                'permission_expired', 'handle_invalid', 'actor_claimed', 'capability_invalid', 'path_unsafe',
                'cwd_mismatch', 'operation_denied', 'scope_mismatch', 'request_override', 'target_pending',
+               'supersede_not_in_scope',
                'target_mismatch', 'service_mismatch', 'service_unconfigured', 'wait_invalid', 'selector_conflict',
                'management_only', 'create_unresolved', 'evidence_unpersisted', 'recovery_needed', 'parent_route_visible',
                'parent_binding_missing', 'parent_binding_running', 'previous_worker_agent_active',
@@ -153,6 +154,10 @@ class NativeInboxError(ValueError):
                                    'be a second live agent on the same role. Nothing was prepared or registered. In '
                                    'this parent chat run session stop, confirm session status shows the listener '
                                    'offline, then prepare the adopt scope again.')
+        elif self.reason == 'supersede_not_in_scope':
+            result['next_step'] = ('Nothing was sent or registered. Retiring another agent is outside every worker '
+                                   'scope. The owner retires the stale agent with leave from the parent chat, '
+                                   'then the worker connects again with --exclusive-role.')
         elif self.code == 'native_worker_unavailable':
             # Emitted only when this command dispatched nothing; any later refusal carries remote_effect instead.
             result['next_step'] = ('This command sent nothing to the service: an invitation it would accept was not '

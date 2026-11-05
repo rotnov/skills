@@ -1092,6 +1092,8 @@ def _check_syntax(operation, arguments):
         raise _denied('scope_mismatch')
     if operation == 'connect' and not (get('transport') == TRANSPORT and get('parent_thread_id') is None):
         raise _denied('scope_mismatch')
+    # Retiring another agent (`leave`) is in no worker scope; the owner retires it, then connects exclusively.
+    if operation == 'connect' and get('supersede'): raise _denied('supersede_not_in_scope')
 
 
 def _check_arguments(record, operation, arguments):
@@ -1295,7 +1297,8 @@ def preflight(args):
             raise NativeInboxError('native_inbox_transport_conflict')
         operation = args.action
         names = {'connect': ('quorum', 'role', 'project_ref', 'transport', 'parent_thread_id', 'accept_tasks_from',
-                             'dispatch_mode', 'accept_tasks_from_members', 'standing_grants_from'),
+                             'dispatch_mode', 'accept_tasks_from_members', 'standing_grants_from', 'exclusive_role',
+                             'supersede'),
                  'receive': ('wait_seconds',), 'received': ('message_id',), 'reply': ('message_id', 'priority'),
                  'task-check': ('message_id',), 'standing-check': ('message_id', 'standing_action')}
         arguments = {name: getattr(args, name, None) for name in names.get(operation, ())}
@@ -1457,6 +1460,13 @@ def _session_action(args, auth_ledger, register_agent, context, ledger, record, 
         if record and (record['registration'] != data or record['role'] != scope['role']
                        or record['quorum'] != scope['quorum_slug']):
             raise ValueError('binding_conflict')
+        if getattr(args, 'exclusive_role', False):
+            # The same read-only check as `session connect --exclusive-role`, on the pinned quorum; an adopt
+            # scope's parent agent is the predecessor its own lifecycle retires, not a duplicate.
+            from quorum_session import claim_role
+            claim_role(guarded, auth_ledger, session_ref, context['target']['quorum_id'], scope['role'],
+                       scope['project_ref'], record,
+                       expected=(scope['adopt']['agent_id'],) if scope['mode'] == 'adopt' else ())
         if scope['mode'] == 'adopt' and not context['target'].get('agent_id'):
             # Persisted before any device or agent request: a lost answer can never release the claim.
             mark_registration(context)
@@ -1527,8 +1537,10 @@ def _effect(source):
     `source` is the effect dict or a callable returning it (None before any dispatch). A service
     error reports its own call's outcome and passes unchanged; nothing here depends on a local write.
     """
+    from quorum_session import RoleHeld
     try: yield
-    except QuorumError: raise
+    # A refused exclusive connect dispatched only reads and registered nothing; its own code and guidance pass.
+    except (QuorumError, RoleHeld): raise
     except Exception as error:
         effect = source() if callable(source) else source
         if not effect: raise

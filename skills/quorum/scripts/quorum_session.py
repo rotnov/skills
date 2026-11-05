@@ -112,17 +112,18 @@ class RoleHeld(ValueError):
                 'next_step': self.NEXT_STEPS[self.code]}
 
 
-def claim_role(api, auth_ledger, sid, quorum_id, role, project_ref, old, *, supersede=False):
+def claim_role(api, auth_ledger, sid, quorum_id, role, project_ref, old, *, supersede=False, expected=()):
     """Before registering: refuse (or, for this identity's own stale agent, supersede) another holder of the role.
 
     `resolve_role` names the single live holder; `agent_status` succeeds only for this login's own live agents,
     so its `agent_denied` proves another identity. No holder, or an already ambiguous role, registers as before.
+    `expected` names agents the caller's own lifecycle already accounts for (an adopting worker's parent agent).
     """
     try: holder = api.call('resolve_role', {'quorum_id':quorum_id, 'role':role, 'project_ref':project_ref})['agent_id']
     except QuorumError as error:
         if str(error) == RecipientUnresolved.code: return None
         raise
-    if holder == (old or {}).get('agent_id'): return None
+    if holder == (old or {}).get('agent_id') or holder in expected: return None
     # The same chat's earlier registration (for example a lost session ledger) is a reconnect, not a duplicate.
     registered = auth_ledger.setting('registration:' + holder) or {}
     if (registered.get('registration') or {}).get('session_ref') == sid: return None
