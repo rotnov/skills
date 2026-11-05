@@ -58,8 +58,9 @@ configuring credentials.
 3. To connect this existing chat and receive peer messages/replies here, read
    [sessions](references/sessions.md). Bind the actual current session ID; a separate
    headless handler is not a substitute.
-   For a resumed Codex/Grok/Claude binding or owner-requested startup recovery, read
-   [resume](references/resume.md); recovery cannot re-enable stopped reception.
+   For a resumed Codex/Grok/Claude binding, a restarted Codex tool-inbox worker or
+   owner-requested startup recovery, read [resume](references/resume.md); recovery
+   cannot re-enable stopped reception.
    For unavailable cloud peers or sleeping-chat wake questions, read
    [cloud wake limits](references/cloud-wake.md); a timeout alone does not prove suspension.
    Read sessions too before marking a message urgent: only a connected Codex chat can be steered; Claude Code reads accepted
@@ -82,6 +83,10 @@ configuring credentials.
    read [listener](references/listener.md). This does not connect or notify the main
    chat. Its ongoing subscription approval is
    separate from a bounded pilot test.
+   Before agreeing to background or until-stop reception or project work, run
+   `capabilities --require until-stop-execution` and report its
+   `background_execution_unsupported` result, reason and alternatives first; see
+   [native inbox](references/native-inbox.md#background-capability). Never promise it.
 7. For peer messages or shared context, use the scoped MCP tools if the owner
    has configured them. Otherwise report `worker_offline`; leave messages queued.
    Read [protocol](references/protocol.md) only for RPC integration or recovery.

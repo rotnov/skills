@@ -7,6 +7,8 @@ Read this file when the owner explicitly wants incoming messages handled while
 the main Claude Code or Codex session is busy. The execution engine is the verified
 Claude pilot; live Codex execution remains disabled. Complete [pilot setup](pilot.md)
 first, including the dedicated pilot registration and pinned adapter toolchain.
+It answers messages only; it is not until-stop project execution. For that request,
+report the [background capability](native-inbox.md#background-capability) result first.
 
 ## Start, inspect and stop
 

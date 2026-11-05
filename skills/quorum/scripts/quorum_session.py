@@ -615,7 +615,10 @@ def add_commands(commands):
     thread.add_argument('--after-sequence', type=sequence, default=0,
                         help='Page after this sequence; the service returns at most 16 messages')
     actions.add_parser('start')
-    actions.add_parser('recover', help='Recover previously enabled reception in this same Codex, Grok or Claude Code conversation')
+    recover_parser = actions.add_parser('recover', help='Recover previously enabled reception in this same Codex, Grok or '
+                                        'Claude Code conversation, or rebind a Codex tool-inbox worker of the same parent')
+    recover_parser.add_argument('--parent-thread-id', type=lambda x: str(uuid.UUID(x)),
+                                help='Tool-inbox worker rebind only: the bound parent thread UUID; a relationship, not authority')
     actions.add_parser('status')
     receive = actions.add_parser('receive', help='Tool-inbox worker: one bounded foreground receive in its own tool result')
     receive.add_argument('--wait-seconds', type=int, choices=range(0, 61), default=30, metavar='0..60')
@@ -888,14 +891,26 @@ def _dispatch(args, auth_ledger, register_agent):
             # Exact-SID supervision: a parent may stop its worker but never act as it.
             if tool: return {**inbox.stop(ledger,record),'session_id':sid}
             return {**stop_listener(ledger,revoke_reception=True),'session_id':sid}
-        if args.action not in ('run',): require_caller(sid,engine)
+        if args.action=='recover' and (tool or getattr(args,'parent_thread_id',None)):
+            # A tool-inbox worker rebind: the new worker of the same parent proves itself; no caller export is borrowed.
+            if not (tool and record): raise inbox.NativeInboxError('native_inbox_transport_conflict')
+            record = require_live_binding(ledger, record, sid)
+            api, _, _ = api_for(auth_ledger)
+            ReleaseGuard(api, ledger).check()
+            return {**inbox.rebind(api,ledger,record,getattr(args,'parent_thread_id',None)),'session_id':sid}
+        # A tool binding's caller is its currently bound worker, which a recorded rebind may have moved.
+        if args.action not in ('run',): require_caller(inbox.worker_session(record) if tool and record else sid,engine)
         # An existing binding keeps its transport; no implicit change or ownership transfer.
         if args.action=='connect' and record and bound!=requested:
             raise inbox.NativeInboxError('native_inbox_transport_conflict')
         if (tool and args.action in ('run','reconcile')) or (not tool and args.action=='receive' and record):
             raise inbox.NativeInboxError('native_inbox_transport_conflict')
+        worker_guard = None
         if tool and record:
             binding = inbox.require_worker(record)
+            # Every later local transition and service call re-reads the persisted binding: a rebind
+            # completing while this command waits (for example on a release RPC) ends it.
+            worker_guard = inbox.binding_guard(ledger, binding)
             if proved is not None and proved != binding: raise inbox.NativeInboxError('native_worker_binding_denied')
         if args.action == 'recover':
             if tool or engine not in RECOVERABLE: raise ValueError('session_recovery_denied')
@@ -931,6 +946,7 @@ def _dispatch(args, auth_ledger, register_agent):
             from quorum_resume import ReceptionApi, startup_authority
             guard = startup_authority(ledger, record, args.run_id)
             api = ReceptionApi(api, ledger, record, authorize=guard)
+        if worker_guard is not None: api = inbox._guarded(api, worker_guard)
         if args.action in ('connect','start','run','receive','recover'):
             release = ReleaseGuard(api, ledger)
             release.check()
@@ -1055,12 +1071,14 @@ def _dispatch(args, auth_ledger, register_agent):
             return {'delegation':record.get('delegation')}
         if args.action == 'task-check':
             ReleaseGuard(api, ledger).check()
-            return task_check(api, record, args.message_id, lambda: ledger.setting('session-agent'))
+            return task_check(api, record, args.message_id, lambda: ledger.setting('session-agent'),
+                              authorize=worker_guard)
         if args.action == 'standing-check':
             if args.standing_action != 'skill-refresh':
                 ReleaseGuard(api, ledger).check()
                 return standing_check(api, record, args.message_id, args.standing_action,
-                                      lambda: ledger.setting('session-agent'), ledger)
+                                      lambda: ledger.setting('session-agent'), ledger,
+                                      authorize=worker_guard)
             # A refresh request is how a stale binding recovers, so a version mismatch must not
             # block it. The authority checks (server-derived sender, current membership, role,
             # local grant, once-per-message marker) are unchanged and do not depend on the
@@ -1071,11 +1089,14 @@ def _dispatch(args, auth_ledger, register_agent):
             except ReleaseMismatch as mismatch:
                 release = mismatch.diagnostic
             result = standing_check(api, record, args.message_id, args.standing_action,
-                                    lambda: ledger.setting('session-agent'), ledger)
+                                    lambda: ledger.setting('session-agent'), ledger,
+                                      authorize=worker_guard)
             return {**result, 'release': release}
         if args.action == 'peers':
-            from quorum_peer_wake import with_wake_diagnostics
-            return with_wake_diagnostics(api.call('session_peers', {'agent_id':record['agent_id'], 'session_ref':sid}))
+            from quorum_peer_wake import REPORTS_KEY, with_wake_diagnostics
+            # This chat's last cached owner-update reports can explain an unavailable peer; never authority.
+            return with_wake_diagnostics(api.call('session_peers', {'agent_id':record['agent_id'], 'session_ref':sid}),
+                                         ledger.setting(REPORTS_KEY))
         if args.action == 'thread':
             # Only this native binding's agent; the backend checks conversation membership.
             return api.call('conversation_read', {'quorum_id':record['quorum_id'], 'agent_id':record['agent_id'],
@@ -1093,16 +1114,18 @@ def _dispatch(args, auth_ledger, register_agent):
             if args.action == 'run' and transport != record['grok_transport']:
                 raise ValueError('session_binding_denied')
         if args.action in ('start','recover'):
-            if tool: return {**inbox.arm(ledger,record),'session_id':sid}
+            if tool: return {**inbox.arm(ledger,record,authorize=worker_guard),'session_id':sid}
             return {**start(auth_ledger.root,ledger,sid,api=api,endpoint=endpoint,grok_transport=transport,
                             recovery=args.action=='recover'),'session_id':sid}
-        if args.action=='receive': return inbox.receive(api,auth_ledger,ledger,record,args.wait_seconds)
+        if args.action=='receive': return inbox.receive(api,auth_ledger,ledger,record,args.wait_seconds,
+                                                          authorize=worker_guard)
         scope={'agent_id':record['agent_id'],'session_ref':sid}
         # Every mutating send/reply requires the exact current server release
         # first; an older server lacks the priority RPCs this client calls.
         if args.action in ('received','reconcile','reply','send'):
             ReleaseGuard(api, ledger).check()
-        if tool and args.action=='received': return inbox.confirm(api,ledger,record,args.message_id)
+        if tool and args.action=='received': return inbox.confirm(api,ledger,record,args.message_id,
+                                                                       authorize=worker_guard)
         if args.action == 'reconcile' and getattr(args, 'confirmed_absent', False):
             if getattr(args, 'confirmed_queued', False): raise ValueError('session_reconcile_denied')
             return reconcile_absent(api, ledger, record, args.message_id, getattr(args, 'attempt_id', None))
@@ -1119,7 +1142,8 @@ def _dispatch(args, auth_ledger, register_agent):
             # A direct caller without this option sends an ordinary message.
             priority=getattr(args,'priority','normal') or 'normal'
             if priority not in PRIORITIES: raise ValueError('invalid_priority')
-            if tool and args.action=='reply': return inbox.reply(api,ledger,record,args.message_id,text,priority)
+            if tool and args.action=='reply': return inbox.reply(api,ledger,record,args.message_id,text,priority,
+                                                                     authorize=worker_guard)
             if args.action=='reply':
                 result=api.call('session_reply',{**scope,'message_id':args.message_id,'body':text,
                                                  'priority':priority})
@@ -1134,6 +1158,8 @@ def _dispatch(args, auth_ledger, register_agent):
                     api.call('session_ack',{**scope,'message_id':args.message_id})
                     ledger.setting('delivery:'+args.message_id,{'state':'acked'})
                 return result
+            # A tool worker's api is already guarded: a rebind after its proof ends the send before dispatch.
+            if worker_guard is not None: worker_guard()
             try:
                 peer=api.call('resolve_role',{'quorum_id':record['quorum_id'],'role':args.to_role,'project_ref':record['project_ref']})
             except QuorumError as error:

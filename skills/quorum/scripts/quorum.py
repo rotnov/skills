@@ -86,6 +86,11 @@ def main(argv=None):
                              help='open: also allow single-use invitations without GitHub (server-set expiry)')
             sub.add_argument('--worker-capability', type=Path,
                              help='Generated Claude worker capability file; slug, access and request ID come from its scope')
+    capabilities = commands.add_parser('capabilities', help='Offline route capability report; starts nothing')
+    from quorum_capabilities import ROUTES, REQUIREMENTS
+    capabilities.add_argument('--route', choices=ROUTES, help='Default: the current client\'s quiet worker route')
+    capabilities.add_argument('--require', choices=tuple(REQUIREMENTS),
+                              help='Fail with background_execution_unsupported unless the route supports it')
     from quorum_live import add_commands
     add_commands(commands)
     from quorum_updates import add_commands as add_update_commands
@@ -99,6 +104,15 @@ def main(argv=None):
         # This is only a route constraint; worker provenance/capabilities are still checked below.
         if getattr(args, 'require_worker_inbox', False) and getattr(args, 'transport', None) != 'tool-inbox':
             raise NativeInboxError('native_worker_required', 'parent_route_visible')
+        if args.command == 'capabilities':
+            # Offline and static: no state directory, login, network or process.
+            from quorum_capabilities import CapabilityUnsupported, check
+            try: value = check(args.route, args.require)
+            except CapabilityUnsupported as error:
+                print(json.dumps({'ok': False, 'code': error.code, 'data': error.data}))
+                return 4
+            print(json.dumps({'ok': True, 'code': 'ok', 'data': value}))
+            return 0
         if args.command == 'version':
             from quorum_release import installed_release
             print(json.dumps({'ok':True, 'code':'ok', 'data':installed_release()}))
