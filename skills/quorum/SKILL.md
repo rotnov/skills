@@ -80,6 +80,10 @@ configuring credentials.
    read [listener](references/listener.md). This does not connect or notify the main
    chat. Its ongoing subscription approval is
    separate from a bounded pilot test.
+   Before agreeing to background or until-stop reception or project work, run
+   `capabilities --require until-stop-execution` and report its
+   `background_execution_unsupported` result, reason and alternatives first; see
+   [native inbox](references/native-inbox.md#background-capability). Never promise it.
 7. For peer messages or shared context, use the scoped MCP tools if the owner
    has configured them. Otherwise report `worker_offline`; leave messages queued.
    Read [protocol](references/protocol.md) only for RPC integration or recovery.

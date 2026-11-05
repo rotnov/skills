@@ -196,6 +196,37 @@ provider allows it. A parent turn ending can suspend the worker: messages stay
 durable and the binding reports offline. A new worker UUID cannot inherit the old
 inbox or receipts. Never claim perpetual service.
 
+## Background capability
+
+`reception: enabled` means later receives are allowed, not that anything is
+receiving or executing. When the owner asks for background reception or project
+work until they stop it, first run this offline check (no state, login or network):
+
+```text
+uv run --project <skill-dir> --frozen python <skill-dir>/scripts/quorum.py capabilities --route <route> --require until-stop-execution
+```
+
+Routes are `codex-tool-inbox`, `claude-worker`, `parent-session`, `grok-cloud`
+and `claude-listener-pilot`; without `--route` the current client's worker route
+is assumed. The report gives `supported`, `conditional` or `unsupported` with a
+fixed `reason` for `bounded_receive`, `continuous_background_reception` and
+`unattended_project_execution`. Every route currently refuses the requirement
+with exit 4, `background_execution_unsupported` and reason `live_agents_disabled`.
+Report that, its reason and alternatives to the owner in one message before
+accepting or promising anything; do not start a launcher, daemon or loop instead.
+
+Supported instead:
+
+- Bounded receive while active: within the current brief, the worker may repeat
+  `session receive --wait-seconds 30` up to an owner-stated deadline or message
+  count, running a fresh `task-check` before each task. It stops on `stopped`,
+  at that limit, or when the brief or parent turn ends. This is not until-stop.
+- Durable queue: unreceived messages wait; the owner later resumes this chat or
+  re-briefs the same worker to drain them.
+- The separate [Claude listener pilot](listener.md) receives until stopped with
+  owner subscription approval, but its turns are text-only, without tools or a
+  checkout, so it cannot do project work.
+
 ## Parent fallback
 
 If the provider lacks verified worker identity or capacity, the supported parent
