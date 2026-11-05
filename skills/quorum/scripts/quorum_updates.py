@@ -196,6 +196,33 @@ def report_runtime(api, ledger, record, notice_id, request_id, *, authorize=lamb
     return {'state':'active_reported', 'target':target, 'runtime':active}
 
 
+def with_restart_visibility(api, ledger, record, status, authorize):
+    """Join an operation page with current peer health, client-side, to name `client_restarted_unrecovered`.
+
+    The report cache feeds later `session peers`. Peer health is best effort: if it is unavailable the
+    page is returned as the service sent it. No participant gains or loses any update state here.
+    """
+    from quorum_peer_wake import annotate, remember_reports
+    participants = status.get('participants')
+    if not isinstance(participants, list): return status
+    remember_reports(ledger, status)
+    try:
+        authorize()
+        peers = api.call('session_peers', {'agent_id':record['agent_id'], 'session_ref':record['session_ref']})
+        authorize()
+    except QuorumError:
+        return status
+    if not isinstance(peers, list): return status
+    reports = {item.get('agent_id'):item for item in participants if isinstance(item, dict)}
+    health = {peer.get('agent_id'):peer for peer in annotate([peer for peer in peers if isinstance(peer, dict)], reports)}
+    joined = []
+    for item in participants:
+        peer = health.get(item.get('agent_id')) if isinstance(item, dict) else None
+        if peer is None or 'availability' not in peer: joined.append(item)
+        else: joined.append({**item, 'availability':peer['availability'], 'last_seen':peer.get('last_seen')})
+    return {**status, 'participants':joined}
+
+
 def add_commands(commands):
     parser = commands.add_parser('update', help='Explicit owner refresh and bounded quorum maintenance')
     parser.add_argument('quorum')
@@ -253,7 +280,8 @@ def dispatch(args, auth):
         if args.status:
             payload = {**_scope(record), 'operation_id':str(uuid.UUID(args.status))}
             if args.after_agent: payload['after_agent'] = str(uuid.UUID(args.after_agent))
-            return _call(api, 'session_update_status', payload, None, authorize)
+            return with_restart_visibility(api, with_ledger, record,
+                                           _call(api, 'session_update_status', payload, None, authorize), authorize)
         if args.apply_notice:
             return apply_notice(api, with_ledger, record, args.apply_notice, args.request_id,
                                 owner_refresh=args.owner_refresh, **options)

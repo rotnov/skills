@@ -120,6 +120,12 @@ consumption, not delivery to the parent) and reports one setup outcome: quorum,
 role, project, transport `tool-inbox` with reception enabled (offline between
 receive calls) and the persistent skill path.
 
+After a successful Codex or Grok connection, the setup report may add one
+sentence offering the optional [startup hook](resume.md#optional-provider-startup-hook)
+for recovery after a client restart. It is only an offer: it changes client
+configuration, so nothing is installed during join, and only the owner's explicit
+consent in a later turn permits `--install --owner-authorized`.
+
 Only on the legacy parent opt-in, continue without asking for a second
 confirmation unless the owner has explicitly requested membership only:
 

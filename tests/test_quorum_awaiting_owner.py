@@ -301,6 +301,75 @@ class CodexAwaitingOwnerTests(base.Harness):
         self.assertEqual(self.ledger().setting('delivery:' + M1)['state'], 'parked')
 
 
+REBOUND = '01a16f00-0000-7000-8000-00000000a113'
+
+
+@base.OWNER_PROOF
+class RebindGuardTests(base.Harness):
+    """A Codex worker rebound away (#104) can no longer park, hold, list, resolve or dismiss."""
+    def setUp(self):
+        super().setUp()
+        base.rollout(self.home)
+        base.rollout(self.home, sid=REBOUND)
+
+    def rebind(self, api, sid):
+        with base.caller(self.home, sid=sid):
+            return self.cli(api, 'session', '--session-id', base.CHILD, 'recover', '--parent-thread-id', base.PARENT)
+
+    def rebind_during(self, api, ledger, record):
+        """Complete a real rebind by the new worker while the previous worker's command checks the release."""
+        from quorum_native_inbox import rebind
+        def concurrent():
+            with base.OtherConnection(ledger.root) as other, base.caller(self.home, sid=REBOUND):
+                rebind(base.Api(), other, record, base.PARENT)
+        api.hooks['session_requirements'] = concurrent
+
+    @isolated_profiles
+    def test_rebound_away_worker_cannot_change_or_read_the_awaiting_list(self):
+        api = base.Api(inbox=[base.message(M1, body='private parked body'), base.message(M2)])
+        with base.caller(self.home):
+            self.connect(api)
+            self.assertEqual(self.receive(api)[1]['data']['message_id'], M1)
+            self.assertEqual(self.cli(api, 'session', 'park', M1)[0], 0)
+            self.assertEqual(self.receive(api)[1]['data']['message_id'], M2)
+        ledger = self.ledger()
+        before = {mid: ledger.setting('delivery:' + mid) for mid in (M1, M2)}
+        commands = ((('park', M2), b''), (('hold', M2, '--seconds', '60'), b''), (('awaiting',), b''),
+                    (('awaiting', 'resolve', M1, '--text-stdin'), b'decision'), (('awaiting', 'dismiss', M1), b''))
+        for argv, stdin in commands:
+            with self.subTest(command=argv):
+                record = ledger.setting('session-agent')
+                if record['worker_binding']['session_ref'] != base.CHILD:
+                    self.assertEqual(self.rebind(api, base.CHILD)[0], 0)
+                    record = ledger.setting('session-agent')
+                # The rebind completes after this worker's proof, inside its own command.
+                self.rebind_during(api, ledger, record)
+                mark = len(api.calls)
+                with base.caller(self.home):
+                    code, result, text = self.cli(api, 'session', *argv, stdin=stdin)
+                self.assertNotIn('session_requirements', api.hooks, 'the rebind ran inside the old command')
+                self.assertEqual((code, result['code']), (3, 'native_worker_binding_denied'), text)
+                self.assertNotIn('private parked body', text)
+                sent = [call[0] for call in api.calls[mark:]]
+                for operation in ('session_ack', 'session_reply', 'session_inbox'):
+                    self.assertNotIn(operation, sent)
+                # After the completed rebind the previous worker is refused outright.
+                with base.caller(self.home):
+                    code, result, text = self.cli(api, 'session', *argv, stdin=stdin)
+                self.assertEqual(code, 3, text)
+                self.assertIn(result['code'], ('session_binding_denied', 'native_worker_binding_denied'))
+                self.assertNotIn('private parked body', text)
+        self.assertEqual({mid: ledger.setting('delivery:' + mid) for mid in (M1, M2)}, before)
+        self.assertNotIn('session_reply', api.ops())
+        # The replacement worker inherits the parked entry and resolves it.
+        with base.caller(self.home, sid=REBOUND):
+            listing = self.cli(api, 'session', '--session-id', base.CHILD, 'awaiting')[1]['data']
+            self.assertEqual([item['message_id'] for item in listing['items']], [M1])
+            code, done, text = self.cli(api, 'session', '--session-id', base.CHILD, 'awaiting', 'resolve', M1,
+                                        '--text-stdin', stdin=b'decision')
+        self.assertEqual((code, done['data']['resolved']), (0, True), text)
+
+
 @claude_base.OWNER_PROOF
 class ClaudeAwaitingOwnerTests(claude_base.Bound):
     @isolated_profiles
