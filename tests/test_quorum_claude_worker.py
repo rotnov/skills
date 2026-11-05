@@ -1376,8 +1376,16 @@ PARENT_AGENT = '88888888-8888-4888-8888-888888888888'
 
 
 class OwnerApi(Api):
-    """The fake service plus the owner knowledge and update RPCs."""
+    """The fake service plus the owner knowledge and update RPCs; `answers` overrides one RPC's answer."""
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.answers = {}
+
     def answer(self, operation, payload):
+        if operation in self.answers:
+            value = self.answers[operation](payload)
+            if isinstance(value, Exception): raise value
+            return value
         if operation.startswith('knowledge_'): return {'ok': True}
         if operation == 'session_update_status': return {'operation_id': payload['operation_id'], 'agents': []}
         if operation == 'agent_leave': return {'left': True}
@@ -1671,6 +1679,8 @@ class AdoptTests(Bound):
         api = OwnerApi()
         self.adopted(api)
         api.fail['agent_leave'] = ['auth_required']
+        # The authenticated read still resolves the role to this worker's own agent.
+        api.answers['resolve_role'] = lambda payload: {'agent_id': AGENT}
         code, result, text = self.cli(api, 'session', 'worker', 'stop', self.slot, '--leave')
         self.assertEqual((code, result['code']), (3, 'auth_required'), text)
         self.assertEqual(self.setting(self.slot)['state'], 'terminal', 'the stop itself still holds')
@@ -1683,6 +1693,83 @@ class AdoptTests(Bound):
         other = self.prepare(self.accept_scope())['slot_id']
         code, result, text = self.cli(api, 'session', 'worker', 'stop', other, '--leave')
         self.assertEqual((code, result['data']['reason']), (3, 'operation_denied'), text)
+
+    def lost_leave(self, api, resolve, status=None):
+        """The worker's leave commits remotely but its answer is lost; retries see the server's view."""
+        from quorum_api import QuorumError
+        self.adopted(api)
+        api.lost.append('agent_leave')
+        api.answers['resolve_role'] = resolve
+        api.answers['agent_status'] = status or (lambda payload: QuorumError('auth_required', denial='agent_denied'))
+        return QuorumError
+
+    @isolated_profiles
+    def test_lost_leave_answer_verified_as_retired_releases_the_claim(self):
+        api = OwnerApi()
+        error = self.lost_leave(api, lambda payload: error('recipient_ambiguous_or_missing'))
+        code, result, text = self.cli(api, 'session', 'worker', 'stop', self.slot, '--leave')
+        self.assertEqual((code, result['data']['worker_agent']), (0, 'retired'), text)
+        self.assertEqual(api.ops()[-3:], ['agent_leave', 'resolve_role', 'agent_status'])
+        self.assertEqual(api.calls[-2][1], {'quorum_id': QUORUM, 'role': 'service-worker', 'project_ref': 'team/project'})
+        self.assertTrue(self.prepare(self.adopt_scope())['slot_id'])
+
+    @isolated_profiles
+    def test_verify_retired_accepts_exactly_one_other_live_agent(self):
+        api = OwnerApi()
+        self.lost_leave(api, lambda payload: {'agent_id': PEER})
+        api.fail['agent_leave'] = ['service_unavailable']
+        code, result, text = self.cli(api, 'session', 'worker', 'stop', self.slot)
+        self.assertEqual(code, 0, text)
+        self.replacement_refused()
+        code, result, text = self.cli(api, 'session', 'worker', 'verify-retired', self.slot)
+        self.assertEqual((code, result['data']['worker_agent']), (0, 'retired'), text)
+        self.assertNotIn('agent_status', api.ops())
+        self.assertTrue(self.prepare(self.adopt_scope())['slot_id'])
+
+    @isolated_profiles
+    def test_agent_still_live_or_unproven_keeps_the_claim(self):
+        from quorum_api import QuorumError
+        cases = {
+            'still resolves': (lambda payload: {'agent_id': AGENT}, None),
+            'ambiguous, status live': (lambda payload: QuorumError('recipient_ambiguous_or_missing'),
+                                       lambda payload: {'agent_id': AGENT, 'registered': True}),
+            'listing error': (lambda payload: QuorumError('service_unavailable'), None),
+            'malformed listing': (lambda payload: {'agent_id': PEER, 'quorum_id': QUORUM}, None),
+            'non-canonical agent': (lambda payload: {'agent_id': 'peer'}, None),
+            'plain auth failure': (lambda payload: QuorumError('recipient_ambiguous_or_missing'),
+                                   lambda payload: QuorumError('auth_required')),
+        }
+        for name, (resolve, status) in cases.items():
+            with self.subTest(name):
+                self.setUp()
+                self.unproven_case(name, resolve, status)
+
+    @isolated_profiles
+    def unproven_case(self, name, resolve, status):
+        """One unproven retirement on a fresh fixture (called per subTest)."""
+        api = OwnerApi()
+        self.lost_leave(api, resolve, status)
+        code, result, text = self.cli(api, 'session', 'worker', 'stop', self.slot, '--leave')
+        self.assertEqual(code, 5, name + ': ' + text)
+        self.replacement_refused()
+        code, result, text = self.cli(api, 'session', 'worker', 'verify-retired', self.slot)
+        self.assertEqual((code, result['data'].get('reason')), (3, 'previous_worker_agent_active'), name + ': ' + text)
+        self.replacement_refused()
+
+    @isolated_profiles
+    def test_verification_reads_only_the_pinned_quorum(self):
+        from quorum_api import QuorumError
+        api = OwnerApi()
+        # Another quorum would prove retirement; the pinned one still resolves to this worker's agent.
+        self.lost_leave(api, lambda payload: {'agent_id': AGENT if payload['quorum_id'] == QUORUM else PEER},
+                        lambda payload: QuorumError('auth_required', denial='agent_denied'))
+        api.lookup = OTHER_QUORUM
+        code, result, text = self.cli(api, 'session', 'worker', 'stop', self.slot, '--leave')
+        self.assertEqual(code, 5, text)
+        self.assertEqual({payload['quorum_id'] for operation, payload, _ in api.calls if operation == 'resolve_role'},
+                         {QUORUM})
+        self.assertNotIn('quorum_lookup', api.ops()[api.ops().index('agent_leave'):])
+        self.replacement_refused()
 
     @isolated_profiles
     def test_expired_connected_worker_blocks_a_replacement(self):

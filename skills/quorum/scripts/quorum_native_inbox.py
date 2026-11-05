@@ -134,7 +134,9 @@ class NativeInboxError(ValueError):
                                    'this role; a second worker would make role sends ambiguous. Nothing was prepared. '
                                    'In this parent chat retire it with session worker stop ' + self.previous['slot_id']
                                    + ' --leave, or leave --request-id <stable-ID> --json-stdin with {"agent_id":"'
-                                   + self.previous['agent_id'] + '"}, then prepare again.')
+                                   + self.previous['agent_id'] + '"}, then prepare again. If a leave already ran '
+                                   'but its answer was lost, session worker verify-retired '
+                                   + self.previous['slot_id'] + ' confirms it with an authenticated read.')
         elif self.reason == 'parent_binding_running':
             result['next_step'] = ("This chat's own reception for that quorum is still running, so the worker would "
                                    'be a second live agent on the same role. Nothing was prepared or registered. In '

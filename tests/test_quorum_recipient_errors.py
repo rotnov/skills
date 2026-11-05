@@ -71,6 +71,17 @@ class TransportCodeTests(unittest.TestCase):
             with self.subTest(status=status):
                 self.assertEqual(str(self.raised(status, body)), 'auth_required')
 
+    def test_an_explicit_agent_denial_is_detail_behind_auth_required(self):
+        denied = json.dumps({'code': '42501', 'message': 'agent_denied'}).encode()
+        error = self.raised(403, denied)
+        self.assertEqual((str(error), error.denial), ('auth_required', 'agent_denied'))
+        for status, body in ((401, denied), (403, json.dumps({'message': 'auth_required'}).encode()),
+                             (403, json.dumps({'message': 'recipient_ambiguous_or_missing'}).encode()),
+                             (403, b'not json'), (403, b'{"message":"agent_denied","pad":"' + b'x' * 5000 + b'"}')):
+            with self.subTest(status=status, body=body[:40]):
+                error = self.raised(status, body)
+                self.assertEqual((str(error), error.denial), ('auth_required', None))
+
 
 class SendRoleTests(unittest.TestCase):
     def setUp(self):

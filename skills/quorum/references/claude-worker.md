@@ -212,7 +212,9 @@ prepare refuses with reason `previous_worker_agent_active`, naming the slot and
 agent. In this chat run `Q session worker stop <slot-uuid> --leave` (adopt
 slots only; it stops the slot and runs `agent_leave` for that worker's agent),
 or the existing `leave` for that `agent_id`. Only a confirmed leave releases the
-claim. Expiry never leaves on its own. A worker that never connected releases
+claim. If a leave's answer was lost, `Q session worker verify-retired <slot-uuid>`
+(and `stop --leave` itself) confirms it with an authenticated read of the pinned
+quorum and role. Errors or unclear answers keep the claim. Expiry never leaves on its own. A worker that never connected releases
 its claim once it is stopped or expired.
 
 ## Supervision and stop

@@ -351,6 +351,7 @@ def add_worker_commands(actions):
     waiting.add_argument('slot', type=slot_uuid)
     waiting.add_argument('--wait-seconds', type=int, choices=range(1, 61), default=60, metavar='1..60')
     steps.add_parser('status').add_argument('slot', type=slot_uuid)
+    steps.add_parser('verify-retired').add_argument('slot', type=slot_uuid)
     stop = steps.add_parser('stop')
     stop.add_argument('slot', type=slot_uuid)
     stop.add_argument('--leave', action='store_true',

@@ -812,11 +812,62 @@ def _retire(root, record):
     try:
         api, config, _ = api_for(ledger)
         same_resolved(context, config)
-        # Only a confirmed leave counts: a denial cannot be told apart from an authentication failure.
-        api.call('agent_leave', {'agent_id': agent_id}, 'leave:' + agent_id)
+        try: api.call('agent_leave', {'agent_id': agent_id}, 'leave:' + agent_id)
+        except QuorumError:
+            # A lost response leaves a committed leave that a retry cannot repeat: confirm it by a read instead.
+            if not verified_retired(api, record, agent_id): raise
         record_retired(ledger, agent_id)
     finally: ledger.db.close()
     return 'retired'
+
+
+def verified_retired(api, record, agent_id):
+    """Authenticated proof that this slot's own worker agent is no longer live under its role; False otherwise.
+
+    Reads only the slot's pinned quorum, role and project (never a slug). Proof is either `resolve_role` naming
+    exactly one live agent that is not this one, or, when the role has none or several, the server's explicit
+    `agent_denied` for this login's own registered agent (revoked agent or device). An error, a malformed
+    answer or this agent still resolving keeps the claim.
+    """
+    scope, quorum_id = record['scope'], (record.get('target') or {}).get('quorum_id')
+    if not isinstance(quorum_id, str) or not quorum_id: return False
+    try:
+        found = api.call('resolve_role', {'quorum_id': quorum_id, 'role': scope['role'],
+                                          'project_ref': scope['project_ref']})
+    except QuorumError as error:
+        if str(error) != 'recipient_ambiguous_or_missing': return False
+        found = None
+    if found is not None:
+        other = found.get('agent_id') if isinstance(found, dict) and set(found) == {'agent_id'} else None
+        return isinstance(other, str) and bool(CANONICAL.fullmatch(other)) and other != agent_id
+    try: api.call('agent_status', {'agent_id': agent_id})
+    except QuorumError as error: return str(error) == 'auth_required' and error.denial == 'agent_denied'
+    return False
+
+
+def verify_retired(state_root, slot_id):
+    """Owner recovery after a lost leave response: record the retirement only on authenticated proof."""
+    from quorum_live import api_for
+    sid = actual_session()
+    root = _state_root(state_root)
+    record = _view(root, _slot_uuid(slot_id))
+    if record.get('provider_session_id') != sid: raise _denied('session_mismatch')
+    if record['scope']['mode'] != 'adopt': raise _denied('operation_denied')
+    agent_id = (record.get('target') or {}).get('agent_id')
+    if not agent_id: return {'slot_id': record['slot_id'], 'worker_agent': 'none'}
+    if _index_setting(root, RETIRED + agent_id) is None:
+        context = {'scope': record['scope'], 'state_root': str(root)}
+        service_check(context)
+        ledger = root_ledger(root)
+        try:
+            api, config, _ = api_for(ledger)
+            same_resolved(context, config)
+            if not verified_retired(api, record, agent_id):
+                raise NativeInboxError('native_worker_binding_denied', 'previous_worker_agent_active',
+                                       previous={'slot_id': record['slot_id'], 'agent_id': agent_id})
+            record_retired(ledger, agent_id)
+        finally: ledger.db.close()
+    return {'slot_id': record['slot_id'], 'worker_agent': 'retired'}
 
 
 def _write_capability(root, slot_id, token):
@@ -1154,6 +1205,7 @@ def manage(args):
         if action == 'await-binding': return await_binding(args.state, args.slot, args.wait_seconds)
         if action == 'status': return slot_status(args.state, args.slot)
         if action == 'stop': return stop_slot(args.state, args.slot, leave=getattr(args, 'leave', False))
+        if action == 'verify-retired': return verify_retired(args.state, args.slot)
         raise _denied('operation_denied')
     # A logical selector is metadata-only supervision by the exact owning actual SID.
     if args.action not in ('status', 'stop'): raise _denied('management_only')

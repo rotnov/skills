@@ -22,13 +22,17 @@ TRANSIENT_HTTP = frozenset((408, 429, 500, 502, 503, 504))
 
 # Fixed server exception names a client may act on. Any other error body stays `service_error`.
 SERVER_CODES = frozenset(('recipient_ambiguous_or_missing',))
+# A 403 keeps its `auth_required` code everywhere; only this allow-listed server denial is kept as detail.
+DENIAL_CODES = frozenset(('agent_denied',))
 
 
 class QuorumError(ValueError):
     """Stable error codes only: never include a response body or credentials."""
-    def __init__(self, code, *, transient=False):
+    def __init__(self, code, *, transient=False, denial=None):
         super().__init__(code)
         self.transient = transient
+        # An explicit, allow-listed server privilege denial behind an `auth_required` 403; else None.
+        self.denial = denial if denial in DENIAL_CODES else None
 
 
 def is_transient_service(error):
@@ -69,7 +73,8 @@ def _open(request):
         with build_opener(NoRedirect).open(request, timeout=20) as response:
             raw = response.read(262145)
     except HTTPError as error:
-        if error.code in (401, 403): raise QuorumError('auth_required') from None
+        if error.code == 403: raise QuorumError('auth_required', denial=_server_code(error, DENIAL_CODES)) from None
+        if error.code == 401: raise QuorumError('auth_required') from None
         code = _server_code(error) if error.code == 400 else None
         if code: raise QuorumError(code) from None
         raise QuorumError('service_error', transient=error.code in TRANSIENT_HTTP) from None
@@ -83,7 +88,7 @@ def _open(request):
         raise QuorumError('invalid_response') from None
 
 
-def _server_code(error):
+def _server_code(error, allowed=SERVER_CODES):
     """Return an allow-listed exception name from a bounded error body; never the body itself."""
     try:
         raw = error.read(4097)
@@ -91,7 +96,7 @@ def _server_code(error):
     except Exception:
         return None
     message = body.get('message') if isinstance(body, dict) else None
-    return message if isinstance(message, str) and message in SERVER_CODES else None
+    return message if isinstance(message, str) and message in allowed else None
 
 
 class QuorumApi:
