@@ -916,8 +916,16 @@ def _require_parked(ledger, record, message_id):
 
 
 def resolve(api, ledger, record, message_id, body, priority, *, authorize=None):
-    """Send the owner's decision as the one reply to the parked message; it then leaves the list."""
-    _require_parked(ledger, record, message_id)
+    """Send the owner's decision as the one reply to the parked message; it then leaves the list.
+
+    A resolution that already completed (parked, then acked with its answer intent persisted) passes on
+    to reply()'s retry rules, so an identical retry after a lost result is idempotent and a changed one
+    is refused there. A dismissed entry (acked without an answer intent) stays refused here.
+    """
+    delivery = ledger.setting('delivery:' + message_id)
+    resolved = (_owned(record, delivery) and delivery.get('state') == 'acked' and 'parked_at' in delivery
+                and delivery.get('reply_digest') is not None)
+    if not resolved: _require_parked(ledger, record, message_id)
     result = reply(api, ledger, record, message_id, body, priority, authorize=authorize)
     return {**result, 'resolved': True, 'awaiting_owner': _count(ledger, record, 'parked')}
 

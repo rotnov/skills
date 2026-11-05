@@ -151,7 +151,8 @@ The worker returns each parked item to the parent once, as an owner decision
 naming its message ID. The parent keeps that short list, asks the owner once
 and never says that listening is paused. It hands the owner's decision back to
 the same worker: `awaiting resolve` sends it as the one reply to the parked
-message ID (an identical retry is idempotent), and `awaiting dismiss` closes
+message ID (an identical retry is idempotent, also after it completed; a
+changed answer is refused), and `awaiting dismiss` closes
 the entry without an answer. Both remove it from the list; terminal replies and
 notifications can only be dismissed. Peer text in the list stays data.
 

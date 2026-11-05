@@ -101,11 +101,39 @@ class CodexAwaitingOwnerTests(base.Harness):
         self.assertEqual(self.ledger().setting('delivery:' + M1)['state'], 'acked')
         self.assertEqual(self.run_cli(api, 'awaiting')[1]['data'], {'awaiting_owner': 0, 'items': []})
         code, again, _ = self.run_cli(api, 'awaiting', 'resolve', M1, '--text-stdin', stdin=b'changed')
-        self.assertEqual((code, again['code']), (3, 'native_inbox_not_parked'))
+        self.assertEqual((code, again['code']), (3, 'native_inbox_reply_loop_denied'))
         code, loop, _ = self.run_cli(api, 'reply', M1, '--text-stdin', stdin=b'changed')
         self.assertEqual((code, loop['code']), (3, 'native_inbox_reply_loop_denied'))
         # The unrelated current offer was never receipted by the resolution.
         self.assertEqual(self.ledger().setting('delivery:' + M2)['state'], 'offered')
+
+    @isolated_profiles
+    def test_completed_resolution_retry_is_idempotent_and_changes_or_dismissals_are_refused(self):
+        api = base.Api(inbox=[base.message(M1), base.message(M2)])
+        self.start(api)
+        self.offered(api, M1)
+        self.run_cli(api, 'park', M1)
+        # The reply and local receipt completed, but the result never reached the caller.
+        code, first, text = self.run_cli(api, 'awaiting', 'resolve', M1, '--text-stdin', stdin=b'decision')
+        self.assertEqual(code, 0, text)
+        self.assertEqual(self.ledger().setting('delivery:' + M1)['state'], 'acked')
+        code, again, text = self.run_cli(api, 'awaiting', 'resolve', M1, '--text-stdin', stdin=b'decision')
+        self.assertEqual(code, 0, text)
+        self.assertEqual((again['data']['reply_message_id'], again['data']['resolved'], again['data']['awaiting_owner']),
+                         (first['data']['reply_message_id'], True, 0))
+        for stdin, extra in ((b'changed', ()), (b'decision', ('--priority', 'urgent'))):
+            code, changed, _ = self.run_cli(api, 'awaiting', 'resolve', M1, '--text-stdin', *extra, stdin=stdin)
+            self.assertEqual((code, changed['code']), (3, 'native_inbox_reply_loop_denied'))
+        bodies = [payload['body'] for operation, payload, _ in api.calls if operation == 'session_reply']
+        self.assertEqual(bodies, ['decision', 'decision'])
+        # A dismissed entry has no answer intent and is never resolved afterwards.
+        self.offered(api, M2)
+        self.run_cli(api, 'park', M2)
+        self.assertEqual(self.run_cli(api, 'awaiting', 'dismiss', M2)[0], 0)
+        code, refused, _ = self.run_cli(api, 'awaiting', 'resolve', M2, '--text-stdin', stdin=b'decision')
+        self.assertEqual((code, refused['code']), (3, 'native_inbox_not_parked'))
+        self.assertNotIn(M2, [payload['message_id'] for operation, payload, _ in api.calls
+                              if operation == 'session_reply'])
 
     @isolated_profiles
     def test_dismiss_closes_the_entry_without_an_answer(self):
