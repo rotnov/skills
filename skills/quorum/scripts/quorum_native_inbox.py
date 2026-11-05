@@ -544,6 +544,17 @@ def awaiting_summary(deliveries, now=None):
     return summary
 
 
+def peer_status(ledger, record, now=None):
+    """(awaiting-owner count, running explicit hold deadline or None) of this binding, for its heartbeat.
+
+    Counts and a deadline only: peers never learn which message is parked or held.
+    """
+    now = wall() if now is None else now
+    held = [value['hold_until'] for _, value in _rows(ledger, record, 'offered')
+            if type(value.get('hold_until')) in (int, float) and value['hold_until'] > now]
+    return _count(ledger, record, 'parked'), (max(held) if held else None)
+
+
 def stop(ledger, record):
     """Any local supervisor of this exact SID may disable future receives and stop the current run."""
     from quorum_listener import Control
@@ -792,7 +803,8 @@ def receive(api, auth_ledger, ledger, record, wait_seconds, *, waiter=None, pres
             # Publish this exact generation and its release marker together under the control lock.
             control.update(run_id, 'starting', 0, timeout=wait_seconds, release=installed_release())
         def stopping(): return control.stopping(run_id) or not enabled(ledger)
-        presence = presence or Presence(api, record, ledger, persist_epoch=True)
+        presence = presence or Presence(api, record, ledger, persist_epoch=True, run_id=run_id,
+                                        status=lambda: peer_status(ledger, record))
         if waiter is None and wait_seconds:
             waiter = RealtimeWait(api, record, ledger, keepalive=presence, stop_aware=True)
         final, code, handled, disclosed = 'stopped', None, 0, None

@@ -16,7 +16,7 @@ The peer commands preserve the server's `availability`, `reason` and health
 timestamps. An unavailable row adds `wake.status: unsupported`,
 `wake.action: owner_open_original_chat`, and unknown `provider` / `suspension`.
 This is a Quorum adapter limit, not a claim that every provider lacks wake APIs.
-Online and unknown rows keep their original health data without this hint.
+Online, `awaiting_owner` and unknown rows keep their original health data without this hint.
 Engine and role do not prove hosting: `grok` can be local TUI or Bot, and Codex
 and Claude can run locally or in hosted compute. A heartbeat/receipt timeout can
 also mean a network failure, stopped process or busy queue. Never relabel it

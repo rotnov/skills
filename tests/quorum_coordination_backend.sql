@@ -70,7 +70,7 @@ begin
   perform public.session_ack(b.id,b.session_ref,(item->>'id')::uuid);
  end loop;
  if has_table_privilege('authenticated','quorum_private.session_health','SELECT') or
-    has_function_privilege('anon','public.session_heartbeat(uuid,text,uuid,integer,text)','EXECUTE') then raise exception 'health_exposed'; end if;
+    has_function_privilege('anon','public.session_heartbeat'::regproc::oid,'EXECUTE') then raise exception 'health_exposed'; end if;
  if has_function_privilege('anon','public.session_requirements()','EXECUTE') then raise exception 'requirements_exposed'; end if;
  perform set_config('request.jwt.claim.sub','',true);
  begin perform public.session_requirements(); raise exception 'anonymous_requirements'; exception when insufficient_privilege then null; end;

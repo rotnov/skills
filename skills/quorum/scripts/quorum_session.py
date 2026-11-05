@@ -1208,7 +1208,7 @@ def _dispatch(args, auth_ledger, register_agent):
                              route_check=lambda:check_native_route(record), **guard_options)
             # Native reception waits out typed service outages with this same Relay and ledger.
             return run_listener(ledger,make,args.run_id,stop_event=event,timeout=0,retry=True,
-                                waiter=RealtimeWait(api,record,ledger,keepalive=Presence(api,record,ledger),
+                                waiter=RealtimeWait(api,record,ledger,keepalive=Presence(api,record,ledger,run_id=args.run_id),
                                                     stop_aware=True, **guard_options))
         raise ValueError('unknown_operation')
     finally: ledger.db.close()

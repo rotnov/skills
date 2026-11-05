@@ -135,11 +135,15 @@ source hash and matching run marker/lock, never from the fresh helper's own file
 Old processes without that marker remain unverified. Server runtime reports are
 timestamped self-reports, not proof of current remote liveness; status never
 asserts all participants are presently upgraded. Each status page is also joined
-client-side with best-effort `session peers` health: a participant gains
-`availability` and `last_seen`, and a refreshed participant without a later
-runtime report whose heartbeat then went stale shows `client_restarted_unrecovered`
-(see [sessions](sessions.md)); its owner recovers the existing binding, never via a
-new invitation. The page's report timestamps are cached in this chat's session ledger
+with best-effort `session peers` health: a participant gains `availability` and
+`last_seen`, plus `awaiting_owner` and `reception_hold_until` from a server with
+the [peer status extension](server.md#peer-status-extension).
+`client_restarted_unrecovered` comes from that server when it knows the
+participant's run generation: another run reported active after the last
+heartbeat, and no heartbeat followed. Otherwise the client shows it for a
+refreshed participant without a later runtime report whose heartbeat then went
+stale (see [sessions](sessions.md)). Its owner recovers the existing binding,
+never via a new invitation. The page's report timestamps are cached in this chat's session ledger
 for later `session peers`. Report one concise result and
 participants needing owner action through the existing service receiver. Do not
 echo raw envelopes or routine stage/receipt updates.

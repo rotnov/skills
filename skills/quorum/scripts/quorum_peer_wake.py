@@ -62,12 +62,28 @@ def remember_reports(ledger, status):
     ledger.setting(REPORTS_KEY, cache)
 
 
+def server_status(peer):
+    """The peer status extension's fields (#113), shape-checked; {} from an older server."""
+    if not isinstance(peer, dict) or 'client_run_reported' not in peer: return {}
+    awaiting, hold = peer.get('awaiting_owner'), peer.get('reception_hold_until')
+    return {'awaiting_owner': awaiting if type(awaiting) is int and 0 <= awaiting <= 32 else None,
+            'reception_hold_until': hold if _time(hold) else None,
+            'client_run_reported': peer.get('client_run_reported') is True}
+
+
 def annotate(peers, reports, *, now=None):
-    """Mark peers whose existing evidence shows a client restart without recovery; others are unchanged."""
+    """Mark peers whose existing evidence shows a client restart without recovery; others are unchanged.
+
+    When the server judged restarts from the peer's own run generation (`client_run_reported`), its
+    availability stands and this chat's cached owner-update reports are not consulted for that peer.
+    """
     reports = reports if isinstance(reports, dict) else {}
     marked = []
     for peer in peers:
-        state = restart_state(peer, reports.get(peer.get('agent_id')), now=now)
+        status = server_status(peer)
+        if status: peer = {**peer, **status}
+        state = None if status.get('client_run_reported') else restart_state(peer, reports.get(peer.get('agent_id')),
+                                                                              now=now)
         marked.append(dict(peer, availability=state, server_availability=peer.get('availability')) if state else peer)
     return marked
 
@@ -75,15 +91,21 @@ def annotate(peers, reports, *, now=None):
 def with_wake_diagnostics(peers, reports=None, *, now=None):
     if not isinstance(peers, list) or any(not isinstance(peer, dict) for peer in peers):
         raise QuorumError('invalid_response')
-    restarted = ('Its last report was a client refresh, which needs a client restart, and its heartbeat '
-                 'stopped without a newer runtime report. Ask its owner to resume the original chat and recover '
-                 'its existing binding (a Codex tool-inbox worker uses the worker rebind); no new invitation is needed. ')
+    reported = ('Its heartbeat stopped after another run of its client reported it was running, and no heartbeat '
+                'followed. ')
+    cached = ('Its last report was a client refresh, which needs a client restart, and its heartbeat '
+              'stopped without a newer runtime report. ')
+    recover = ('Ask its owner to resume the original chat and recover its existing binding (a Codex tool-inbox '
+               'worker uses the worker rebind); no new invitation is needed. ')
+    def restarted(peer):
+        if peer.get('availability') != RESTARTED: return ''
+        return (reported if peer.get('reason') == 'run_changed_without_heartbeat' else cached) + recover
     return [dict(peer, wake={
         'status': 'unsupported',
         'provider': 'unknown',
         'suspension': 'unknown',
         'action': 'owner_open_original_chat',
-        'next_step': ((restarted if peer.get('availability') == RESTARTED else '') +
+        'next_step': (restarted(peer) +
                       'Quorum has no verified automatic wake for this binding. Ask its owner to open the '
                       'original chat and recover its existing binding if reception needs recovery. The '
                       'peer view does not prove a message was sent or queued. Leave any existing message '
