@@ -103,6 +103,13 @@ needs a coordinator; member intake is inline), `operations` (a subset only) and 
   binding persists one delegation policy, so it cannot be combined with member
   intake.
 
+- `knowledge` (create or accept only): a nonempty subset of
+  `["search","read","propose"]` for a project wiki rule the owner wants this
+  member to follow. It adds the `knowledge` operation for exactly those commands;
+  anything else, including `verify` or `admin`, is `scope_invalid`. Omission keeps
+  the legacy scope with no knowledge. See
+  [Claude worker knowledge](knowledge.md#claude-worker-knowledge).
+
 - `lifetime: "bounded"` is the default for finite QA: `ttl_seconds` 1..3600,
   default 900, measured from prepare.
 - `"lifetime": "until-owner-stop"` is selected once, only under the owner's
@@ -148,6 +155,10 @@ Q session --worker-capability <capability-file> receive --wait-seconds 30
 Q session --worker-capability <capability-file> status
 Q session --worker-capability <capability-file> stop
 ```
+
+With a scope's `knowledge` key, the connected worker also runs the
+[knowledge](knowledge.md#claude-worker-knowledge) `search`, `read` and
+`write` (propose) commands with `--worker-capability <capability-file>` appended.
 
 Every argument must equal the approved scope, including `--access open`,
 `--accept-tasks-from`, `--accept-tasks-from-members`, `--trust-members` and
