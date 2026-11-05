@@ -374,6 +374,13 @@ independent of availability, membership, task permissions and queue retention. N
 `heartbeat_timeout`. Healthy listener heartbeat alone cannot clear an overdue
 message: its receipt is still required. This is derived from server time on read,
 without a scheduled job, revocation, automatic retries or queue deletion.
+The client shows `availability: client_restarted_unrecovered` (keeping the
+service's `server_availability: unavailable`) only when this chat's last
+`update --status` page reported that peer's canonical refresh, which needs a
+client restart, with no runtime report since, and its heartbeat, still alive
+around that refresh, has been stale for 60 seconds. It names an owner recovery
+step, not a wake. A client restart outside an owner update leaves no such
+evidence and stays `unavailable`.
 
 Keepalive runs quietly every 20 seconds, including polling fallback, and does not
 invoke a model or poll the inbox more often. Each newly started listener, and a

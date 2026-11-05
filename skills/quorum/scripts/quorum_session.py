@@ -593,7 +593,10 @@ def add_commands(commands):
     thread.add_argument('--after-sequence', type=sequence, default=0,
                         help='Page after this sequence; the service returns at most 16 messages')
     actions.add_parser('start')
-    actions.add_parser('recover', help='Recover previously enabled reception in this same Codex, Grok or Claude Code conversation')
+    recover_parser = actions.add_parser('recover', help='Recover previously enabled reception in this same Codex, Grok or '
+                                        'Claude Code conversation, or rebind a Codex tool-inbox worker of the same parent')
+    recover_parser.add_argument('--parent-thread-id', type=lambda x: str(uuid.UUID(x)),
+                                help='Tool-inbox worker rebind only: the bound parent thread UUID; a relationship, not authority')
     actions.add_parser('status')
     receive = actions.add_parser('receive', help='Tool-inbox worker: one bounded foreground receive in its own tool result')
     receive.add_argument('--wait-seconds', type=int, choices=range(0, 61), default=30, metavar='0..60')
@@ -866,7 +869,15 @@ def _dispatch(args, auth_ledger, register_agent):
             # Exact-SID supervision: a parent may stop its worker but never act as it.
             if tool: return {**inbox.stop(ledger,record),'session_id':sid}
             return {**stop_listener(ledger,revoke_reception=True),'session_id':sid}
-        if args.action not in ('run',): require_caller(sid,engine)
+        if args.action=='recover' and (tool or getattr(args,'parent_thread_id',None)):
+            # A tool-inbox worker rebind: the new worker of the same parent proves itself; no caller export is borrowed.
+            if not (tool and record): raise inbox.NativeInboxError('native_inbox_transport_conflict')
+            record = require_live_binding(ledger, record, sid)
+            api, _, _ = api_for(auth_ledger)
+            ReleaseGuard(api, ledger).check()
+            return {**inbox.rebind(api,ledger,record,getattr(args,'parent_thread_id',None)),'session_id':sid}
+        # A tool binding's caller is its currently bound worker, which a recorded rebind may have moved.
+        if args.action not in ('run',): require_caller(inbox.worker_session(record) if tool and record else sid,engine)
         # An existing binding keeps its transport; no implicit change or ownership transfer.
         if args.action=='connect' and record and bound!=requested:
             raise inbox.NativeInboxError('native_inbox_transport_conflict')
@@ -1031,8 +1042,10 @@ def _dispatch(args, auth_ledger, register_agent):
                                     lambda: ledger.setting('session-agent'), ledger)
             return {**result, 'release': release}
         if args.action == 'peers':
-            from quorum_peer_wake import with_wake_diagnostics
-            return with_wake_diagnostics(api.call('session_peers', {'agent_id':record['agent_id'], 'session_ref':sid}))
+            from quorum_peer_wake import REPORTS_KEY, with_wake_diagnostics
+            # This chat's last cached owner-update reports can explain an unavailable peer; never authority.
+            return with_wake_diagnostics(api.call('session_peers', {'agent_id':record['agent_id'], 'session_ref':sid}),
+                                         ledger.setting(REPORTS_KEY))
         if args.action == 'thread':
             # Only this native binding's agent; the backend checks conversation membership.
             return api.call('conversation_read', {'quorum_id':record['quorum_id'], 'agent_id':record['agent_id'],
