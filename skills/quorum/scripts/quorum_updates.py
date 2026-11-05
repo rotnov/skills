@@ -17,7 +17,8 @@ BLOCKERS = {'update_tool_missing', 'update_node_too_old', 'update_fetch_failed',
 # The deployed blocked-evidence allowlist predates these local codes. Report the
 # closest accepted code; the local result keeps the precise one. A distinct
 # server code needs a reviewed migration.
-SERVER_BLOCKER = {'update_node_too_old': 'update_tool_missing'}
+SERVER_BLOCKER = {'update_node_too_old': 'update_tool_missing',
+                  'python_provisioning_failed': 'update_tool_missing'}
 
 
 class UpdateFailure(QuorumError):
