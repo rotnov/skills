@@ -175,8 +175,10 @@ routine reception to one worker with `"mode": "adopt"` and neither `access` nor
 `invite_id`; `quorum_slug`, `role`, `project_ref` and `cwd` must equal that
 binding. There is no invitation and no new identity: the worker uses the same
 state, login and membership, and registers its own tool-inbox session under
-the same role (never this chat's session ID). Its operations are only connect,
-receive, receipt, reply, task-check, status and stop.
+the same role (never this chat's session ID). Its operations are connect,
+receive, receipt, reply, task-check, status, stop, `knowledge` and `update`;
+never create or accept. Prefer `"lifetime": "until-owner-stop"` so owner
+maintenance stays available.
 
 1. In this chat run `Q session stop` and confirm `Q session status` shows the
    listener offline.
@@ -195,8 +197,14 @@ receive, receipt, reply, task-check, status and stop.
    fail with `recipient_ambiguous_or_missing` and send nothing; retry them with
    the same request ID. `session peers` then lists only the worker for the role.
 
-Do not restart this chat's reception for that quorum afterwards. Invitations,
-knowledge administration and update fan-out stay with this chat.
+Do not restart this chat's reception for that quorum afterwards. Invitations
+(`invite-id`) still run in this chat: they use the login, not an agent. Owner
+operations bound to an agent move to the worker, because the retired agent is
+refused: the worker runs `Q knowledge <action> --json-stdin --worker-capability
+<capability-file>` (with `--owner-action` where required) and `Q update <slug>
+--worker-capability <capability-file> ...` only on this chat's explicit brief,
+never on a peer's request. The scope pins the quorum; a stopped or expired
+capability refuses them.
 
 ## Supervision and stop
 

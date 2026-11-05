@@ -36,8 +36,11 @@ AWAIT_DEFAULT, AWAIT_LIMIT = 60, 60
 LABEL_LIMIT = 256
 OPERATIONS = {'create': ('create', 'connect', 'receive', 'received', 'reply', 'status', 'stop', 'task-check'),
               'accept': ('accept', 'connect', 'receive', 'received', 'reply', 'status', 'stop', 'task-check'),
-              # The owner's own existing membership: no create, invitation or owner-only operation.
-              'adopt': ('connect', 'receive', 'received', 'reply', 'status', 'stop', 'task-check')}
+              # The owner's own existing membership: no create or invitation. Once the parent agent is retired,
+              # knowledge and update (owner maintenance) run only through this worker, on the parent's request.
+              'adopt': ('connect', 'receive', 'received', 'reply', 'status', 'stop', 'task-check', 'knowledge',
+                        'update')}
+KNOWN = tuple(dict.fromkeys(name for names in OPERATIONS.values() for name in names))
 SESSION_ACTIONS = ('connect', 'receive', 'received', 'reply', 'status', 'stop', 'task-check')
 COMPETING = ('CODEX_THREAD_ID', 'GROK_SESSION_ID', 'GROK_LEADER_SOCKET', 'CURSOR_CONVERSATION_ID')
 NAME = re.compile('[a-z][a-z0-9-]{0,47}')
@@ -971,8 +974,9 @@ def _check_arguments(record, operation, arguments):
         require(scope.get('accept_tasks_from_members') is True
                 and isinstance(get('message_id'), str) and CANONICAL.fullmatch(get('message_id')))
         if not target.get('agent_id'): raise _denied('target_pending')
-    elif operation in ('receive', 'received', 'reply') and not target.get('agent_id'):
+    elif operation in ('receive', 'received', 'reply', 'knowledge', 'update') and not target.get('agent_id'):
         raise _denied('target_pending')
+    if operation == 'update': require(get('quorum') == scope['quorum_slug'])
 
 
 def _capability_token(raw, root, slot_id):
@@ -999,7 +1003,7 @@ def authorize(state_root, capability_path, operation, arguments):
     """Read-only validation before any worker ledger, profile, auth or API; never returns the bearer."""
     sid = actual_session()
     root = _state_root(state_root)
-    if operation not in OPERATIONS['create'] + ('accept',): raise _denied('operation_denied')
+    if operation not in KNOWN: raise _denied('operation_denied')
     path, slot_id = _generated_slot(root, capability_path)
     with _directory(root, 'claude-workers', slot_id) as directory:
         if directory is None: raise _denied('slot_invalid')
@@ -1146,6 +1150,9 @@ def preflight(args):
         except (ValueError, TypeError, AttributeError): raise _denied('scope_mismatch') from None
         arguments = {'invite_id': invite, **{name: getattr(args, name, None) for name in (
             'transport', 'parent_thread_id', 'membership_only', 'client', 'anonymous', 'origin', 'publishable_key')}}
+    elif args.command in ('knowledge', 'update'):
+        operation = args.command
+        arguments = {'quorum': args.quorum} if operation == 'update' else {}
     else: raise NativeInboxError('native_inbox_transport_conflict')
     return _authorize_route(args, operation, arguments)
 
@@ -1168,7 +1175,7 @@ def _preverify(state_root, capability_path, operation, arguments):
     """Record-independent capability and argument checks; the slot ID when a capability file exists."""
     actual_session()
     root = _state_root(state_root)
-    if operation not in OPERATIONS['create'] + ('accept',): raise _denied('operation_denied')
+    if operation not in KNOWN: raise _denied('operation_denied')
     _check_syntax(operation, arguments)
     _, slot_id = _generated_slot(root, capability_path)
     with _components(root, ('claude-workers', slot_id), SLOT_KINDS) as fds:
@@ -1208,6 +1215,26 @@ def _api(auth_ledger, context, explicit=None):
     api, config, store = api_for(auth_ledger)
     same_resolved(context, config)
     return api, config, store
+
+
+def owner_binding(context, auth_ledger):
+    """The connected adopted worker's own ledger, record, provenance check and pinned API for knowledge and
+    update commands; the caller closes the ledger. Never the parent's session or ledger."""
+    context = {**guard(context), 'arguments': context['arguments']}
+    ledger = _actor_ledger(_state_root(context['state_root']), context['session_ref'])
+    if ledger is None: raise ValueError('session_not_connected')
+    try:
+        record = ledger.setting('session-agent')
+        if record is None: raise ValueError('session_not_connected')
+        _record_matches(record, context)
+        def check():
+            guard(context)
+            _record_matches(ledger.setting('session-agent') or {}, context)
+        api, _, _ = _api(auth_ledger, context)
+    except BaseException:
+        ledger.db.close()
+        raise
+    return ledger, record, check, api
 
 
 def capability_status(context):

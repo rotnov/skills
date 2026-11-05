@@ -1375,6 +1375,14 @@ class Bound(Harness):
 PARENT_AGENT = '88888888-8888-4888-8888-888888888888'
 
 
+class OwnerApi(Api):
+    """The fake service plus the owner knowledge and update RPCs."""
+    def answer(self, operation, payload):
+        if operation.startswith('knowledge_'): return {'ok': True}
+        if operation == 'session_update_status': return {'operation_id': payload['operation_id'], 'agents': []}
+        return super().answer(operation, payload)
+
+
 @OWNER_PROOF
 class AdoptTests(Bound):
     """`mode: adopt`: the owner's own stopped parent binding hands reception to one worker, no invitation."""
@@ -1540,6 +1548,70 @@ class AdoptTests(Bound):
         code, result, _ = self.cli(api, 'create', 'team', '--access', 'github', '--json-stdin', '--worker-capability',
                                    str(cap), stdin=b'{"slug": "team"}')
         self.assertEqual((code, result['code']), (3, 'native_worker_binding_denied'))
+        self.assertEqual(api.calls, [])
+
+    def adopted(self, api):
+        self.parent()
+        self.slot = self.prepare(self.adopt_scope())['slot_id']
+        self.attest(self.slot)
+        self.cap = self.capability(self.slot)
+        code, _, text = self.connect(api, self.cap)
+        self.assertEqual(code, 0, text)
+        return self.cap
+
+    @isolated_profiles
+    def test_owner_maintenance_moves_to_the_adopted_worker(self):
+        """After the parent agent is retired, knowledge admin and update run as the worker's own binding."""
+        api = OwnerApi()
+        cap = self.adopted(api)
+        self.assertIn('knowledge', self.setting(self.slot)['scope']['operations'])
+        space = str(uuid.uuid4())
+        body = json.dumps({'operation': 'create', 'payload': {'space_id': space, 'name': 'Team'}}).encode()
+        code, result, text = self.cli(api, 'knowledge', 'admin', '--json-stdin', '--owner-action', '--request-id',
+                                      'admin-1', '--worker-capability', str(cap), stdin=body)
+        self.assertEqual(code, 0, text)
+        operation, payload, request = api.calls[-1]
+        self.assertEqual((operation, payload['agent_id'], payload['session_ref'], request),
+                         ('knowledge_admin', AGENT, actor(), 'admin-1'))
+        self.assertNotEqual(payload['agent_id'], PARENT_AGENT, 'never the retired parent agent')
+        status = str(uuid.uuid4())
+        code, result, text = self.cli(api, 'update', 'team', '--status', status, '--worker-capability', str(cap))
+        self.assertEqual(code, 0, text)
+        operation, payload, _ = api.calls[-1]
+        self.assertEqual((operation, payload), ('session_update_status', {'agent_id': AGENT, 'session_ref': actor(),
+                                                                          'quorum_id': QUORUM, 'operation_id': status}))
+        # Owner knowledge actions keep their explicit owner-action requirement.
+        before = len(api.calls)
+        code, result, text = self.cli(api, 'knowledge', 'admin', '--json-stdin', '--request-id', 'admin-2',
+                                      '--worker-capability', str(cap), stdin=body)
+        self.assertEqual((code, result['code']), (3, 'knowledge_owner_action_required'), text)
+        # Another quorum, another session or a stopped capability is refused before any service call.
+        code, result, text = self.cli(api, 'update', 'other', '--status', status, '--worker-capability', str(cap))
+        self.assertEqual((code, result['code']), (3, 'native_worker_binding_denied'), text)
+        code, result, text = self.cli(api, 'update', 'team', '--status', status, '--worker-capability', str(cap),
+                                      sid=OTHER_SID)
+        self.assertEqual(code, 3, text)
+        import quorum_claude_worker as worker
+        with claude(): worker.stop_slot(self.root, self.slot)
+        code, result, text = self.cli(api, 'knowledge', 'admin', '--json-stdin', '--owner-action', '--request-id',
+                                      'admin-1', '--worker-capability', str(cap), stdin=body)
+        self.assertEqual((code, result['code']), (3, 'native_worker_slot_terminal'), text)
+        self.assertEqual(len(api.calls), before)
+
+    @isolated_profiles
+    def test_owner_maintenance_needs_a_connected_adopt_scope(self):
+        api = OwnerApi()
+        self.parent()
+        slot = self.prepare(self.adopt_scope())['slot_id']
+        self.attest(slot)
+        code, result, text = self.cli(api, 'update', 'team', '--status', str(uuid.uuid4()), '--worker-capability',
+                                      str(self.capability(slot)))
+        self.assertEqual((code, result['code'], result['data']['reason']),
+                         (3, 'native_worker_binding_denied', 'target_pending'), text)
+        # Create and accept scopes never carry owner maintenance.
+        for scope in (self.scope(), self.accept_scope()):
+            self.assertNotIn('knowledge', self.setting(self.prepare(scope)['slot_id'])['scope']['operations'])
+            self.denied('native_worker_binding_denied', self.prepare, {**scope, 'operations': ['connect', 'update']})
         self.assertEqual(api.calls, [])
 
     @isolated_profiles
