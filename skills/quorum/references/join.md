@@ -199,7 +199,9 @@ and decisions.
 
 When the pasted invitation also contains its standing grants (skill refresh and
 bounded client tests for a named coordinator role), add
-`--standing-grants-from <that-role>` to the same member connect. Before acting
+`--standing-grants-from <that-role>` to the same member connect (a Claude worker
+scope sets `"standing_grants_from": "<that-role>"` with member intake; see
+[Claude worker](claude-worker.md#owner-parent-setup)). Before acting
 on one, read [standing owner authorizations](delegation.md#standing-owner-authorizations).
 An invitation without that text grants none.
 

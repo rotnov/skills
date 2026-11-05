@@ -106,3 +106,90 @@ class ClaudeMemberRouteTests(claude_cases.Bound):
             code, result, text = self.worker(api, 'task-check', claude_cases.M1)
             self.assertEqual(code, 3, text)
             self.assertNotIn('session_task_authority', api.ops())
+
+
+@unittest.skipIf(os.name == 'nt', 'Claude worker slots use POSIX owner proof')
+class ClaudeStandingGrantRouteTests(claude_cases.Bound):
+    """An open invitation's member intake plus standing grants, honoured on the Claude worker route."""
+    def standing_scope(self, **changes):
+        return self.accept_scope(**{'accept_tasks_from_members': True, 'standing_grants_from': 'coordinator',
+                                    **changes})
+
+    def api(self):
+        class Api(claude_cases.Api):
+            def answer(self, operation, payload):
+                if operation == 'session_task_authority': return response(claude_cases, payload)
+                return super().answer(operation, payload)
+        return Api()
+
+    @isolated_profiles
+    def test_member_scope_with_standing_grants_persists_the_session_connect_grant(self):
+        from quorum_delegation import member_grant
+        api = self.api()
+        with claude_cases.claude():
+            self.bound(api, scope=self.standing_scope(),
+                       extra=('--accept-tasks-from-members', '--standing-grants-from', 'coordinator'))
+            scope = self.setting(self.slot)['scope']
+            self.assertEqual(scope['standing_grants_from'], 'coordinator')
+            self.assertIn('standing-check', scope['operations'])
+            record = self.worker_ledger(self.slot).setting('session-agent')
+            # Exactly what `session connect --accept-tasks-from-members --standing-grants-from` stores.
+            self.assertEqual(record['delegation'], member_grant(record, 'coordinator'))
+            self.assertEqual(record['delegation']['standing_grants']['from_role'], 'coordinator')
+            for action in ('client-test', 'skill-refresh'):
+                with self.subTest(action=action):
+                    code, result, text = self.worker(api, 'standing-check', claude_cases.M1, '--action', action)
+                    self.assertEqual(code, 0, text)
+                    self.assertTrue(result['data']['authorized'], text)
+                    self.assertEqual(result['data']['sender_role'], 'coordinator')
+            # A used refresh request is not authorized twice.
+            code, result, text = self.worker(api, 'standing-check', claude_cases.M1, '--action', 'skill-refresh')
+            self.assertEqual((code, result['data']['reason']), (0, 'request_already_used'), text)
+            # The connect arguments must equal the scope: no other or missing standing role.
+            for extra in (('--accept-tasks-from-members',),
+                          ('--accept-tasks-from-members', '--standing-grants-from', 'lead')):
+                code, result, text = self.connect(api, self.cap, *extra)
+                self.assertEqual((code, result['code']), (3, 'native_worker_binding_denied'), text)
+
+    @isolated_profiles
+    def test_legacy_coordinator_and_member_scopes_are_unchanged(self):
+        import quorum_claude_worker as worker
+        coordinator = worker.normalize_scope(self.accept_scope(coordinator_role='coordinator',
+                                                               dispatch_mode='native-subagent'))
+        self.assertNotIn('standing_grants_from', coordinator)
+        self.assertNotIn('standing-check', coordinator['operations'])
+        members = worker.normalize_scope(self.accept_scope(accept_tasks_from_members=True))
+        self.assertNotIn('standing_grants_from', members)
+        self.assertEqual(members['operations'], list(worker.OPERATIONS['accept']))
+        api = self.api()
+        with claude_cases.claude():
+            self.bound(api, scope=self.accept_scope(accept_tasks_from_members=True),
+                       extra=('--accept-tasks-from-members',))
+            record = self.worker_ledger(self.slot).setting('session-agent')
+            self.assertNotIn('standing_grants', record['delegation'])
+            before = len(api.calls)
+            code, result, text = self.worker(api, 'standing-check', claude_cases.M1, '--action', 'client-test')
+            self.assertEqual((code, result['code']), (3, 'native_worker_binding_denied'), text)
+            self.assertEqual(len(api.calls), before)
+
+    def test_contradictory_or_invalid_standing_scopes_are_refused(self):
+        from quorum_native_inbox import NativeInboxError
+        import quorum_claude_worker as worker
+        cases = [
+            # Coordinator-only intake and member intake are two different persisted policies.
+            self.accept_scope(accept_tasks_from_members=True, coordinator_role='coordinator'),
+            self.standing_scope(coordinator_role='coordinator'),
+            # Standing grants need member intake, as on `session connect`.
+            self.accept_scope(standing_grants_from='coordinator'),
+            self.accept_scope(accept_tasks_from_members=False, standing_grants_from='coordinator'),
+            self.accept_scope(coordinator_role='coordinator', standing_grants_from='coordinator'),
+            # Only the shared role domain.
+            *(self.standing_scope(standing_grants_from=role)
+              for role in ('Coordinator', 'bad role', '', '1lead', 'x' * 49, 7, ['coordinator'], False)),
+            # standing-check is not available without standing grants.
+            self.accept_scope(accept_tasks_from_members=True, operations=['connect', 'standing-check']),
+        ]
+        for raw in cases:
+            with self.subTest(raw={key: raw[key] for key in raw if key not in ('service', 'cwd')}):
+                with self.assertRaises(NativeInboxError) as raised: worker.normalize_scope(raw)
+                self.assertEqual(raised.exception.reason, 'scope_invalid')
