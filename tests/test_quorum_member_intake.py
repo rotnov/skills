@@ -159,14 +159,14 @@ class MemberIntakeTests(unittest.TestCase):
         self.assertIn('always require', text)
 
     def test_generated_invitation_grants_members_inline_without_paid_dispatch_right(self):
-        from quorum_invitations import authorizations
-        text = authorizations('coordinator')
-        self.assertIn('--accept-tasks-from-members', text)
+        from quorum_invitations import authorizations, connect_line
+        text = connect_line(None, 'coordinator', True) + authorizations('coordinator')
+        self.assertIn('--accept-tasks-from-members --dispatch-mode inline', text)
         self.assertNotIn('--accept-tasks-from coordinator', text)
+        self.assertNotIn('native-subagent', text)
         self.assertNotIn('I authorize built-in native subagents', text)
-        self.assertIn('anonymous', text)
-        self.assertIn('task-check', text)
-        self.assertIn('always require', text)
+        self.assertIn('requests from members of this quorum', text)
+        self.assertIn('Hard stops', text)
 
     def test_revoked_or_different_grant_is_denied_before_network(self):
         from quorum_delegation import grant, task_check

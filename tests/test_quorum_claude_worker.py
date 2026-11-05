@@ -3276,8 +3276,8 @@ class PromptTests(unittest.TestCase):
         # Thin invitations defer every route to the recipient's installed join guide, which names this one.
         for name, prompt in prompts():
             with self.subTest(name=name):
-                self.assertIn('follow its references/join.md for this invitation', prompt)
-                self.assertLess(prompt.index('references/join.md wins'), prompt.index('Accept with accept-id'))
+                self.assertIn('3. Connect this actual session on the route references/join.md selects', prompt)
+                self.assertLess(prompt.index('references/join.md wins'), prompt.index('2. Accept: accept-id'))
                 self.assertNotIn('Claude and other clients have no worker inbox', prompt)
         join = ' '.join((SKILL / 'references/join.md').read_text().split())
         for required in ('[its capability route](claude-worker.md)', 'A bound Claude worker connects with its capability',

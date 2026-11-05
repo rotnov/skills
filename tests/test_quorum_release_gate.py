@@ -97,8 +97,8 @@ class MandatoryReleaseTests(Gate):
             self.assertIn('0.3.0', text, name)
             self.assertNotIn('0.2.0', text, name)
         # Invitations freeze no version: the recipient's refreshed join guide verifies the exact tuple.
-        from quorum_invitations import SAFETY, authorizations, bootstrap
-        for text in (authorizations('coordinator'), bootstrap(), SAFETY):
+        from quorum_invitations import EXPIRY, authorizations, bootstrap, connect_line
+        for text in (authorizations('coordinator'), bootstrap(), EXPIRY, connect_line(None, 'coordinator', True)):
             self.assertNotIn('0.3.0', text)
             self.assertNotIn('protocol 2', text)
         join = ' '.join((ROOT / 'skills/quorum/references/join.md').read_text(encoding='utf-8').split())
