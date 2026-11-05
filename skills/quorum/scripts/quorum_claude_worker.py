@@ -41,6 +41,11 @@ OPERATIONS = {'create': ('create', 'connect', 'receive', 'received', 'reply', 's
               # knowledge and update (owner maintenance) run only through this worker, on the parent's request.
               'adopt': ('connect', 'receive', 'received', 'reply', 'status', 'stop', 'task-check', 'knowledge',
                         'update')}
+# A create/accept scope may carry an optional member knowledge subset; it adds the `knowledge` operation for
+# exactly these commands (`write` only as `propose`). Verification, administration, audit, catalog, sources and
+# capture stay with an owner binding. The server's own space ACL still decides every call.
+KNOWLEDGE = ('search', 'read', 'propose')
+KNOWLEDGE_ACTIONS = {'search': 'search', 'read': 'read', 'write': 'propose'}
 # standing-check is added to a scope's operations only when it carries standing grants.
 KNOWN = tuple(dict.fromkeys([name for names in OPERATIONS.values() for name in names] + ['standing-check']))
 SESSION_ACTIONS = ('connect', 'receive', 'received', 'reply', 'status', 'stop', 'task-check', 'standing-check',
@@ -539,7 +544,8 @@ def normalize_scope(raw):
         {'create': {'access'}, 'accept': {'invite_id'}}.get(mode, set()))
     optional = {'coordinator_role', 'dispatch_mode', 'lifetime', 'ttl_seconds', 'operations', 'accept_tasks_from_members',
                 'standing_grants_from'} | (
-        {'access'} if mode == 'accept' else set())
+        {'access'} if mode == 'accept' else set()) | (
+        {'knowledge'} if mode in ('create', 'accept') else set())
     if not required <= set(raw) or set(raw) - required - optional: raise _denied('scope_invalid')
     service = raw['service']
     if not isinstance(service, dict) or set(service) != {'origin', 'publishable_key_sha256'}:
@@ -592,8 +598,17 @@ def normalize_scope(raw):
         ttl = raw['ttl_seconds']
         if lifetime != 'bounded' or type(ttl) is not int or not 1 <= ttl <= TTL_LIMIT: raise _denied('scope_invalid')
     else: ttl = DEFAULT_TTL if lifetime == 'bounded' else None
+    # Omission preserves the exact legacy scope/hash. Only the member subset of knowledge commands is pinnable.
+    knowledge = raw.get('knowledge')
+    if 'knowledge' in raw:
+        if (not isinstance(knowledge, list) or not knowledge or len(knowledge) > len(KNOWLEDGE)
+                or any(not isinstance(item, str) or item not in KNOWLEDGE for item in knowledge)
+                or len(set(knowledge)) != len(knowledge)):
+            raise _denied('scope_invalid')
+        scope['knowledge'] = [item for item in KNOWLEDGE if item in knowledge]
     # standing-check exists only for a scope that carries standing grants; others keep their exact operations.
-    allowed = OPERATIONS[mode] + (('standing-check',) if standing is not None else ())
+    allowed = (OPERATIONS[mode] + (('standing-check',) if standing is not None else ())
+               + (('knowledge',) if knowledge is not None else ()))
     operations = raw.get('operations', list(allowed))
     if (not isinstance(operations, list) or not operations or len(set(map(str, operations))) != len(operations)
             or any(not isinstance(item, str) or item not in allowed for item in operations)):
@@ -1135,6 +1150,23 @@ def _check_arguments(record, operation, arguments):
     elif operation in ('receive', 'received', 'reply', 'knowledge', 'update') and not target.get('agent_id'):
         raise _denied('target_pending')
     if operation == 'update': require(get('quorum') == scope['quorum_slug'])
+    if operation == 'knowledge' and 'knowledge' in scope:
+        # A member subset: only its pinned commands, never an owner action or a capture.
+        if (KNOWLEDGE_ACTIONS.get(get('action')) not in scope['knowledge'] or get('owner_action')
+                or get('material_result')):
+            raise _denied('operation_denied')
+
+
+def knowledge_request(context, action, data):
+    """A member knowledge subset rechecked on the parsed request, before any ledger, profile or service call.
+
+    `write` is only `propose` and `read` is never an audit; adopt scopes keep their owner maintenance.
+    """
+    if 'knowledge' not in context['scope']: return
+    get = data.get if isinstance(data, dict) else (lambda _: None)
+    if (KNOWLEDGE_ACTIONS.get(action) not in context['scope']['knowledge']
+            or (action == 'write' and get('operation') != 'propose') or (action == 'read' and get('audit'))):
+        raise _denied('operation_denied')
 
 
 def _capability_token(raw, root, slot_id):
@@ -1326,7 +1358,9 @@ def preflight(args):
             'transport', 'parent_thread_id', 'membership_only', 'client', 'anonymous', 'origin', 'publishable_key')}}
     elif args.command in ('knowledge', 'update'):
         operation = args.command
-        arguments = {'quorum': args.quorum} if operation == 'update' else {}
+        arguments = ({'quorum': args.quorum} if operation == 'update' else
+                     {'action': args.action, 'owner_action': bool(args.owner_action),
+                      'material_result': bool(args.material_result)})
     else: raise NativeInboxError('native_inbox_transport_conflict')
     return _authorize_route(args, operation, arguments)
 
@@ -1396,8 +1430,10 @@ def _api(auth_ledger, context, explicit=None):
 
 
 def owner_binding(context, auth_ledger):
-    """The connected adopted worker's own ledger, record, provenance check and pinned API for knowledge and
-    update commands; the caller closes the ledger. Never the parent's session or ledger."""
+    """The connected worker's own ledger, record, provenance check and pinned API for its scoped knowledge and
+    (adopt only) update commands; the caller closes the ledger. Never the parent's session or ledger.
+
+    The check re-reads the persisted binding: a changed slot or worker binding refuses the call and its result."""
     context = {**guard(context), 'arguments': context['arguments']}
     ledger = _actor_ledger(_state_root(context['state_root']), context['session_ref'])
     if ledger is None: raise ValueError('session_not_connected')
