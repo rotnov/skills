@@ -136,6 +136,9 @@ confirmation unless the owner has explicitly requested membership only:
    invitation's `Assigned binding` is mandatory: use exactly its role and project
    with `--exclusive-role`, never the fallback role, and report
    `role_held_by_other_identity` or `role_held_by_own_agent` as a blocker.
+   `accept-id` output shows `assigned` when the service stored the binding; a
+   `role_assignment_mismatch` from connect names it in `data.assigned`. Report it;
+   never retry with another role.
 2. Run `session connect <quorum> --role <role> --project-ref <shared-project>
    --exclusive-role`,
    then `session start` and `session status`, using the same installed helper,

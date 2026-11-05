@@ -9,7 +9,7 @@ import hashlib
 import subprocess
 
 sys.dont_write_bytecode = True
-from quorum_api import QuorumApi, ServiceConfig, QuorumError
+from quorum_api import QuorumApi, ServiceConfig, QuorumError, rpc_missing
 from quorum_auth import token_provider
 from quorum_state import LocalLedger
 from quorum_grok_leader import GrokBindingError
@@ -20,7 +20,15 @@ from quorum_debug import DebugError
 from quorum_knowledge import KnowledgeError
 
 
-def register_agent(api, ledger, slug, role, data, *, device_key="device", expected_quorum_id=None):
+def register_agent(api, ledger, slug, role, data, *, device_key="device", expected_quorum_id=None, supersede=False,
+                   keep_agent_id=None):
+    """Register (or reuse) this binding's agent.
+
+    `supersede` asks the service to retire this identity's own other holders of the role in the same transaction;
+    an older service without that argument raises its missing-RPC error so the caller can choose a fallback.
+    `keep_agent_id` names one own holder that may coexist (an adopting worker's parent); an older service has no
+    role exclusivity, so the plain join is retried there with the same request ID.
+    """
     required = {'engine', 'project_ref', 'session_ref', 'cwd'}
     if set(data) != required or data['engine'] not in ('claude', 'codex', 'grok') or not Path(data['cwd']).is_absolute():
         raise ValueError('invalid_registration')
@@ -43,13 +51,19 @@ def register_agent(api, ledger, slug, role, data, *, device_key="device", expect
         device = api.call('device_register', {'label': 'quorum-local'},
                           'device:' + hashlib.sha256((str(ledger.root) + ('' if device_key == 'device' else ':' + device_key)).encode()).hexdigest())
         ledger.setting(device_key, device)
-    result = api.call('agent_join', {'quorum_id': quorum, 'device_id': device['device_id'],
-                                     'role': role, **{key: data[key] for key in required - {'cwd'}}},
-                      'join:' + identity)
+    payload = {'quorum_id': quorum, 'device_id': device['device_id'], 'role': role,
+               **{key: data[key] for key in required - {'cwd'}}}
+    extras = {**({'supersede': True} if supersede else {}), **({'keep_agent_id': keep_agent_id} if keep_agent_id else {})}
+    try: result = api.call('agent_join', {**payload, **extras}, 'join:' + identity)
+    except QuorumError as error:
+        if not (extras and not supersede and rpc_missing(error)): raise
+        result = api.call('agent_join', payload, 'join:' + identity)
+    # Agents this join retired are reported once; they are not part of the stored binding.
+    superseded = result.pop('superseded', None) if isinstance(result, dict) else None
     value = {**result, 'quorum_id': quorum, 'device_id': device['device_id'], 'worker': 'offline'}
     ledger.setting('agent:' + identity, value)
     ledger.setting('registration:' + value['agent_id'], {**value, 'registration': data})
-    return value
+    return {**value, 'superseded': superseded} if superseded else value
 
 
 def main(argv=None):
@@ -216,7 +230,10 @@ def main(argv=None):
                  'engine_acceptance_pending': 4, 'service_profile_ambiguous': 4, 'machine_profile_unavailable': 4,
                  'auth_profile_conflict': 3, 'service_config_conflict': 4, 'service_unavailable': 5, 'service_error': 5,
                  'response_too_large': 5, 'invalid_response': 5, 'listener_start_failed': 5, 'listener_stop_failed': 5, 'listener_not_ready': 5,
-                 'anonymous_login_unavailable': 4, 'open_invite_required': 3, 'recipient_ambiguous_or_missing': 3}
+                 'anonymous_login_unavailable': 4, 'open_invite_required': 3, 'recipient_ambiguous_or_missing': 3,
+                 'role_held_by_own_agent': 3, 'role_held_by_other_identity': 3, 'role_assignment_mismatch': 3,
+                 'role_exclusivity_requires_read_committed': 5, 'owner_required': 3, 'agent_denied': 3,
+                 'owner_retire_unavailable': 4}
         codes.update({'update_extension_unavailable':4, 'runtime_source_unavailable':4})
         code = str(error) if str(error) in codes else 'operation_failed'
         from quorum_release import ReleaseMismatch
@@ -263,7 +280,8 @@ def main(argv=None):
         # Allow only fixed local codes; arbitrary exception text may contain secrets.
         safe = {'machine_profile_unavailable', 'service_profile_ambiguous', 'auth_profile_conflict',
                 'service_config_conflict', 'github_identity_required', 'auth_lock_timeout',
-                'browser_unavailable', 'login_timeout', 'anonymous_state_conflict', 'invalid_role', 'invalid_project_ref'}
+                'browser_unavailable', 'login_timeout', 'anonymous_state_conflict', 'invalid_role', 'invalid_project_ref',
+                'invalid_agent_id', 'invalid_request_id'}
         if isinstance(error, ValueError):
             safe.update({'update_request_invalid', 'update_notice_denied', 'update_target_changed',
                          'update_fetch_failed', 'update_tool_missing', 'update_invalid_copy',

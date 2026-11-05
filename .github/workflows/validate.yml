@@ -60,6 +60,12 @@ jobs:
           PYTHONPATH: tests
         run: uv run --frozen python -m unittest test_quorum_updates_backend test_quorum_update_authority_races -v
 
+      - name: Verify concurrent role claims in isolated PostgreSQL
+        env:
+          QUORUM_ROLE_DOCKER: "1"
+          PYTHONPATH: tests
+        run: uv run --frozen python -m unittest test_quorum_role_race -v
+
       - name: Verify project knowledge in isolated pgvector PostgreSQL
         env:
           QUORUM_KNOWLEDGE_DOCKER: "1"
