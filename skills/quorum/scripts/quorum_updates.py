@@ -225,8 +225,8 @@ def with_restart_visibility(api, ledger, record, status, authorize):
         if peer is None or 'availability' not in peer: joined.append(item)
         else:
             # A server with the peer status extension also reports the awaiting-owner count and a running hold.
-            status = {key: peer[key] for key in ('awaiting_owner', 'reception_hold_until') if key in peer}
-            joined.append({**item, 'availability':peer['availability'], 'last_seen':peer.get('last_seen'), **status})
+            fields = {key: peer[key] for key in ('awaiting_owner', 'reception_hold_until') if key in peer}
+            joined.append({**item, 'availability':peer['availability'], 'last_seen':peer.get('last_seen'), **fields})
     return {**status, 'participants':joined}
 
 

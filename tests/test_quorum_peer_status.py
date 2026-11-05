@@ -267,25 +267,38 @@ class PeerViewTests(unittest.TestCase):
         self.assertEqual((result['awaiting_owner'], result['reception_hold_until'], result['client_run_reported']),
                          (None, None, False))
 
-    def test_update_status_page_shows_the_server_status(self):
+    PAGE = {'operation_id': 'op-1', 'target': {'protocol_version': 2, 'skill_version': '0.3.0',
+                                                'content_sha256': 'a' * 64},
+            'next_after_agent': AGENT, 'unaddressable_members': 1, 'all_participants_upgraded': False}
+
+    def joined(self, rows):
         from quorum_state import LocalLedger
         from quorum_updates import with_restart_visibility
+        class Api:
+            def call(self, operation, payload, request_id=None): return rows
+        status = {**self.PAGE, 'participants': [{'agent_id': AGENT, 'state': 'refreshed',
+                                                 'refreshed_at': '2026-11-05T11:49:30+00:00'}]}
         with tempfile.TemporaryDirectory() as root:
             ledger = LocalLedger(Path(root))
             try:
-                class Api:
-                    def call(self, operation, payload, request_id=None):
-                        return [peer(availability='awaiting_owner', reason=None, awaiting_owner=1,
-                                     reception_hold_until=None, client_run_reported=True)]
-                status = {'participants': [{'agent_id': AGENT, 'state': 'refreshed',
-                                            'refreshed_at': '2026-11-05T11:49:30+00:00'}]}
-                result = with_restart_visibility(Api(), ledger, {'agent_id': str(uuid.uuid4()), 'session_ref': 's'},
-                                                 status, lambda: None)
-                item = result['participants'][0]
-                self.assertEqual((item['availability'], item['awaiting_owner'], item['reception_hold_until']),
-                                 ('awaiting_owner', 1, None))
+                return with_restart_visibility(Api(), ledger, {'agent_id': str(uuid.uuid4()), 'session_ref': 's'},
+                                               status, lambda: None)
             finally: ledger.db.close()
 
+    def test_update_status_page_shows_the_server_status_and_keeps_pagination(self):
+        result = self.joined([peer(availability='awaiting_owner', reason=None, awaiting_owner=1,
+                                   reception_hold_until=None, client_run_reported=True)])
+        item = result['participants'][0]
+        self.assertEqual((item['availability'], item['awaiting_owner'], item['reception_hold_until']),
+                         ('awaiting_owner', 1, None))
+        self.assertEqual({key: result[key] for key in self.PAGE}, self.PAGE)
+
+    def test_older_server_page_keeps_pagination(self):
+        result = self.joined([peer(availability='online', reason=None)])
+        item = result['participants'][0]
+        self.assertEqual(item['availability'], 'online')
+        self.assertNotIn('awaiting_owner', item)
+        self.assertEqual({key: result[key] for key in self.PAGE}, self.PAGE)
 
 if __name__ == '__main__':
     unittest.main()
