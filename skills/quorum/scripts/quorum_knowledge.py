@@ -275,7 +275,8 @@ def dispatch(args,auth_ledger):
 
 
 def dispatch_bounded(args,auth_ledger):
-    from quorum_session import current_session,current_engine,require_caller,check_native_route
+    from quorum_session import (current_session,current_engine,require_caller,check_native_route,
+                                BindingError,RETIRED_BINDING,agent_revoked,left_locally)
     context=getattr(args,'worker_context',None)
     if context is None:
         sid=current_session(); engine=current_engine(); require_caller(sid,engine)
@@ -297,8 +298,12 @@ def dispatch_bounded(args,auth_ledger):
         caller=lambda:require_caller(sid,engine)
     try:
         record=ledger.setting('session-agent')
+        # A left or revoked binding says so before any RPC, instead of acting as that agent.
+        if not record and ledger.setting(RETIRED_BINDING):
+            raise BindingError('binding_revoked',ledger.setting(RETIRED_BINDING))
         if not record or record.get('session_ref')!=sid or record.get('engine')!=engine:
             raise KnowledgeError('knowledge_binding_required')
+        if left_locally(auth_ledger.root,record): raise BindingError('binding_revoked',record)
         saved=binding_snapshot(record)
         capture_check=None
         def check_identity():
@@ -341,12 +346,17 @@ def dispatch_bounded(args,auth_ledger):
         api=worker_api if worker_api is not None else api_for(auth_ledger)[0]
         api=BoundApi(api,authorize)
         authorize()
-        # Knowledge commands do not grant lifecycle control over a resident run.
-        ReleaseGuard(api,ledger,stop_on_mismatch=False).check()
-        if args.action=='capture-source':
-            return invoke(api,record,'source-write',data,request_id=args.request_id,before_request=capture_check)
-        if args.action=='capture':
-            return capture(api,ledger,record,data['space_id'],data['entry'],args.request_id,
-                           material_result=args.material_result)
-        return invoke(api,record,args.action,data,request_id=args.request_id,owner_action=args.owner_action)
+        try:
+            # Knowledge commands do not grant lifecycle control over a resident run.
+            ReleaseGuard(api,ledger,stop_on_mismatch=False).check()
+            if args.action=='capture-source':
+                return invoke(api,record,'source-write',data,request_id=args.request_id,before_request=capture_check)
+            if args.action=='capture':
+                return capture(api,ledger,record,data['space_id'],data['entry'],args.request_id,
+                               material_result=args.material_result)
+            return invoke(api,record,args.action,data,request_id=args.request_id,owner_action=args.owner_action)
+        except QuorumError as error:
+            # The service's explicit denial of this binding's own agent: it left or was revoked.
+            if agent_revoked(error): raise BindingError('binding_revoked',record) from None
+            raise
     finally: ledger.db.close()
