@@ -48,7 +48,8 @@ class NativeInboxError(ValueError):
                'permission_expired', 'handle_invalid', 'actor_claimed', 'capability_invalid', 'path_unsafe',
                'cwd_mismatch', 'operation_denied', 'scope_mismatch', 'request_override', 'target_pending',
                'target_mismatch', 'service_mismatch', 'service_unconfigured', 'wait_invalid', 'selector_conflict',
-               'management_only', 'create_unresolved', 'evidence_unpersisted', 'recovery_needed', 'parent_route_visible'}
+               'management_only', 'create_unresolved', 'evidence_unpersisted', 'recovery_needed', 'parent_route_visible',
+               'parent_binding_missing', 'parent_binding_running'}
     # Existing fixed local codes a failure after dispatch keeps, now with its remote effect.
     DISPATCHED_CODES = {'operation_failed', 'session_delivery_unknown', 'session_binding_denied',
                         'session_not_connected', 'binding_conflict', 'coordinator_changed', 'invalid_response',
@@ -61,7 +62,7 @@ class NativeInboxError(ValueError):
     EFFECTS = {'accepted', 'completed', 'uncertain'}
 
     # Which worker ledger a read-only view could not recover: each has its own supported writable route.
-    RECOVERY = {'slot', 'actor', 'state'}
+    RECOVERY = {'slot', 'actor', 'state', 'parent'}
 
     def __init__(self, code, reason=None, *, remote_effect=None, recovery=None):
         allowed = self.CODES | (self.DISPATCHED_CODES if remote_effect else set())
@@ -111,6 +112,7 @@ class NativeInboxError(ValueError):
                 'actor': ("the worker's own ledger: the worker runs its next session --worker-capability "
                           '<capability-file> receive (or connect, received or reply); owner slot commands do not '
                           'open this ledger'),
+                'parent': ("the parent chat's own session ledger: the parent chat runs its own session status"),
                 'state': ('the state ledger: the worker runs its next capability receive (or connect, received, '
                           'reply, create or accept); meanwhile the owner uses session worker status or stop with '
                           'the slot UUID, which do not read it'),
@@ -121,6 +123,11 @@ class NativeInboxError(ValueError):
                                    'status cannot apply. It is in ' + route + '. SQLite then discards only the '
                                    'uncommitted local changes; completed remote operations and earlier committed '
                                    'local steps remain.')
+        elif self.reason == 'parent_binding_running':
+            result['next_step'] = ("This chat's own reception for that quorum is still running, so the worker would "
+                                   'be a second live agent on the same role. Nothing was prepared or registered. In '
+                                   'this parent chat run session stop, confirm session status shows the listener '
+                                   'offline, then prepare the adopt scope again.')
         elif self.code == 'native_worker_unavailable':
             # Emitted only when this command dispatched nothing; any later refusal carries remote_effect instead.
             result['next_step'] = ('This command sent nothing to the service: an invitation it would accept was not '

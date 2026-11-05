@@ -28,13 +28,16 @@ PROVIDER = 'claude'
 PREFIX = 'claude-worker:'
 SLOT_KEY = 'claude-worker-slot'
 INDEX = 'claude-worker-actor:'
+ADOPTED = 'claude-worker-adopt:'
 JSON_LIMIT = 16384
 PENDING_SECONDS = 120
 DEFAULT_TTL, TTL_LIMIT = 900, 3600
 AWAIT_DEFAULT, AWAIT_LIMIT = 60, 60
 LABEL_LIMIT = 256
 OPERATIONS = {'create': ('create', 'connect', 'receive', 'received', 'reply', 'status', 'stop', 'task-check'),
-              'accept': ('accept', 'connect', 'receive', 'received', 'reply', 'status', 'stop', 'task-check')}
+              'accept': ('accept', 'connect', 'receive', 'received', 'reply', 'status', 'stop', 'task-check'),
+              # The owner's own existing membership: no create, invitation or owner-only operation.
+              'adopt': ('connect', 'receive', 'received', 'reply', 'status', 'stop', 'task-check')}
 SESSION_ACTIONS = ('connect', 'receive', 'received', 'reply', 'status', 'stop', 'task-check')
 COMPETING = ('CODEX_THREAD_ID', 'GROK_SESSION_ID', 'GROK_LEADER_SOCKET', 'CURSOR_CONVERSATION_ID')
 NAME = re.compile('[a-z][a-z0-9-]{0,47}')
@@ -527,7 +530,7 @@ def normalize_scope(raw):
     if not isinstance(raw, dict) or raw.get('mode') not in OPERATIONS: raise _denied('scope_invalid')
     mode = raw['mode']
     required = {'mode', 'service', 'quorum_slug', 'role', 'project_ref', 'cwd'} | (
-        {'access'} if mode == 'create' else {'invite_id'})
+        {'create': {'access'}, 'accept': {'invite_id'}}.get(mode, set()))
     optional = {'coordinator_role', 'dispatch_mode', 'lifetime', 'ttl_seconds', 'operations', 'accept_tasks_from_members'} | (
         {'access'} if mode == 'accept' else set())
     if not required <= set(raw) or set(raw) - required - optional: raise _denied('scope_invalid')
@@ -552,7 +555,7 @@ def normalize_scope(raw):
     if mode == 'create':
         if raw['access'] not in ('github', 'open'): raise _denied('scope_invalid')
         scope['access'] = raw['access']
-    else:
+    elif mode == 'accept':
         if not isinstance(raw['invite_id'], str) or not CANONICAL.fullmatch(raw['invite_id']):
             raise _denied('scope_invalid')
         scope['invite_id'] = raw['invite_id']
@@ -691,6 +694,12 @@ def prepare(state_root, scope):
     root = _state_root(state_root)
     scope = normalize_scope(scope)
     if scope['cwd'] != str(Path.cwd().resolve()): raise _denied('cwd_mismatch')
+    target = {}
+    if scope['mode'] == 'adopt':
+        # The target comes from this chat's own existing binding in this state, never from the input.
+        parent = parent_binding(root, sid, scope)
+        scope['adopt'] = parent
+        target = {'quorum_id': parent['quorum_id']}
     prepared = now()
     permission = None if scope['lifetime'] == 'until-owner-stop' else prepared + scope['ttl_seconds']
     pending = prepared + PENDING_SECONDS if permission is None else min(prepared + PENDING_SECONDS, permission)
@@ -698,19 +707,82 @@ def prepare(state_root, scope):
     # The ordinary private state root may be created on this parent route, then verified like every worker path.
     os.close(_root_fd(root, create=True))
     _ledger(root, create=True).db.close()
-    with _directory(root, 'claude-workers', create=True) as workers:
+    with _directory(root, 'claude-workers', create=True): pass
+    adopt = scope['mode'] == 'adopt'
+    # One live adopting worker per parent agent: check, write and claim under the index lock.
+    with (_lock(root, ('claude-workers',), 'index.lock') if adopt else nullcontext()):
+        if adopt: _adoption_free(root, scope['adopt']['agent_id'])
+        _write_slot(root, sid, scope, slot_id, target, prepared, pending, permission)
+        if adopt: _index_setting(root, ADOPTED + scope['adopt']['agent_id'], {'slot_id': slot_id})
+    result = {'slot_id': slot_id, 'state': 'pending', 'lifetime': scope['lifetime'], 'pending_expires_at': pending,
+              'permission_expires_at': permission, 'bootstrap_command': _bootstrap(root, slot_id)}
+    if adopt: result['adopt'] = dict(scope['adopt'])
+    return result
+
+
+def _write_slot(root, sid, scope, slot_id, target, prepared, pending, permission):
+    with _directory(root, 'claude-workers') as workers:
+        if workers is None: raise _unavailable('path_unsafe')
         _mkdir_new(slot_id, workers)
         os.close(_open(slot_id, workers, 'private'))
     record = {'slot_id': slot_id, 'state': 'pending', 'terminal_reason': None, 'provider_session_id': sid,
               'state_root': str(root), 'scope': scope, 'scope_hash': _digest(scope), 'lifetime': scope['lifetime'],
               'prepared_at': prepared, 'pending_expires_at': pending, 'permission_expires_at': permission,
-              'generation': 1, 'binding': None, 'token_hash': None, 'target': {}}
+              'generation': 1, 'binding': None, 'token_hash': None, 'target': target}
     if scope['mode'] == 'create': record.update(create_request_id=str(uuid.uuid4()), create=None)
     ledger = _ledger(root, ('claude-workers', slot_id), SLOT_KINDS, create=True)
     try: ledger.setting(SLOT_KEY, record)
     finally: ledger.db.close()
-    return {'slot_id': slot_id, 'state': 'pending', 'lifetime': scope['lifetime'], 'pending_expires_at': pending,
-            'permission_expires_at': permission, 'bootstrap_command': _bootstrap(root, slot_id)}
+
+
+def parent_binding(root, sid, scope):
+    """This chat's own stopped parent-route binding for exactly the scoped quorum, role and project.
+
+    Read-only from the verified `sessions/<actual SID>` ledger; the state's public service must be the pinned
+    one. A running parent listener or enabled parent reception refuses: two live agents on one role make
+    role sends ambiguous. Returns the parent's quorum and agent IDs, which pin the worker's target.
+    """
+    if not os.path.isdir(root): raise _denied('parent_binding_missing')
+    names = ('sessions', sid)
+    with _components(root, names, ACTOR_KINDS[:2]) as fds:
+        if fds is None: raise _denied('parent_binding_missing')
+        rows = _read_db(fds[-1], root.joinpath(*names, 'ledger.sqlite'), lambda db: db.execute(
+            "select key,data from settings where key in ('session-agent', 'session-reception')"
+        ).fetchall(), ledger='parent')
+        running = rows is not None and _held(fds[-1], 'listener.lock')
+    settings = {key: json.loads(data) for key, data in rows or ()}
+    record = settings.get('session-agent')
+    if (not isinstance(record, dict) or record.get('session_ref') != sid or record.get('engine') != PROVIDER
+            or record.get('transport', 'native') == TRANSPORT
+            or not all(isinstance(record.get(key), str) and record[key] for key in ('quorum_id', 'agent_id'))):
+        raise _denied('parent_binding_missing')
+    if record.get('quorum') != scope['quorum_slug']: raise _denied('target_mismatch')
+    if (record.get('role') != scope['role'] or record.get('project_ref') != scope['project_ref']
+            or record.get('cwd') != scope['cwd']):
+        raise _denied('scope_mismatch')
+    service_check({'scope': scope, 'state_root': str(root)})
+    # The held listener lock, not a recorded state, proves a run; enabled reception would restart one.
+    if running or (settings.get('session-reception') or {}).get('enabled') is True:
+        raise _denied('parent_binding_running')
+    return {'quorum_id': record['quorum_id'], 'agent_id': record['agent_id']}
+
+
+def _index_setting(root, key, value=None):
+    index = _ledger(root)
+    if index is None: raise _unavailable('path_unsafe')
+    try: return index.setting(key, value)
+    finally: index.db.close()
+
+
+def _adoption_free(root, agent_id):
+    """Caller holds the index lock. An earlier adopting slot blocks until it is terminal (stopped or expired)."""
+    claimed = _index_setting(root, ADOPTED + agent_id)
+    if not isinstance(claimed, dict): return
+    try: earlier = _effective(_view(root, _slot_uuid(claimed.get('slot_id'))))[0]
+    except NativeInboxError as error:
+        if error.reason == 'recovery_needed': raise
+        return  # A slot whose ledger was never written holds nothing.
+    if earlier != 'terminal': raise _denied('actor_claimed')
 
 
 def _write_capability(root, slot_id, token):
@@ -1145,7 +1217,8 @@ def capability_status(context):
 
 
 def session_dispatch(args, auth_ledger, register_agent, context):
-    """Capability-scoped session actions for the logical actor; never the parent pipe, ledger or device."""
+    """Capability-scoped session actions for the logical actor; never the parent pipe or device, and the parent
+    ledger only read (an adopt scope's first connect rechecks that the parent's reception is stopped)."""
     action = args.action
     if action == 'status': return capability_status(context)
     if action == 'stop':
@@ -1159,6 +1232,13 @@ def session_dispatch(args, auth_ledger, register_agent, context):
     try:
         record = ledger.setting('session-agent')
         if record is not None: _record_matches(record, context)
+        scope = context['scope']
+        if action == 'connect' and scope['mode'] == 'adopt' and record is None:
+            # First connect, before any service call: the parent's reception for this quorum is still
+            # stopped and still names the same pinned agent.
+            parent = parent_binding(_state_root(context['state_root']), context['binding']['provider_session_id'],
+                                    scope)
+            if parent != scope['adopt']: raise _denied('target_mismatch')
         api, _, _ = _api(auth_ledger, context)
         guarded = Guarded(api, check)
         with _effect(guarded.effect):

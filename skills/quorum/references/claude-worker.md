@@ -87,6 +87,8 @@ For joining, use `"mode": "accept"` with `"invite_id"` instead of `access`.
 For an open (anonymous) invitation, the accept scope also sets
 `"access": "open"`; omitted or `"github"` keeps the GitHub login. Prepare an
 open scope in a fresh private state (no GitHub `config.json` or credentials).
+To hand this chat's existing parent-route binding to a worker, see
+[adopting this chat's binding](#adopting-this-chats-binding).
 Optional keys: `coordinator_role`, `accept_tasks_from_members` (boolean; defaults
 to false and excludes `coordinator_role`), `dispatch_mode` (`native-subagent`
 needs a coordinator; member intake is inline), `operations` (a subset only) and the permission lifetime:
@@ -165,6 +167,36 @@ capability is rechecked before each service operation, after each blocking
 return and before disclosure. A worker receipt means the worker consumed the
 message, never that the parent chat saw it. Grants are only those resolved for
 this scope at connect; nothing is inherited from the parent.
+
+## Adopting this chat's binding
+
+A chat that already joined with `session connect` (parent route) can move its
+routine reception to one worker with `"mode": "adopt"` and neither `access` nor
+`invite_id`; `quorum_slug`, `role`, `project_ref` and `cwd` must equal that
+binding. There is no invitation and no new identity: the worker uses the same
+state, login and membership, and registers its own tool-inbox session under
+the same role (never this chat's session ID). Its operations are only connect,
+receive, receipt, reply, task-check, status and stop.
+
+1. In this chat run `Q session stop` and confirm `Q session status` shows the
+   listener offline.
+2. Prepare the adopt scope in this chat with this same `--state`. Prepare reads
+   this chat's own binding: its quorum ID becomes the worker's pinned target and
+   the result's `adopt.agent_id` names this chat's agent. It refuses with reason
+   `parent_binding_missing` (no such binding for this chat in this state),
+   `target_mismatch` or `scope_mismatch` (another quorum, role, project or
+   directory), `service_mismatch`, `actor_claimed` (another adopting worker is
+   still live) or `parent_binding_running` (reception still on). The worker's
+   first connect checks the parent binding again.
+3. Attest the worker and let it connect and `receive` as above.
+4. Once the worker has received and receipted an envelope, retire this chat's
+   agent so the role names one live agent: `Q leave --request-id <stable-ID>
+   --json-stdin` with `{"agent_id":"<adopt.agent_id>"}`. Until then role sends
+   fail with `recipient_ambiguous_or_missing` and send nothing; retry them with
+   the same request ID. `session peers` then lists only the worker for the role.
+
+Do not restart this chat's reception for that quorum afterwards. Invitations,
+knowledge administration and update fan-out stay with this chat.
 
 ## Supervision and stop
 

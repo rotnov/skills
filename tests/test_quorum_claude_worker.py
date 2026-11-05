@@ -1372,6 +1372,188 @@ class Bound(Harness):
         return stop
 
 
+PARENT_AGENT = '88888888-8888-4888-8888-888888888888'
+
+
+@OWNER_PROOF
+class AdoptTests(Bound):
+    """`mode: adopt`: the owner's own stopped parent binding hands reception to one worker, no invitation."""
+    def adopt_scope(self, **changes):
+        value = self.scope(mode='adopt')
+        value.pop('access')
+        value.update(changes)
+        return {key: item for key, item in value.items() if item is not None}
+
+    def parent(self, sid=SID, **changes):
+        """This chat's existing parent-route binding, as `session connect` wrote it in its own ledger."""
+        from quorum_state import LocalLedger
+        for directory in (self.root, self.root / 'sessions'):
+            if not directory.exists(): directory.mkdir(mode=0o700)
+        record = {'engine': 'claude', 'session_ref': sid, 'project_ref': 'team/project', 'cwd': str(self.project),
+                  'role': 'service-worker', 'quorum': 'team', 'quorum_id': QUORUM, 'agent_id': PARENT_AGENT}
+        record['registration'] = {key: record[key] for key in ('engine', 'session_ref', 'project_ref', 'cwd')}
+        record.update(changes)
+        ledger = LocalLedger(self.root / 'sessions' / sid)
+        try: ledger.setting('session-agent', {key: item for key, item in record.items() if item is not None})
+        finally: ledger.db.close()
+        if not (self.root / 'config.json').exists(): self.configure()
+        return self.root / 'sessions' / sid
+
+    def reception(self, enabled, sid=SID):
+        from quorum_state import LocalLedger
+        ledger = LocalLedger(self.root / 'sessions' / sid)
+        try: ledger.setting('session-reception', {'enabled': enabled})
+        finally: ledger.db.close()
+
+    def slots(self):
+        workers = self.root / 'claude-workers'
+        return sorted(path.name for path in workers.iterdir()) if workers.exists() else []
+
+    @isolated_profiles
+    def test_adopt_hands_reception_to_one_worker_without_invitation_or_new_identity(self):
+        api = Api(inbox=[message(M1)])
+        self.parent()
+        prepared = self.prepare(self.adopt_scope())
+        self.assertEqual(prepared['adopt'], {'quorum_id': QUORUM, 'agent_id': PARENT_AGENT})
+        slot = prepared['slot_id']
+        record = self.setting(slot)
+        self.assertEqual((record['target'], record['scope']['adopt']['agent_id']), ({'quorum_id': QUORUM}, PARENT_AGENT))
+        self.assertNotIn('accept', record['scope']['operations'])
+        self.assertNotIn('create', record['scope']['operations'])
+        self.attest(slot)
+        self.cap = cap = self.capability(slot)
+        self.slot = slot
+        code, result, text = self.connect(api, cap, '--require-worker-inbox')
+        self.assertEqual(code, 0, text)
+        self.assertEqual((result['data']['session_ref'], result['data']['transport']), (actor(), 'tool-inbox'))
+        # The owner's existing login and membership: no invitation, no new identity.
+        self.assertNotIn('invite_accept_id', api.ops())
+        join = [payload for operation, payload, _ in api.calls if operation == 'agent_join'][0]
+        self.assertEqual((join['session_ref'], join['role'], join['project_ref']),
+                         (actor(), 'service-worker', 'team/project'))
+        self.assertNotEqual(join['session_ref'], SID, 'never the parent session ID')
+        self.assertEqual(self.setting(slot)['target'], {'quorum_id': QUORUM, 'agent_id': AGENT})
+        offered = self.offer(api)
+        self.assertEqual(offered['message']['id'], M1)
+        # The parent's own binding is read only, never rewritten by the worker.
+        from quorum_state import LocalLedger
+        parent = LocalLedger(self.root / 'sessions' / SID)
+        self.addCleanup(parent.db.close)
+        self.assertEqual(parent.setting('session-agent')['agent_id'], PARENT_AGENT)
+        # A reconnect of the same worker keeps its binding even after the parent is retired.
+        self.assertEqual(self.connect(api, cap)[0], 0)
+
+    @isolated_profiles
+    def test_adopt_refuses_while_parent_reception_runs(self):
+        from quorum_os import FileLock
+        api = Api()
+        directory = self.parent()
+        self.reception(True)
+        error = self.denied('native_worker_binding_denied', self.prepare, self.adopt_scope())
+        self.assertEqual(error.reason, 'parent_binding_running')
+        self.assertIn('session stop', error.diagnostic()['next_step'])
+        code, result, text = self.cli(None, 'session', 'worker', 'prepare', '--json-stdin',
+                                      stdin=json.dumps(self.adopt_scope()).encode())
+        self.assertEqual((code, result['code'], result['data']['reason']),
+                         (3, 'native_worker_binding_denied', 'parent_binding_running'), text)
+        self.assertEqual(self.slots(), [], 'nothing prepared')
+        self.reception(False)
+        with FileLock(directory / 'listener.lock'):
+            error = self.denied('native_worker_binding_denied', self.prepare, self.adopt_scope())
+            self.assertEqual(error.reason, 'parent_binding_running')
+        # Stopped at prepare, restarted before the worker connects: refused before any service call.
+        slot = self.prepare(self.adopt_scope())['slot_id']
+        self.attest(slot)
+        self.reception(True)
+        code, result, text = self.connect(api, self.capability(slot))
+        self.assertEqual((code, result['code'], result['data']['reason']),
+                         (3, 'native_worker_binding_denied', 'parent_binding_running'), text)
+        self.assertEqual(api.calls, [])
+
+    @isolated_profiles
+    def test_adopt_refuses_wrong_state_session_or_binding_kind(self):
+        # A state without this chat's binding: nothing is created there.
+        error = self.denied('native_worker_binding_denied', self.prepare, self.adopt_scope())
+        self.assertEqual(error.reason, 'parent_binding_missing')
+        self.assertFalse(self.root.exists())
+        # Another chat's binding in this state is not this chat's.
+        self.parent(sid=OTHER_SID)
+        error = self.denied('native_worker_binding_denied', self.prepare, self.adopt_scope())
+        self.assertEqual(error.reason, 'parent_binding_missing')
+        # Neither a worker (tool-inbox) binding nor another engine's binding can be adopted.
+        for changes in ({'transport': 'tool-inbox'}, {'engine': 'codex'}, {'agent_id': None}):
+            with self.subTest(changes=changes):
+                self.parent(**changes)
+                error = self.denied('native_worker_binding_denied', self.prepare, self.adopt_scope())
+                self.assertEqual(error.reason, 'parent_binding_missing')
+        self.parent()
+        self.configure(key='sb_publishable_other')
+        error = self.denied('native_worker_binding_denied', self.prepare, self.adopt_scope())
+        self.assertEqual(error.reason, 'service_mismatch')
+        self.assertEqual(self.slots(), [])
+
+    @isolated_profiles
+    def test_adopt_refuses_a_foreign_quorum_role_or_project(self):
+        api = Api()
+        self.parent()
+        for changes, reason in (({'quorum_slug': 'other'}, 'target_mismatch'), ({'role': 'lead'}, 'scope_mismatch'),
+                                ({'project_ref': 'other/project'}, 'scope_mismatch')):
+            with self.subTest(changes=changes):
+                error = self.denied('native_worker_binding_denied', self.prepare, self.adopt_scope(**changes))
+                self.assertEqual(error.reason, reason)
+        # Owner input cannot supply or override the derived target.
+        for extra in ({'adopt': {'quorum_id': OTHER_QUORUM, 'agent_id': PARENT_AGENT}}, {'invite_id': INVITE},
+                      {'access': 'open'}):
+            with self.subTest(extra=extra):
+                error = self.denied('native_worker_binding_denied', self.prepare, self.adopt_scope(**extra))
+                self.assertEqual(error.reason, 'scope_invalid')
+        self.assertEqual(self.slots(), [])
+        # The slug resolving to another quorum at connect is refused before any device or agent effect.
+        slot = self.prepare(self.adopt_scope())['slot_id']
+        self.attest(slot)
+        api.lookup = OTHER_QUORUM
+        code, result, text = self.connect(api, self.capability(slot))
+        self.assertEqual((code, result['code']), (3, 'native_worker_binding_denied'), text)
+        self.assertNotIn('device_register', api.ops())
+        self.assertNotIn('agent_join', api.ops())
+
+    @isolated_profiles
+    def test_adopt_capability_cannot_impersonate_the_parent_or_widen(self):
+        api = Api()
+        self.parent()
+        slot = self.prepare(self.adopt_scope())['slot_id']
+        self.attest(slot)
+        cap = self.capability(slot)
+        # The parent's session ID is never a selector for the capability route.
+        code, result, text = self.cli(api, 'session', '--session-id', SID, '--worker-capability', str(cap), 'connect',
+                                      'team', '--role', 'service-worker', '--project-ref', 'team/project',
+                                      '--transport', 'tool-inbox')
+        self.assertEqual((code, result['code']), (3, 'native_worker_binding_denied'), text)
+        # Another chat holding the file is not the attested owner session.
+        with claude(OTHER_SID):
+            import quorum_claude_worker as worker
+            self.denied('native_worker_binding_denied', worker.authorize, self.root, cap, 'connect', {})
+        # No invitation, creation or owner-only operation is delegated.
+        code, result, _ = self.cli(api, 'accept-id', INVITE, '--transport', 'tool-inbox', '--worker-capability',
+                                   str(cap))
+        self.assertEqual((code, result['code']), (3, 'native_worker_binding_denied'))
+        code, result, _ = self.cli(api, 'create', 'team', '--access', 'github', '--json-stdin', '--worker-capability',
+                                   str(cap), stdin=b'{"slug": "team"}')
+        self.assertEqual((code, result['code']), (3, 'native_worker_binding_denied'))
+        self.assertEqual(api.calls, [])
+
+    @isolated_profiles
+    def test_one_live_adopting_worker_per_parent_agent(self):
+        import quorum_claude_worker as worker
+        self.parent()
+        first = self.prepare(self.adopt_scope())['slot_id']
+        error = self.denied('native_worker_binding_denied', self.prepare, self.adopt_scope())
+        self.assertEqual(error.reason, 'actor_claimed')
+        with claude(): worker.stop_slot(self.root, first)
+        second = self.prepare(self.adopt_scope())['slot_id']
+        self.assertNotEqual(first, second)
+
+
 @OWNER_PROOF
 class DeliveryTests(Bound):
     @isolated_profiles
