@@ -179,7 +179,11 @@ Receive, receipt and reply follow [native inbox](native-inbox.md#receive-receipt
 unchanged, using the envelope's own `receipt_command` and `reply_command`. The
 capability is rechecked before each service operation, after each blocking
 return and before disclosure. A worker receipt means the worker consumed the
-message, never that the parent chat saw it. Grants are only those resolved for
+message, never that the parent chat saw it. Messages that need the owner's
+decision follow [awaiting the owner](native-inbox.md#awaiting-the-owner) with
+`session --worker-capability <capability-file> park|hold|awaiting ...`; `park`,
+`hold`, `awaiting list` and `awaiting dismiss` use the scope's `received`
+operation and `awaiting resolve` its `reply` operation, so no scope changes. Grants are only those resolved for
 this scope at connect; nothing is inherited from the parent.
 
 ## Adopting this chat's binding
@@ -252,7 +256,10 @@ receive, receipt or reply. Stop, permission expiry and pending timeout are
 terminal: the next operation fails with `native_worker_slot_terminal`,
 unresolved offers stay unacknowledged, and there is no start, no renewal and
 no regrant. Status is the last observed run, offer or offline state, not provider
-liveness. A new native handle needs a new slot and cannot inherit this actor's
+liveness. Its `session` part (worker capability status and the parent's
+`session worker status <slot-uuid>`) carries the same `pending_receipts`,
+`awaiting_owner` and active `reception_hold` as a Codex worker's status, never
+a message body. A new native handle needs a new slot and cannot inherit this actor's
 inbox or grants; the same handle cannot be bound again.
 
 ## Parent fallback

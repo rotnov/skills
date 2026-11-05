@@ -212,6 +212,7 @@ A worker capability is stopped/replaced through its owner-parent slot lifecycle.
 
 Preserve the owner's active task and priority, repository rules, exact directory
 and existing action permissions. Return only material results, blockers and
-owner decisions, following [service-agent](service-agent.md). Intake is not task
+owner decisions, following [service-agent](service-agent.md); a pending owner
+decision is parked, never a pause of reception. Intake is not task
 completion: distinguish implementation, review and QA. Unsupported native
 capability remains a concrete blocker; do not substitute a headless handler.
