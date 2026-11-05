@@ -74,6 +74,8 @@ configuring credentials.
    engine, project reference and absolute working directory. Read
    [operations](references/operations.md), then invoke the helper from this skill.
    Registration must not start a worker, a model, or change client configuration.
+   For an owner's request to list or retire a quorum's agents (`agents`,
+   `agent-retire`), read the owner agent commands in the same reference.
 5. For an explicitly authorized cross-machine Claude test, read
    [pilot](references/pilot.md). It covers the bounded opt-in worker and private
    invitation-file flow. Do not enable it merely because registration succeeded.

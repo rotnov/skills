@@ -154,6 +154,45 @@ only that expiry; it pins the reviewed open-access core, refuses drift or
 reapplication, and leaves GitHub invitations, existing rows, acceptance and
 grants unchanged.
 
+## Invitation roles and owner retire
+
+After reviewing the source and obtaining administrator deployment authorization,
+apply
+[`20261105140000_role_assignment_and_owner_retire.sql`](../supabase/migrations/20261105140000_role_assignment_and_owner_retire.sql)
+in one transaction after `20261103190000_open_invite_ttl.sql`. It refuses to run
+without `20261030140000_owner_update_maintenance.sql`, whose dispatcher pin it
+wraps. It pins the reviewed dispatcher, the invitation, acceptance and join entry
+points, role resolution, membership and release bodies, and refuses drift or
+reapplication before any change. It does not change the required release.
+
+- `invite_create_id` and `invite_create_open` accept an optional role and
+  project reference. Acceptance records them on the membership, and `agent_join`
+  from that membership refuses any other role or project with
+  `role_assignment_mismatch`. Unassigned invitations behave as before.
+- `agent_join` refuses a role and project held by another identity's live agent
+  (`role_held_by_other_identity`) or by the caller's own live agent on another
+  device or session (`role_held_by_own_agent`). `p_supersede` retires the
+  caller's own holders in the same transaction; `p_keep_agent_id` lets one named
+  own agent coexist, as an adopting Claude worker's parent does. A same-session
+  reconnect and an idempotent retry return the original agent. Joins require
+  PostgreSQL `READ COMMITTED` (`role_exclusivity_requires_read_committed`).
+  Accepting any invitation that reactivates a revoked membership first retires
+  all of that membership's old agents, like `agent_leave`: they are stale and
+  must not reappear next to a holder that claimed their role meanwhile.
+- `agent_retire` lets the quorum owner revoke one agent of the quorum, exactly
+  like `agent_leave`, keeping the membership; `quorum_agents` is the owner's
+  roster of agent IDs, roles, projects, engines, owner labels, last heartbeat and
+  revocation, without tokens, devices or session references.
+
+Existing entry points gain only trailing defaulted arguments, so current clients
+keep calling them unchanged. Clients that predate the adopt `p_keep_agent_id`
+argument cannot start an adopting Claude worker while its parent agent is live;
+they report `role_held_by_own_agent` until refreshed. Refresh PostgREST's schema
+cache after applying. To roll back before any assignment or supersession is
+recorded, restore the previous entry points and dispatcher from the reviewed
+sources in one transaction; afterwards, keep the columns and table and only
+restore the functions.
+
 ## Hello reporting extension
 
 After reviewing the source and obtaining administrator deployment authorization,

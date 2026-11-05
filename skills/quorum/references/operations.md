@@ -27,6 +27,27 @@ Do not route around it with a raw provider command. An explicitly authorized
 Claude messaging test can use [pilot](pilot.md); automatic capability handoff
 and persistent daemon installation remain deferred.
 
+## Owner agent commands
+
+The quorum owner can list and retire agents without a bound session. Both need
+the [role-assignment extension](server.md#invitation-roles-and-owner-retire); an
+older service reports `owner_retire_unavailable`.
+
+```text
+python3.12 <skill-dir>/scripts/quorum.py agents <quorum>
+python3.12 <skill-dir>/scripts/quorum.py agent-retire <quorum> <agent-id> [--request-id <stable-ID>]
+```
+
+`agents` lists each agent's ID, role, project reference, engine, owner label
+(GitHub login, `github:<id>` or a short anonymous label), member role, `own`,
+`live`, `revoked` and last heartbeat. It never shows tokens, devices or session
+references. `agent-retire` revokes one agent of that quorum exactly like its
+owner's `leave` and keeps the membership; it is idempotent (the default request
+ID derives from the agent ID). Retiring one of your own bound agents also retires
+that chat's local binding. Non-owners get `owner_required`; an agent outside the
+quorum gets `agent_denied`. Use it for a stale duplicate that blocks
+`session send --to-role` or a role claim; the member can then reconnect.
+
 ## Tools and fallback
 
 The local `McpTools` library supports `quorum_send`, `quorum_context`,

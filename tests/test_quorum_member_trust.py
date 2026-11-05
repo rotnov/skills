@@ -29,10 +29,18 @@ def flat(path):
 
 
 class Owner:
+    """A service with the role-assignment extension (#119) unless `legacy`, which lacks those arguments."""
+    def __init__(self, legacy=False):
+        self.legacy = legacy
+
     def call(self, operation, payload, request_id=None):
         if operation == 'quorum_lookup': return {'quorum_id': 'q'}
         if operation == 'quorum_check_owner': return True
-        return {'invite_id': INVITE, 'expires_at': '2026-11-06T12:00:00Z'}
+        stored = {key: payload[key] for key in ('role', 'project_ref') if key in payload}
+        if stored and self.legacy:
+            from quorum_api import QuorumError
+            raise QuorumError('service_error', missing=True)
+        return {'invite_id': INVITE, 'expires_at': '2026-11-06T12:00:00Z', **({'assigned': stored} if stored else {})}
 
 
 def config():
@@ -63,7 +71,7 @@ class ShortInvitationTests(unittest.TestCase):
                 with self.subTest(key=key, access=result.get('access', 'github')):
                     prompt = result[key]
                     self.assertLessEqual(len(prompt.splitlines()), 10)
-                    self.assertLess(len(prompt), 2500)
+                    self.assertLess(len(prompt), 2600)
                     self.assertEqual(prompt.count(CONSENT), 1)
                     self.assertIn('by pasting it, I authorize this agent to act on requests from members of this '
                                   'quorum within the shared project without asking me', CONSENT)
@@ -81,6 +89,21 @@ class ShortInvitationTests(unittest.TestCase):
         # #111's assigned role and safely single-quoted project survive in the connect command.
         self.assertIn("--role jekman --project-ref 'rotnov/skills' --exclusive-role", github['session_prompt'])
         self.assertIn('--role <role> --project-ref <project>', opened['session_prompt'])
+
+    @isolated_profiles
+    def test_short_prompt_keeps_server_role_assignment_and_older_server_fallback(self):
+        from quorum_invitations import SERVER_ASSIGNED, create_id_invitation
+        for legacy, storage in ((False, 'server'), (True, 'prompt_only')):
+            with self.subTest(storage=storage):
+                result = create_id_invitation(Owner(legacy), config(), 'velvil24', '123', 'r', role='jekman',
+                                              project_ref='rotnov/skills')
+                self.assertEqual(result['assignment_storage'], storage)
+                for key in ('session_prompt', 'configured_machine_prompt'):
+                    prompt = result[key]
+                    self.assertEqual(SERVER_ASSIGNED in prompt, storage == 'server')
+                    self.assertIn("--role jekman --project-ref 'rotnov/skills' --exclusive-role", prompt)
+                    self.assertLessEqual(len(prompt.splitlines()), 10)
+                    self.assertLess(len(prompt), 2600)
 
     def test_prompt_wording_is_version_independent(self):
         from quorum_invitations import EXPIRY, authorizations, bootstrap, connect_line, hard_stops

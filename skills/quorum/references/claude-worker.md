@@ -221,7 +221,10 @@ maintenance stays available.
    directory), `service_mismatch`, `actor_claimed` (another adopting worker is
    still live) or `parent_binding_running` (reception still on). The worker's
    first connect checks the parent binding again.
-3. Attest the worker and let it connect and `receive` as above.
+3. Attest the worker and let it connect and `receive` as above. Its join names
+   `adopt.agent_id` as the one own agent allowed to share the role meanwhile; a
+   service with the role-assignment extension refuses any other own holder with
+   `role_held_by_own_agent`.
 4. Once the worker has received and receipted an envelope, retire this chat's
    agent so the role names one live agent: `Q leave --request-id <stable-ID>
    --json-stdin` with `{"agent_id":"<adopt.agent_id>"}`. Until then role sends

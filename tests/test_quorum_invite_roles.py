@@ -27,11 +27,16 @@ CLIENT_VARIABLES = ('CODEX_THREAD_ID', 'GROK_SESSION_ID', 'GROK_LEADER_SOCKET', 
 
 class Service:
     """The rules this issue depends on: `resolve_role` names exactly one live holder per role and project,
-    `agent_status`/`agent_leave` succeed only for the caller's own live agents (else `agent_denied`)."""
+    `agent_status`/`agent_leave` succeed only for the caller's own live agents (else `agent_denied`).
+
+    By default an older service: `agent_join` has no supersede/keep arguments (PostgREST's missing-function
+    answer). With `new=True` it is the role-assignment migration: one live agent per identity, role and project,
+    server-side supersede, and the membership's assigned role."""
     ME = 'me'
 
-    def __init__(self):
+    def __init__(self, new=False, assigned=None):
         self.calls, self.requests, self.agents, self.devices = [], {}, {}, 0
+        self.new, self.assigned = new, assigned
 
     def ops(self):
         return [call[0] for call in self.calls]
@@ -61,21 +66,39 @@ class Service:
             self.devices += 1
             result = {'device_id': str(uuid.UUID(int=self.devices))}
         elif operation == 'agent_join':
+            if not self.new and {'supersede', 'keep_agent_id'} & set(payload):
+                raise QuorumError('service_error', missing=True)
             same = [agent_id for agent_id, agent in self.agents.items()
                     if (agent['device_id'], agent['session_ref']) == (payload['device_id'], payload['session_ref'])]
+            superseded = []
             if same: result = {'agent_id': same[0]}
             else:
+                if self.new: superseded = self.claim(payload)
                 agent_id = str(uuid.uuid4())
                 self.agents[agent_id] = {'owner': self.ME, 'role': payload['role'],
                                          'project_ref': payload['project_ref'], 'session_ref': payload['session_ref'],
                                          'device_id': payload['device_id'], 'revoked': False}
                 result = {'agent_id': agent_id}
+            if self.new: result = {**result, 'superseded': superseded}
         elif operation == 'agent_leave':
             self.agents[payload['agent_id']]['revoked'] = True
             result = {'left': True}
         else: raise AssertionError(operation)
         if request_id is not None: self.requests[operation, request_id] = result
         return result
+
+    def claim(self, payload):
+        from quorum_api import QuorumError
+        if self.assigned and (payload['role'], payload['project_ref']) != self.assigned:
+            raise QuorumError('role_assignment_mismatch', detail=json.dumps(
+                {'role': self.assigned[0], 'project_ref': self.assigned[1]}))
+        live = [(agent_id, agent) for agent_id, agent in self.agents.items() if not agent['revoked']
+                and (agent['role'], agent['project_ref']) == (payload['role'], payload['project_ref'])]
+        if any(agent['owner'] != self.ME for _, agent in live): raise QuorumError('role_held_by_other_identity')
+        own = sorted(agent_id for agent_id, _ in live if agent_id != payload.get('keep_agent_id'))
+        if own and not payload.get('supersede'): raise QuorumError('role_held_by_own_agent', detail=own[0])
+        for agent_id in own: self.agents[agent_id]['revoked'] = True
+        return own
 
 
 class ExclusiveRoleConnectTests(unittest.TestCase):
@@ -188,13 +211,19 @@ class ExclusiveRoleConnectTests(unittest.TestCase):
 
 class InvitationRoleTests(unittest.TestCase):
     class Api:
-        def __init__(self): self.calls = []
+        """An older service by default (no role arguments); `new=True` stores and echoes the assignment."""
+        def __init__(self, new=False): self.calls, self.payloads, self.new = [], [], new
         def call(self, operation, payload, request_id=None):
+            from quorum_api import QuorumError
             self.calls.append(operation)
             if operation == 'quorum_lookup': return {'quorum_id': 'q'}
             if operation == 'quorum_check_owner': return True
             if operation in ('invite_create_id', 'invite_create_open'):
-                return {'invite_id': INVITE, 'expires_at': '2026-11-05T12:00:00Z'}
+                self.payloads.append(payload)
+                assigned = {key: payload[key] for key in ('role', 'project_ref') if key in payload}
+                if assigned and not self.new: raise QuorumError('service_error', missing=True)
+                return {'invite_id': INVITE, 'expires_at': '2026-11-05T12:00:00Z',
+                        **({'assigned': assigned or None} if self.new else {})}
             raise AssertionError(operation)
 
     def config(self):

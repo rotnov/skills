@@ -87,8 +87,15 @@ form of `invite-id`. The project reference may contain only letters, digits and
 and PowerShell; anything else is `invalid_project_ref` before any server call. Output repeats them as `assigned`, and every prompt carries a
 binding instruction: connect with exactly that role and project and
 `--exclusive-role`, with no fallback role, and report `role_held_by_other_identity`
-or `role_held_by_own_agent` instead of choosing another role. The server stores
-no role with the invitation, so this is prompt text, not server enforcement.
+or `role_held_by_own_agent` instead of choosing another role. On a service with
+the [role-assignment extension](server.md#invitation-roles-and-owner-retire),
+`invite-id` also stores the role and project with the invitation
+(`assignment_storage: server`): acceptance records them on the membership and the
+service refuses any other role or project for it with `role_assignment_mismatch`.
+An older service has no such arguments; the helper then issues the same invitation
+without them (`assignment_storage: prompt_only`), and the prompt text is the only
+carrier. See [owner agent commands](operations.md#owner-agent-commands) to list
+and retire agents.
 The recipient's [join](join.md) asks for a sanitized connection-failure report
 prepared for the owner; posting outside the quorum needs the receiving owner's
 confirmation. Follow [the failure-reporting procedure](join.md#connection-failures),
