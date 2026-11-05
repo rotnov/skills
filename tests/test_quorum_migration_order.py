@@ -26,6 +26,7 @@ SERIALIZATION_PINS = {
     'public.session_requirements()': '6e9752bcaedbbdfc4b2b8197cb44598306ee8d79044d654836017aab86031eef',
 }
 ROLES = '20261105140000_role_assignment_and_owner_retire.sql'
+STATUS = '20261105160000_peer_status_visibility.sql'
 # prosrc hashes after the reviewed tail through 190000; tests/quorum-backend recomputes them by drift injection.
 ROLE_PINS = {
     'quorum_private.call(text,jsonb,text)': 'ca718afbcda8682ade19ea6b246ccc2f1bfd5523eb7d1076cf4e9583e24f3ab7',
@@ -155,7 +156,8 @@ class MigrationOrderTests(unittest.TestCase):
         self.assertIn("raise exception 'reviewed_dispatcher_changed: %',f;", body)
         # Additive only: the release, older heartbeat body and table access stay unchanged.
         self.assertNotIn('function public.session_requirements', body)
-        self.assertEqual(defining('public.session_heartbeat(')[-1].name, hello)
+        # Only the peer status release (#113) replaces the heartbeat after it, by wrapping this body.
+        self.assertEqual([path.name for path in defining('public.session_heartbeat(')][-2:], [hello, STATUS])
         self.assertNotRegex(body.lower(), r'grant [^;]* to [^;]*(anon|public|service_role)')
         self.assertNotRegex(body.lower(), r'grant [^;]* on (table )?quorum_private\.')
         self.assertIn('requires_handler=false', body)
@@ -169,7 +171,7 @@ class MigrationOrderTests(unittest.TestCase):
         ttl = next(name for name in names if name.endswith('_open_invite_ttl.sql'))
         self.assertGreater(ttl, '20261103180000_hello_roster_visibility.sql')
         # Only the reviewed role-assignment release (#105) follows it.
-        self.assertEqual(names[names.index(ttl) + 1:], [ROLES])
+        self.assertEqual(names[names.index(ttl) + 1:], [ROLES, STATUS])
         body = (SKILL / 'supabase/migrations' / ttl).read_text(encoding='utf-8')
         pins = dict(re.findall(r"'([a-z_.]+\([a-z,]*\))','([0-9a-f]{64})'", body))
         self.assertEqual(pins, {'quorum_private.call_priority_core(text,jsonb,text)':
@@ -193,7 +195,7 @@ class MigrationOrderTests(unittest.TestCase):
 
     def test_role_assignment_follows_the_tail_pins_reviewed_bodies_and_grants_only_authenticated(self):
         names = [path.name for path in MIGRATIONS]
-        self.assertEqual(names[-1], ROLES)
+        self.assertEqual(names[names.index(ROLES) + 1:], [STATUS])
         self.assertGreater(ROLES, '20261103190000_open_invite_ttl.sql')
         body = (SKILL / 'supabase/migrations' / ROLES).read_text(encoding='utf-8')
         pins = dict(re.findall(r"'([a-z_.]+\([a-z,]*\))','([0-9a-f]{64})'", body))
@@ -243,6 +245,61 @@ class MigrationOrderTests(unittest.TestCase):
         section = guide.split('## Invitation roles and owner retire', 1)[1].split('\n## ', 1)[0]
         self.assertIn(ROLES, section)
         self.assertIn('after `20261103190000_open_invite_ttl.sql`', section)
+
+
+    def test_peer_status_follows_roles_pins_reviewed_bodies_and_grants_only_authenticated(self):
+        names = [path.name for path in MIGRATIONS]
+        self.assertEqual(names[-1], STATUS)
+        body = (SKILL / 'supabase/migrations' / STATUS).read_text(encoding='utf-8')
+        self.assertTrue(body.startswith('-- SOURCE ONLY.'))
+        pins = dict(re.findall(r"'([a-z_.]+\([a-z,]*\))','([0-9a-f]{64})'", body))
+        self.assertEqual(set(pins), {'public.session_heartbeat(uuid,text,uuid,integer,text)',
+                                     'quorum_private.session_heartbeat_before_hello(uuid,text,uuid,integer,text)',
+                                     'quorum_private.call(text,jsonb,text)', 'public.session_peers(uuid,text)',
+                                     'quorum_private.native_session(uuid,text)',
+                                     'public.session_update_report(uuid,text,uuid,uuid,text,jsonb,text)',
+                                     'public.session_requirements()'})
+        self.assertEqual(pins['public.session_requirements()'], SERIALIZATION_PINS['public.session_requirements()'])
+        hello = (SKILL / 'supabase/migrations/20261103180000_hello_roster_visibility.sql').read_text(encoding='utf-8')
+        core = 'quorum_private.session_heartbeat_before_hello(uuid,text,uuid,integer,text)'
+        self.assertIn("'" + core.replace('quorum_private.session_heartbeat_before_hello', 'public.session_heartbeat')
+                      + "','" + pins[core] + "'", hello)
+        # The role-assignment wrapper replaced the dispatcher the maintenance release pinned.
+        self.assertNotEqual(pins['quorum_private.call(text,jsonb,text)'], ROLE_PINS['quorum_private.call(text,jsonb,text)'])
+        guard = body.split('end $migration$;', 1)[0]
+        for code in ('peer_status_present', 'hello_extension_required', 'owner_update_maintenance_required',
+                     'role_assignment_required'):
+            self.assertIn(f"raise exception '{code}'", guard)
+        self.assertIn("raise exception 'reviewed_dispatcher_changed: %',f;", guard)
+        # The guard only reads; every change follows it.
+        for change in ('alter ', 'create ', 'drop ', 'insert ', 'update ', 'grant '):
+            self.assertNotIn(change, guard.split('begin', 1)[1].lower())
+        created = re.findall(r'create function ([a-z_.]+)\(', body)
+        self.assertEqual(created, ['public.session_heartbeat', 'public.session_peers'])
+        for chunk in body.split('create function ')[1:]:
+            header = chunk.split(' as $', 1)[0]
+            self.assertIn('security definer set search_path=pg_catalog', ' '.join(header.split()), header[:60])
+        self.assertEqual(defining('public.session_peers(')[-1].name, STATUS)
+        # Old bodies move to private and are revoked; the old public heartbeat signature is gone.
+        lowered = ' '.join(body.lower().split())
+        for moved in ('session_heartbeat_before_status(uuid,text,uuid,integer,text)', 'session_peers_before_status(uuid,text)'):
+            self.assertIn(f'revoke all on function quorum_private.{moved} from public,anon,authenticated,service_role;', lowered)
+        self.assertIn('revoke all on quorum_private.session_status from public,anon,authenticated,service_role;', lowered)
+        grants = re.findall(r'grant [^;]*;', lowered)
+        self.assertEqual(len(grants), 1)
+        self.assertTrue(grants[0].endswith(' to authenticated;'))
+        self.assertNotRegex(grants[0], r'quorum_private\.')
+        self.assertNotIn('function public.session_requirements', body)
+        self.assertNotRegex(lowered, r'grant [^;]* on (table )?quorum_private\.')
+        # Peers see counts, timestamps and a boolean: never the run ID or the stored start time.
+        peers = body.split('create function public.session_peers(', 1)[1].split(' from quorum_private.agents a', 1)[0]
+        self.assertNotRegex(peers, r's\.client_run_id( as|,)')
+        self.assertNotIn('runtime_started_at', peers)
+        self.assertNotIn('message_id', peers)
+        guide = (SKILL / 'references/server.md').read_text(encoding='utf-8')
+        section = guide.split('## Peer status extension', 1)[1].split('\n## ', 1)[0]
+        self.assertIn(STATUS, section)
+        self.assertIn('after `20261105140000_role_assignment_and_owner_retire.sql`', section)
 
 
 if __name__ == '__main__':

@@ -382,13 +382,27 @@ independent of availability, membership, task permissions and queue retention. N
 `heartbeat_timeout`. Healthy listener heartbeat alone cannot clear an overdue
 message: its receipt is still required. This is derived from server time on read,
 without a scheduled job, revocation, automatic retries or queue deletion.
-The client shows `availability: client_restarted_unrecovered` (keeping the
-service's `server_availability: unavailable`) only when this chat's last
-`update --status` page reported that peer's canonical refresh, which needs a
-client restart, with no runtime report since, and its heartbeat, still alive
-around that refresh, has been stale for 60 seconds. It names an owner recovery
-step, not a wake. A client restart outside an owner update leaves no such
-evidence and stays `unavailable`.
+With the server's [peer status extension](server.md#peer-status-extension),
+every heartbeat also carries the sender's awaiting-owner count, a running
+reception hold and its run generation, and each peer row adds `awaiting_owner`,
+`reception_hold_until` and `client_run_reported`. A peer whose status heartbeat
+is under 60 seconds old and has items awaiting its owner shows `awaiting_owner`:
+alive and waiting on a human, not crashed. An overdue receipt behind an explicit
+hold shows reason `reception_hold` until the deadline. The server reports
+`client_restarted_unrecovered` (reason `run_changed_without_heartbeat`) only
+when the peer's health is stale for 60 seconds, its last heartbeat named a run,
+and its newest owner-update runtime report names a different run recorded after
+that heartbeat. A client without the extension resends the heartbeat with the
+older arguments and peers see plain `unavailable` / `online` as before.
+
+For a peer without that server evidence (an older server, or a peer client
+that sends no run generation), the client shows `availability:
+client_restarted_unrecovered` (keeping the service's `server_availability:
+unavailable`) only when this chat's last `update --status` page reported that
+peer's canonical refresh, which needs a client restart, with no runtime report
+since, and its heartbeat, still alive around that refresh, has been stale for
+60 seconds. Either way it names an owner recovery step, not a wake. A client
+restart outside an owner update leaves no such evidence and stays `unavailable`.
 
 Keepalive runs quietly every 20 seconds, including polling fallback, and does not
 invoke a model or poll the inbox more often. Each newly started listener, and a

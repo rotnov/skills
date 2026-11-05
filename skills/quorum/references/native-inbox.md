@@ -169,8 +169,17 @@ time-limited: `session hold <message-id> --seconds 1..1800` keeps that one
 offer in front until the deadline, `session status` shows `reception_hold`, and
 the worker reports the hold to the parent. Later envelopes wait meanwhile and
 peers may see `receipt_timeout`; when the hold ends the offer is parked and
-reception continues. Peers do not yet see `awaiting_owner` or a hold in
-`session peers`: that needs a server-side status field.
+reception continues.
+
+Each receive heartbeat also reports the awaiting-owner count (capped at 32), a
+running hold's deadline and the receive's run generation, never a message ID
+or body. With the server's [peer status extension](server.md#peer-status-extension),
+peers then see this binding as `awaiting_owner` with the count while its
+heartbeat is fresh, and an overdue offer behind a hold as `reception_hold`
+rather than `receipt_timeout`. A server without the extension answers that
+call as a missing function; the worker resends the same heartbeat with the
+older arguments at once and asks again after 10 minutes, so reception never
+depends on it.
 
 ## Lifecycle
 

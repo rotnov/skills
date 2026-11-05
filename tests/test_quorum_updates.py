@@ -319,7 +319,9 @@ class OwnerUpdateTests(unittest.TestCase):
     def test_every_reported_blocker_is_in_the_server_allowlist(self):
         import re
         migrations = sorted((SCRIPTS.parent/'supabase/migrations').glob('*.sql'))
-        sql = [path.read_text() for path in migrations if 'session_update_report' in path.read_text()][-1]
+        # The last file that defines the writer; later files may only pin it.
+        sql = [path.read_text() for path in migrations
+               if 'create function public.session_update_report(' in path.read_text()][-1]
         clause = sql[sql.index("p_event='blocked'"):]
         clause = clause[:clause.index('update_evidence_invalid')]
         allowed = set(re.findall(r"'([a-z_]+)'", clause[clause.index('not in'):]))

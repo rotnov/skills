@@ -198,7 +198,10 @@ def report_runtime(api, ledger, record, notice_id, request_id, *, authorize=lamb
 
 
 def with_restart_visibility(api, ledger, record, status, authorize):
-    """Join an operation page with current peer health, client-side, to name `client_restarted_unrecovered`.
+    """Join an operation page with current peer health to name `client_restarted_unrecovered`.
+
+    A server with the peer status extension decides that from each peer's run generation; otherwise the
+    client-side heuristic over this page's reports applies.
 
     The report cache feeds later `session peers`. Peer health is best effort: if it is unavailable the
     page is returned as the service sent it. No participant gains or loses any update state here.
@@ -220,7 +223,10 @@ def with_restart_visibility(api, ledger, record, status, authorize):
     for item in participants:
         peer = health.get(item.get('agent_id')) if isinstance(item, dict) else None
         if peer is None or 'availability' not in peer: joined.append(item)
-        else: joined.append({**item, 'availability':peer['availability'], 'last_seen':peer.get('last_seen')})
+        else:
+            # A server with the peer status extension also reports the awaiting-owner count and a running hold.
+            status = {key: peer[key] for key in ('awaiting_owner', 'reception_hold_until') if key in peer}
+            joined.append({**item, 'availability':peer['availability'], 'last_seen':peer.get('last_seen'), **status})
     return {**status, 'participants':joined}
 
 

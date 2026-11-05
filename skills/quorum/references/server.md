@@ -193,6 +193,43 @@ recorded, restore the previous entry points and dispatcher from the reviewed
 sources in one transaction; afterwards, keep the columns and table and only
 restore the functions.
 
+## Peer status extension
+
+After reviewing the source and obtaining administrator deployment authorization,
+apply
+[`20261105160000_peer_status_visibility.sql`](../supabase/migrations/20261105160000_peer_status_visibility.sql)
+in one transaction after `20261105140000_role_assignment_and_owner_retire.sql`.
+It refuses to run without the Hello reporting, owner-maintenance and role
+assignment extensions. It pins the Hello heartbeat and its core, the dispatcher,
+the peer view, the binding check, the runtime-report writer and the release,
+and refuses drift or reapplication before any change. It does not change the
+required release, Hello recipients or task authority.
+
+- `session_heartbeat` takes four optional trailing arguments: the awaiting-owner
+  count (0..32, otherwise `invalid_peer_status` before anything is written), a
+  reception hold deadline (kept only while in the future, clamped to 30 minutes
+  from now), a client run generation UUID and that run's start (clamped to now).
+  Each accepted heartbeat overwrites one private `session_status` row for its
+  agent, so it always describes the latest heartbeat. Current clients keep
+  calling with five arguments and get the same response; they store NULLs.
+- `session_peers` adds `awaiting_owner` and `reception_hold_until` (both only
+  from a status heartbeat under 60 seconds old) and `client_run_reported`. A live
+  peer with a count above zero shows availability `awaiting_owner`. An overdue
+  receipt behind a running hold keeps `unavailable` with reason `reception_hold`.
+  A peer shows `client_restarted_unrecovered` (reason
+  `run_changed_without_heartbeat`) only when its health is at least 60 seconds
+  stale, its last heartbeat named a run, and its newest owner-update runtime
+  report names a different run recorded after that heartbeat. Peers never see a
+  run ID, a message ID or a body.
+
+The previous heartbeat and peer view stay as private functions. Refresh
+PostgREST's schema cache after applying. To roll back, in one transaction drop
+the new `session_heartbeat` and `session_peers`, move
+`quorum_private.session_heartbeat_before_status` and
+`quorum_private.session_peers_before_status` back to `public` under their old
+names, grant both to `authenticated` again and drop `session_status`. Clients
+then fall back to five-argument heartbeats on their own.
+
 ## Hello reporting extension
 
 After reviewing the source and obtaining administrator deployment authorization,

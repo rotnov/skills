@@ -472,4 +472,5 @@ def run(args, api, ledger, record):
         return webhook().CloudWakeRelay(api, ledger, relay_record)
     return run_listener(ledger, make, args.run_id, stop_event=event, timeout=0,
                         waiter=quorum_realtime.RealtimeWait(api, record, ledger,
-                                                            keepalive=quorum_presence.Presence(api, record, ledger)))
+                                                            keepalive=quorum_presence.Presence(api, record, ledger,
+                                                                                                run_id=args.run_id)))
