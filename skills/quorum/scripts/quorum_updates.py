@@ -11,9 +11,13 @@ from quorum_release import read_release, runtime_evidence, source_identity
 from quorum_resume import binding as resume_binding
 from quorum_update import refresh as canonical_refresh, validate_source
 
-BLOCKERS = {'update_tool_missing', 'update_fetch_failed', 'update_invalid_copy', 'update_validation_failed',
+BLOCKERS = {'update_tool_missing', 'update_node_too_old', 'update_fetch_failed', 'update_invalid_copy', 'update_validation_failed',
             'update_cache_conflict', 'update_target_changed', 'update_in_progress', 'update_unsafe_cache',
             'python_provisioning_failed'}
+# The deployed blocked-evidence allowlist predates these local codes. Report the
+# closest accepted code; the local result keeps the precise one. A distinct
+# server code needs a reviewed migration.
+SERVER_BLOCKER = {'update_node_too_old': 'update_tool_missing'}
 
 
 class UpdateFailure(QuorumError):
@@ -160,9 +164,10 @@ def apply_notice(api, ledger, record, notice_id, request_id, *, owner_refresh=Fa
                 if refreshed != target: raise ValueError('update_target_changed')
             except ValueError as error:
                 if str(error) in BLOCKERS:
+                    reported = SERVER_BLOCKER.get(str(error), str(error))
                     _call(api, 'session_update_report', {**_scope(record), 'notice_id':notice_id,
-                          'event':'blocked', 'evidence':{'code':str(error)}},
-                          'blocked:'+hashlib.sha256((notice_id+':'+str(error)).encode()).hexdigest(), authorize)
+                          'event':'blocked', 'evidence':{'code':reported}},
+                          'blocked:'+hashlib.sha256((notice_id+':'+reported).encode()).hexdigest(), authorize)
                 raise
             journal = {**journal, 'local':local, 'state':'refreshed'}
             ledger.setting(key, journal)
