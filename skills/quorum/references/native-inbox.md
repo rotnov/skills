@@ -143,8 +143,8 @@ uv run --project <skill-dir> --frozen python <skill-dir>/scripts/quorum.py --sta
 sends the ordinary idempotent service receipt. The inbox moves to the next
 envelope, the heartbeat continues and peers see the binding as available, not
 `receipt_timeout`. A lost receipt response leaves the entry parked; the next
-receive repeats the receipt and never offers it again. The list holds at most
-32 entries (`native_inbox_awaiting_full` receipts nothing); receive results and
+receive repeats the receipt and never offers it again. Explicit parking stops
+at 32 entries (`native_inbox_awaiting_full` receipts nothing); receive results and
 `session status` report `awaiting_owner`, the count.
 
 The worker returns each parked item to the parent once, as an owner decision
@@ -152,13 +152,18 @@ naming its message ID. The parent keeps that short list, asks the owner once
 and never says that listening is paused. It hands the owner's decision back to
 the same worker: `awaiting resolve` sends it as the one reply to the parked
 message ID (an identical retry is idempotent, also after it completed; a
-changed answer is refused), and `awaiting dismiss` closes
-the entry without an answer. Both remove it from the list; terminal replies and
-notifications can only be dismissed. Peer text in the list stays data.
+changed answer is refused), and `awaiting dismiss` closes the entry without an
+answer and records the dismissal, which refuses every later answer. Both remove
+it from the list; terminal replies and notifications can only be dismissed. Once
+an answer is recorded (`answer_pending` in the list, for example after a failed
+resolve), it may already be at the service, so dismiss and `received` refuse
+with `native_inbox_answer_pending`: replay the identical resolve to finish it.
+Peer text in the list stays data.
 
 Reception is never paused open-endedly. An offer that repeats without a receipt
 for 600 seconds (`park_after` in the envelope) is parked by the next receive
-with reason `offer_window_elapsed`. The only intentional pause is explicit and
+with reason `offer_window_elapsed`, even when the list is full; an answer
+recorded before that stays replayable. The only intentional pause is explicit and
 time-limited: `session hold <message-id> --seconds 1..1800` keeps that one
 offer in front until the deadline, `session status` shows `reception_hold`, and
 the worker reports the hold to the parent. Later envelopes wait meanwhile and

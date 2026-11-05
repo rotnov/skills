@@ -136,6 +136,68 @@ class CodexAwaitingOwnerTests(base.Harness):
                               if operation == 'session_reply'])
 
     @isolated_profiles
+    def test_dismiss_is_refused_while_an_answer_intent_is_pending(self):
+        api = base.Api(inbox=[base.message(M1)])
+        self.start(api)
+        self.offered(api, M1)
+        self.run_cli(api, 'park', M1)
+        api.fail['session_reply'] = ['service_unavailable']
+        code, failed, _ = self.run_cli(api, 'awaiting', 'resolve', M1, '--text-stdin', stdin=b'decision')
+        self.assertEqual((code, failed['code']), (5, 'service_unavailable'))
+        # The answer may already be at the service: neither dismiss nor a plain receipt can withdraw it.
+        for argv in (('awaiting', 'dismiss', M1), ('received', M1)):
+            code, refused, _ = self.run_cli(api, *argv)
+            self.assertEqual((code, refused['code']), (3, 'native_inbox_answer_pending'))
+            self.assertIn('identical', refused['data']['next_step'])
+        delivery = self.ledger().setting('delivery:' + M1)
+        self.assertEqual((delivery['state'], delivery.get('dismissed')), ('parked', None))
+        self.assertEqual(self.run_cli(api, 'awaiting')[1]['data']['items'][0]['answer_pending'], True)
+        code, changed, _ = self.run_cli(api, 'awaiting', 'resolve', M1, '--text-stdin', stdin=b'other')
+        self.assertEqual((code, changed['code']), (3, 'native_inbox_reply_loop_denied'))
+        self.assertEqual([p['body'] for op, p, _ in api.calls if op == 'session_reply'], ['decision'],
+                         'only the failed attempt was sent; dismiss sent nothing')
+        code, done, text = self.run_cli(api, 'awaiting', 'resolve', M1, '--text-stdin', stdin=b'decision')
+        self.assertEqual((code, done['data']['resolved'], done['data']['awaiting_owner']), (0, True, 0), text)
+
+    @isolated_profiles
+    def test_dismissal_marker_closes_every_later_answer(self):
+        api = base.Api(inbox=[base.message(M1)])
+        self.start(api)
+        self.offered(api, M1)
+        self.run_cli(api, 'park', M1)
+        self.assertEqual(self.run_cli(api, 'awaiting', 'dismiss', M1)[0], 0)
+        delivery = self.ledger().setting('delivery:' + M1)
+        self.assertEqual((delivery['state'], delivery['dismissed'], delivery.get('reply_digest')),
+                         ('acked', True, None))
+        # Even a forged intent on the dismissed row is never treated as a completed resolution.
+        ledger = self.ledger()
+        ledger.setting('delivery:' + M1, {**delivery, 'reply_digest': '0' * 64})
+        for argv in (('awaiting', 'resolve', M1, '--text-stdin'), ('reply', M1, '--text-stdin')):
+            code, refused, _ = self.run_cli(api, *argv, stdin=b'decision')
+            self.assertEqual(code, 3)
+            self.assertIn(refused['code'], ('native_inbox_not_parked', 'native_inbox_reply_loop_denied'))
+        self.assertNotIn('session_reply', api.ops())
+
+    @isolated_profiles
+    def test_crashed_reply_on_an_offer_is_parked_with_its_intent_and_never_stalls(self):
+        import quorum_native_inbox as inbox
+        api = base.Api(inbox=[base.message(M1), base.message(M2)])
+        self.start(api)
+        self.offered(api, M1)
+        api.fail['session_reply'] = ['service_unavailable']
+        self.assertEqual(self.run_cli(api, 'reply', M1, '--text-stdin', stdin=b'answer')[0], 5)
+        self.clock.now += inbox.OFFER_WINDOW
+        with patch('quorum_native_inbox.AWAITING_LIMIT', 0):
+            # The window elapsed: the offer is parked even past the explicit-park limit.
+            self.offered(api, M2)
+        item = self.run_cli(api, 'awaiting')[1]['data']['items'][0]
+        self.assertEqual((item['message_id'], item['reason'], item['answer_pending']),
+                         (M1, 'offer_window_elapsed', True))
+        code, done, text = self.run_cli(api, 'awaiting', 'resolve', M1, '--text-stdin', stdin=b'answer')
+        self.assertEqual((code, done['data']['resolved']), (0, True), text)
+        self.assertEqual([p['body'] for op, p, _ in api.calls if op == 'session_reply'], ['answer', 'answer'])
+
+    @isolated_profiles
     def test_dismiss_closes_the_entry_without_an_answer(self):
         api = base.Api(inbox=[base.message(M1)])
         self.start(api)

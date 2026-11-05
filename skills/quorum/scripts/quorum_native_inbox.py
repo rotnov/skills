@@ -48,7 +48,7 @@ class NativeInboxError(ValueError):
     CODES = {'native_worker_unavailable', 'native_worker_required', 'native_worker_binding_denied', 'native_inbox_transport_conflict',
              'native_inbox_receipt_not_offered', 'native_inbox_reply_loop_denied', 'native_worker_slot_terminal',
              'native_worker_create_ambiguous', 'native_inbox_not_parked', 'native_inbox_park_denied',
-             'native_inbox_awaiting_full'}
+             'native_inbox_awaiting_full', 'native_inbox_answer_pending'}
     REASONS = {'provider_unsupported', 'competing_exports', 'session_missing', 'session_invalid',
                'parent_invalid', 'parent_is_caller', 'parent_mismatch', 'session_mismatch', 'not_spawned',
                'rollout_missing', 'rollout_ambiguous', 'rollout_unsafe', 'metadata_oversized',
@@ -168,6 +168,14 @@ class NativeInboxError(ValueError):
             result['next_step'] = ('Nothing was parked or receipted. The awaiting-owner list is full; ask the owner '
                                    'about the listed items, then resolve or dismiss them with session awaiting. Until '
                                    'then this offer repeats and receive parks it itself when its window ends.')
+        elif self.code == 'native_inbox_answer_pending':
+            result['next_step'] = ('Nothing was changed. An answer to this message was already recorded and may '
+                                   'have reached the service, so it can no longer be withdrawn. Replay the identical '
+                                   'session awaiting resolve (same text and priority) to finish it; the retry is '
+                                   'idempotent and sends nothing new if the service already has it.')
+        elif self.code == 'native_inbox_park_denied':
+            result['next_step'] = ('Nothing was parked. This message is no longer an open offer of this binding: it '
+                                   'was already receipted, answered or dismissed. Check session awaiting and status.')
         elif self.reason == 'supersede_not_in_scope':
             result['next_step'] = ('Nothing was sent or registered. Retiring another agent is outside every worker '
                                    'scope. The owner retires the stale agent with leave from the parent chat, '
@@ -765,7 +773,10 @@ def acknowledge(api, ledger, record, message_id):
 def confirm(api, ledger, record, message_id, *, authorize=None):
     if authorize is not None: api = _guarded(api, authorize)
     _authoritative(api, ledger, record)
-    offered(ledger, record, message_id)
+    # A receipt of a parked entry closes it like a dismissal, with the same pending-answer rule.
+    if offered(ledger, record, message_id).get('state') == 'parked':
+        _close_parked(api, ledger, record, message_id)
+        return {'received': True, 'state': 'acked', 'message_id': message_id}
     acknowledge(api, ledger, record, message_id)
     return {'received': True, 'state': 'acked', 'message_id': message_id}
 
@@ -844,10 +855,12 @@ def _park(api, ledger, record, message_id, reason, *, automatic=False):
         if current.get('state') == 'parked':
             api.call('session_ack', {**_scope(record), 'message_id': message_id})
             return current
-        # A persisted answer intent or a completed receipt is never moved back to awaiting the owner.
-        if current.get('state') != 'offered' or current.get('reply_digest') is not None: break
-        if _count(ledger, record, 'parked') >= AWAITING_LIMIT:
-            if automatic: return None
+        # A completed receipt is never moved back to awaiting the owner. A persisted answer intent moves with
+        # the entry (listed as answer_pending) and stays replayable only identically, never dismissible.
+        if current.get('state') != 'offered': break
+        # The limit bounds explicit parking only: an elapsed offer window always parks, so a full list can
+        # never stall reception again.
+        if not automatic and _count(ledger, record, 'parked') >= AWAITING_LIMIT:
             raise NativeInboxError('native_inbox_awaiting_full')
         parked = {**current, 'state': 'parked', 'parked_at': wall(), 'park_reason': reason}
         parked.pop('hold_until', None)
@@ -924,7 +937,7 @@ def resolve(api, ledger, record, message_id, body, priority, *, authorize=None):
     """
     delivery = ledger.setting('delivery:' + message_id)
     resolved = (_owned(record, delivery) and delivery.get('state') == 'acked' and 'parked_at' in delivery
-                and delivery.get('reply_digest') is not None)
+                and delivery.get('reply_digest') is not None and not delivery.get('dismissed'))
     if not resolved: _require_parked(ledger, record, message_id)
     result = reply(api, ledger, record, message_id, body, priority, authorize=authorize)
     return {**result, 'resolved': True, 'awaiting_owner': _count(ledger, record, 'parked')}
@@ -935,9 +948,34 @@ def dismiss(api, ledger, record, message_id, *, authorize=None):
     if authorize is not None: api = _guarded(api, authorize)
     _authoritative(api, ledger, record)
     _require_parked(ledger, record, message_id)
-    acknowledge(api, ledger, record, message_id)
+    _close_parked(api, ledger, record, message_id)
     return {'dismissed': True, 'state': 'acked', 'message_id': message_id,
             'awaiting_owner': _count(ledger, record, 'parked')}
+
+
+def _close_parked(api, ledger, record, message_id):
+    """Compare-and-set parked (with no answer intent) -> acked + dismissed, then the idempotent receipt.
+
+    An entry whose answer intent is persisted is refused: that answer may already be at the service and
+    cannot be withdrawn, so only its identical replay may finish it. The dismissal marker is written in
+    the same compare-and-set, so a concurrent answer intent either precedes it (refused here) or finds
+    the entry acked without an intent and is refused by reply().
+    """
+    key = 'delivery:' + message_id
+    for _ in range(16):
+        raw = ledger.db.execute('select data from settings where key=?', (key,)).fetchone()[0]
+        current = json.loads(raw)
+        if not _owned(record, current) or current.get('state') != 'parked':
+            raise NativeInboxError('native_inbox_not_parked')
+        if current.get('reply_digest') is not None: raise NativeInboxError('native_inbox_answer_pending')
+        with ledger.db:
+            changed = ledger.db.execute('update settings set data=? where key=? and data=?',
+                                        (json.dumps({**current, 'state': 'acked', 'dismissed': True}), key,
+                                         raw)).rowcount
+        if changed:
+            api.call('session_ack', {**_scope(record), 'message_id': message_id})
+            return
+    raise ValueError('session_delivery_unknown')
 
 
 def add_commands(actions):
