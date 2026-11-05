@@ -86,7 +86,7 @@ declare
  invitation quorum_private.id_invitations%rowtype; membership quorum_private.memberships%rowtype;
  agent quorum_private.agents%rowtype; fingerprint text;
 begin
- if op not in ('invite_create_id','invite_create_open','invite_accept_id','agent_join','agent_retire') then
+ if op not in ('invite_create_id','invite_create_open','invite_accept_id','invite_accept','agent_join','agent_retire') then
   return quorum_private.call_role_core(op,p,req);
  end if;
  -- Requests the core rejects before reading a row keep its errors and precedence.
@@ -97,9 +97,13 @@ begin
   if p is null or jsonb_typeof(p)<>'object' or octet_length(p::text)>131072 then raise exception 'invalid_payload'; end if;
   raise exception 'request_id_required';
  end if;
- replayed:=exists(select 1 from quorum_private.requests r where r.actor=who and r.operation=op and r.request_id=req);
-
  if op in ('invite_create_id','invite_create_open') then
+  -- The core's own request key, taken before the replay probe: a concurrent identical
+  -- request waits here until this one commits, then sees its request row and stored
+  -- assignment. The key is shared only by identical requests (close takes no such
+  -- key), so taking it before the core's quorum row lock creates no cycle.
+  perform pg_advisory_xact_lock(hashtextextended(who::text||op||req,0));
+  replayed:=exists(select 1 from quorum_private.requests r where r.actor=who and r.operation=op and r.request_id=req);
   -- The core authorizes and issues first; any refusal below rolls the issue back.
   result:=quorum_private.call_role_core(op,p-'role'-'project_ref',req);
   want_role:=p->>'role'; want_project:=p->>'project_ref';
@@ -122,10 +126,33 @@ begin
   return result||jsonb_build_object('assigned',case when want_project is null then null
    else jsonb_build_object('role',want_role,'project_ref',want_project) end);
 
- elsif op='invite_accept_id' then
-  -- Read before the core consumes it; the core relocks and rechecks the row.
-  select * into invitation from quorum_private.id_invitations where id=(p->>'invite_id')::uuid;
+ elsif op in ('invite_accept_id','invite_accept') then
+  -- quorum_id never changes after insert; the core relocks and rechecks the invitation.
+  if op='invite_accept_id' then
+   select * into invitation from quorum_private.id_invitations where id=(p->>'invite_id')::uuid;
+   q:=invitation.quorum_id;
+  else
+   select i.quorum_id into q from quorum_private.invitations i
+    where i.token_hash=encode(sha256(convert_to(p->>'token','UTF8')),'hex');
+  end if;
+  if q is null then return quorum_private.call_role_core(op,p,req); end if;
+  -- One key per accepting identity and quorum serializes its acceptances, so the
+  -- replay, first-acceptance and reactivation reads below are current. Close takes
+  -- no such key, so taking it before the core's quorum row lock creates no cycle.
+  perform pg_advisory_xact_lock(hashtextextended(who::text||'/accept/'||q::text,4));
+  replayed:=exists(select 1 from quorum_private.requests r where r.actor=who and r.operation=op and r.request_id=req);
+  if op='invite_accept_id' then
+   select * into invitation from quorum_private.id_invitations where id=(p->>'invite_id')::uuid; end if;
+  -- Reactivating a revoked membership must not revive its old agents next to a
+  -- holder that claimed their role meanwhile. A revoked membership's agents are
+  -- stale, so all of them are retired exactly like agent_leave, before the core
+  -- touches the membership (agent before membership, as maintenance locks). Any
+  -- refusal by the core rolls this back; the member reconnects with a new agent.
+  if exists(select 1 from quorum_private.memberships m where m.quorum_id=q and m.user_id=who and m.revoked) then
+   update quorum_private.agents set revoked=true where quorum_id=q and owner_id=who and not revoked;
+  end if;
   result:=quorum_private.call_role_core(op,p,req);
+  if op='invite_accept' then return result; end if;
   -- Only a first acceptance sets the binding; a role-less invitation clears an older one.
   if not replayed and invitation.id is not null and invitation.accepted_by is null then
    update quorum_private.memberships set assigned_role=invitation.assigned_role,
@@ -141,15 +168,20 @@ begin
   supersede:=coalesce((p->>'supersede')::boolean,false);
   keep:=(p->>'keep_agent_id')::uuid;
   core:=p-'supersede'-'keep_agent_id';
-  select * into membership from quorum_private.memberships m where m.quorum_id=q and m.user_id=who and not m.revoked;
-  -- Non-members never learn who holds a role: the core refuses them.
-  if not found or not quorum_private.verified_actor(who) then
+  if not exists(select 1 from quorum_private.memberships m where m.quorum_id=q and m.user_id=who and not m.revoked)
+     or not quorum_private.verified_actor(who) then
+   -- Non-members never learn who holds a role: the core refuses them.
    return quorum_private.call_role_core(op,core,req); end if;
   -- One key per quorum, project and role serializes concurrent claims; it is
   -- always taken before the core's request lock.
   perform pg_advisory_xact_lock(hashtextextended(q::text||'/'||coalesce(p->>'project_ref','')||'/'
    ||coalesce(p->>'role',''),3));
-  if not (replayed or exists(select 1 from quorum_private.agents a where a.quorum_id=q
+  -- Every read below happens after the wait. The membership row is held FOR SHARE so
+  -- its assignment cannot change or be revoked before the core inserts the agent.
+  select * into membership from quorum_private.memberships m where m.quorum_id=q and m.user_id=who and not m.revoked
+   for share;
+  if not found then return quorum_private.call_role_core(op,core,req); end if;
+  if not (exists(select 1 from quorum_private.agents a where a.quorum_id=q
      and a.device_id=(p->>'device_id')::uuid and a.session_ref=p->>'session_ref')
      or exists(select 1 from quorum_private.requests r where r.actor=who and r.operation=op and r.request_id=req)) then
    if membership.assigned_project_ref is not null and (p->>'project_ref' is distinct from membership.assigned_project_ref
@@ -187,6 +219,7 @@ begin
 
  else
   -- agent_retire: the quorum owner revokes one agent of the quorum, keeping its membership.
+  -- The replay probe below runs only after the request lock, like the core's.
   if not quorum_private.verified_actor(who) then raise insufficient_privilege using message='auth_required'; end if;
   q:=(p->>'quorum_id')::uuid;
   if quorum_private.member(q,who)<>'owner' then raise insufficient_privilege using message='owner_required'; end if;

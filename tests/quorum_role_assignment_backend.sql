@@ -7,7 +7,7 @@ declare
  result jsonb; first jsonb; a_device uuid; b_device uuid; c_device uuid; o_device uuid; first_agent uuid;
  second_agent uuid; third_agent uuid; b_agent uuid; c_agent uuid; owner_agent uuid; foreign_agent uuid;
  s1 text:=gen_random_uuid()::text; s2 text:=gen_random_uuid()::text; s3 text:=gen_random_uuid()::text;
- req text:=gen_random_uuid()::text; roster jsonb; entry jsonb; detail text;
+ req text:=gen_random_uuid()::text; roster jsonb; entry jsonb; detail text; taker uuid;
 begin
  insert into auth.users(id,raw_user_meta_data) values(owner_id,'{}'),(alice,'{}'),(bob,'{}'),(anon_id,'{}');
  insert into auth.identities(user_id,provider,provider_id,identity_data) values
@@ -175,6 +175,46 @@ begin
  exception when insufficient_privilege then if sqlerrm<>'agent_denied' then raise; end if; end;
  -- The retired role is free again for its member.
  perform public.agent_join(q,b_device,slug,'builder','codex',s2,req||'-rejoin');
+
+ -- Reactivating a revoked membership retires its stale agents instead of reviving
+ -- them next to the identity that claimed their role meanwhile.
+ perform set_config('request.jwt.claim.sub',owner_id::text,true);
+ perform public.member_revoke(q,(select id from quorum_private.memberships where quorum_id=q and user_id=alice),req||'-rv');
+ if not exists(select 1 from quorum_private.agents where id=third_agent and not revoked) then
+  raise exception 'revoke_fixture_changed'; end if;
+ perform set_config('request.jwt.claim.sub',bob::text,true);
+ taker:=(public.agent_join(q,b_device,slug,'reviewer','codex',s3,req||'-take')->>'agent_id')::uuid;
+ perform set_config('request.jwt.claim.sub',owner_id::text,true);
+ inv:=(public.invite_create_id(q,'9000000000102',req||'-back')->>'invite_id')::uuid;
+ perform set_config('request.jwt.claim.sub',alice::text,true);
+ -- A refused acceptance changes nothing.
+ update quorum_private.id_invitations set expires_at=now()-interval '1 second' where id=inv;
+ begin perform public.invite_accept_id(inv,req||'-back'); raise exception 'expired_reactivation';
+ exception when insufficient_privilege then null; end;
+ if not exists(select 1 from quorum_private.agents where id=third_agent and not revoked) then
+  raise exception 'refused_accept_retired_agents'; end if;
+ update quorum_private.id_invitations set expires_at=now()+interval '1 hour' where id=inv;
+ perform public.invite_accept_id(inv,req||'-back');
+ if quorum_private.member(q,alice)<>'member' then raise exception 'membership_not_reactivated'; end if;
+ if exists(select 1 from quorum_private.agents a where a.quorum_id=q and a.owner_id=alice and not a.revoked) then
+  raise exception 'reactivation_revived_agents'; end if;
+ if (public.resolve_role(q,'reviewer',slug)->>'agent_id')::uuid<>taker then raise exception 'reactivation_made_role_ambiguous'; end if;
+ -- The legacy token acceptance reactivates the same way.
+ first_agent:=(public.agent_join(q,a_device,slug,'token-role','claude',gen_random_uuid()::text,req||'-tok')->>'agent_id')::uuid;
+ perform set_config('request.jwt.claim.sub',owner_id::text,true);
+ perform public.member_revoke(q,(select id from quorum_private.memberships where quorum_id=q and user_id=alice),req||'-rv2');
+ detail:=public.invite_create(q,'9000000000102',req||'-tok')->>'token';
+ perform set_config('request.jwt.claim.sub',alice::text,true);
+ perform public.invite_accept(detail,req||'-tok');
+ if quorum_private.member(q,alice)<>'member' or not (select revoked from quorum_private.agents where id=first_agent) then
+  raise exception 'token_reactivation_revived_agent'; end if;
+ -- An ordinary acceptance by a live member retires nothing.
+ second_agent:=(public.agent_join(q,a_device,slug,'kept-role','claude',gen_random_uuid()::text,req||'-kept')->>'agent_id')::uuid;
+ perform set_config('request.jwt.claim.sub',owner_id::text,true);
+ inv:=(public.invite_create_id(q,'9000000000102',req||'-live')->>'invite_id')::uuid;
+ perform set_config('request.jwt.claim.sub',alice::text,true);
+ perform public.invite_accept_id(inv,req||'-live');
+ if (select revoked from quorum_private.agents where id=second_agent) then raise exception 'live_accept_retired_agent'; end if;
 
  -- Owner roster: binding metadata only.
  perform set_config('request.jwt.claim.sub',owner_id::text,true);

@@ -55,17 +55,17 @@ class RoleClaimRaceTests(unittest.TestCase):
         return int(self.cluster.sql('role_races', f"select count(*) from quorum_private.agents "
                                                   f"where quorum_id='{QUORUM}' and role='{role}' and not revoked").strip())
 
-    def race(self, first, second):
-        """`first` claims the role and holds its transaction open; `second` must wait, then see it."""
+    def race(self, first, second, statement='agent_join'):
+        """`first` takes its lock and holds its transaction open; `second` must wait, then see it."""
         blocker = self.cluster.session('role_races', 'role_blocker')
         blocker.send('begin;' + first)
-        wait_statement(self.cluster, 'role_races', blocker.label, 'agent_join',
+        wait_statement(self.cluster, 'role_races', blocker.label, statement,
                        lambda row: row['state'] == 'idle in transaction', 'held role claim', advisory=True)
         worker = self.cluster.session('role_races', 'role_worker')
         worker.send('begin;' + second + 'commit;')
         held = self.cluster.sql('role_races', "select pid from pg_stat_activity where application_name="
                                               f"'{blocker.label}'").strip()
-        wait_statement(self.cluster, 'role_races', worker.label, 'agent_join',
+        wait_statement(self.cluster, 'role_races', worker.label, statement,
                        lambda row: row['wait_event_type'] == 'Lock' and int(held) in row['blocking'],
                        'second claim waits for the first')
         blocker.send('commit;')
@@ -94,6 +94,28 @@ class RoleClaimRaceTests(unittest.TestCase):
         self.assertEqual(self.live('tester'), 1)
         self.assertEqual(self.cluster.sql('role_races', "select session_ref from quorum_private.agents "
                                                         "where role='tester' and not revoked").strip(), 's6')
+
+    def invite(self, request, role=None):
+        extra = f",'{role}'" if role else ''
+        return (f"select set_config('request.jwt.claim.sub','{OWNER}',true);"
+                f"select public.invite_create_id('{QUORUM}','9000000000203','{request}'{extra});")
+
+    def test_concurrent_identical_invite_waits_then_refuses_a_different_assignment(self):
+        code, out, error = self.race(self.invite('same-issue'), self.invite('same-issue', 'reviewer'),
+                                     statement='invite_create_id')
+        self.assertNotEqual(code, 0, out)
+        self.assertIn('idempotency_conflict', error)
+        # The issued invitation keeps the first request's (empty) assignment.
+        self.assertEqual(self.cluster.sql('role_races', "select count(*)||'|'||count(assigned_role) from "
+                                                        "quorum_private.id_invitations where target_github_id='9000000000203' and assigned_role is distinct from 'writer'"
+                                                        ).strip(), '1|0')
+
+    def test_concurrent_identical_invite_with_the_same_assignment_replays(self):
+        code, out, error = self.race(self.invite('same-role', 'writer'), self.invite('same-role', 'writer'),
+                                     statement='invite_create_id')
+        self.assertEqual(code, 0, error)
+        self.assertEqual(self.cluster.sql('role_races', "select count(*) from quorum_private.id_invitations "
+                                                        "where assigned_role='writer'").strip(), '1')
 
 
 if __name__ == '__main__':

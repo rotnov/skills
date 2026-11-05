@@ -176,6 +176,9 @@ reapplication before any change. It does not change the required release.
   own agent coexist, as an adopting Claude worker's parent does. A same-session
   reconnect and an idempotent retry return the original agent. Joins require
   PostgreSQL `READ COMMITTED` (`role_exclusivity_requires_read_committed`).
+  Accepting any invitation that reactivates a revoked membership first retires
+  all of that membership's old agents, like `agent_leave`: they are stale and
+  must not reappear next to a holder that claimed their role meanwhile.
 - `agent_retire` lets the quorum owner revoke one agent of the quorum, exactly
   like `agent_leave`, keeping the membership; `quorum_agents` is the owner's
   roster of agent IDs, roles, projects, engines, owner labels, last heartbeat and
