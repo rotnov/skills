@@ -224,12 +224,39 @@ class _RetiredDuringConnect(ValueError):
     def __init__(self): super().__init__('session_binding_denied')
 
 
+# Each supported client's own current-session export, in fixed order.
+CLIENT_SESSION_ENV = (('codex', 'CODEX_THREAD_ID'), ('claude', 'CLAUDE_CODE_SESSION_ID'),
+                      ('grok', 'GROK_SESSION_ID'))
+
+
+class AmbiguousSession(ValueError):
+    """More than one client's session export is set; only the fixed variable names cross, never values.
+
+    Every export, including GROK_LEADER_SOCKET, is inherited by child processes, so none of them
+    proves which client is the caller. The calling chat is never guessed; its owner relaunches it
+    from a clean environment.
+    """
+    code = 'ambiguous_current_session'
+
+    def __init__(self, names):
+        super().__init__(self.code)
+        self.names = list(names)
+
+    def diagnostic(self):
+        unset = ' '.join('-u ' + name for _, name in CLIENT_SESSION_ENV)
+        return {'detected_env': self.names, 'next_step': (
+            'Nothing was registered or sent. This process carries current-session variables for more than '
+            'one client, usually because one client was started from another client\'s shell, so the calling '
+            'chat cannot be identified. Do not choose a session for it or substitute another chat. Have the '
+            'owner quit this client and relaunch it from a clean environment that removes the other clients\' '
+            'variables, for example `env ' + unset + ' grok --leader ...` for a Grok TUI (see '
+            'references/grok.md), then run the same command again from the relaunched chat.')}
+
+
 def current_engine():
-    engines = [engine for engine, key in (('codex','CODEX_THREAD_ID'), ('claude','CLAUDE_CODE_SESSION_ID'),
-                                        ('grok','GROK_SESSION_ID'))
-               if os.environ.get(key)]
-    if len(engines) > 1: raise ValueError('ambiguous_current_session')
-    return engines[0] if engines else 'codex'
+    found = [(engine, key) for engine, key in CLIENT_SESSION_ENV if os.environ.get(key)]
+    if len(found) > 1: raise AmbiguousSession(key for _, key in found)
+    return found[0][0] if found else 'codex'
 
 
 def current_session():

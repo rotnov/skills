@@ -13,7 +13,7 @@ from quorum_api import QuorumApi, ServiceConfig, QuorumError
 from quorum_auth import token_provider
 from quorum_state import LocalLedger
 from quorum_grok_leader import GrokBindingError
-from quorum_session import BindingError, RecipientUnresolved, RoleHeld, UnsupportedClient
+from quorum_session import AmbiguousSession, BindingError, RecipientUnresolved, RoleHeld, UnsupportedClient
 from quorum_grok_cloud import CloudError
 from quorum_native_inbox import NativeInboxError
 from quorum_debug import DebugError
@@ -216,6 +216,10 @@ def main(argv=None):
         return 3
     except UnsupportedClient as error:
         print(json.dumps({'ok': False, 'code': 'unsupported_client', 'data': error.diagnostic()}))
+        return 3
+    except AmbiguousSession as error:
+        # Only the fixed names of the detected client variables; never their values.
+        print(json.dumps({'ok': False, 'code': error.code, 'data': error.diagnostic()}))
         return 3
     except BindingError as error:
         # This chat's own role, quorum and agent with fixed guidance; never a path, token or server body.
