@@ -9,7 +9,8 @@ Native Windows support is experimental; the verified scope is described below.
 Missing prerequisites are a blocker; never move credentials or switch billing
 implicitly. Install prerequisite tools only when the owner authorizes setup.
 
-The default `worker` and Codex runner remain disabled. `pilot-worker` is a
+The default `worker` and Codex runner remain disabled; `capabilities` reports
+this as `unattended_project_execution: unsupported`. `pilot-worker` is a
 separate, explicit owner command. Obtain a nonzero subscription budget before
 starting it. One invocation can consume at most one incoming model turn, capped
 at 60 seconds. Do not restart an uncertain or completed attempt to obtain a reply.
