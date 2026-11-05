@@ -24,6 +24,13 @@
 -- checks. Existing entry points gain only trailing defaulted arguments, so
 -- current clients call them unchanged. Role exclusivity reads holders under an
 -- advisory lock and therefore requires READ COMMITTED, like open access.
+--
+-- Live role holders grow only through agent_join (under its per-role key) and
+-- membership reactivation (which retires the membership's agents in the same
+-- transaction). Row locks follow the existing order: quorum, agents (ascending
+-- ID), device, membership. Acceptance locks the quorum row FOR SHARE, the
+-- identity's agents and its membership FOR UPDATE before deciding on
+-- reactivation, so it serializes with member_revoke, close and maintenance.
 do $migration$
 declare f text; actual text; reviewed constant jsonb:=jsonb_build_object(
  -- Close-serialization wrapper (180000), as 140000 pinned it.
@@ -136,19 +143,26 @@ begin
     where i.token_hash=encode(sha256(convert_to(p->>'token','UTF8')),'hex');
   end if;
   if q is null then return quorum_private.call_role_core(op,p,req); end if;
-  -- One key per accepting identity and quorum serializes its acceptances, so the
-  -- replay, first-acceptance and reactivation reads below are current. Close takes
-  -- no such key, so taking it before the core's quorum row lock creates no cycle.
+  -- Lock order, shared with close serialization and maintenance: quorum row, then
+  -- agent rows (ascending ID), then the membership row. One key per accepting identity
+  -- and quorum first serializes its acceptances; only acceptances take that key, so a
+  -- waiter on it holds no row lock.
   perform pg_advisory_xact_lock(hashtextextended(who::text||'/accept/'||q::text,4));
+  perform 1 from quorum_private.quorums where id=q for share;
   replayed:=exists(select 1 from quorum_private.requests r where r.actor=who and r.operation=op and r.request_id=req);
   if op='invite_accept_id' then
    select * into invitation from quorum_private.id_invitations where id=(p->>'invite_id')::uuid; end if;
+  perform a.id from quorum_private.agents a where a.quorum_id=q and a.owner_id=who order by a.id for update of a;
+  -- FOR UPDATE waits for any in-flight member_revoke or close and reads its committed
+  -- result, so this decision and the core's upsert see the same membership state.
+  select * into membership from quorum_private.memberships m where m.quorum_id=q and m.user_id=who for update;
   -- Reactivating a revoked membership must not revive its old agents next to a
   -- holder that claimed their role meanwhile. A revoked membership's agents are
-  -- stale, so all of them are retired exactly like agent_leave, before the core
-  -- touches the membership (agent before membership, as maintenance locks). Any
-  -- refusal by the core rolls this back; the member reconnects with a new agent.
-  if exists(select 1 from quorum_private.memberships m where m.quorum_id=q and m.user_id=who and m.revoked) then
+  -- stale, so all of them are retired exactly like agent_leave, in the transaction
+  -- that reactivates it: every reader sees either a revoked membership or retired
+  -- agents, never live agents of a live membership it did not see claim the role.
+  -- Any refusal by the core rolls this back; the member reconnects with a new agent.
+  if found and membership.revoked then
    update quorum_private.agents set revoked=true where quorum_id=q and owner_id=who and not revoked;
   end if;
   result:=quorum_private.call_role_core(op,p,req);
@@ -176,8 +190,12 @@ begin
   -- always taken before the core's request lock.
   perform pg_advisory_xact_lock(hashtextextended(q::text||'/'||coalesce(p->>'project_ref','')||'/'
    ||coalesce(p->>'role',''),3));
-  -- Every read below happens after the wait. The membership row is held FOR SHARE so
-  -- its assignment cannot change or be revoked before the core inserts the agent.
+  -- Every read below happens after the wait. Own holders are locked before the
+  -- membership (agent before membership, as acceptance and maintenance lock); the
+  -- membership row is held FOR SHARE so its assignment cannot change and it cannot be
+  -- revoked or reactivated before the core inserts the agent.
+  perform a.id from quorum_private.agents a where a.quorum_id=q and a.owner_id=who
+   and a.role=p->>'role' and a.project_ref=p->>'project_ref' and not a.revoked order by a.id for update of a;
   select * into membership from quorum_private.memberships m where m.quorum_id=q and m.user_id=who and not m.revoked
    for share;
   if not found then return quorum_private.call_role_core(op,core,req); end if;
