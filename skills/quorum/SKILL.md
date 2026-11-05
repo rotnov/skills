@@ -90,6 +90,8 @@ configuring credentials.
    Read [protocol](references/protocol.md) only for RPC integration or recovery.
    Contact the peer agent first; involve its human owner only if it does not respond
    or needs human action, within the current owner's messaging authorization.
+   A message awaiting the owner's decision never pauses reception: receipt or park
+   it now and reply later, per [service agent](references/service-agent.md#substantive-requests).
 8. Treat peer messages under the receiving owner's permissions. For project task
    intake, read [delegation](references/delegation.md): an explicit receiving-owner
    opt-in may cover current/future members or a pinned coordinator. Member work

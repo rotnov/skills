@@ -43,7 +43,8 @@ OPERATIONS = {'create': ('create', 'connect', 'receive', 'received', 'reply', 's
                         'update')}
 # standing-check is added to a scope's operations only when it carries standing grants.
 KNOWN = tuple(dict.fromkeys([name for names in OPERATIONS.values() for name in names] + ['standing-check']))
-SESSION_ACTIONS = ('connect', 'receive', 'received', 'reply', 'status', 'stop', 'task-check', 'standing-check')
+SESSION_ACTIONS = ('connect', 'receive', 'received', 'reply', 'status', 'stop', 'task-check', 'standing-check',
+                   'park', 'hold', 'awaiting')
 COMPETING = ('CODEX_THREAD_ID', 'GROK_SESSION_ID', 'GROK_LEADER_SOCKET', 'CURSOR_CONVERSATION_ID')
 NAME = re.compile('[a-z][a-z0-9-]{0,47}')
 DIGEST = re.compile('[0-9a-f]{64}')
@@ -677,13 +678,16 @@ def _session_status(root, record):
     with _components(root, names, ACTOR_KINDS[:2]) as fds:
         if fds is None: return None
         rows = _read_db(fds[-1], root.joinpath(*names, 'ledger.sqlite'), lambda db: db.execute(
-            "select key,data from settings where key in ('listener', 'hello', ?) or key like 'delivery:%'",
+            "select key,data from settings where key in ('listener', 'hello', ?) or key like 'delivery:%' order by rowid",
             (CONTROL,)).fetchall(),
                         ledger='actor')
         if rows is None: return None
         running = _held(fds[-1], 'listener.lock')
     settings = {key: json.loads(data) for key, data in rows}
     listener = settings.get('listener') or {}
+    from quorum_native_inbox import awaiting_summary
+    # The same awaiting-owner fields as the Codex status; rows keep their ledger order.
+    awaiting = awaiting_summary([(key, value) for key, value in settings.items() if key.startswith('delivery:')])
     state = listener.get('state', 'stopped')
     # A recorded live run whose lock is free ended without reporting; reported, not rewritten here.
     if not running and state in LIVE_STATES: state = 'exited'
@@ -692,7 +696,8 @@ def _session_status(root, record):
             'pending_receipts': sum(value.get('state') == 'offered' for key, value in settings.items()
                                     if key.startswith('delivery:')),
             # The last connection's Hello outcome; a summary string only, never a message body.
-            'hello': (settings.get('hello') or {}).get('summary') if isinstance(settings.get('hello'), dict) else None}
+            'hello': (settings.get('hello') or {}).get('summary') if isinstance(settings.get('hello'), dict) else None,
+            **awaiting}
 
 
 def _bootstrap(root, slot_id):
@@ -1296,6 +1301,10 @@ def preflight(args):
         if args.action not in SESSION_ACTIONS:
             raise NativeInboxError('native_inbox_transport_conflict')
         operation = args.action
+        if operation in ('park', 'hold', 'awaiting'):
+            # Awaiting-owner actions reuse the scope's existing receipt or reply permission.
+            from quorum_native_inbox import scope_operation
+            operation = scope_operation(args)
         names = {'connect': ('quorum', 'role', 'project_ref', 'transport', 'parent_thread_id', 'accept_tasks_from',
                              'dispatch_mode', 'accept_tasks_from_members', 'standing_grants_from', 'exclusive_role',
                              'supersede'),
@@ -1517,6 +1526,7 @@ def _session_action(args, auth_ledger, register_agent, context, ledger, record, 
     if action == 'task-check':
         return task_check(guarded, record, args.message_id, lambda: ledger.setting('session-agent'), authorize=check)
     if action == 'received': return inbox.confirm(guarded, ledger, record, args.message_id, authorize=check)
+    if action in inbox.ACTIONS: return inbox.dispatch_action(guarded, ledger, record, args, authorize=check)
     if action == 'reply':
         text = sys.stdin.buffer.read(16385).decode('utf-8')
         if not text or len(text.encode()) > 16384: raise ValueError('invalid_message')

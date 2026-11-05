@@ -601,6 +601,8 @@ def add_commands(commands):
     receive = actions.add_parser('receive', help='Tool-inbox worker: one bounded foreground receive in its own tool result')
     receive.add_argument('--wait-seconds', type=int, choices=range(0, 61), default=30, metavar='0..60')
     actions.add_parser('stop')
+    from quorum_native_inbox import add_commands as add_awaiting_commands
+    add_awaiting_commands(actions)
     received = actions.add_parser('received')
     received.add_argument('message_id', type=lambda x: str(uuid.UUID(x)))
     run = actions.add_parser('run')
@@ -881,7 +883,7 @@ def _dispatch(args, auth_ledger, register_agent):
         # An existing binding keeps its transport; no implicit change or ownership transfer.
         if args.action=='connect' and record and bound!=requested:
             raise inbox.NativeInboxError('native_inbox_transport_conflict')
-        if (tool and args.action in ('run','reconcile')) or (not tool and args.action=='receive' and record):
+        if (tool and args.action in ('run','reconcile')) or (not tool and args.action in ('receive',*inbox.ACTIONS) and record):
             raise inbox.NativeInboxError('native_inbox_transport_conflict')
         worker_guard = None
         if tool and record:
@@ -1076,6 +1078,7 @@ def _dispatch(args, auth_ledger, register_agent):
                             recovery=args.action=='recover'),'session_id':sid}
         if args.action=='receive': return inbox.receive(api,auth_ledger,ledger,record,args.wait_seconds,
                                                           authorize=worker_guard)
+        if args.action in inbox.ACTIONS: return inbox.dispatch_action(api,ledger,record,args,authorize=worker_guard)
         scope={'agent_id':record['agent_id'],'session_ref':sid}
         # Every mutating send/reply requires the exact current server release
         # first; an older server lacks the priority RPCs this client calls.

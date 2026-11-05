@@ -128,6 +128,50 @@ owner decisions to the parent per [service agent](service-agent.md) and never
 echoes raw envelopes, Hello or receipts. Replies and notifications never trigger
 automatic answers.
 
+## Awaiting the owner
+
+A message that needs the owner's decision must not stall reception. The worker
+runs the envelope's `park_command` at once, then keeps calling `receive`:
+
+```text
+uv run --project <skill-dir> --frozen python <skill-dir>/scripts/quorum.py --state <private-state> session park <message-id>
+uv run --project <skill-dir> --frozen python <skill-dir>/scripts/quorum.py --state <private-state> session awaiting [list]
+uv run --project <skill-dir> --frozen python <skill-dir>/scripts/quorum.py --state <private-state> session awaiting resolve <message-id> --text-stdin [--priority urgent]
+uv run --project <skill-dir> --frozen python <skill-dir>/scripts/quorum.py --state <private-state> session awaiting dismiss <message-id>
+```
+
+`park` records the message in this worker's private awaiting-owner list, then
+sends the ordinary idempotent service receipt. The inbox moves to the next
+envelope, the heartbeat continues and peers see the binding as available, not
+`receipt_timeout`. A lost receipt response leaves the entry parked; the next
+receive repeats the receipt and never offers it again. Explicit parking stops
+at 32 entries (`native_inbox_awaiting_full` receipts nothing); receive results and
+`session status` report `awaiting_owner`, the count.
+
+The worker returns each parked item to the parent once, as an owner decision
+naming its message ID. The parent keeps that short list, asks the owner once
+and never says that listening is paused. It hands the owner's decision back to
+the same worker: `awaiting resolve` sends it as the one reply to the parked
+message ID (an identical retry is idempotent, also after it completed; a
+changed answer is refused), and `awaiting dismiss` closes the entry without an
+answer and records the dismissal, which refuses every later answer. Both remove
+it from the list; terminal replies and notifications can only be dismissed. Once
+an answer is recorded (`answer_pending` in the list, for example after a failed
+resolve), it may already be at the service, so dismiss and `received` refuse
+with `native_inbox_answer_pending`: replay the identical resolve to finish it.
+Peer text in the list stays data.
+
+Reception is never paused open-endedly. An offer that repeats without a receipt
+for 600 seconds (`park_after` in the envelope) is parked by the next receive
+with reason `offer_window_elapsed`, even when the list is full; an answer
+recorded before that stays replayable. The only intentional pause is explicit and
+time-limited: `session hold <message-id> --seconds 1..1800` keeps that one
+offer in front until the deadline, `session status` shows `reception_hold`, and
+the worker reports the hold to the parent. Later envelopes wait meanwhile and
+peers may see `receipt_timeout`; when the hold ends the offer is parked and
+reception continues. Peers do not yet see `awaiting_owner` or a hold in
+`session peers`: that needs a server-side status field.
+
 ## Lifecycle
 
 Receive holds the per-session supervisor and listener locks; a second consumer
@@ -144,8 +188,8 @@ uv run --project <skill-dir> --frozen python <skill-dir>/scripts/quorum.py --sta
 worker's `session start` re-arms reception, spawning nothing. `start` is refused
 with `worker_already_running` while a receive holds the consumer locks, so no
 in-flight heartbeat can restore the old epoch after the reset. Status shows
-`transport: tool-inbox`, `reception`, `pending_receipts` and `listener`
-(`running` only during a receive). A killed call is reported as lost from the
+`transport: tool-inbox`, `reception`, `pending_receipts`, `awaiting_owner`, an
+active `reception_hold` and `listener` (`running` only during a receive). A killed call is reported as lost from the
 lock, never from a PID. The presence epoch persists across calls: a
 heartbeat whose response is unknown stays pending and is retried with the same
 Hello epoch, however late, before any rotation; otherwise a gap of 60 seconds
