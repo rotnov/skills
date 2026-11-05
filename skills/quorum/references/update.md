@@ -52,6 +52,7 @@ Fetch, missing-tool, Python-provisioning, invalid-copy, validation and cache-con
 create/join with a safe error code and leave current code/private state intact.
 Report that blocker; do not claim an update, silently continue with stale code,
 or overwrite an active installation. No background updater is installed.
+Before npx runs, the helper checks `node --version`; an unparseable or older-than-22.20 Node returns `update_node_too_old` with `data.found`, `data.required` and a fixed hint.
 
 ## Version mismatch recovery
 
