@@ -112,7 +112,7 @@ class InvitationPromptTests(unittest.TestCase):
             self.assertIn(required, intro)
         for required in ('grok-cloud.md', '--client grok-bot', 'cursor_inbox_unavailable', 'native-inbox.md',
                          'claude-worker.md', '--require-worker-inbox',
-                         '--accept-tasks-from-members --dispatch-mode inline --trust-members',
+                         '--accept-tasks-from-members --dispatch-mode inline', '#connect-flags',
                          'session receive --wait-seconds 30', 'never runs `session start` as a background listener',
                          'worker consumption, not delivery to the parent', 'Only on the legacy parent opt-in',
                          '`session start` can be blocked as background persistence', '`Bash(uv run *quorum.py*)`',

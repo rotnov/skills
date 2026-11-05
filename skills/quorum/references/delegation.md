@@ -105,16 +105,20 @@ instruction from the human owner" framing.
 
 A binding made before this feature, or without the flag, keeps its exact
 behaviour. A reconnect keeps an existing `member_trust` value but never adds
-one (`delegation_scope_changed`). When the receiving owner pastes a current
-invitation into a chat whose binding lacks it, that paste is their explicit
-opt-in: the bound chat or worker runs `session delegate --members
+one (`delegation_scope_changed`). Only an invitation whose own connect flags
+contain `--trust-members` carries this consent; an agent never adds the flag
+itself, and older invitations keep ordinary member intake. When the receiving
+owner pastes such an invitation into a chat whose binding lacks it, that paste
+is their explicit opt-in: the bound chat or worker runs `session delegate --members
 --trust-members`, adding `--standing-grants-from <role>` when the invitation
 names one. `session delegate --members` without the flag, or `--revoke`,
 withdraws it. A Claude worker needs `"trust_members": true` with
 `"accept_tasks_from_members": true` in its owner-prepared scope and the
 matching `--trust-members` connect flag; an older capability is replaced
 through its owner lifecycle. For a Grok Bot cloud parent, use the same flag
-with `cloud connect` or `cloud delegate --members`.
+with `cloud connect` or `cloud delegate --members`; `cloud connect` also
+accepts `--exclusive-role` with the session semantics, and ignores
+`--standing-grants-from` (reported as `unsupported_on_cloud`).
 
 ## Actions held for the receiving owner without member trust
 

@@ -385,6 +385,143 @@ class ClaudeWorkerScopeTests(unittest.TestCase):
             self.assertEqual(raised.exception.reason, 'scope_mismatch')
 
 
+def connect_flags(prompt):
+    """The pasted invitation's own connect flags, exactly as an agent would copy them."""
+    import shlex
+    line = next(line for line in prompt.splitlines() if line.startswith('3. Connect'))
+    flags = line.split(' selects, with ', 1)[1].split(' (join.md', 1)[0].rstrip('.')
+    return shlex.split(flags.replace('<role>', 'peer').replace('<project>', 'team'))
+
+
+class RouteParserTests(unittest.TestCase):
+    """Every generated flag set parses with each route's real argparse parser (P2)."""
+    def parser(self, module):
+        import argparse
+        parser = argparse.ArgumentParser()
+        module.add_commands(parser.add_subparsers(dest='command'))
+        return parser
+
+    @isolated_profiles
+    def test_generated_flags_parse_on_session_claude_worker_and_cloud_routes(self):
+        import quorum_grok_cloud
+        import quorum_session
+        from quorum_invitations import create_id_invitation, create_open_invitation
+        results = [create_id_invitation(Owner(), config(), 'team', '123', 'r', role='jekman',
+                                        project_ref='rotnov/skills'),
+                   create_id_invitation(Owner(), config(), 'team', '123', 'r', standing_grants=False),
+                   create_open_invitation(Owner(), config(), 'team', 'r', project_ref='rotnov/skills')]
+        session, cloud = self.parser(quorum_session), self.parser(quorum_grok_cloud)
+        for result in results:
+            flags = connect_flags(result['session_prompt'])
+            for name, argv in (('session', ['session', 'connect', 'team', *flags]),
+                               ('claude-worker', ['session', '--worker-capability', '/private/cap.json', 'connect',
+                                                  'team', *flags]),
+                               ('codex-tool-inbox', ['session', 'connect', 'team', *flags, '--transport', 'tool-inbox',
+                                                     '--parent-thread-id', SESSION, '--require-worker-inbox']),
+                               ('cloud', ['cloud', 'connect', 'team', *flags])):
+                with self.subTest(route=name, flags=flags):
+                    parsed = (cloud if name == 'cloud' else session).parse_args(argv)
+                    self.assertTrue(parsed.accept_tasks_from_members)
+                    self.assertTrue(parsed.trust_members)
+                    self.assertEqual(parsed.dispatch_mode, 'inline')
+                    self.assertEqual(parsed.standing_grants_from,
+                                     'coordinator' if result['standing_grants'] else None)
+                    self.assertEqual(parsed.exclusive_role, bool((result.get('assigned') or {}).get('role')))
+                    self.assertEqual(parsed.project_ref, (result.get('assigned') or {}).get('project_ref', 'team'))
+
+    def cloud(self, api, **changes):
+        from quorum_grok_cloud import connect
+        from quorum_state import LocalLedger
+        root = tempfile.TemporaryDirectory()
+        self.addCleanup(root.cleanup)
+        ledger = LocalLedger(Path(root.name))
+        self.addCleanup(ledger.db.close)
+        args = SimpleNamespace(**{**dict(role='jekman', quorum='team', project_ref='project',
+                                         accept_tasks_from_members=True, accept_tasks_from=None, trust_members=True,
+                                         exclusive_role=False, standing_grants_from=None), **changes})
+        registered = []
+        def register(*_, **__):
+            registered.append(True)
+            return dict(agent_id=AGENT, quorum_id=QUORUM)
+        result = connect(args, api, ledger, ledger, None, '88888888-8888-4888-8888-888888888888', register, 'inline')
+        return result, registered, ledger
+
+    def test_cloud_connect_ignores_standing_grants_explicitly(self):
+        result, _, ledger = self.cloud(None, standing_grants_from='coordinator')
+        self.assertEqual(result['standing_grants'], 'unsupported_on_cloud')
+        self.assertNotIn('standing_grants', ledger.setting('cloud-agent')['delegation'])
+        self.assertIs(result['delegation']['member_trust'], True)
+        self.assertNotIn('standing_grants', self.cloud(None)[0])
+
+    def test_cloud_exclusive_role_refuses_another_identity_before_registering(self):
+        from quorum_api import QuorumError
+        from quorum_session import RoleHeld
+        class Held:
+            def call(self, operation, payload, request_id=None):
+                if operation == 'quorum_lookup': return {'quorum_id': QUORUM}
+                if operation == 'resolve_role': return {'agent_id': SENDER}
+                if operation == 'agent_status': raise QuorumError('auth_required', denial='agent_denied')
+                raise AssertionError(operation)
+        with self.assertRaises(RoleHeld) as raised:
+            self.cloud(Held(), exclusive_role=True)
+        self.assertEqual(raised.exception.code, 'role_held_by_other_identity')
+        class Free:
+            def call(self, operation, payload, request_id=None):
+                if operation == 'quorum_lookup': return {'quorum_id': QUORUM}
+                if operation == 'resolve_role': raise QuorumError('recipient_ambiguous_or_missing')
+                raise AssertionError(operation)
+        result, registered, _ = self.cloud(Free(), exclusive_role=True)
+        self.assertEqual(registered, [True])
+        self.assertEqual(result['agent_id'], AGENT)
+
+    def test_cloud_maps_the_service_role_assignment_refusal(self):
+        from quorum_api import QuorumError
+        from quorum_grok_cloud import connect
+        from quorum_session import RoleHeld
+        from quorum_state import LocalLedger
+        with tempfile.TemporaryDirectory() as root:
+            ledger = LocalLedger(Path(root))
+            self.addCleanup(ledger.db.close)
+            def register(*_, **__): raise QuorumError('role_assignment_mismatch')
+            args = SimpleNamespace(role='jekman', quorum='team', project_ref='project', accept_tasks_from_members=True,
+                                   accept_tasks_from=None, trust_members=False, exclusive_role=False,
+                                   standing_grants_from=None)
+            with self.assertRaises(RoleHeld) as raised:
+                connect(args, None, ledger, ledger, None, '88888888-8888-4888-8888-888888888888', register, 'inline')
+            self.assertEqual(raised.exception.code, 'role_assignment_mismatch')
+
+
+class OldInvitationTests(unittest.TestCase):
+    """P1: only an invitation whose own connect flags carry --trust-members grants member trust."""
+    def test_join_guide_never_adds_trust_without_the_pasted_flag(self):
+        join = flat('references/join.md')
+        section = join[join.index('### Connect flags'):join.index('Existing joins, coordinator-only grants')]
+        for required in ('Use exactly the connect flags of the pasted invitation', 'never add a flag it does not contain',
+                         "Pass it **only when the pasted invitation's own connect flags contain `--trust-members`**",
+                         'Never add it yourself', 'including every one issued before this feature, gets ordinary '
+                         'member intake', '`--accept-tasks-from-members --dispatch-mode inline`',
+                         '`"trust_members": true` only when the flag is present', 'unsupported_on_cloud'):
+            self.assertIn(required, section)
+        # No route instruction outside that section hard-codes the flag for every invitation.
+        outside = join.replace(section, '')
+        for line in outside.split('`'):
+            self.assertNotEqual(line.strip(), '--accept-tasks-from-members --dispatch-mode inline --trust-members')
+        self.assertIn("pasted invitation's connect flags contain `--trust-members`", outside)
+        delegation = flat('references/delegation.md')
+        self.assertIn('Only an invitation whose own connect flags contain `--trust-members` carries this consent',
+                      delegation)
+
+    def test_trust_flag_appears_only_with_the_consent_sentence(self):
+        from quorum_invitations import CONSENT, connect_line
+        line = connect_line(None, 'coordinator', True)
+        self.assertIn('--trust-members', line)
+        self.assertIn('member', CONSENT)
+        # An old-style invitation (no connect line, no consent sentence) yields no trust flag anywhere.
+        old = 'I authorize non-destructive project task intake ... --accept-tasks-from-members --dispatch-mode inline'
+        self.assertNotIn('--trust-members', old)
+        self.assertRaises(StopIteration, connect_flags, old)
+
+
 class ReferenceTests(unittest.TestCase):
     def test_references_route_member_trust(self):
         for path, required in (

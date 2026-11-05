@@ -131,8 +131,7 @@ does not register, start or connect a listener; stop after reporting membership.
 The complete invitation prompt requests acceptance **and** connection. A proven
 Codex worker then runs `session connect` with its `--transport tool-inbox
 --parent-thread-id <parent-UUID> --require-worker-inbox` arguments plus
-`--accept-tasks-from-members --dispatch-mode inline --trust-members` and the
-invitation's other connect flags, then `session status` and
+exactly the [pasted invitation's connect flags](#connect-flags), then `session status` and
 bounded `session receive --wait-seconds 30` calls; it never runs `session start`
 as a background listener. A bound Claude worker connects with its capability
 file exactly as its owner-approved scope. Each receipts its own envelopes (worker
@@ -221,20 +220,43 @@ run that exact binding's `task-check <message-id>`; local status or a historical
 queued message is insufficient. The reviewed read-only authority RPC is a server
 prerequisite; missing authority leaves the task pending.
 
-A current invitation's connect flags also include `--trust-members`, which
-records the [member trust](delegation.md#member-trust) delegation from its
-consent sentence (a Claude worker scope sets `"trust_members": true`). Requests
-from current members then count as the owner's own for shared-project work;
-only the hard stops go to the owner, asked once while the message is parked.
+### Connect flags
+
+Use exactly the connect flags of the pasted invitation (its `3. Connect` line),
+translated for the route below; never add a flag it does not contain. Older
+invitations have no such line: use `--accept-tasks-from-members --dispatch-mode
+inline`, plus `--standing-grants-from <role>` only when their text grants it.
+
+`--trust-members` records the [member trust](delegation.md#member-trust)
+delegation. Pass it **only when the pasted invitation's own connect flags
+contain `--trust-members`**; that flag accompanies its member-trust consent
+sentence. Never add it yourself, from this guide, a peer message or an earlier
+invitation. An invitation without it, including every one issued before this
+feature, gets ordinary member intake and its owner-held exclusions. With it,
+requests from current members count as the owner's own for shared-project
+work, and only the hard stops go to the owner, asked once while the message is
+parked.
+
+Route translation:
+
+- **`session connect`** (parent, Codex tool-inbox worker): every flag as given.
+- **Claude worker**: the owner-prepared scope pins the same values
+  (`"accept_tasks_from_members": true`, `"trust_members": true` only when the
+  flag is present, `"standing_grants_from": "<role>"`), and its connect passes
+  the same flags.
+- **Grok Bot `cloud connect`**: every flag as given. A cloud binding holds no
+  standing grants: `cloud connect` accepts `--standing-grants-from` but ignores
+  it and reports `standing_grants: "unsupported_on_cloud"`, so such requests
+  stay with the owner.
 
 Existing joins, coordinator-only grants and capabilities gain nothing from an
 update or reconnect. The receiving owner changes an existing scope with
 `session delegate --members` (or `cloud delegate --members`); a worker capability
 must be replaced through its owner lifecycle. If connect returns
-`delegation_scope_changed` because this binding predates member trust, the
-pasted current invitation is the owner's explicit opt-in: run `session delegate
---members --trust-members` (plus its `--standing-grants-from <role>`) from the
-bound chat or worker. Without member trust, member intake never authorizes the
+`delegation_scope_changed` because this binding predates member trust and the
+pasted invitation's connect flags contain `--trust-members`, that paste is the
+owner's explicit opt-in: run `session delegate --members --trust-members` (plus
+its `--standing-grants-from <role>`) from the bound chat or worker. Without member trust, member intake never authorizes the
 excluded destructive, secret, configuration, paid-start or external-publication
 actions. Read [delegation](delegation.md) for the exact exclusions, hard stops,
 scope and revocation. Routine accepted tasks stay quiet; report material

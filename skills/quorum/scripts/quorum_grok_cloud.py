@@ -113,6 +113,11 @@ def add_commands(commands):
     intake.add_argument('--accept-tasks-from-members', action='store_true', help='Owner opt-in: current and future members, excluding owner-held actions')
     connect.add_argument('--dispatch-mode', choices=('inline', 'native-subagent'), default='inline')
     connect.add_argument('--trust-members', action='store_true', help='With member intake: member-trust delegation')
+    connect.add_argument('--exclusive-role', action='store_true',
+                         help='Refuse before registering when another identity or another own agent holds this role')
+    # Accepted so an invitation's connect flags parse on every route; a cloud binding holds no standing grants.
+    connect.add_argument('--standing-grants-from', metavar='COORDINATOR_ROLE',
+                         help='Ignored on the cloud route (reported as unsupported_on_cloud)')
     delegation = actions.add_parser('delegate', help='Receiving-owner task intake permission for this exact binding')
     choice = delegation.add_mutually_exclusive_group(required=True)
     choice.add_argument('--coordinator-role')
@@ -269,8 +274,19 @@ def connect(args, api, auth_ledger, ledger, old, conversation, register_agent, d
     trust = getattr(args, 'trust_members', False) is True
     if old and members and trust and not member_trust(old): raise ValueError('delegation_scope_changed')
     if old and members: trust = member_trust(old)
+    from quorum_session import claim_role, role_refusal
+    if getattr(args, 'exclusive_role', False) is True:
+        # The same read-only check as `session connect --exclusive-role`, before any device or agent request.
+        quorum_id = api.call('quorum_lookup', {'slug': args.quorum})['quorum_id']
+        claim_role(api, auth_ledger, session_ref, quorum_id, args.role, args.project_ref, old)
     # Idempotent owned registration only; no relay or model is started here.
-    result = register_agent(api, auth_ledger, args.quorum, args.role, data, device_key='cloud-device:' + conversation)
+    try:
+        result = register_agent(api, auth_ledger, args.quorum, args.role, data,
+                                device_key='cloud-device:' + conversation)
+    except QuorumError as error:
+        refusal = role_refusal(error, args.role)
+        if refusal is not None: raise refusal from None
+        raise
     record = {**result, **data, 'registration': data, 'role': args.role, 'quorum': args.quorum,
               'client': 'grok-bot', 'provider_conversation_id': conversation, 'transport': TRANSPORT}
     if old and old.get('delegation'): record['delegation'] = old['delegation']
@@ -285,8 +301,10 @@ def connect(args, api, auth_ledger, ledger, old, conversation, register_agent, d
             raise ValueError('coordinator_changed')
         record['delegation'] = grant(record, peer['agent_id'], coordinator, dispatch_mode=dispatch_mode)
         save_grant_binding(ledger, 'cloud-agent', record, snapshot)
+    ignored = ({'standing_grants': 'unsupported_on_cloud'}
+               if getattr(args, 'standing_grants_from', None) is not None else {})
     return {**result, 'session_ref': session_ref, 'provider_conversation_id': conversation,
-            'transport': TRANSPORT, 'relay': 'offline', 'delegation': record.get('delegation')}
+            'transport': TRANSPORT, 'relay': 'offline', 'delegation': record.get('delegation'), **ignored}
 
 
 def command(auth_ledger, *action):
