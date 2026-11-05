@@ -332,7 +332,11 @@ The rebind is refused with:
 - `agent_revoked` when the agent or membership was revoked at the service;
 - `target_pending` when the worker never connected;
 - `slot_pending` when the slot is not attested;
-- `rebind_pending` when another successor is still pending.
+- `rebind_pending` when another successor is still pending. Each binding
+  reserves one pending successor. Repeating the same rebind, for example after
+  a lost answer, returns that same successor. A different request, such as one
+  adding opt-ins, is refused until the successor is attested or expires, and an
+  expired successor is replaced.
 
 Attest refuses `worker_already_running` while the old worker is inside a
 receive. Nothing changes; retry when that call has returned.

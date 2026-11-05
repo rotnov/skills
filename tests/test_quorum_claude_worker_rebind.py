@@ -244,6 +244,80 @@ class RebindTests(Bound):
         self.refused(self.receive(api), 'native_worker_slot_terminal', 'pending_expired')
 
     @isolated_profiles
+    def test_an_attest_interrupted_before_activation_is_completed_by_its_retry(self):
+        from quorum_state import LocalLedger
+        api = OwnerApi(inbox=[message(M1)])
+        old, old_cap = self.members(api, lifetime='until-owner-stop')
+        successor = self.rebind(api, old)[1]['data']['slot_id']
+        real = LocalLedger.setting
+        def fail_activation(ledger, key, value=None):
+            if (key == 'claude-worker-slot' and isinstance(value, dict) and value.get('slot_id') == successor
+                    and value.get('state') == 'active'):
+                raise OSError('crash before the successor activates')
+            return real(ledger, key, value)
+        with patch.object(LocalLedger, 'setting', fail_activation):
+            with self.assertRaises(OSError): self.attest(successor, NEW_HANDLE)
+        # Every other step persisted: the index (including the new handle's own actor) names the pending successor.
+        self.assertEqual(self.setting(old)['rebound_to'], successor)
+        self.assertEqual(self.setting(successor)['state'], 'pending')
+        index = LocalLedger(self.root)
+        self.addCleanup(index.db.close)
+        alias = 'claude-worker:' + str(uuid.uuid5(uuid.UUID(SID), NEW_HANDLE))
+        self.assertEqual(index.setting('claude-worker-actor:' + alias)['slot_id'], successor)
+        self.as_worker(old, old_cap)
+        self.refused(self.receive(api), 'native_worker_slot_terminal', 'rebound')
+        # The identical retry reclaims its own alias and activates.
+        self.attest(successor, NEW_HANDLE)
+        self.assertEqual(self.setting(successor)['state'], 'active')
+        self.as_worker(successor, self.capability(successor))
+        self.assertEqual(self.offer(api)['message']['id'], M1)
+        # Another actor's handle still cannot take that alias.
+        api2 = OwnerApi()
+        other, _ = self.bound(api2, self.accept_scope(lifetime='until-owner-stop'), handle='agent_08 quorum')
+        third = self.rebind(api2, other)[1]['data']['slot_id']
+        error = self.denied('native_worker_binding_denied', self.attest, third, NEW_HANDLE)
+        self.assertEqual(error.reason, 'actor_claimed')
+
+    @isolated_profiles
+    def test_a_repeated_rebind_returns_the_same_reserved_successor(self):
+        import quorum_claude_worker as worker
+        api = OwnerApi(inbox=[message(M1)])
+        old, _ = self.members(api, lifetime='until-owner-stop')
+        slots = lambda: sorted(path.name for path in (self.root / 'claude-workers').iterdir())
+        code, first, text = self.rebind(api, old)
+        self.assertEqual(code, 0, text)
+        before = slots()
+        # A retry after a lost response is idempotent: the same pending successor and the same answer.
+        code, second, text = self.rebind(api, old)
+        self.assertEqual(code, 0, text)
+        self.assertEqual(second['data'], first['data'])
+        self.assertEqual(slots(), before, 'no second successor')
+        # A different request while that successor is pending is refused, writing nothing.
+        self.refused(self.rebind(api, old, '--knowledge', 'search'), 'native_worker_binding_denied',
+                     'rebind_pending')
+        self.assertEqual(slots(), before)
+        # A lapsed successor may be replaced; it can no longer be attested.
+        lapsed = first['data']['slot_id']
+        self.now += 121
+        code, third, text = self.rebind(api, old)
+        self.assertEqual(code, 0, text)
+        replacement = third['data']['slot_id']
+        self.assertNotEqual(replacement, lapsed)
+        self.denied('native_worker_slot_terminal', self.attest, lapsed, NEW_HANDLE)
+        self.attest(replacement, NEW_HANDLE)
+        self.as_worker(replacement, self.capability(replacement))
+        self.assertEqual(self.offer(api)['message']['id'], M1)
+        # A crash after the reservation but before the slot write leaves a reservation of nothing: replaced.
+        with patch('quorum_claude_worker._write_slot', side_effect=OSError('crash')):
+            with self.assertRaises(OSError):
+                with claude(), patch('quorum_live.api_for', return_value=(api, None, None)), \
+                        patch('quorum_claude_worker.same_resolved'):
+                    worker.rebind(self.root, replacement)
+        code, result, text = self.rebind(api, replacement)
+        self.assertEqual(code, 0, text)
+        self.attest(result['data']['slot_id'], THIRD_HANDLE)
+
+    @isolated_profiles
     def test_a_rebind_during_the_old_handles_reconnect_keeps_the_successor_binding(self):
         import quorum_claude_worker as worker
         api = OwnerApi(inbox=[message(M1)])

@@ -1220,14 +1220,48 @@ def rebind(state_root, slot_id, *, knowledge=(), update=False):
               'session_ref': binding['session_ref'], 'logical_actor_id': binding['logical_actor_id'],
               'agent_id': agent['agent_id'], 'count': (source.get('rebind') or {}).get('count', 0) + 1}
     carried = {key: source[key] for key in ('registration', 'create', 'create_request_id') if key in source}
+    key = REBINDING + binding['session_ref']
     with _lock(root, ('claude-workers',), 'index.lock'):
+        # Attest also runs under this lock: the source cannot change hands between this check and the write.
+        if _rebind_source(root, _view(root, slot_id))['slot_id'] != source['slot_id']: raise _denied('rebind_pending')
+        reserved = _reserved(root, _index_setting(root, key), source['slot_id'])
+        if reserved is not None:
+            # A repeated rebind (for example after a lost response) returns the same pending successor.
+            if reserved['scope_hash'] != _digest(scope): raise _denied('rebind_pending')
+            return _rebind_result(root, reserved)
+        # Reserve first: a crash before the slot is written leaves a reservation of nothing, which is replaced.
+        _index_setting(root, key, {'slot_id': successor, 'previous_slot_id': source['slot_id']})
         _write_slot(root, sid, scope, successor, dict(source.get('target') or {}), prepared, pending, permission,
                     extra={**carried, 'rebind': marker})
-    return {'slot_id': successor, 'state': 'pending', 'lifetime': scope['lifetime'], 'pending_expires_at': pending,
-            'permission_expires_at': permission, 'bootstrap_command': _bootstrap(root, successor),
-            'rebind': {'previous_slot_id': source['slot_id'], 'session_ref': binding['session_ref'],
-                       'agent_id': agent['agent_id'], 'count': marker['count']},
-            'connect_flags': connect_flags(scope)}
+    return _rebind_result(root, _view(root, successor))
+
+
+# One reserved pending successor per actor: `claude-worker-rebinding:<session_ref>` -> its slot and source.
+REBINDING = 'claude-worker-rebinding:'
+
+
+def _reserved(root, reservation, source_id):
+    """The still-valid pending successor this reservation names for `source_id`, else None (absent, never
+    written, lapsed, activated or superseded reservations are replaceable)."""
+    if not isinstance(reservation, dict): return None
+    try: record = _view(root, _slot_uuid(reservation.get('slot_id')))
+    except NativeInboxError as error:
+        if error.reason == 'recovery_needed': raise
+        return None
+    if _effective(record)[0] != 'pending' or record.get('binding'): return None
+    if (record.get('rebind') or {}).get('previous_slot_id') != source_id: raise _denied('rebind_pending')
+    return record
+
+
+def _rebind_result(root, record):
+    """The rebind answer for a pending successor; identical for a repeated request. IDs only, never a token."""
+    marker = record['rebind']
+    return {'slot_id': record['slot_id'], 'state': 'pending', 'lifetime': record['lifetime'],
+            'pending_expires_at': record['pending_expires_at'],
+            'permission_expires_at': record['permission_expires_at'],
+            'bootstrap_command': _bootstrap(root, record['slot_id']),
+            'rebind': {key: marker[key] for key in ('previous_slot_id', 'session_ref', 'agent_id', 'count')},
+            'connect_flags': connect_flags(record['scope'])}
 
 
 @contextmanager
@@ -1249,9 +1283,14 @@ def _alias_free(root, sid, alias, session_ref):
     if claimed is None: return
     try: owner = _view(root, _slot_uuid(claimed.get('slot_id') if isinstance(claimed, dict) else None))
     except NativeInboxError: owner = None
-    if (owner is None or claimed.get('provider_session_id') != sid
-            or (owner.get('binding') or {}).get('session_ref') != session_ref):
+    if owner is None or claimed.get('provider_session_id') != sid or owner.get('provider_session_id') != sid:
         raise _denied('actor_claimed')
+    # An activated slot proves its actor by its binding; a never-activated rebind successor (this same
+    # hand-over interrupted after its index step, or an earlier lapsed one) by its owner-written rebind marker.
+    marker = owner.get('rebind') if not owner.get('binding') else None
+    actor = ((owner.get('binding') or {}).get('session_ref') if marker is None
+             else marker.get('session_ref') if isinstance(marker, dict) else None)
+    if actor != session_ref: raise _denied('actor_claimed')
 
 
 def _attest_rebind(root, sid, ledger, record, handle, tool):
