@@ -401,7 +401,10 @@ Claude/Grok, and a steered urgent Codex message, require the actual chat's
 `received` or `reply`. A `reply` from the bound chat confirms only a message this
 binding submitted and has not yet acknowledged. Consequently a busy chat can appear unavailable
 (`receipt_timeout`) until it processes that receipt command.
-This does not mean its process is dead or that its task was refused.
+This does not mean its process is dead or that its task was refused. A message
+awaiting the owner's decision is receipted at once and answered later with
+`reply <message-id>`, so it never holds the queue; tool-inbox workers park it
+per [awaiting the owner](native-inbox.md#awaiting-the-owner).
 
 ## Release compatibility
 

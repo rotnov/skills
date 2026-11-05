@@ -32,13 +32,23 @@ COMPETING = ('CLAUDE_CODE_SESSION_ID', 'CLAUDE_CODE_HOST_SESSION_ID', 'CLAUDE_CO
              'CLAUDE_CODE_MESSAGING_TOKEN', 'GROK_SESSION_ID', 'GROK_LEADER_SOCKET', 'CURSOR_CONVERSATION_ID')
 MESSAGE_FIELDS = ('id', 'sender_id', 'sender_role', 'recipient_id', 'conversation_id', 'sequence',
                   'body', 'priority', 'reply_to', 'notification', 'created_at', 'maintenance')
+# Messages awaiting the owner's decision are parked: receipted at the service (so reception, the inbox
+# order and peer availability continue) and kept in this private ledger until resolved or dismissed.
+AWAITING_LIMIT = 32
+# An unreceipted offer repeats at most this long before receive parks it itself; `hold` may extend it
+# explicitly for one offer, up to HOLD_LIMIT. Reception is therefore never paused open-endedly.
+OFFER_WINDOW, HOLD_LIMIT = 600, 1800
+LOCAL_STATES = ('offered', 'parked', 'acked')
+# Patchable wall clock for parked/hold timestamps (persisted across calls, unlike the monotonic budget).
+wall = time.time
 
 
 class NativeInboxError(ValueError):
     """Fixed codes and reasons only; never a path, transcript text, exception text or peer data."""
     CODES = {'native_worker_unavailable', 'native_worker_required', 'native_worker_binding_denied', 'native_inbox_transport_conflict',
              'native_inbox_receipt_not_offered', 'native_inbox_reply_loop_denied', 'native_worker_slot_terminal',
-             'native_worker_create_ambiguous'}
+             'native_worker_create_ambiguous', 'native_inbox_not_parked', 'native_inbox_park_denied',
+             'native_inbox_awaiting_full'}
     REASONS = {'provider_unsupported', 'competing_exports', 'session_missing', 'session_invalid',
                'parent_invalid', 'parent_is_caller', 'parent_mismatch', 'session_mismatch', 'not_spawned',
                'rollout_missing', 'rollout_ambiguous', 'rollout_unsafe', 'metadata_oversized',
@@ -154,6 +164,10 @@ class NativeInboxError(ValueError):
                                    'be a second live agent on the same role. Nothing was prepared or registered. In '
                                    'this parent chat run session stop, confirm session status shows the listener '
                                    'offline, then prepare the adopt scope again.')
+        elif self.code == 'native_inbox_awaiting_full':
+            result['next_step'] = ('Nothing was parked or receipted. The awaiting-owner list is full; ask the owner '
+                                   'about the listed items, then resolve or dismiss them with session awaiting. Until '
+                                   'then this offer repeats and receive parks it itself when its window ends.')
         elif self.reason == 'supersede_not_in_scope':
             result['next_step'] = ('Nothing was sent or registered. Retiring another agent is outside every worker '
                                    'scope. The owner retires the stale agent with leave from the parent chat, '
@@ -473,9 +487,23 @@ def status(ledger, record):
     from quorum_listener import Control
     states = [json.loads(raw).get('state') for (raw,) in
               ledger.db.execute("select data from settings where key like 'delivery:%'")]
-    return {**Control(ledger).status(), 'transport': TRANSPORT,
-            'reception': 'enabled' if enabled(ledger) else 'disabled', 'pending_receipts': states.count('offered'),
-            'worker_binding': (record or {}).get('worker_binding')}
+    result = {**Control(ledger).status(), 'transport': TRANSPORT,
+              'reception': 'enabled' if enabled(ledger) else 'disabled', 'pending_receipts': states.count('offered'),
+              'awaiting_owner': states.count('parked'), 'worker_binding': (record or {}).get('worker_binding')}
+    hold = reception_hold(ledger)
+    if hold: result['reception_hold'] = hold
+    return result
+
+
+def reception_hold(ledger):
+    """An explicit, still running hold on one repeating offer; None when reception is not held."""
+    for key, raw in ledger.db.execute("select key,data from settings where key like 'delivery:%' order by rowid"):
+        value = json.loads(raw)
+        if value.get('state') == 'offered' and isinstance(value.get('hold_until'), (int, float)) \
+                and value['hold_until'] > wall():
+            return {'message_id': key[len('delivery:'):], 'until': int(value['hold_until']),
+                    'reason': 'explicit_hold'}
+    return None
 
 
 def stop(ledger, record):
@@ -536,7 +564,11 @@ def notice(record, message, priority):
             + 'If reply_to is non-null or notification is true, this is terminal: '
             'run the receipt command and do not answer it. Otherwise evaluate it within existing owner scope and '
             'either run the receipt command or send one scoped answer with the reply command, answer text on '
-            'stdin. Only this worker may run these commands. Then call session receive again within your brief.')
+            'stdin. If the answer needs the owner\'s decision, run the park command now: it receipts the message, '
+            'keeps it in the private awaiting-owner list and keeps reception running; return the decision to the '
+            'parent once, and later answer it with session awaiting resolve. Never stop receiving or report '
+            'listening as paused while a decision is pending. Only this worker may run these commands. Then call '
+            'session receive again within your brief.')
 
 
 def _scope(record):
@@ -578,8 +610,19 @@ def offer(api, auth_ledger, ledger, record, stopping=lambda: False):
     if stopping(): return None
     # A legacy queue intent or submission stays uncertain; it is never converted into an offer.
     for (raw,) in ledger.db.execute("select data from settings where key like 'delivery:%'"):
-        if json.loads(raw).get('state') not in ('offered', 'acked'): raise ValueError('session_delivery_unknown')
+        if json.loads(raw).get('state') not in LOCAL_STATES: raise ValueError('session_delivery_unknown')
     found = pending_offer(ledger, record)
+    while found is not None and _window_end(found[1]) is not None and wall() >= _window_end(found[1]):
+        # The offer repeated for its whole window without a receipt: park it so later envelopes and the
+        # heartbeat continue. It stays answerable and listed; the next result reports it.
+        if _park(api, ledger, record, found[0], 'offer_window_elapsed', automatic=True) is None: break
+        if stopping(): return None
+        found = pending_offer(ledger, record)
+        if found is None:
+            # The parked message was the service head; read the inbox again after its receipt.
+            messages = api.call('session_inbox', _scope(record))
+            if not isinstance(messages, list): raise QuorumError('invalid_response')
+            if stopping(): return None
     if found is None:
         if not messages: return None
         # The durable inbox order already places an urgent message first.
@@ -590,14 +633,16 @@ def offer(api, auth_ledger, ledger, record, stopping=lambda: False):
         message_id = str(uuid.UUID(head['id']))
         with ledger.db:
             ledger.db.execute('insert or ignore into settings values (?,?)', ('delivery:' + message_id, json.dumps({
-                'state': 'offered', 'agent_id': record['agent_id'], 'session_ref': record['session_ref'],
+                'state': 'offered', 'offered_at': wall(), 'agent_id': record['agent_id'],
+                'session_ref': record['session_ref'],
                 'quorum_id': record['quorum_id'], 'reply_to': bool(head.get('reply_to')),
                 'notification': bool(head.get('notification')),
                 'message': {key: head[key] for key in MESSAGE_FIELDS if key in head}})))
         delivery = ledger.setting('delivery:' + message_id)
         if delivery.get('state') != 'offered' or not _owned(record, delivery):
-            # The service still lists a message this binding already acknowledged; repeat the idempotent ACK.
-            if delivery.get('state') == 'acked' and _owned(record, delivery):
+            # The service still lists a message this binding already acknowledged or parked; repeat the
+            # idempotent ACK (a parked message keeps its local state and stays answerable).
+            if delivery.get('state') in ('acked', 'parked') and _owned(record, delivery):
                 api.call('session_ack', {**_scope(record), 'message_id': message_id})
                 return None
             raise ValueError('session_delivery_unknown')
@@ -613,6 +658,9 @@ def offer(api, auth_ledger, ledger, record, stopping=lambda: False):
             'notice': notice(current, message, priority),
             'receipt_command': command(auth_ledger, record, 'received', message_id),
             'reply_command': command(auth_ledger, record, 'reply', message_id, '--text-stdin'),
+            'park_command': command(auth_ledger, record, 'park', message_id),
+            'park_after': int(_window_end(delivery)) if _window_end(delivery) else None,
+            'awaiting_owner': _count(ledger, record, 'parked'),
             'message': message}
 
 
@@ -634,7 +682,8 @@ def receive(api, auth_ledger, ledger, record, wait_seconds, *, waiter=None, pres
     def result(state, run_id):
         # A bounded worker reports its connection's Hello outcome once, never per call.
         return {'state': state, 'message': None, 'run_id': run_id, 'session_ref': record['session_ref'],
-                'transport': TRANSPORT, 'wait_seconds': wait_seconds, **hello_once(ledger)}
+                'transport': TRANSPORT, 'wait_seconds': wait_seconds,
+                'awaiting_owner': _count(ledger, record, 'parked'), **hello_once(ledger)}
     with LocalSupervisorLock(ledger.root), FileLock(ledger.root / 'listener.lock'):
         with control_lock(ledger):
             if not enabled(ledger): return result('stopped', None)
@@ -689,7 +738,7 @@ def receive(api, auth_ledger, ledger, record, wait_seconds, *, waiter=None, pres
 def offered(ledger, record, message_id):
     """Only this binding's own offered (or already received) message; nothing else permits a receipt."""
     delivery = ledger.setting('delivery:' + message_id)
-    if not _owned(record, delivery) or delivery.get('state') not in ('offered', 'acked'):
+    if not _owned(record, delivery) or delivery.get('state') not in LOCAL_STATES:
         raise NativeInboxError('native_inbox_receipt_not_offered')
     return delivery
 
@@ -705,7 +754,7 @@ def acknowledge(api, ledger, record, message_id):
         raw = ledger.db.execute('select data from settings where key=?', (key,)).fetchone()[0]
         current = json.loads(raw)
         if current.get('state') == 'acked': return
-        if current.get('state') != 'offered' or not _owned(record, current): break
+        if current.get('state') not in ('offered', 'parked') or not _owned(record, current): break
         with ledger.db:
             changed = ledger.db.execute('update settings set data=? where key=? and data=?',
                                         (json.dumps({**current, 'state': 'acked'}), key, raw)).rowcount
@@ -750,3 +799,173 @@ def reply(api, ledger, record, message_id, body, priority, *, authorize=None):
     acknowledge(api, ledger, record, message_id)
     return {key: result[key] for key in ('reply_message_id', 'conversation_id') if key in result} | {
         'received': True, 'message_id': message_id}
+
+
+# --- Awaiting the owner: park, explicit hold, list, resolve, dismiss -------------------------------
+
+ACTIONS = ('park', 'hold', 'awaiting')
+
+
+def _window_end(delivery):
+    """When an unreceipted offer stops repeating: its explicit hold, else its default window; None for
+    a legacy offer recorded before offer timestamps (it keeps the old repeat-until-receipt behavior)."""
+    if delivery.get('state') != 'offered': return None
+    hold_until = delivery.get('hold_until')
+    if isinstance(hold_until, (int, float)): return hold_until
+    offered_at = delivery.get('offered_at')
+    return offered_at + OFFER_WINDOW if isinstance(offered_at, (int, float)) else None
+
+
+def _rows(ledger, record, state):
+    rows = []
+    for key, raw in ledger.db.execute("select key,data from settings where key like 'delivery:%' order by rowid"):
+        value = json.loads(raw)
+        if value.get('state') == state and _owned(record, value): rows.append((key[len('delivery:'):], value))
+    return rows
+
+
+def _count(ledger, record, state): return len(_rows(ledger, record, state))
+
+
+def _park(api, ledger, record, message_id, reason, *, automatic=False):
+    """Compare-and-set offered -> parked locally first, then the idempotent service receipt.
+
+    The local entry is written before the receipt, so a lost receipt response leaves the message
+    parked and the next receive repeats the ACK; it is never dropped and never offered again.
+    Returns the parked row, or None when an automatic park cannot proceed (the offer then repeats).
+    """
+    key = 'delivery:' + message_id
+    for _ in range(16):
+        row = ledger.db.execute('select data from settings where key=?', (key,)).fetchone()
+        if row is None: break
+        raw = row[0]
+        current = json.loads(raw)
+        if not _owned(record, current): break
+        if current.get('state') == 'parked':
+            api.call('session_ack', {**_scope(record), 'message_id': message_id})
+            return current
+        # A persisted answer intent or a completed receipt is never moved back to awaiting the owner.
+        if current.get('state') != 'offered' or current.get('reply_digest') is not None: break
+        if _count(ledger, record, 'parked') >= AWAITING_LIMIT:
+            if automatic: return None
+            raise NativeInboxError('native_inbox_awaiting_full')
+        parked = {**current, 'state': 'parked', 'parked_at': wall(), 'park_reason': reason}
+        parked.pop('hold_until', None)
+        with ledger.db:
+            changed = ledger.db.execute('update settings set data=? where key=? and data=?',
+                                        (json.dumps(parked), key, raw)).rowcount
+        if changed:
+            api.call('session_ack', {**_scope(record), 'message_id': message_id})
+            return parked
+    if automatic: return None
+    raise NativeInboxError('native_inbox_park_denied')
+
+
+def park(api, ledger, record, message_id, *, authorize=None):
+    """Receipt one offered message now and keep it awaiting the owner's decision; reception continues."""
+    if authorize is not None: api = _guarded(api, authorize)
+    _authoritative(api, ledger, record)
+    offered(ledger, record, message_id)
+    _park(api, ledger, record, message_id, 'owner_decision')
+    return {'parked': True, 'state': 'parked', 'message_id': message_id,
+            'awaiting_owner': _count(ledger, record, 'parked')}
+
+
+def hold(api, ledger, record, message_id, seconds, *, authorize=None):
+    """The only intentional pause: one offer keeps repeating until `seconds` from now, then is parked."""
+    if authorize is not None: api = _guarded(api, authorize)
+    if type(seconds) is not int or not 1 <= seconds <= HOLD_LIMIT: raise ValueError('invalid_wait_seconds')
+    _authoritative(api, ledger, record)
+    offered(ledger, record, message_id)
+    key = 'delivery:' + message_id
+    for _ in range(16):
+        raw = ledger.db.execute('select data from settings where key=?', (key,)).fetchone()[0]
+        current = json.loads(raw)
+        if current.get('state') != 'offered' or not _owned(record, current):
+            raise NativeInboxError('native_inbox_receipt_not_offered')
+        until = wall() + seconds
+        with ledger.db:
+            changed = ledger.db.execute('update settings set data=? where key=? and data=?',
+                                        (json.dumps({**current, 'hold_until': until}), key, raw)).rowcount
+        if changed:
+            return {'held': True, 'message_id': message_id,
+                    'reception_hold': {'message_id': message_id, 'until': int(until), 'reason': 'explicit_hold'},
+                    'next_step': ('Reception is paused behind this one offer until the time shown: later envelopes '
+                                  'wait and peers may see receipt_timeout. Report this hold to the parent. When it '
+                                  'ends, receive parks the offer and continues.')}
+    raise ValueError('session_delivery_unknown')
+
+
+def awaiting(api, ledger, record, *, authorize=None):
+    """The private awaiting-owner list, oldest first, after the same release and membership checks."""
+    if authorize is not None: api = _guarded(api, authorize)
+    _authoritative(api, ledger, record)
+    items = [{'message_id': message_id, 'parked_at': int(value.get('parked_at') or 0),
+              'reason': value.get('park_reason'), 'terminal': bool(value['reply_to'] or value['notification']),
+              'answer_pending': value.get('reply_digest') is not None, 'message': value['message']}
+             for message_id, value in _rows(ledger, record, 'parked')]
+    items.sort(key=lambda item: item['parked_at'])
+    return {'awaiting_owner': len(items), 'items': items}
+
+
+def _require_parked(ledger, record, message_id):
+    delivery = ledger.setting('delivery:' + message_id)
+    if not _owned(record, delivery) or delivery.get('state') != 'parked':
+        raise NativeInboxError('native_inbox_not_parked')
+    return delivery
+
+
+def resolve(api, ledger, record, message_id, body, priority, *, authorize=None):
+    """Send the owner's decision as the one reply to the parked message; it then leaves the list."""
+    _require_parked(ledger, record, message_id)
+    result = reply(api, ledger, record, message_id, body, priority, authorize=authorize)
+    return {**result, 'resolved': True, 'awaiting_owner': _count(ledger, record, 'parked')}
+
+
+def dismiss(api, ledger, record, message_id, *, authorize=None):
+    """The owner decided not to answer: close the parked entry (and its answer path) without a reply."""
+    if authorize is not None: api = _guarded(api, authorize)
+    _authoritative(api, ledger, record)
+    _require_parked(ledger, record, message_id)
+    acknowledge(api, ledger, record, message_id)
+    return {'dismissed': True, 'state': 'acked', 'message_id': message_id,
+            'awaiting_owner': _count(ledger, record, 'parked')}
+
+
+def add_commands(actions):
+    """Worker-inbox subcommands; the parent route keeps its own received/reply commands."""
+    def message_id(value): return str(uuid.UUID(value))
+    actions.add_parser('park', help='Tool-inbox worker: receipt an offer now and keep it awaiting the owner') \
+        .add_argument('message_id', type=message_id)
+    held = actions.add_parser('hold', help='Tool-inbox worker: explicitly pause reception behind one offer, time-limited')
+    held.add_argument('message_id', type=message_id)
+    def seconds(value):
+        number = int(value)
+        if not 1 <= number <= HOLD_LIMIT: raise ValueError('invalid_wait_seconds')
+        return number
+    held.add_argument('--seconds', type=seconds, required=True, metavar='1..' + str(HOLD_LIMIT))
+    listing = actions.add_parser('awaiting', help='Tool-inbox worker: list, resolve or dismiss parked messages')
+    steps = listing.add_subparsers(dest='awaiting_action')
+    steps.add_parser('list')
+    answer = steps.add_parser('resolve')
+    answer.add_argument('message_id', type=message_id)
+    answer.add_argument('--text-stdin', required=True, action='store_true')
+    answer.add_argument('--priority', choices=('normal', 'urgent'), default='normal')
+    steps.add_parser('dismiss').add_argument('message_id', type=message_id)
+
+
+def scope_operation(args):
+    """The existing worker-capability operation each action needs: no new scope or permission."""
+    if args.action == 'awaiting' and getattr(args, 'awaiting_action', None) == 'resolve': return 'reply'
+    return 'received'
+
+
+def dispatch_action(api, ledger, record, args, *, authorize=None):
+    if args.action == 'park': return park(api, ledger, record, args.message_id, authorize=authorize)
+    if args.action == 'hold': return hold(api, ledger, record, args.message_id, args.seconds, authorize=authorize)
+    step = getattr(args, 'awaiting_action', None) or 'list'
+    if step == 'list': return awaiting(api, ledger, record, authorize=authorize)
+    if step == 'dismiss': return dismiss(api, ledger, record, args.message_id, authorize=authorize)
+    text = sys.stdin.buffer.read(16385).decode('utf-8')
+    if not text or len(text.encode()) > 16384: raise ValueError('invalid_message')
+    return resolve(api, ledger, record, args.message_id, text, args.priority, authorize=authorize)

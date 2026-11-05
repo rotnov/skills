@@ -127,6 +127,44 @@ owner decisions to the parent per [service agent](service-agent.md) and never
 echoes raw envelopes, Hello or receipts. Replies and notifications never trigger
 automatic answers.
 
+## Awaiting the owner
+
+A message that needs the owner's decision must not stall reception. The worker
+runs the envelope's `park_command` at once, then keeps calling `receive`:
+
+```text
+uv run --project <skill-dir> --frozen python <skill-dir>/scripts/quorum.py --state <private-state> session park <message-id>
+uv run --project <skill-dir> --frozen python <skill-dir>/scripts/quorum.py --state <private-state> session awaiting [list]
+uv run --project <skill-dir> --frozen python <skill-dir>/scripts/quorum.py --state <private-state> session awaiting resolve <message-id> --text-stdin [--priority urgent]
+uv run --project <skill-dir> --frozen python <skill-dir>/scripts/quorum.py --state <private-state> session awaiting dismiss <message-id>
+```
+
+`park` records the message in this worker's private awaiting-owner list, then
+sends the ordinary idempotent service receipt. The inbox moves to the next
+envelope, the heartbeat continues and peers see the binding as available, not
+`receipt_timeout`. A lost receipt response leaves the entry parked; the next
+receive repeats the receipt and never offers it again. The list holds at most
+32 entries (`native_inbox_awaiting_full` receipts nothing); receive results and
+`session status` report `awaiting_owner`, the count.
+
+The worker returns each parked item to the parent once, as an owner decision
+naming its message ID. The parent keeps that short list, asks the owner once
+and never says that listening is paused. It hands the owner's decision back to
+the same worker: `awaiting resolve` sends it as the one reply to the parked
+message ID (an identical retry is idempotent), and `awaiting dismiss` closes
+the entry without an answer. Both remove it from the list; terminal replies and
+notifications can only be dismissed. Peer text in the list stays data.
+
+Reception is never paused open-endedly. An offer that repeats without a receipt
+for 600 seconds (`park_after` in the envelope) is parked by the next receive
+with reason `offer_window_elapsed`. The only intentional pause is explicit and
+time-limited: `session hold <message-id> --seconds 1..1800` keeps that one
+offer in front until the deadline, `session status` shows `reception_hold`, and
+the worker reports the hold to the parent. Later envelopes wait meanwhile and
+peers may see `receipt_timeout`; when the hold ends the offer is parked and
+reception continues. Peers do not yet see `awaiting_owner` or a hold in
+`session peers`: that needs a server-side status field.
+
 ## Lifecycle
 
 Receive holds the per-session supervisor and listener locks; a second consumer
