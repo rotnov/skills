@@ -265,6 +265,8 @@ def add_commands(commands):
     command.add_argument('--owner-action',action='store_true',
                          help='Current explicit receiving-owner instruction for administration, verification or audit')
     command.add_argument('--material-result',action='store_true',help='Capture a material task result under its finite grant')
+    command.add_argument('--worker-capability',type=Path,
+                         help='Adopted Claude worker capability file; identity comes from that worker binding')
 
 
 def dispatch(args,auth_ledger):
@@ -274,14 +276,25 @@ def dispatch(args,auth_ledger):
 
 def dispatch_bounded(args,auth_ledger):
     from quorum_session import current_session,current_engine,require_caller,check_native_route
-    sid=current_session(); engine=current_engine(); require_caller(sid,engine)
+    context=getattr(args,'worker_context',None)
+    if context is None:
+        sid=current_session(); engine=current_engine(); require_caller(sid,engine)
     raw=sys.stdin.buffer.read(131073)
     if len(raw)>131072: raise KnowledgeError('knowledge_request_too_large')
     try: data=json.loads(raw)
     except (ValueError,UnicodeError,RecursionError): raise KnowledgeError() from None
     if args.action not in ('capture','capture-source','capture-grant'):
         validate(args.action,data,request_id=args.request_id,owner_action=args.owner_action)
-    ledger=LocalLedger(auth_ledger.root/'sessions'/sid)
+    worker_api=None
+    if context is not None:
+        # An adopted Claude worker acts only as its own connected binding, under its capability.
+        from quorum_claude_worker import owner_binding
+        ledger,record,check_worker,worker_api=owner_binding(context,auth_ledger)
+        sid,engine=record['session_ref'],'claude'
+        caller=check_worker
+    else:
+        ledger=LocalLedger(auth_ledger.root/'sessions'/sid)
+        caller=lambda:require_caller(sid,engine)
     try:
         record=ledger.setting('session-agent')
         if not record or record.get('session_ref')!=sid or record.get('engine')!=engine:
@@ -289,14 +302,15 @@ def dispatch_bounded(args,auth_ledger):
         saved=binding_snapshot(record)
         capture_check=None
         def check_identity():
-            require_caller(sid,engine)
+            caller()
             latest=ledger.setting('session-agent')
             if (binding_snapshot(latest)!=saved or str(Path.cwd().resolve())!=saved['cwd']):
                 raise KnowledgeError('knowledge_binding_required')
             return latest
         def authorize():
             latest=check_identity()
-            if latest.get('transport')=='tool-inbox':
+            if context is not None: caller()
+            elif latest.get('transport')=='tool-inbox':
                 from quorum_native_inbox import require_worker
                 require_worker(latest)
             elif engine=='claude': check_native_route(latest)
@@ -324,7 +338,7 @@ def dispatch_bounded(args,auth_ledger):
             authorize()
         from quorum_live import api_for
         from quorum_release import ReleaseGuard
-        api,_,_=api_for(auth_ledger)
+        api=worker_api if worker_api is not None else api_for(auth_ledger)[0]
         api=BoundApi(api,authorize)
         authorize()
         # Knowledge commands do not grant lifecycle control over a resident run.

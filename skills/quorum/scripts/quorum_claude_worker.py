@@ -28,13 +28,20 @@ PROVIDER = 'claude'
 PREFIX = 'claude-worker:'
 SLOT_KEY = 'claude-worker-slot'
 INDEX = 'claude-worker-actor:'
+ADOPTED = 'claude-worker-adopt:'
+RETIRED = 'claude-worker-retired:'
 JSON_LIMIT = 16384
 PENDING_SECONDS = 120
 DEFAULT_TTL, TTL_LIMIT = 900, 3600
 AWAIT_DEFAULT, AWAIT_LIMIT = 60, 60
 LABEL_LIMIT = 256
 OPERATIONS = {'create': ('create', 'connect', 'receive', 'received', 'reply', 'status', 'stop', 'task-check'),
-              'accept': ('accept', 'connect', 'receive', 'received', 'reply', 'status', 'stop', 'task-check')}
+              'accept': ('accept', 'connect', 'receive', 'received', 'reply', 'status', 'stop', 'task-check'),
+              # The owner's own existing membership: no create or invitation. Once the parent agent is retired,
+              # knowledge and update (owner maintenance) run only through this worker, on the parent's request.
+              'adopt': ('connect', 'receive', 'received', 'reply', 'status', 'stop', 'task-check', 'knowledge',
+                        'update')}
+KNOWN = tuple(dict.fromkeys(name for names in OPERATIONS.values() for name in names))
 SESSION_ACTIONS = ('connect', 'receive', 'received', 'reply', 'status', 'stop', 'task-check')
 COMPETING = ('CODEX_THREAD_ID', 'GROK_SESSION_ID', 'GROK_LEADER_SOCKET', 'CURSOR_CONVERSATION_ID')
 NAME = re.compile('[a-z][a-z0-9-]{0,47}')
@@ -527,7 +534,7 @@ def normalize_scope(raw):
     if not isinstance(raw, dict) or raw.get('mode') not in OPERATIONS: raise _denied('scope_invalid')
     mode = raw['mode']
     required = {'mode', 'service', 'quorum_slug', 'role', 'project_ref', 'cwd'} | (
-        {'access'} if mode == 'create' else {'invite_id'})
+        {'create': {'access'}, 'accept': {'invite_id'}}.get(mode, set()))
     optional = {'coordinator_role', 'dispatch_mode', 'lifetime', 'ttl_seconds', 'operations', 'accept_tasks_from_members'} | (
         {'access'} if mode == 'accept' else set())
     if not required <= set(raw) or set(raw) - required - optional: raise _denied('scope_invalid')
@@ -552,7 +559,7 @@ def normalize_scope(raw):
     if mode == 'create':
         if raw['access'] not in ('github', 'open'): raise _denied('scope_invalid')
         scope['access'] = raw['access']
-    else:
+    elif mode == 'accept':
         if not isinstance(raw['invite_id'], str) or not CANONICAL.fullmatch(raw['invite_id']):
             raise _denied('scope_invalid')
         scope['invite_id'] = raw['invite_id']
@@ -691,6 +698,12 @@ def prepare(state_root, scope):
     root = _state_root(state_root)
     scope = normalize_scope(scope)
     if scope['cwd'] != str(Path.cwd().resolve()): raise _denied('cwd_mismatch')
+    target = {}
+    if scope['mode'] == 'adopt':
+        # The target comes from this chat's own existing binding in this state, never from the input.
+        parent = parent_binding(root, sid, scope)
+        scope['adopt'] = parent
+        target = {'quorum_id': parent['quorum_id']}
     prepared = now()
     permission = None if scope['lifetime'] == 'until-owner-stop' else prepared + scope['ttl_seconds']
     pending = prepared + PENDING_SECONDS if permission is None else min(prepared + PENDING_SECONDS, permission)
@@ -698,19 +711,211 @@ def prepare(state_root, scope):
     # The ordinary private state root may be created on this parent route, then verified like every worker path.
     os.close(_root_fd(root, create=True))
     _ledger(root, create=True).db.close()
-    with _directory(root, 'claude-workers', create=True) as workers:
+    with _directory(root, 'claude-workers', create=True): pass
+    adopt = scope['mode'] == 'adopt'
+    # One live adopting worker per parent agent: check, write and claim under the index lock.
+    with (_lock(root, ('claude-workers',), 'index.lock') if adopt else nullcontext()):
+        if adopt: _adoption_free(root, scope['adopt']['agent_id'])
+        # Claim first: a crash before the slot is written leaves a claim to nothing, which is released.
+        if adopt: _index_setting(root, ADOPTED + scope['adopt']['agent_id'], {'slot_id': slot_id})
+        _write_slot(root, sid, scope, slot_id, target, prepared, pending, permission)
+    result = {'slot_id': slot_id, 'state': 'pending', 'lifetime': scope['lifetime'], 'pending_expires_at': pending,
+              'permission_expires_at': permission, 'bootstrap_command': _bootstrap(root, slot_id)}
+    if adopt: result['adopt'] = dict(scope['adopt'])
+    return result
+
+
+def _write_slot(root, sid, scope, slot_id, target, prepared, pending, permission):
+    with _directory(root, 'claude-workers') as workers:
+        if workers is None: raise _unavailable('path_unsafe')
         _mkdir_new(slot_id, workers)
         os.close(_open(slot_id, workers, 'private'))
     record = {'slot_id': slot_id, 'state': 'pending', 'terminal_reason': None, 'provider_session_id': sid,
               'state_root': str(root), 'scope': scope, 'scope_hash': _digest(scope), 'lifetime': scope['lifetime'],
               'prepared_at': prepared, 'pending_expires_at': pending, 'permission_expires_at': permission,
-              'generation': 1, 'binding': None, 'token_hash': None, 'target': {}}
+              'generation': 1, 'binding': None, 'token_hash': None, 'target': target}
     if scope['mode'] == 'create': record.update(create_request_id=str(uuid.uuid4()), create=None)
     ledger = _ledger(root, ('claude-workers', slot_id), SLOT_KINDS, create=True)
     try: ledger.setting(SLOT_KEY, record)
     finally: ledger.db.close()
-    return {'slot_id': slot_id, 'state': 'pending', 'lifetime': scope['lifetime'], 'pending_expires_at': pending,
-            'permission_expires_at': permission, 'bootstrap_command': _bootstrap(root, slot_id)}
+
+
+def parent_binding(root, sid, scope):
+    """This chat's own stopped parent-route binding for exactly the scoped quorum, role and project.
+
+    Read-only from the verified `sessions/<actual SID>` ledger; the state's public service must be the pinned
+    one. A running parent listener or enabled parent reception refuses: two live agents on one role make
+    role sends ambiguous. Returns the parent's quorum and agent IDs, which pin the worker's target.
+    """
+    if not os.path.isdir(root): raise _denied('parent_binding_missing')
+    names = ('sessions', sid)
+    with _components(root, names, ACTOR_KINDS[:2]) as fds:
+        if fds is None: raise _denied('parent_binding_missing')
+        rows = _read_db(fds[-1], root.joinpath(*names, 'ledger.sqlite'), lambda db: db.execute(
+            "select key,data from settings where key in ('session-agent', 'session-reception')"
+        ).fetchall(), ledger='parent')
+        running = rows is not None and _held(fds[-1], 'listener.lock')
+    settings = {key: json.loads(data) for key, data in rows or ()}
+    record = settings.get('session-agent')
+    if (not isinstance(record, dict) or record.get('session_ref') != sid or record.get('engine') != PROVIDER
+            or record.get('transport', 'native') == TRANSPORT
+            or not all(isinstance(record.get(key), str) and record[key] for key in ('quorum_id', 'agent_id'))):
+        raise _denied('parent_binding_missing')
+    if record.get('quorum') != scope['quorum_slug']: raise _denied('target_mismatch')
+    if (record.get('role') != scope['role'] or record.get('project_ref') != scope['project_ref']
+            or record.get('cwd') != scope['cwd']):
+        raise _denied('scope_mismatch')
+    service_check({'scope': scope, 'state_root': str(root)})
+    # The held listener lock, not a recorded state, proves a run; enabled reception would restart one.
+    if running or (settings.get('session-reception') or {}).get('enabled') is True:
+        raise _denied('parent_binding_running')
+    return {'quorum_id': record['quorum_id'], 'agent_id': record['agent_id']}
+
+
+def _index_setting(root, key, value=None):
+    index = _ledger(root)
+    if index is None: raise _unavailable('path_unsafe')
+    try: return index.setting(key, value)
+    finally: index.db.close()
+
+
+def _adoption_free(root, agent_id):
+    """Caller holds the index lock. An earlier adopting slot blocks until it is terminal (stopped or expired)
+    and, if it ever connected, until its own agent is confirmed retired: never two live agents on one role."""
+    claimed = _index_setting(root, ADOPTED + agent_id)
+    if not isinstance(claimed, dict): return
+    try: earlier = _view(root, _slot_uuid(claimed.get('slot_id')))
+    except NativeInboxError as error:
+        if error.reason == 'recovery_needed': raise
+        return  # A slot whose ledger was never written holds nothing.
+    if _effective(earlier)[0] != 'terminal': raise _denied('actor_claimed')
+    worker_agent = (earlier.get('target') or {}).get('agent_id')
+    if _unresolved(earlier):
+        # A registration was sent without a recorded answer: its agent may be live under this role.
+        raise NativeInboxError('native_worker_binding_denied', 'previous_worker_registration_unresolved',
+                               previous={'slot_id': earlier['slot_id'], 'agent_id': None})
+    if worker_agent and _index_setting(root, RETIRED + worker_agent) is None:
+        raise NativeInboxError('native_worker_binding_denied', 'previous_worker_agent_active',
+                               previous={'slot_id': earlier['slot_id'], 'agent_id': worker_agent})
+
+
+def record_retired(ledger, agent_id):
+    """The owner's confirmed `leave` of an agent; read only to release an adoption claim."""
+    if isinstance(agent_id, str) and CANONICAL.fullmatch(agent_id):
+        ledger.setting(RETIRED + agent_id, {'retired_at': now()})
+
+
+@contextmanager
+def _owner_api(root, record):
+    """The owner's root ledger and API on this state's login, after the slot's pinned service is confirmed."""
+    from quorum_live import api_for
+    context = {'scope': record['scope'], 'state_root': str(root)}
+    service_check(context)
+    ledger = root_ledger(root)
+    try:
+        api, config, _ = api_for(ledger)
+        same_resolved(context, config)
+        yield ledger, api
+    finally: ledger.db.close()
+
+
+def _registration(record):
+    """The adopting worker's exact pinned registration: payload, device key and stable join request ID."""
+    scope, session_ref = record['scope'], record['binding']['session_ref']
+    data = {'engine': PROVIDER, 'session_ref': session_ref, 'project_ref': scope['project_ref'], 'cwd': scope['cwd']}
+    device_key = 'session-device:' + session_ref
+    # Same identity as `register_agent`, so a replay repeats the original request exactly.
+    identity = hashlib.sha256(json.dumps([record['target']['quorum_id'], scope['role'], data, device_key],
+                                         sort_keys=True).encode()).hexdigest()
+    return data, device_key, 'join:' + identity
+
+
+def _unresolved(record):
+    """A registration was (or may have been) sent, but its agent ID is not recorded."""
+    return bool(record.get('registration')) and not (record.get('target') or {}).get('agent_id')
+
+
+def _reconcile(root, record, ledger, api, register_agent):
+    """Recover a sent registration's agent ID by replaying it with the same request ID and pinned payload.
+
+    The service checks membership, then answers a replay from its idempotency record; a request that never
+    arrived registers the agent now, which the caller then retires. The ID is pinned once on the slot.
+    """
+    agent_id = (record.get('target') or {}).get('agent_id')
+    if agent_id or not record.get('registration'): return agent_id
+    if register_agent is None: raise _denied('operation_denied')
+    data, device_key, _ = _registration(record)
+    result = register_agent(api, ledger, record['scope']['quorum_slug'], record['scope']['role'], data,
+                            device_key=device_key, expected_quorum_id=record['target']['quorum_id'])
+    agent_id = result.get('agent_id') if isinstance(result, dict) else None
+    if not isinstance(agent_id, str) or not CANONICAL.fullmatch(agent_id): raise QuorumError('invalid_response')
+    with _slot(root, record['slot_id'], record['provider_session_id']) as slot:
+        current = slot.setting(SLOT_KEY)
+        target = dict(current.get('target') or {})
+        if target.get('agent_id') not in (None, agent_id): raise _denied('target_mismatch')
+        slot.setting(SLOT_KEY, {**current, 'target': {**target, 'agent_id': agent_id}})
+    record['target'] = {**record['target'], 'agent_id': agent_id}
+    return agent_id
+
+
+def _retire(root, record, register_agent=None):
+    """Owner `stop --leave`: retire this adopt slot's own worker agent with the owner's login and pinned service."""
+    agent_id = (record.get('target') or {}).get('agent_id')
+    if not agent_id and not record.get('registration'): return 'none'
+    if agent_id and _index_setting(root, RETIRED + agent_id) is not None: return 'retired'
+    with _owner_api(root, record) as (ledger, api):
+        agent_id = _reconcile(root, record, ledger, api, register_agent)
+        if _index_setting(root, RETIRED + agent_id) is not None: return 'retired'
+        try: api.call('agent_leave', {'agent_id': agent_id}, 'leave:' + agent_id)
+        except QuorumError:
+            # A lost response leaves a committed leave that a retry cannot repeat: confirm it by a read instead.
+            if not verified_retired(api, record, agent_id): raise
+        record_retired(ledger, agent_id)
+    return 'retired'
+
+
+def verified_retired(api, record, agent_id):
+    """Authenticated proof that this slot's own worker agent is no longer live under its role; False otherwise.
+
+    Reads only the slot's pinned quorum, role and project (never a slug). Proof is either `resolve_role` naming
+    exactly one live agent that is not this one, or, when the role has none or several, the server's explicit
+    `agent_denied` for this login's own registered agent (revoked agent or device). An error, a malformed
+    answer or this agent still resolving keeps the claim.
+    """
+    scope, quorum_id = record['scope'], (record.get('target') or {}).get('quorum_id')
+    if not isinstance(quorum_id, str) or not quorum_id: return False
+    try:
+        found = api.call('resolve_role', {'quorum_id': quorum_id, 'role': scope['role'],
+                                          'project_ref': scope['project_ref']})
+    except QuorumError as error:
+        if str(error) != 'recipient_ambiguous_or_missing': return False
+        found = None
+    if found is not None:
+        other = found.get('agent_id') if isinstance(found, dict) and set(found) == {'agent_id'} else None
+        return isinstance(other, str) and bool(CANONICAL.fullmatch(other)) and other != agent_id
+    try: api.call('agent_status', {'agent_id': agent_id})
+    except QuorumError as error: return str(error) == 'auth_required' and error.denial == 'agent_denied'
+    return False
+
+
+def verify_retired(state_root, slot_id, register_agent=None):
+    """Owner recovery after a lost leave or registration answer: record the retirement only on authenticated proof."""
+    sid = actual_session()
+    root = _state_root(state_root)
+    record = _view(root, _slot_uuid(slot_id))
+    if record.get('provider_session_id') != sid: raise _denied('session_mismatch')
+    if record['scope']['mode'] != 'adopt': raise _denied('operation_denied')
+    agent_id = (record.get('target') or {}).get('agent_id')
+    if not agent_id and not record.get('registration'): return {'slot_id': record['slot_id'], 'worker_agent': 'none'}
+    if not agent_id or _index_setting(root, RETIRED + agent_id) is None:
+        with _owner_api(root, record) as (ledger, api):
+            agent_id = _reconcile(root, record, ledger, api, register_agent)
+            if _index_setting(root, RETIRED + agent_id) is None:
+                if not verified_retired(api, record, agent_id):
+                    raise NativeInboxError('native_worker_binding_denied', 'previous_worker_agent_active',
+                                           previous={'slot_id': record['slot_id'], 'agent_id': agent_id})
+                record_retired(ledger, agent_id)
+    return {'slot_id': record['slot_id'], 'worker_agent': 'retired'}
 
 
 def _write_capability(root, slot_id, token):
@@ -811,14 +1016,18 @@ def slot_status(state_root, slot_id):
     return _summary(root, record)
 
 
-def stop_slot(state_root, slot_id, *, sid=None):
-    """Terminal revocation of this slot, then a stop request for its exact active run only."""
+def stop_slot(state_root, slot_id, *, sid=None, leave=False, register_agent=None):
+    """Terminal revocation of this slot, then a stop request for its exact active run only.
+
+    `leave` (owner, adopt slots only) then retires the worker's own agent; expiry never does.
+    """
     import quorum_native_inbox as inbox
     sid = sid or actual_session()
     root = _state_root(state_root)
     slot_id = _slot_uuid(slot_id)
     with _slot(root, slot_id, sid) as ledger:
         record = _settle(ledger, ledger.setting(SLOT_KEY))
+        if leave and record['scope']['mode'] != 'adopt': raise _denied('operation_denied')
         if record['state'] != 'terminal':
             record = {**record, 'state': 'terminal', 'terminal_reason': 'stopped', 'terminal_at': now()}
             ledger.setting(SLOT_KEY, record)
@@ -833,6 +1042,7 @@ def stop_slot(state_root, slot_id, *, sid=None):
             # Unresolved offers stay; nothing is acknowledged automatically.
             if agent: inbox.stop(session, agent)
         finally: session.db.close()
+    if leave: return {**_summary(root, record), 'worker_agent': _retire(root, record, register_agent)}
     return _summary(root, record)
 
 
@@ -899,8 +1109,9 @@ def _check_arguments(record, operation, arguments):
         require(scope.get('accept_tasks_from_members') is True
                 and isinstance(get('message_id'), str) and CANONICAL.fullmatch(get('message_id')))
         if not target.get('agent_id'): raise _denied('target_pending')
-    elif operation in ('receive', 'received', 'reply') and not target.get('agent_id'):
+    elif operation in ('receive', 'received', 'reply', 'knowledge', 'update') and not target.get('agent_id'):
         raise _denied('target_pending')
+    if operation == 'update': require(get('quorum') == scope['quorum_slug'])
 
 
 def _capability_token(raw, root, slot_id):
@@ -927,7 +1138,7 @@ def authorize(state_root, capability_path, operation, arguments):
     """Read-only validation before any worker ledger, profile, auth or API; never returns the bearer."""
     sid = actual_session()
     root = _state_root(state_root)
-    if operation not in OPERATIONS['create'] + ('accept',): raise _denied('operation_denied')
+    if operation not in KNOWN: raise _denied('operation_denied')
     path, slot_id = _generated_slot(root, capability_path)
     with _directory(root, 'claude-workers', slot_id) as directory:
         if directory is None: raise _denied('slot_invalid')
@@ -990,6 +1201,15 @@ def pin_target(context, quorum_id, agent_id=None, *, membership_id=None):
     return target
 
 
+def mark_registration(context):
+    """Locked intent for the adopting worker's pinned registration, with its stable join request ID."""
+    root = _state_root(context['state_root'])
+    with _slot(root, context['slot_id'], context['binding']['provider_session_id']) as ledger:
+        record = ledger.setting(SLOT_KEY)
+        if not record.get('registration'):
+            ledger.setting(SLOT_KEY, {**record, 'registration': {'state': 'sent', 'request_id': _registration(record)[2]}})
+
+
 def service_check(context, explicit=None):
     """Pinned public service identity before resolve_profile, a legacy credential or any token.
 
@@ -1025,7 +1245,7 @@ def selected(args):
                                                or str(args.session_id or '').startswith(PREFIX))))
 
 
-def manage(args):
+def manage(args, register_agent=None):
     """Owner-parent slot management and logical status/stop; None when a capability route follows."""
     if args.command != 'session' or getattr(args, 'worker_capability', None) is not None:
         if args.command == 'session' and str(args.session_id or '').startswith(PREFIX):
@@ -1041,7 +1261,9 @@ def manage(args):
         if action == 'attest': return attest(args.state, args.slot, args.native_handle, args.spawn_tool_use_id)
         if action == 'await-binding': return await_binding(args.state, args.slot, args.wait_seconds)
         if action == 'status': return slot_status(args.state, args.slot)
-        if action == 'stop': return stop_slot(args.state, args.slot)
+        if action == 'stop':
+            return stop_slot(args.state, args.slot, leave=getattr(args, 'leave', False), register_agent=register_agent)
+        if action == 'verify-retired': return verify_retired(args.state, args.slot, register_agent)
         raise _denied('operation_denied')
     # A logical selector is metadata-only supervision by the exact owning actual SID.
     if args.action not in ('status', 'stop'): raise _denied('management_only')
@@ -1074,6 +1296,9 @@ def preflight(args):
         except (ValueError, TypeError, AttributeError): raise _denied('scope_mismatch') from None
         arguments = {'invite_id': invite, **{name: getattr(args, name, None) for name in (
             'transport', 'parent_thread_id', 'membership_only', 'client', 'anonymous', 'origin', 'publishable_key')}}
+    elif args.command in ('knowledge', 'update'):
+        operation = args.command
+        arguments = {'quorum': args.quorum} if operation == 'update' else {}
     else: raise NativeInboxError('native_inbox_transport_conflict')
     return _authorize_route(args, operation, arguments)
 
@@ -1096,7 +1321,7 @@ def _preverify(state_root, capability_path, operation, arguments):
     """Record-independent capability and argument checks; the slot ID when a capability file exists."""
     actual_session()
     root = _state_root(state_root)
-    if operation not in OPERATIONS['create'] + ('accept',): raise _denied('operation_denied')
+    if operation not in KNOWN: raise _denied('operation_denied')
     _check_syntax(operation, arguments)
     _, slot_id = _generated_slot(root, capability_path)
     with _components(root, ('claude-workers', slot_id), SLOT_KINDS) as fds:
@@ -1138,6 +1363,26 @@ def _api(auth_ledger, context, explicit=None):
     return api, config, store
 
 
+def owner_binding(context, auth_ledger):
+    """The connected adopted worker's own ledger, record, provenance check and pinned API for knowledge and
+    update commands; the caller closes the ledger. Never the parent's session or ledger."""
+    context = {**guard(context), 'arguments': context['arguments']}
+    ledger = _actor_ledger(_state_root(context['state_root']), context['session_ref'])
+    if ledger is None: raise ValueError('session_not_connected')
+    try:
+        record = ledger.setting('session-agent')
+        if record is None: raise ValueError('session_not_connected')
+        _record_matches(record, context)
+        def check():
+            guard(context)
+            _record_matches(ledger.setting('session-agent') or {}, context)
+        api, _, _ = _api(auth_ledger, context)
+    except BaseException:
+        ledger.db.close()
+        raise
+    return ledger, record, check, api
+
+
 def capability_status(context):
     root = _state_root(context['state_root'])
     return {**_summary(root, _view(root, context['slot_id'])), 'session_ref': context['session_ref'],
@@ -1145,7 +1390,8 @@ def capability_status(context):
 
 
 def session_dispatch(args, auth_ledger, register_agent, context):
-    """Capability-scoped session actions for the logical actor; never the parent pipe, ledger or device."""
+    """Capability-scoped session actions for the logical actor; never the parent pipe or device, and the parent
+    ledger only read (an adopt scope's first connect rechecks that the parent's reception is stopped)."""
     action = args.action
     if action == 'status': return capability_status(context)
     if action == 'stop':
@@ -1159,6 +1405,13 @@ def session_dispatch(args, auth_ledger, register_agent, context):
     try:
         record = ledger.setting('session-agent')
         if record is not None: _record_matches(record, context)
+        scope = context['scope']
+        if action == 'connect' and scope['mode'] == 'adopt' and record is None:
+            # First connect, before any service call: the parent's reception for this quorum is still
+            # stopped and still names the same pinned agent.
+            parent = parent_binding(_state_root(context['state_root']), context['binding']['provider_session_id'],
+                                    scope)
+            if parent != scope['adopt']: raise _denied('target_mismatch')
         api, _, _ = _api(auth_ledger, context)
         guarded = Guarded(api, check)
         with _effect(guarded.effect):
@@ -1184,6 +1437,9 @@ def _session_action(args, auth_ledger, register_agent, context, ledger, record, 
         if record and (record['registration'] != data or record['role'] != scope['role']
                        or record['quorum'] != scope['quorum_slug']):
             raise ValueError('binding_conflict')
+        if scope['mode'] == 'adopt' and not context['target'].get('agent_id'):
+            # Persisted before any device or agent request: a lost answer can never release the claim.
+            mark_registration(context)
         result = register_agent(guarded, auth_ledger, scope['quorum_slug'], scope['role'], data,
                                 device_key='session-device:' + session_ref,
                                 expected_quorum_id=context['target']['quorum_id'])

@@ -1372,6 +1372,539 @@ class Bound(Harness):
         return stop
 
 
+PARENT_AGENT = '88888888-8888-4888-8888-888888888888'
+
+
+class OwnerApi(Api):
+    """The fake service plus the owner knowledge and update RPCs; `answers` overrides one RPC's answer."""
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.answers = {}
+
+    def answer(self, operation, payload):
+        if operation in self.answers:
+            value = self.answers[operation](payload)
+            if isinstance(value, Exception): raise value
+            return value
+        if operation.startswith('knowledge_'): return {'ok': True}
+        if operation == 'session_update_status': return {'operation_id': payload['operation_id'], 'agents': []}
+        if operation == 'agent_leave': return {'left': True}
+        return super().answer(operation, payload)
+
+
+@OWNER_PROOF
+class AdoptTests(Bound):
+    """`mode: adopt`: the owner's own stopped parent binding hands reception to one worker, no invitation."""
+    def adopt_scope(self, **changes):
+        value = self.scope(mode='adopt')
+        value.pop('access')
+        value.update(changes)
+        return {key: item for key, item in value.items() if item is not None}
+
+    def parent(self, sid=SID, **changes):
+        """This chat's existing parent-route binding, as `session connect` wrote it in its own ledger."""
+        from quorum_state import LocalLedger
+        for directory in (self.root, self.root / 'sessions'):
+            if not directory.exists(): directory.mkdir(mode=0o700)
+        record = {'engine': 'claude', 'session_ref': sid, 'project_ref': 'team/project', 'cwd': str(self.project),
+                  'role': 'service-worker', 'quorum': 'team', 'quorum_id': QUORUM, 'agent_id': PARENT_AGENT}
+        record['registration'] = {key: record[key] for key in ('engine', 'session_ref', 'project_ref', 'cwd')}
+        record.update(changes)
+        ledger = LocalLedger(self.root / 'sessions' / sid)
+        try: ledger.setting('session-agent', {key: item for key, item in record.items() if item is not None})
+        finally: ledger.db.close()
+        if not (self.root / 'config.json').exists(): self.configure()
+        return self.root / 'sessions' / sid
+
+    def reception(self, enabled, sid=SID):
+        from quorum_state import LocalLedger
+        ledger = LocalLedger(self.root / 'sessions' / sid)
+        try: ledger.setting('session-reception', {'enabled': enabled})
+        finally: ledger.db.close()
+
+    def slots(self):
+        workers = self.root / 'claude-workers'
+        return sorted(path.name for path in workers.iterdir()) if workers.exists() else []
+
+    @isolated_profiles
+    def test_adopt_hands_reception_to_one_worker_without_invitation_or_new_identity(self):
+        api = Api(inbox=[message(M1)])
+        self.parent()
+        prepared = self.prepare(self.adopt_scope())
+        self.assertEqual(prepared['adopt'], {'quorum_id': QUORUM, 'agent_id': PARENT_AGENT})
+        slot = prepared['slot_id']
+        record = self.setting(slot)
+        self.assertEqual((record['target'], record['scope']['adopt']['agent_id']), ({'quorum_id': QUORUM}, PARENT_AGENT))
+        self.assertNotIn('accept', record['scope']['operations'])
+        self.assertNotIn('create', record['scope']['operations'])
+        self.attest(slot)
+        self.cap = cap = self.capability(slot)
+        self.slot = slot
+        code, result, text = self.connect(api, cap, '--require-worker-inbox')
+        self.assertEqual(code, 0, text)
+        self.assertEqual((result['data']['session_ref'], result['data']['transport']), (actor(), 'tool-inbox'))
+        # The owner's existing login and membership: no invitation, no new identity.
+        self.assertNotIn('invite_accept_id', api.ops())
+        join = [payload for operation, payload, _ in api.calls if operation == 'agent_join'][0]
+        self.assertEqual((join['session_ref'], join['role'], join['project_ref']),
+                         (actor(), 'service-worker', 'team/project'))
+        self.assertNotEqual(join['session_ref'], SID, 'never the parent session ID')
+        self.assertEqual(self.setting(slot)['target'], {'quorum_id': QUORUM, 'agent_id': AGENT})
+        offered = self.offer(api)
+        self.assertEqual(offered['message']['id'], M1)
+        # The parent's own binding is read only, never rewritten by the worker.
+        from quorum_state import LocalLedger
+        parent = LocalLedger(self.root / 'sessions' / SID)
+        self.addCleanup(parent.db.close)
+        self.assertEqual(parent.setting('session-agent')['agent_id'], PARENT_AGENT)
+        # A reconnect of the same worker keeps its binding even after the parent is retired.
+        self.assertEqual(self.connect(api, cap)[0], 0)
+
+    @isolated_profiles
+    def test_adopt_refuses_while_parent_reception_runs(self):
+        from quorum_os import FileLock
+        api = Api()
+        directory = self.parent()
+        self.reception(True)
+        error = self.denied('native_worker_binding_denied', self.prepare, self.adopt_scope())
+        self.assertEqual(error.reason, 'parent_binding_running')
+        self.assertIn('session stop', error.diagnostic()['next_step'])
+        code, result, text = self.cli(None, 'session', 'worker', 'prepare', '--json-stdin',
+                                      stdin=json.dumps(self.adopt_scope()).encode())
+        self.assertEqual((code, result['code'], result['data']['reason']),
+                         (3, 'native_worker_binding_denied', 'parent_binding_running'), text)
+        self.assertEqual(self.slots(), [], 'nothing prepared')
+        self.reception(False)
+        with FileLock(directory / 'listener.lock'):
+            error = self.denied('native_worker_binding_denied', self.prepare, self.adopt_scope())
+            self.assertEqual(error.reason, 'parent_binding_running')
+        # Stopped at prepare, restarted before the worker connects: refused before any service call.
+        slot = self.prepare(self.adopt_scope())['slot_id']
+        self.attest(slot)
+        self.reception(True)
+        code, result, text = self.connect(api, self.capability(slot))
+        self.assertEqual((code, result['code'], result['data']['reason']),
+                         (3, 'native_worker_binding_denied', 'parent_binding_running'), text)
+        self.assertEqual(api.calls, [])
+
+    @isolated_profiles
+    def test_adopt_refuses_wrong_state_session_or_binding_kind(self):
+        # A state without this chat's binding: nothing is created there.
+        error = self.denied('native_worker_binding_denied', self.prepare, self.adopt_scope())
+        self.assertEqual(error.reason, 'parent_binding_missing')
+        self.assertFalse(self.root.exists())
+        # Another chat's binding in this state is not this chat's.
+        self.parent(sid=OTHER_SID)
+        error = self.denied('native_worker_binding_denied', self.prepare, self.adopt_scope())
+        self.assertEqual(error.reason, 'parent_binding_missing')
+        # Neither a worker (tool-inbox) binding nor another engine's binding can be adopted.
+        for changes in ({'transport': 'tool-inbox'}, {'engine': 'codex'}, {'agent_id': None}):
+            with self.subTest(changes=changes):
+                self.parent(**changes)
+                error = self.denied('native_worker_binding_denied', self.prepare, self.adopt_scope())
+                self.assertEqual(error.reason, 'parent_binding_missing')
+        self.parent()
+        self.configure(key='sb_publishable_other')
+        error = self.denied('native_worker_binding_denied', self.prepare, self.adopt_scope())
+        self.assertEqual(error.reason, 'service_mismatch')
+        self.assertEqual(self.slots(), [])
+
+    @isolated_profiles
+    def test_adopt_refuses_a_foreign_quorum_role_or_project(self):
+        api = Api()
+        self.parent()
+        for changes, reason in (({'quorum_slug': 'other'}, 'target_mismatch'), ({'role': 'lead'}, 'scope_mismatch'),
+                                ({'project_ref': 'other/project'}, 'scope_mismatch')):
+            with self.subTest(changes=changes):
+                error = self.denied('native_worker_binding_denied', self.prepare, self.adopt_scope(**changes))
+                self.assertEqual(error.reason, reason)
+        # Owner input cannot supply or override the derived target.
+        for extra in ({'adopt': {'quorum_id': OTHER_QUORUM, 'agent_id': PARENT_AGENT}}, {'invite_id': INVITE},
+                      {'access': 'open'}):
+            with self.subTest(extra=extra):
+                error = self.denied('native_worker_binding_denied', self.prepare, self.adopt_scope(**extra))
+                self.assertEqual(error.reason, 'scope_invalid')
+        self.assertEqual(self.slots(), [])
+        # The slug resolving to another quorum at connect is refused before any device or agent effect.
+        slot = self.prepare(self.adopt_scope())['slot_id']
+        self.attest(slot)
+        api.lookup = OTHER_QUORUM
+        code, result, text = self.connect(api, self.capability(slot))
+        self.assertEqual((code, result['code']), (3, 'native_worker_binding_denied'), text)
+        self.assertNotIn('device_register', api.ops())
+        self.assertNotIn('agent_join', api.ops())
+
+    @isolated_profiles
+    def test_adopt_capability_cannot_impersonate_the_parent_or_widen(self):
+        api = Api()
+        self.parent()
+        slot = self.prepare(self.adopt_scope())['slot_id']
+        self.attest(slot)
+        cap = self.capability(slot)
+        # The parent's session ID is never a selector for the capability route.
+        code, result, text = self.cli(api, 'session', '--session-id', SID, '--worker-capability', str(cap), 'connect',
+                                      'team', '--role', 'service-worker', '--project-ref', 'team/project',
+                                      '--transport', 'tool-inbox')
+        self.assertEqual((code, result['code']), (3, 'native_worker_binding_denied'), text)
+        # Another chat holding the file is not the attested owner session.
+        with claude(OTHER_SID):
+            import quorum_claude_worker as worker
+            self.denied('native_worker_binding_denied', worker.authorize, self.root, cap, 'connect', {})
+        # No invitation, creation or owner-only operation is delegated.
+        code, result, _ = self.cli(api, 'accept-id', INVITE, '--transport', 'tool-inbox', '--worker-capability',
+                                   str(cap))
+        self.assertEqual((code, result['code']), (3, 'native_worker_binding_denied'))
+        code, result, _ = self.cli(api, 'create', 'team', '--access', 'github', '--json-stdin', '--worker-capability',
+                                   str(cap), stdin=b'{"slug": "team"}')
+        self.assertEqual((code, result['code']), (3, 'native_worker_binding_denied'))
+        self.assertEqual(api.calls, [])
+
+    def adopted(self, api):
+        self.parent()
+        self.slot = self.prepare(self.adopt_scope())['slot_id']
+        self.attest(self.slot)
+        self.cap = self.capability(self.slot)
+        code, _, text = self.connect(api, self.cap)
+        self.assertEqual(code, 0, text)
+        return self.cap
+
+    @isolated_profiles
+    def test_owner_maintenance_moves_to_the_adopted_worker(self):
+        """After the parent agent is retired, knowledge admin and update run as the worker's own binding."""
+        api = OwnerApi()
+        cap = self.adopted(api)
+        self.assertIn('knowledge', self.setting(self.slot)['scope']['operations'])
+        space = str(uuid.uuid4())
+        body = json.dumps({'operation': 'create', 'payload': {'space_id': space, 'name': 'Team'}}).encode()
+        code, result, text = self.cli(api, 'knowledge', 'admin', '--json-stdin', '--owner-action', '--request-id',
+                                      'admin-1', '--worker-capability', str(cap), stdin=body)
+        self.assertEqual(code, 0, text)
+        operation, payload, request = api.calls[-1]
+        self.assertEqual((operation, payload['agent_id'], payload['session_ref'], request),
+                         ('knowledge_admin', AGENT, actor(), 'admin-1'))
+        self.assertNotEqual(payload['agent_id'], PARENT_AGENT, 'never the retired parent agent')
+        status = str(uuid.uuid4())
+        code, result, text = self.cli(api, 'update', 'team', '--status', status, '--worker-capability', str(cap))
+        self.assertEqual(code, 0, text)
+        operation, payload, _ = api.calls[-1]
+        self.assertEqual((operation, payload), ('session_update_status', {'agent_id': AGENT, 'session_ref': actor(),
+                                                                          'quorum_id': QUORUM, 'operation_id': status}))
+        # Owner knowledge actions keep their explicit owner-action requirement.
+        before = len(api.calls)
+        code, result, text = self.cli(api, 'knowledge', 'admin', '--json-stdin', '--request-id', 'admin-2',
+                                      '--worker-capability', str(cap), stdin=body)
+        self.assertEqual((code, result['code']), (3, 'knowledge_owner_action_required'), text)
+        # Another quorum, another session or a stopped capability is refused before any service call.
+        code, result, text = self.cli(api, 'update', 'other', '--status', status, '--worker-capability', str(cap))
+        self.assertEqual((code, result['code']), (3, 'native_worker_binding_denied'), text)
+        code, result, text = self.cli(api, 'update', 'team', '--status', status, '--worker-capability', str(cap),
+                                      sid=OTHER_SID)
+        self.assertEqual(code, 3, text)
+        import quorum_claude_worker as worker
+        with claude(): worker.stop_slot(self.root, self.slot)
+        code, result, text = self.cli(api, 'knowledge', 'admin', '--json-stdin', '--owner-action', '--request-id',
+                                      'admin-1', '--worker-capability', str(cap), stdin=body)
+        self.assertEqual((code, result['code']), (3, 'native_worker_slot_terminal'), text)
+        self.assertEqual(len(api.calls), before)
+
+    @isolated_profiles
+    def test_owner_maintenance_needs_a_connected_adopt_scope(self):
+        api = OwnerApi()
+        self.parent()
+        slot = self.prepare(self.adopt_scope())['slot_id']
+        self.attest(slot)
+        code, result, text = self.cli(api, 'update', 'team', '--status', str(uuid.uuid4()), '--worker-capability',
+                                      str(self.capability(slot)))
+        self.assertEqual((code, result['code'], result['data']['reason']),
+                         (3, 'native_worker_binding_denied', 'target_pending'), text)
+        # Create and accept scopes never carry owner maintenance.
+        for scope in (self.scope(), self.accept_scope()):
+            self.assertNotIn('knowledge', self.setting(self.prepare(scope)['slot_id'])['scope']['operations'])
+            self.denied('native_worker_binding_denied', self.prepare, {**scope, 'operations': ['connect', 'update']})
+        self.assertEqual(api.calls, [])
+
+    def owner_leave(self, api, agent_id):
+        """The existing owner `leave` from the parent chat, with the owner's login."""
+        from quorum_api import ServiceConfig
+        with patch('quorum_profiles.resolve_profile', return_value=(ServiceConfig(ORIGIN, KEY), Store())), \
+                patch('quorum.QuorumApi', return_value=api), patch('quorum.token_provider'):
+            return self.cli(api, 'leave', '--request-id', 'retire-1', '--json-stdin',
+                            stdin=json.dumps({'agent_id': agent_id}).encode())
+
+    def replacement_refused(self):
+        error = self.denied('native_worker_binding_denied', self.prepare, self.adopt_scope())
+        self.assertEqual(error.reason, 'previous_worker_agent_active')
+        diagnostic = error.diagnostic()
+        self.assertEqual(diagnostic['previous_worker'], {'slot_id': self.slot, 'agent_id': AGENT})
+        self.assertIn('session worker stop ' + self.slot + ' --leave', diagnostic['next_step'])
+        self.assertIn(AGENT, diagnostic['next_step'])
+
+    @isolated_profiles
+    def test_stopped_connected_worker_blocks_a_replacement_until_its_agent_leaves(self):
+        import quorum_claude_worker as worker
+        api = OwnerApi()
+        self.adopted(api)
+        with claude(): worker.stop_slot(self.root, self.slot)
+        self.assertNotIn('agent_leave', api.ops(), 'a plain stop never leaves')
+        self.replacement_refused()
+        code, result, text = self.cli(None, 'session', 'worker', 'prepare', '--json-stdin',
+                                      stdin=json.dumps(self.adopt_scope()).encode())
+        self.assertEqual((code, result['data']['reason']), (3, 'previous_worker_agent_active'), text)
+        # The existing owner leave of that agent, from the parent chat, releases the claim.
+        code, _, text = self.owner_leave(api, AGENT)
+        self.assertEqual(code, 0, text)
+        self.assertEqual(api.calls[-1], ('agent_leave', {'agent_id': AGENT}, 'retire-1'))
+        self.assertTrue(self.prepare(self.adopt_scope())['slot_id'])
+
+    @isolated_profiles
+    def test_owner_stop_with_leave_retires_the_worker_agent(self):
+        api = OwnerApi()
+        self.adopted(api)
+        # Leaving another agent records nothing for this worker.
+        code, _, text = self.owner_leave(api, PEER)
+        self.assertEqual(code, 0, text)
+        code, result, text = self.cli(api, 'session', 'worker', 'stop', self.slot, '--leave')
+        self.assertEqual(code, 0, text)
+        self.assertEqual((result['data']['state'], result['data']['worker_agent']), ('terminal', 'retired'))
+        self.assertEqual(api.calls[-1], ('agent_leave', {'agent_id': AGENT}, 'leave:' + AGENT))
+        self.assertTrue(self.prepare(self.adopt_scope())['slot_id'])
+        # A repeated stop --leave is stable and sends nothing more.
+        before = len(api.calls)
+        self.assertEqual(self.cli(api, 'session', 'worker', 'stop', self.slot, '--leave')[1]['data']['worker_agent'],
+                         'retired')
+        self.assertEqual(len(api.calls), before)
+
+    @isolated_profiles
+    def test_failed_leave_and_expiry_keep_the_claim(self):
+        api = OwnerApi()
+        self.adopted(api)
+        api.fail['agent_leave'] = ['auth_required']
+        # The authenticated read still resolves the role to this worker's own agent.
+        api.answers['resolve_role'] = lambda payload: {'agent_id': AGENT}
+        code, result, text = self.cli(api, 'session', 'worker', 'stop', self.slot, '--leave')
+        self.assertEqual((code, result['code']), (3, 'auth_required'), text)
+        self.assertEqual(self.setting(self.slot)['state'], 'terminal', 'the stop itself still holds')
+        self.replacement_refused()
+        # Expiry is fail-closed too: it never leaves, and the next prepare demands the retirement step.
+        self.now += 7200
+        self.replacement_refused()
+        self.assertEqual(api.ops().count('agent_leave'), 1)
+        # Only adopt slots retire their agent through stop.
+        other = self.prepare(self.accept_scope())['slot_id']
+        code, result, text = self.cli(api, 'session', 'worker', 'stop', other, '--leave')
+        self.assertEqual((code, result['data']['reason']), (3, 'operation_denied'), text)
+
+    def lost_leave(self, api, resolve, status=None):
+        """The worker's leave commits remotely but its answer is lost; retries see the server's view."""
+        from quorum_api import QuorumError
+        self.adopted(api)
+        api.lost.append('agent_leave')
+        api.answers['resolve_role'] = resolve
+        api.answers['agent_status'] = status or (lambda payload: QuorumError('auth_required', denial='agent_denied'))
+        return QuorumError
+
+    @isolated_profiles
+    def test_lost_leave_answer_verified_as_retired_releases_the_claim(self):
+        api = OwnerApi()
+        error = self.lost_leave(api, lambda payload: error('recipient_ambiguous_or_missing'))
+        code, result, text = self.cli(api, 'session', 'worker', 'stop', self.slot, '--leave')
+        self.assertEqual((code, result['data']['worker_agent']), (0, 'retired'), text)
+        self.assertEqual(api.ops()[-3:], ['agent_leave', 'resolve_role', 'agent_status'])
+        self.assertEqual(api.calls[-2][1], {'quorum_id': QUORUM, 'role': 'service-worker', 'project_ref': 'team/project'})
+        self.assertTrue(self.prepare(self.adopt_scope())['slot_id'])
+
+    @isolated_profiles
+    def test_verify_retired_accepts_exactly_one_other_live_agent(self):
+        api = OwnerApi()
+        self.lost_leave(api, lambda payload: {'agent_id': PEER})
+        api.fail['agent_leave'] = ['service_unavailable']
+        code, result, text = self.cli(api, 'session', 'worker', 'stop', self.slot)
+        self.assertEqual(code, 0, text)
+        self.replacement_refused()
+        code, result, text = self.cli(api, 'session', 'worker', 'verify-retired', self.slot)
+        self.assertEqual((code, result['data']['worker_agent']), (0, 'retired'), text)
+        self.assertNotIn('agent_status', api.ops())
+        self.assertTrue(self.prepare(self.adopt_scope())['slot_id'])
+
+    @isolated_profiles
+    def test_agent_still_live_or_unproven_keeps_the_claim(self):
+        from quorum_api import QuorumError
+        cases = {
+            'still resolves': (lambda payload: {'agent_id': AGENT}, None),
+            'ambiguous, status live': (lambda payload: QuorumError('recipient_ambiguous_or_missing'),
+                                       lambda payload: {'agent_id': AGENT, 'registered': True}),
+            'listing error': (lambda payload: QuorumError('service_unavailable'), None),
+            'malformed listing': (lambda payload: {'agent_id': PEER, 'quorum_id': QUORUM}, None),
+            'non-canonical agent': (lambda payload: {'agent_id': 'peer'}, None),
+            'plain auth failure': (lambda payload: QuorumError('recipient_ambiguous_or_missing'),
+                                   lambda payload: QuorumError('auth_required')),
+        }
+        for name, (resolve, status) in cases.items():
+            with self.subTest(name):
+                self.setUp()
+                self.unproven_case(name, resolve, status)
+
+    @isolated_profiles
+    def unproven_case(self, name, resolve, status):
+        """One unproven retirement on a fresh fixture (called per subTest)."""
+        api = OwnerApi()
+        self.lost_leave(api, resolve, status)
+        code, result, text = self.cli(api, 'session', 'worker', 'stop', self.slot, '--leave')
+        self.assertEqual(code, 5, name + ': ' + text)
+        self.replacement_refused()
+        code, result, text = self.cli(api, 'session', 'worker', 'verify-retired', self.slot)
+        self.assertEqual((code, result['data'].get('reason')), (3, 'previous_worker_agent_active'), name + ': ' + text)
+        self.replacement_refused()
+
+    @isolated_profiles
+    def test_verification_reads_only_the_pinned_quorum(self):
+        from quorum_api import QuorumError
+        api = OwnerApi()
+        # Another quorum would prove retirement; the pinned one still resolves to this worker's agent.
+        self.lost_leave(api, lambda payload: {'agent_id': AGENT if payload['quorum_id'] == QUORUM else PEER},
+                        lambda payload: QuorumError('auth_required', denial='agent_denied'))
+        api.lookup = OTHER_QUORUM
+        code, result, text = self.cli(api, 'session', 'worker', 'stop', self.slot, '--leave')
+        self.assertEqual(code, 5, text)
+        self.assertEqual({payload['quorum_id'] for operation, payload, _ in api.calls if operation == 'resolve_role'},
+                         {QUORUM})
+        self.assertNotIn('quorum_lookup', api.ops()[api.ops().index('agent_leave'):])
+        self.replacement_refused()
+
+    def lost_join(self, api):
+        """The first adopt connect's agent_join commits remotely, but its answer is lost."""
+        self.parent()
+        self.slot = self.prepare(self.adopt_scope())['slot_id']
+        self.attest(self.slot)
+        self.cap = self.capability(self.slot)
+        api.lost.append('agent_join')
+        code, result, text = self.connect(api, self.cap)
+        self.assertEqual(code, 5, text)
+        record = self.setting(self.slot)
+        self.assertNotIn('agent_id', record['target'])
+        joins = [request for operation, _, request in api.calls if operation == 'agent_join']
+        self.assertEqual(record['registration'], {'state': 'sent', 'request_id': joins[0]})
+        return joins[0]
+
+    def unresolved_refused(self):
+        error = self.denied('native_worker_binding_denied', self.prepare, self.adopt_scope())
+        self.assertEqual(error.reason, 'previous_worker_registration_unresolved')
+        diagnostic = error.diagnostic()
+        self.assertEqual(diagnostic['previous_worker'], {'slot_id': self.slot, 'agent_id': None})
+        self.assertIn('session worker stop ' + self.slot + ' --leave', diagnostic['next_step'])
+
+    @isolated_profiles
+    def test_lost_join_answer_keeps_the_claim_through_stop_and_expiry(self):
+        import quorum_claude_worker as worker
+        api = OwnerApi()
+        self.lost_join(api)
+        with claude(): worker.stop_slot(self.root, self.slot)
+        self.unresolved_refused()
+        self.now += 7200
+        self.unresolved_refused()
+
+    @isolated_profiles
+    def test_replayed_join_recovers_the_agent_then_retirement_releases(self):
+        api = OwnerApi()
+        request = self.lost_join(api)
+        code, result, text = self.cli(api, 'session', 'worker', 'stop', self.slot, '--leave')
+        self.assertEqual((code, result['data']['worker_agent']), (0, 'retired'), text)
+        joins = [(payload, rid) for operation, payload, rid in api.calls if operation == 'agent_join']
+        self.assertEqual(len(joins), 2)
+        self.assertEqual(joins[0], joins[1], 'the same pinned payload and stable request ID')
+        self.assertEqual(joins[1][1], request)
+        self.assertEqual(api.calls[-1], ('agent_leave', {'agent_id': AGENT}, 'leave:' + AGENT))
+        self.assertEqual(self.setting(self.slot)['target']['agent_id'], AGENT)
+        self.assertTrue(self.prepare(self.adopt_scope())['slot_id'])
+
+    @isolated_profiles
+    def test_verify_retired_also_replays_an_unresolved_join(self):
+        from quorum_api import QuorumError
+        import quorum_claude_worker as worker
+        api = OwnerApi()
+        self.lost_join(api)
+        with claude(): worker.stop_slot(self.root, self.slot)
+        api.answers['resolve_role'] = lambda payload: QuorumError('recipient_ambiguous_or_missing')
+        api.answers['agent_status'] = lambda payload: QuorumError('auth_required', denial='agent_denied')
+        code, result, text = self.cli(api, 'session', 'worker', 'verify-retired', self.slot)
+        self.assertEqual((code, result['data']['worker_agent']), (0, 'retired'), text)
+        self.assertEqual(api.ops().count('agent_join'), 2)
+        self.assertTrue(self.prepare(self.adopt_scope())['slot_id'])
+
+    @isolated_profiles
+    def test_replay_error_keeps_the_claim(self):
+        api = OwnerApi()
+        self.lost_join(api)
+        api.fail['agent_join'] = ['auth_required']
+        code, result, text = self.cli(api, 'session', 'worker', 'stop', self.slot, '--leave')
+        self.assertEqual((code, result['code']), (3, 'auth_required'), text)
+        self.assertNotIn('agent_leave', api.ops())
+        self.unresolved_refused()
+        # The slug now naming another quorum is refused before any device or agent request.
+        api.lookup = OTHER_QUORUM
+        before = api.ops().count('agent_join')
+        code, result, text = self.cli(api, 'session', 'worker', 'verify-retired', self.slot)
+        self.assertEqual((code, result['code']), (3, 'native_worker_binding_denied'), text)
+        self.assertEqual(api.ops().count('agent_join'), before)
+        self.unresolved_refused()
+
+    @isolated_profiles
+    def test_answered_join_with_a_lost_pin_is_recovered_from_the_saved_registration(self):
+        import quorum_claude_worker as worker
+        api = OwnerApi()
+        self.parent()
+        self.slot = self.prepare(self.adopt_scope())['slot_id']
+        self.attest(self.slot)
+        with patch('quorum_claude_worker.pin_target', side_effect=OSError('crash')):
+            code, result, text = self.connect(api, self.capability(self.slot))
+        self.assertNotEqual(code, 0, text)
+        with claude(): worker.stop_slot(self.root, self.slot)
+        self.unresolved_refused()
+        code, result, text = self.cli(api, 'session', 'worker', 'stop', self.slot, '--leave')
+        self.assertEqual((code, result['data']['worker_agent']), (0, 'retired'), text)
+        self.assertEqual(api.ops().count('agent_join'), 1, 'the saved registration answers without a replay')
+        self.assertTrue(self.prepare(self.adopt_scope())['slot_id'])
+
+    @isolated_profiles
+    def test_a_claim_is_written_before_its_slot(self):
+        """A crash between them leaves a claim to nothing (released), never a slot without a claim."""
+        import quorum_claude_worker as worker
+        self.parent()
+        with patch('quorum_claude_worker._write_slot', side_effect=OSError('crash')):
+            with self.assertRaises(OSError): self.prepare(self.adopt_scope())
+        first = self.prepare(self.adopt_scope())['slot_id']
+        self.denied('native_worker_binding_denied', self.prepare, self.adopt_scope())
+        with claude(): worker.stop_slot(self.root, first)
+        self.assertTrue(self.prepare(self.adopt_scope())['slot_id'])
+
+    @isolated_profiles
+    def test_normal_connect_records_the_same_join_request(self):
+        api = OwnerApi()
+        self.adopted(api)
+        record = self.setting(self.slot)
+        join = [rid for operation, _, rid in api.calls if operation == 'agent_join']
+        self.assertEqual((record['registration']['request_id'], record['target']['agent_id']), (join[0], AGENT))
+
+    @isolated_profiles
+    def test_expired_connected_worker_blocks_a_replacement(self):
+        api = OwnerApi()
+        self.adopted(api)
+        self.now += 7200
+        self.replacement_refused()
+        self.assertNotIn('agent_leave', api.ops())
+
+    @isolated_profiles
+    def test_one_live_adopting_worker_per_parent_agent(self):
+        import quorum_claude_worker as worker
+        self.parent()
+        first = self.prepare(self.adopt_scope())['slot_id']
+        error = self.denied('native_worker_binding_denied', self.prepare, self.adopt_scope())
+        self.assertEqual(error.reason, 'actor_claimed')
+        with claude(): worker.stop_slot(self.root, first)
+        second = self.prepare(self.adopt_scope())['slot_id']
+        self.assertNotEqual(first, second)
+
+
 @OWNER_PROOF
 class DeliveryTests(Bound):
     @isolated_profiles
