@@ -97,7 +97,10 @@ starting new paid agents. Replies/notices never spawn workers or reply loops.
 
 The same member flag works for a proven Codex `--transport tool-inbox` binding.
 The worker receives, checks and replies with its own identity; its parent gains
-no task authority. For a Claude logical worker, the receiving owner must put
+no task authority. A grant covers tasks the worker receives during its finite
+brief; it is not unattended execution until the owner stops it (see
+[background capability](native-inbox.md#background-capability)).
+For a Claude logical worker, the receiving owner must put
 `"accept_tasks_from_members": true` in its original immutable preparation scope,
 with no `coordinator_role` and inline mode, then pass
 `--accept-tasks-from-members` on that worker's connect command. Its task check is:
