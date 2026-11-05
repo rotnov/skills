@@ -4,7 +4,7 @@ from pathlib import Path
 import unittest
 
 from quorum_test_support import isolated_profiles
-from test_quorum_native_inbox import (AGENT, CHILD, M1, M2, OTHER, OWNER_PROOF, PARENT, Api, Harness, caller,
+from test_quorum_native_inbox import (AGENT, CHILD, M1, M2, OTHER, OWNER_PROOF, PARENT, Api, Harness, OtherConnection, caller,
                                       message, rollout)
 
 NEW = '01a16f00-0000-7000-8000-00000000a104'
@@ -68,6 +68,61 @@ class WorkerRebindTests(Harness):
                 self.assertEqual(code, 3)
                 self.assertIn(refused['code'], ('session_binding_denied', 'native_worker_binding_denied'))
         self.assertEqual(self.spawns, [])
+
+    def rebind_during(self, api, ledger, record, operation='session_requirements'):
+        """Complete a real rebind by the new worker while the previous worker's command awaits `operation`."""
+        from quorum_native_inbox import rebind
+        def concurrent():
+            with OtherConnection(ledger.root) as other, caller(self.home, sid=NEW):
+                rebind(Api(), other, record, PARENT)
+        api.hooks[operation] = concurrent
+
+    @isolated_profiles
+    def test_rebind_after_the_previous_workers_proof_refuses_its_receive_without_disclosure(self):
+        api = Api(inbox=[message(M1, body='private-peer-body')])
+        ledger, record = self.bound(api)
+        self.rebind_during(api, ledger, record)
+        with caller(self.home):
+            mark = len(api.calls)
+            code, result, text = self.receive(api)
+        self.assertNotIn('session_requirements', api.hooks, 'the rebind ran inside the old receive')
+        self.assertEqual((code, result['code']), (3, 'native_worker_binding_denied'), text)
+        self.assertNotIn('private-peer-body', text)
+        self.assertNotIn(M1, text)
+        self.assertNotIn('session_inbox', [call[0] for call in api.calls[mark:]])
+        self.assertIsNone(ledger.setting('delivery:' + M1))
+        # The replacement worker receives the message.
+        with caller(self.home, sid=NEW):
+            code, offered, text = self.cli(api, 'session', '--session-id', CHILD, 'receive', '--wait-seconds', '0')
+        self.assertEqual((code, offered['data']['message_id']), (0, M1), text)
+
+    @isolated_profiles
+    def test_rebind_after_the_previous_workers_proof_refuses_its_receipt_reply_and_send(self):
+        api = Api(inbox=[message(M1)])
+        ledger, record = self.bound(api)
+        with caller(self.home):
+            self.assertEqual(self.receive(api)[1]['data']['message_id'], M1)
+        commands = ((('received', M1), b''), (('reply', M1, '--text-stdin'), b'answer'),
+                    (('send', '--to-role', 'peer', '--request-id', 'r-1', '--text-stdin'), b'hello'))
+        for argv, stdin in commands:
+            with self.subTest(command=argv[0]):
+                record = ledger.setting('session-agent')
+                if record['worker_binding']['session_ref'] != CHILD:
+                    # Return the binding to the previous worker for the next race.
+                    with caller(self.home, sid=CHILD):
+                        self.assertEqual(self.rebind(api, sid=CHILD)[0], 0)
+                    record = ledger.setting('session-agent')
+                self.rebind_during(api, ledger, record)
+                mark = len(api.calls)
+                with caller(self.home):
+                    code, result, text = self.cli(api, 'session', *argv, stdin=stdin)
+                self.assertNotIn('session_requirements', api.hooks)
+                self.assertEqual((code, result['code']), (3, 'native_worker_binding_denied'), text)
+                sent = [call[0] for call in api.calls[mark:]]
+                for operation in ('session_ack', 'session_reply', 'message_send', 'session_inbox'):
+                    self.assertNotIn(operation, sent)
+        self.assertEqual(api.acked, [])
+        self.assertEqual(ledger.setting('delivery:' + M1)['state'], 'offered')
 
     @isolated_profiles
     def test_same_worker_recover_is_unchanged_and_repeat_rebind_is_idempotent(self):

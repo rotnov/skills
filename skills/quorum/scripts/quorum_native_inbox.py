@@ -528,6 +528,19 @@ def arm(ledger, record):
     return status(ledger, record)
 
 
+def binding_guard(ledger, binding):
+    """Authority for one already proven worker command: the persisted binding must still name this worker.
+
+    A rebind that completes after the caller's proof (for example while it waits on a service call or
+    for the receive locks) refuses every later operation and disclosure of the previous worker.
+    """
+    def authorize():
+        try: current = _check_binding(ledger.setting('session-agent'))
+        except NativeInboxError: current = None
+        if current != binding: raise NativeInboxError('native_worker_binding_denied', 'binding_changed')
+    return authorize
+
+
 def rebind(api, ledger, record, parent_thread_id, *, clock=time.time):
     """Re-establish this existing binding for a new verified worker of the same parent thread.
 
@@ -703,6 +716,8 @@ def receive(api, auth_ledger, ledger, record, wait_seconds, *, waiter=None, pres
                 'transport': TRANSPORT, 'wait_seconds': wait_seconds, **hello_once(ledger)}
     with LocalSupervisorLock(ledger.root), FileLock(ledger.root / 'listener.lock'):
         with control_lock(ledger):
+            # A rebind completed before these locks were taken excludes this caller before any read.
+            if authorize is not None: api.check()
             if not enabled(ledger): return result('stopped', None)
             run_id = str(uuid.uuid4())
             # Publish this exact generation and its release marker together under the control lock.

@@ -1066,13 +1066,15 @@ def _dispatch(args, auth_ledger, register_agent):
             if tool: return {**inbox.arm(ledger,record),'session_id':sid}
             return {**start(auth_ledger.root,ledger,sid,api=api,endpoint=endpoint,grok_transport=transport,
                             recovery=args.action=='recover'),'session_id':sid}
-        if args.action=='receive': return inbox.receive(api,auth_ledger,ledger,record,args.wait_seconds)
+        if args.action=='receive': return inbox.receive(api,auth_ledger,ledger,record,args.wait_seconds,
+                                                          authorize=inbox.binding_guard(ledger,binding))
         scope={'agent_id':record['agent_id'],'session_ref':sid}
         # Every mutating send/reply requires the exact current server release
         # first; an older server lacks the priority RPCs this client calls.
         if args.action in ('received','reconcile','reply','send'):
             ReleaseGuard(api, ledger).check()
-        if tool and args.action=='received': return inbox.confirm(api,ledger,record,args.message_id)
+        if tool and args.action=='received': return inbox.confirm(api,ledger,record,args.message_id,
+                                                                       authorize=inbox.binding_guard(ledger,binding))
         if args.action == 'reconcile' and getattr(args, 'confirmed_absent', False):
             if getattr(args, 'confirmed_queued', False): raise ValueError('session_reconcile_denied')
             return reconcile_absent(api, ledger, record, args.message_id, getattr(args, 'attempt_id', None))
@@ -1089,7 +1091,8 @@ def _dispatch(args, auth_ledger, register_agent):
             # A direct caller without this option sends an ordinary message.
             priority=getattr(args,'priority','normal') or 'normal'
             if priority not in PRIORITIES: raise ValueError('invalid_priority')
-            if tool and args.action=='reply': return inbox.reply(api,ledger,record,args.message_id,text,priority)
+            if tool and args.action=='reply': return inbox.reply(api,ledger,record,args.message_id,text,priority,
+                                                                     authorize=inbox.binding_guard(ledger,binding))
             if args.action=='reply':
                 result=api.call('session_reply',{**scope,'message_id':args.message_id,'body':text,
                                                  'priority':priority})
@@ -1104,6 +1107,11 @@ def _dispatch(args, auth_ledger, register_agent):
                     api.call('session_ack',{**scope,'message_id':args.message_id})
                     ledger.setting('delivery:'+args.message_id,{'state':'acked'})
                 return result
+            if tool:
+                # A rebind after this worker's proof also ends its sends; checked again just before sending.
+                guard=inbox.binding_guard(ledger,binding)
+                guard()
+                api=inbox._guarded(api,guard)
             try:
                 peer=api.call('resolve_role',{'quorum_id':record['quorum_id'],'role':args.to_role,'project_ref':record['project_ref']})
             except QuorumError as error:

@@ -181,7 +181,10 @@ working directory, and while the previous worker is inside a receive
 (`worker_already_running`). It extends nothing. `rebind: rebound` records
 `worker_rebind` (new and previous worker UUID, count) and resets the presence
 epoch, so the next receive says Hello; the same worker gets `rebind: unchanged`.
-Afterwards the previous worker and the parent are refused. The new worker passes
+Afterwards the previous worker and the parent are refused; a previous-worker
+receive, receipt, reply or send already past its proof re-reads the persisted
+binding under the receive locks, before each service call and before disclosure,
+and stops with `native_worker_binding_denied`. The new worker passes
 `--session-id <binding-session-ref>` to every session command; envelope receipt
 and reply commands already carry it. An unreceipted offer is offered again. A
 local knowledge-capture grant bound to the previous worker does not transfer.
