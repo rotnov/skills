@@ -1,5 +1,7 @@
 """Member intake through the existing native/tool/cloud fixtures; no provider launch."""
+import json
 import os
+from pathlib import Path
 import sys
 import unittest
 from unittest.mock import patch
@@ -136,6 +138,15 @@ class ClaudeStandingGrantRouteTests(claude_cases.Bound):
             # Exactly what `session connect --accept-tasks-from-members --standing-grants-from` stores.
             self.assertEqual(record['delegation'], member_grant(record, 'coordinator'))
             self.assertEqual(record['delegation']['standing_grants']['from_role'], 'coordinator')
+            # The envelope points this worker at its own capability standing-check and the canonical procedure.
+            api.inbox.append(claude_cases.message(claude_cases.M2))
+            envelope = json.dumps(self.offer(api))
+            self.assertIn('session --worker-capability ' + str(self.cap) + ' standing-check ' + claude_cases.M2,
+                          envelope)
+            self.assertIn('references/delegation.md#standing-owner-authorizations', envelope)
+            doc = (Path(claude_cases.SCRIPTS).parent / 'references/delegation.md').read_text()
+            self.assertIn('standing_grants_from', doc)
+            self.assertNotIn('A Claude worker capability, a Grok Bot cloud binding', doc)
             for action in ('client-test', 'skill-refresh'):
                 with self.subTest(action=action):
                     code, result, text = self.worker(api, 'standing-check', claude_cases.M1, '--action', action)

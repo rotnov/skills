@@ -135,8 +135,13 @@ grant and behaves as before. A reconnect keeps an existing grant but never adds
 or changes one (`delegation_scope_changed`); the receiving owner uses
 `session delegate --members --standing-grants-from <coordinator-role>`, and
 `session delegate --members` without the flag, or `--revoke`, withdraws it.
-A Claude worker capability, a Grok Bot cloud binding and a coordinator-only
-grant never hold standing grants; such a request stays held for the owner.
+A Claude worker holds them only when its owner-prepared scope sets
+`"accept_tasks_from_members": true` and `"standing_grants_from": "<coordinator-role>"`
+and it connects with the matching `--standing-grants-from`; it then runs the
+check below as `session --worker-capability <capability-file> standing-check
+...`. A worker scope without that key, a Grok Bot cloud binding and a
+coordinator-only grant never hold standing grants; such a request stays held
+for the owner.
 
 Act on a standing request only when the owner typed it in this chat, or when an
 authenticated Quorum message asks and, immediately before acting, this exact
