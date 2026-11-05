@@ -13,9 +13,10 @@ arguments or a peer-selected session. No model, listener or provider is started.
 Server commands check the current required release without stopping or restarting
 a resident run. Exact identity, cwd, worker proof and endpoint markers are reread
 after profile/token/proof waits and before transport or returning results.
-Codex and Claude use the same commands and contract; an existing logical Claude
-worker capability does not authorize these operations. Use an authorized native
-binding or report the blocker; do not substitute another session.
+Codex and Claude use the same commands and contract. A Claude worker capability
+authorizes knowledge only as its owner pinned it at `session worker prepare`
+(see [Claude worker knowledge](#claude-worker-knowledge)); otherwise use an
+authorized native binding or report the blocker; do not substitute another session.
 `binding_revoked` means this chat's binding belongs to an agent that left or was
 revoked; run `session connect` again from this chat, then retry.
 
@@ -32,6 +33,28 @@ never retries or substitutes an approximate roster/context store. A missing RPC
 or rejected backend operation reports `knowledge_backend_unavailable_or_rejected`;
 check the owner's deployment/access instead of bypassing it. Transport and
 credential errors keep their existing bounded codes, without response bodies.
+
+## Claude worker knowledge
+
+A Claude member that joined or created through its worker has no parent binding,
+so its worker runs these commands with `--worker-capability <capability-file>`
+appended, after `connect`:
+
+- An accept or create scope with the optional `"knowledge"` key, a subset of
+  `["search","read","propose"]`, permits exactly those: `search`, `read` (never
+  `audit`) and `write` with `operation: "propose"`. Verification, administration,
+  other write operations, `catalog`, sources, `index`, capture and `--owner-action`
+  are refused with `native_worker_binding_denied` reason `operation_denied` before
+  any service call. A scope without the key has no knowledge operation.
+- An adopt scope keeps the owner maintenance in
+  [Claude worker](claude-worker.md#adopting-this-chats-binding).
+
+Identity is the worker's own connected agent. The capability and the persisted
+worker binding are rechecked before and after each call. The scope never widens
+server access: every call still needs the space attachment and that member's
+reader/writer grant. A new wiki page needs retained sources, which the worker
+cannot write; propose a legacy entry, cite existing sources, or route the record
+to a member with source access.
 
 ## Space and authority
 

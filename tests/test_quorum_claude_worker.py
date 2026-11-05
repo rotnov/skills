@@ -1906,6 +1906,149 @@ class AdoptTests(Bound):
 
 
 @OWNER_PROOF
+class MemberKnowledgeTests(Bound):
+    """A create/accept scope's optional pinned knowledge subset (#115): search, read and propose only."""
+    SPACE = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    ENTRY = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'
+
+    def knowledge(self, api, action, data, *extra):
+        return self.cli(api, 'knowledge', action, '--json-stdin', '--worker-capability', str(self.cap), *extra,
+                        stdin=json.dumps(data).encode())
+
+    def write(self, operation='propose'):
+        payloads = {'propose': {'entry_id': self.ENTRY, 'type': 'fact', 'title': 'Title', 'body': 'Body'},
+                    'verify': {'entry_id': self.ENTRY, 'expected_revision': 1, 'evidence': 'e',
+                               'owner_assertion': True},
+                    'withdraw': {'entry_id': self.ENTRY, 'expected_revision': 1}}
+        return {'space_id': self.SPACE, 'operation': operation, 'payload': payloads[operation]}
+
+    def refused(self, api, action, data, *extra, reason='operation_denied'):
+        before = len(api.calls)
+        code, result, text = self.knowledge(api, action, data, *extra)
+        self.assertEqual((code, result['code'], result['data'].get('reason')),
+                         (3, 'native_worker_binding_denied', reason), text)
+        self.assertEqual(len(api.calls), before, 'refused before any service call')
+
+    def test_knowledge_scope_is_an_exact_member_subset(self):
+        import quorum_claude_worker as worker
+        for value in (['verify'], ['admin'], ['search', 'verify'], ['search', 'admin'], ['catalog'], [], 'search',
+                      ['search', 'search'], [1], {'search': True}, None):
+            for scope in (self.scope(), self.accept_scope()):
+                with self.subTest(value=value, mode=scope['mode']):
+                    error = self.denied('native_worker_binding_denied', worker.normalize_scope,
+                                        {**scope, 'knowledge': value})
+                    self.assertEqual(error.reason, 'scope_invalid')
+        # An adopt scope already carries owner maintenance; it takes no member subset.
+        adopt = self.scope(mode='adopt', knowledge=['search'])
+        adopt.pop('access')
+        error = self.denied('native_worker_binding_denied', worker.normalize_scope, adopt)
+        self.assertEqual(error.reason, 'scope_invalid')
+        error = self.denied('native_worker_binding_denied', self.prepare, self.accept_scope(knowledge=['verify']))
+        self.assertEqual(error.reason, 'scope_invalid')
+        self.assertFalse((self.root / 'claude-workers').exists(), 'nothing prepared')
+        scope = worker.normalize_scope(self.accept_scope(knowledge=['propose', 'search']))
+        self.assertEqual(scope['knowledge'], ['search', 'propose'])
+        self.assertEqual(scope['operations'], [*worker.OPERATIONS['accept'], 'knowledge'])
+        # Omission keeps the exact legacy scope, operations and hash.
+        legacy = worker.normalize_scope(self.accept_scope())
+        self.assertNotIn('knowledge', legacy)
+        self.assertEqual(legacy['operations'], list(worker.OPERATIONS['accept']))
+        self.assertEqual(legacy, {key: value for key, value in scope.items() if key != 'knowledge'}
+                         | {'operations': list(worker.OPERATIONS['accept'])})
+        # An explicit operations list may drop knowledge; it cannot add it without the key.
+        narrowed = worker.normalize_scope(self.accept_scope(knowledge=['search'], operations=['accept', 'connect']))
+        self.assertEqual(narrowed['operations'], ['accept', 'connect'])
+        self.denied('native_worker_binding_denied', worker.normalize_scope,
+                    self.accept_scope(operations=['accept', 'connect', 'knowledge']))
+
+    @isolated_profiles
+    def test_search_read_and_propose_run_as_the_worker_binding(self):
+        from quorum_api import QuorumError
+        api = OwnerApi()
+        self.bound(api, self.accept_scope(knowledge=['search', 'read', 'propose']))
+        cases = (('search', {'space_id': self.SPACE, 'query': 'deploy'}, (), 'knowledge_search', None),
+                 ('read', {'space_id': self.SPACE, 'entry_id': self.ENTRY}, (), 'knowledge_read', None),
+                 ('write', self.write(), ('--request-id', 'propose-1'), 'knowledge_write', 'propose-1'))
+        for action, data, extra, rpc, request in cases:
+            with self.subTest(action=action):
+                code, result, text = self.knowledge(api, action, data, *extra)
+                self.assertEqual(code, 0, text)
+                operation, payload, request_id = api.calls[-1]
+                self.assertEqual((operation, payload['agent_id'], payload['session_ref'], request_id),
+                                 (rpc, AGENT, actor(), request))
+                self.assertEqual({key: payload[key] for key in data}, data)
+        # The server's own space ACL still decides; its denial is reported, never bypassed.
+        api.answers['knowledge_search'] = lambda _: QuorumError('service_error')
+        code, result, text = self.knowledge(api, 'search', {'space_id': self.SPACE, 'query': 'deploy'})
+        self.assertEqual((code, result['code']), (3, 'knowledge_backend_unavailable_or_rejected'), text)
+
+    @isolated_profiles
+    def test_verify_admin_and_other_owner_commands_are_refused_without_a_call(self):
+        api = OwnerApi()
+        self.bound(api, self.accept_scope(knowledge=['search', 'read', 'propose']))
+        before = len(api.calls)
+        self.refused(api, 'write', self.write('verify'), '--request-id', 'verify-1')
+        self.refused(api, 'write', self.write('verify'), '--request-id', 'verify-1', '--owner-action')
+        self.refused(api, 'write', self.write('withdraw'), '--request-id', 'withdraw-1')
+        self.refused(api, 'admin', {'operation': 'create', 'payload': {'space_id': self.SPACE, 'name': 'Team'}},
+                     '--request-id', 'admin-1', '--owner-action')
+        self.refused(api, 'admin', {'operation': 'create', 'payload': {'space_id': self.SPACE, 'name': 'Team'}},
+                     '--request-id', 'admin-1')
+        self.refused(api, 'read', {'space_id': self.SPACE, 'entry_id': self.ENTRY, 'audit': True}, '--owner-action')
+        self.refused(api, 'read', {'space_id': self.SPACE, 'entry_id': self.ENTRY, 'audit': True})
+        self.refused(api, 'search', {'space_id': self.SPACE, 'query': 'deploy'}, '--owner-action')
+        for action in ('catalog', 'source-read', 'source-write', 'index', 'capture-grant'):
+            with self.subTest(action=action):
+                self.refused(api, action, {'space_id': self.SPACE}, '--request-id', 'other-1')
+        self.refused(api, 'capture', {'space_id': self.SPACE, 'entry': self.write()['payload']},
+                     '--request-id', 'capture-1', '--material-result')
+        self.assertEqual(len(api.calls), before)
+
+    @isolated_profiles
+    def test_a_scope_without_the_key_or_command_is_refused_without_a_call(self):
+        api = OwnerApi()
+        self.bound(api)  # A legacy accept scope: no knowledge operation, exactly as before.
+        self.assertNotIn('knowledge', self.setting(self.slot)['scope'])
+        self.refused(api, 'search', {'space_id': self.SPACE, 'query': 'deploy'})
+        self.refused(api, 'write', self.write(), '--request-id', 'propose-1')
+        api = OwnerApi()
+        self.bound(api, self.accept_scope(knowledge=['search']), handle='agent_02 quorum')
+        self.refused(api, 'read', {'space_id': self.SPACE, 'entry_id': self.ENTRY})
+        self.refused(api, 'write', self.write(), '--request-id', 'propose-1')
+        code, _, text = self.knowledge(api, 'search', {'space_id': self.SPACE, 'query': 'deploy'})
+        self.assertEqual(code, 0, text)
+
+    @isolated_profiles
+    def test_knowledge_needs_the_connected_unchanged_binding(self):
+        api = OwnerApi()
+        search = {'space_id': self.SPACE, 'query': 'deploy'}
+        self.bound(api, self.accept_scope(knowledge=['search']), connect=False)
+        self.refused(api, 'search', search, reason='target_pending')
+        self.assertEqual(self.connect(api, self.cap)[0], 0, 'connect')
+        # A persisted worker binding that no longer names this slot refuses before the call.
+        ledger = self.worker_ledger(self.slot)
+        record = ledger.setting('session-agent')
+        ledger.setting('session-agent', {**record, 'worker_binding': {**record['worker_binding'], 'slot_id': INVITE}})
+        before = len(api.calls)
+        code, result, text = self.knowledge(api, 'search', search)
+        self.assertEqual((code, result['code']), (3, 'native_worker_binding_denied'), text)
+        self.assertEqual(len(api.calls), before)
+        # A binding replaced while the service call is in flight withholds its result.
+        ledger.setting('session-agent', record)
+        api.hooks['knowledge_search'] = lambda: ledger.setting('session-agent', {**record, 'agent_id': PEER})
+        code, result, text = self.knowledge(api, 'search', search)
+        self.assertEqual(code, 3, text)
+        self.assertEqual(api.ops()[-1], 'knowledge_search')
+        ledger.setting('session-agent', record)
+        import quorum_claude_worker as worker
+        with claude(): worker.stop_slot(self.root, self.slot)
+        before = len(api.calls)
+        code, result, text = self.knowledge(api, 'search', search)
+        self.assertEqual((code, result['code']), (3, 'native_worker_slot_terminal'), text)
+        self.assertEqual(len(api.calls), before)
+
+
+@OWNER_PROOF
 class DeliveryTests(Bound):
     @isolated_profiles
     def test_claude_offer_precedes_stdout_and_explicit_receipt_only(self):
