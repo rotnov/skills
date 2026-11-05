@@ -211,7 +211,7 @@ class InvitationRoleTests(unittest.TestCase):
             self.assertEqual(result['assigned'], {'role': 'jekman', 'project_ref': 'velvil'})
             for key in keys:
                 prompt = result[key]
-                self.assertIn('--role jekman --project-ref "velvil" --exclusive-role', prompt)
+                self.assertIn("--role jekman --project-ref 'velvil' --exclusive-role", prompt)
                 self.assertIn('never choose, derive or append another role', prompt)
                 self.assertIn('role_held_by_other_identity', prompt)
 
@@ -220,7 +220,26 @@ class InvitationRoleTests(unittest.TestCase):
         from quorum_invitations import create_id_invitation
         result = create_id_invitation(self.Api(), self.config(), 'team', '123', 'r', role='jekman')
         self.assertEqual(result['assigned'], {'role': 'jekman', 'project_ref': 'team'})
-        self.assertIn('--role jekman --project-ref "team"', result['session_prompt'])
+        self.assertIn("--role jekman --project-ref 'team'", result['session_prompt'])
+
+    @isolated_profiles
+    def test_normal_project_references_render_single_quoted(self):
+        from quorum_invitations import create_id_invitation
+        for project_ref in ('velvil', 'rotnov/skills', 'team.v2_main', 'example.com:rotnov/skills', 'me@host/x-y'):
+            result = create_id_invitation(self.Api(), self.config(), 'team', '123', 'r', role='jekman',
+                                          project_ref=project_ref)
+            self.assertEqual(result['assigned']['project_ref'], project_ref)
+            self.assertIn(f"--project-ref '{project_ref}' --exclusive-role", result['session_prompt'])
+        only = create_id_invitation(self.Api(), self.config(), 'team', '123', 'r', project_ref='rotnov/skills')
+        self.assertIn("Assigned shared project reference: 'rotnov/skills'", only['session_prompt'])
+
+    @isolated_profiles
+    def test_unsafe_slug_is_never_defaulted_into_the_command(self):
+        from quorum_invitations import create_id_invitation
+        api = self.Api()
+        with self.assertRaisesRegex(ValueError, 'invalid_project_ref'):
+            create_id_invitation(api, self.config(), 'te$(id)', '123', 'r', role='jekman')
+        self.assertEqual(api.calls, [])
 
     @isolated_profiles
     def test_without_assignment_the_prompt_is_unchanged(self):
@@ -236,7 +255,16 @@ class InvitationRoleTests(unittest.TestCase):
         for role, project_ref, code in (('Jek Man', None, 'invalid_role'), ('-x', None, 'invalid_role'),
                                         ('jekman', '', 'invalid_project_ref'),
                                         ('jekman', 'a\nb', 'invalid_project_ref'),
-                                        ('jekman', 'x' * 501, 'invalid_project_ref')):
+                                        ('jekman', 'x' * 501, 'invalid_project_ref'),
+                                        # Shell expansion, command substitution, quoting and word splitting on
+                                        # bash, zsh or PowerShell; a leading dash would read as an option.
+                                        ('jekman', '$HOME', 'invalid_project_ref'),
+                                        ('jekman', 'a`id`', 'invalid_project_ref'),
+                                        ('jekman', '$(id)', 'invalid_project_ref'),
+                                        ('jekman', "it's", 'invalid_project_ref'),
+                                        ('jekman', 'two words', 'invalid_project_ref'),
+                                        ('jekman', '-x', 'invalid_project_ref'),
+                                        (None, '$HOME', 'invalid_project_ref')):
             api = self.Api()
             with self.assertRaisesRegex(ValueError, code):
                 create_id_invitation(api, self.config(), 'team', '123', 'r', role=role, project_ref=project_ref)

@@ -138,6 +138,9 @@ def authorizations(coordinator_role, standing=True):
 
 
 ROLE = re.compile('[a-z][a-z0-9-]{0,47}')
+# A conservative charset that is inert inside single quotes in bash, zsh and PowerShell alike (no quote, `$`,
+# backtick, space or glob), still covering slugs, owner/repo, paths and URL-like references; no leading `-`.
+PROJECT_REF = re.compile('[A-Za-z0-9._/:@][A-Za-z0-9._/:@-]{0,499}')
 
 
 def assignment(slug, role=None, project_ref=None):
@@ -148,17 +151,17 @@ def assignment(slug, role=None, project_ref=None):
     """
     if role is None and project_ref is None: return None, ''
     if role is not None and not ROLE.fullmatch(role): raise ValueError('invalid_role')
-    if project_ref is not None and (not isinstance(project_ref, str) or not 1 <= len(project_ref) <= 500
-                                    or not project_ref.isprintable() or project_ref != project_ref.strip()):
+    if role is not None and project_ref is None: project_ref = slug
+    # Checked before any server call: the value is pasted into a shell command on the recipient's machine.
+    if not isinstance(project_ref, str) or not PROJECT_REF.fullmatch(project_ref):
         raise ValueError('invalid_project_ref')
     if role is None:
         return {'role': None, 'project_ref': project_ref}, (
-            f'Assigned shared project reference: {json.dumps(project_ref)}; use exactly it as --project-ref. ')
-    project_ref = slug if project_ref is None else project_ref
+            f"Assigned shared project reference: '{project_ref}'; use exactly it as --project-ref. ")
     return {'role': role, 'project_ref': project_ref}, (
         f'Assigned binding (binding instruction, not a suggestion): connect this session with exactly role '
-        f'{json.dumps(role)} and shared project reference {json.dumps(project_ref)}, i.e. session connect with '
-        f'--role {role} --project-ref {json.dumps(project_ref)} --exclusive-role, or the same role and project in '
+        f"{json.dumps(role)} and shared project reference {json.dumps(project_ref)}, i.e. session connect with "
+        f"--role {role} --project-ref '{project_ref}' --exclusive-role, or the same role and project in "
         'a Claude worker scope. This overrides every default or fallback role; never choose, derive or append '
         'another role. If connect returns role_held_by_other_identity or role_held_by_own_agent, stop and report '
         'that code to me; do not pick a different role. ')
