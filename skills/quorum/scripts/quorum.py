@@ -93,7 +93,7 @@ def main(argv=None):
             import quorum_claude_worker as claude_worker
             # A Claude worker route validates its capability and arguments before the root ledger exists.
             if claude_worker.selected(args):
-                value = claude_worker.manage(args)
+                value = claude_worker.manage(args, register_agent)
                 if value is not None:
                     print(json.dumps({'ok': True, 'code': 'ok', 'data': value}))
                     return 0

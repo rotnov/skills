@@ -49,7 +49,8 @@ class NativeInboxError(ValueError):
                'cwd_mismatch', 'operation_denied', 'scope_mismatch', 'request_override', 'target_pending',
                'target_mismatch', 'service_mismatch', 'service_unconfigured', 'wait_invalid', 'selector_conflict',
                'management_only', 'create_unresolved', 'evidence_unpersisted', 'recovery_needed', 'parent_route_visible',
-               'parent_binding_missing', 'parent_binding_running', 'previous_worker_agent_active'}
+               'parent_binding_missing', 'parent_binding_running', 'previous_worker_agent_active',
+               'previous_worker_registration_unresolved'}
     # Existing fixed local codes a failure after dispatch keeps, now with its remote effect.
     DISPATCHED_CODES = {'operation_failed', 'session_delivery_unknown', 'session_binding_denied',
                         'session_not_connected', 'binding_conflict', 'coordinator_changed', 'invalid_response',
@@ -69,7 +70,9 @@ class NativeInboxError(ValueError):
         # Service and slot identifiers of the owner's own earlier worker only, for its retirement step.
         self.previous = ({key: previous[key] for key in ('slot_id', 'agent_id')}
                          if isinstance(previous, dict) and set(previous) == {'slot_id', 'agent_id'}
-                         and all(isinstance(value, str) and CANONICAL.fullmatch(value) for value in previous.values())
+                         and isinstance(previous['slot_id'], str) and CANONICAL.fullmatch(previous['slot_id'])
+                         and (previous['agent_id'] is None
+                              or isinstance(previous['agent_id'], str) and CANONICAL.fullmatch(previous['agent_id']))
                          else None)
         code = code if code in allowed else 'native_worker_unavailable'
         super().__init__(code)
@@ -128,7 +131,15 @@ class NativeInboxError(ValueError):
                                    'status cannot apply. It is in ' + route + '. SQLite then discards only the '
                                    'uncommitted local changes; completed remote operations and earlier committed '
                                    'local steps remain.')
-        elif self.reason == 'previous_worker_agent_active' and self.previous:
+        elif self.reason == 'previous_worker_registration_unresolved' and self.previous:
+            result['previous_worker'] = dict(self.previous)
+            result['next_step'] = ("The earlier adopting worker's registration was sent but its answer was not "
+                                   'recorded, so its agent may be live under this role. Nothing was prepared. In this '
+                                   'parent chat run session worker stop ' + self.previous['slot_id'] + ' --leave: it '
+                                   'replays the same registration request to learn that agent, then retires it. If '
+                                   'the replay fails (for example the membership or service changed), the claim '
+                                   'stays; report it to the owner.')
+        elif self.reason == 'previous_worker_agent_active' and self.previous and self.previous['agent_id']:
             result['previous_worker'] = dict(self.previous)
             result['next_step'] = ('The earlier adopting worker connected, and its agent may still be registered under '
                                    'this role; a second worker would make role sends ambiguous. Nothing was prepared. '

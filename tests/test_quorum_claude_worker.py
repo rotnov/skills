@@ -1771,6 +1771,120 @@ class AdoptTests(Bound):
         self.assertNotIn('quorum_lookup', api.ops()[api.ops().index('agent_leave'):])
         self.replacement_refused()
 
+    def lost_join(self, api):
+        """The first adopt connect's agent_join commits remotely, but its answer is lost."""
+        self.parent()
+        self.slot = self.prepare(self.adopt_scope())['slot_id']
+        self.attest(self.slot)
+        self.cap = self.capability(self.slot)
+        api.lost.append('agent_join')
+        code, result, text = self.connect(api, self.cap)
+        self.assertEqual(code, 5, text)
+        record = self.setting(self.slot)
+        self.assertNotIn('agent_id', record['target'])
+        joins = [request for operation, _, request in api.calls if operation == 'agent_join']
+        self.assertEqual(record['registration'], {'state': 'sent', 'request_id': joins[0]})
+        return joins[0]
+
+    def unresolved_refused(self):
+        error = self.denied('native_worker_binding_denied', self.prepare, self.adopt_scope())
+        self.assertEqual(error.reason, 'previous_worker_registration_unresolved')
+        diagnostic = error.diagnostic()
+        self.assertEqual(diagnostic['previous_worker'], {'slot_id': self.slot, 'agent_id': None})
+        self.assertIn('session worker stop ' + self.slot + ' --leave', diagnostic['next_step'])
+
+    @isolated_profiles
+    def test_lost_join_answer_keeps_the_claim_through_stop_and_expiry(self):
+        import quorum_claude_worker as worker
+        api = OwnerApi()
+        self.lost_join(api)
+        with claude(): worker.stop_slot(self.root, self.slot)
+        self.unresolved_refused()
+        self.now += 7200
+        self.unresolved_refused()
+
+    @isolated_profiles
+    def test_replayed_join_recovers_the_agent_then_retirement_releases(self):
+        api = OwnerApi()
+        request = self.lost_join(api)
+        code, result, text = self.cli(api, 'session', 'worker', 'stop', self.slot, '--leave')
+        self.assertEqual((code, result['data']['worker_agent']), (0, 'retired'), text)
+        joins = [(payload, rid) for operation, payload, rid in api.calls if operation == 'agent_join']
+        self.assertEqual(len(joins), 2)
+        self.assertEqual(joins[0], joins[1], 'the same pinned payload and stable request ID')
+        self.assertEqual(joins[1][1], request)
+        self.assertEqual(api.calls[-1], ('agent_leave', {'agent_id': AGENT}, 'leave:' + AGENT))
+        self.assertEqual(self.setting(self.slot)['target']['agent_id'], AGENT)
+        self.assertTrue(self.prepare(self.adopt_scope())['slot_id'])
+
+    @isolated_profiles
+    def test_verify_retired_also_replays_an_unresolved_join(self):
+        from quorum_api import QuorumError
+        import quorum_claude_worker as worker
+        api = OwnerApi()
+        self.lost_join(api)
+        with claude(): worker.stop_slot(self.root, self.slot)
+        api.answers['resolve_role'] = lambda payload: QuorumError('recipient_ambiguous_or_missing')
+        api.answers['agent_status'] = lambda payload: QuorumError('auth_required', denial='agent_denied')
+        code, result, text = self.cli(api, 'session', 'worker', 'verify-retired', self.slot)
+        self.assertEqual((code, result['data']['worker_agent']), (0, 'retired'), text)
+        self.assertEqual(api.ops().count('agent_join'), 2)
+        self.assertTrue(self.prepare(self.adopt_scope())['slot_id'])
+
+    @isolated_profiles
+    def test_replay_error_keeps_the_claim(self):
+        api = OwnerApi()
+        self.lost_join(api)
+        api.fail['agent_join'] = ['auth_required']
+        code, result, text = self.cli(api, 'session', 'worker', 'stop', self.slot, '--leave')
+        self.assertEqual((code, result['code']), (3, 'auth_required'), text)
+        self.assertNotIn('agent_leave', api.ops())
+        self.unresolved_refused()
+        # The slug now naming another quorum is refused before any device or agent request.
+        api.lookup = OTHER_QUORUM
+        before = api.ops().count('agent_join')
+        code, result, text = self.cli(api, 'session', 'worker', 'verify-retired', self.slot)
+        self.assertEqual((code, result['code']), (3, 'native_worker_binding_denied'), text)
+        self.assertEqual(api.ops().count('agent_join'), before)
+        self.unresolved_refused()
+
+    @isolated_profiles
+    def test_answered_join_with_a_lost_pin_is_recovered_from_the_saved_registration(self):
+        import quorum_claude_worker as worker
+        api = OwnerApi()
+        self.parent()
+        self.slot = self.prepare(self.adopt_scope())['slot_id']
+        self.attest(self.slot)
+        with patch('quorum_claude_worker.pin_target', side_effect=OSError('crash')):
+            code, result, text = self.connect(api, self.capability(self.slot))
+        self.assertNotEqual(code, 0, text)
+        with claude(): worker.stop_slot(self.root, self.slot)
+        self.unresolved_refused()
+        code, result, text = self.cli(api, 'session', 'worker', 'stop', self.slot, '--leave')
+        self.assertEqual((code, result['data']['worker_agent']), (0, 'retired'), text)
+        self.assertEqual(api.ops().count('agent_join'), 1, 'the saved registration answers without a replay')
+        self.assertTrue(self.prepare(self.adopt_scope())['slot_id'])
+
+    @isolated_profiles
+    def test_a_claim_is_written_before_its_slot(self):
+        """A crash between them leaves a claim to nothing (released), never a slot without a claim."""
+        import quorum_claude_worker as worker
+        self.parent()
+        with patch('quorum_claude_worker._write_slot', side_effect=OSError('crash')):
+            with self.assertRaises(OSError): self.prepare(self.adopt_scope())
+        first = self.prepare(self.adopt_scope())['slot_id']
+        self.denied('native_worker_binding_denied', self.prepare, self.adopt_scope())
+        with claude(): worker.stop_slot(self.root, first)
+        self.assertTrue(self.prepare(self.adopt_scope())['slot_id'])
+
+    @isolated_profiles
+    def test_normal_connect_records_the_same_join_request(self):
+        api = OwnerApi()
+        self.adopted(api)
+        record = self.setting(self.slot)
+        join = [rid for operation, _, rid in api.calls if operation == 'agent_join']
+        self.assertEqual((record['registration']['request_id'], record['target']['agent_id']), (join[0], AGENT))
+
     @isolated_profiles
     def test_expired_connected_worker_blocks_a_replacement(self):
         api = OwnerApi()
