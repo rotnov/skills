@@ -512,15 +512,18 @@ def stop(ledger, record):
     return status(ledger, record)
 
 
-def arm(ledger, record):
+def arm(ledger, record, *, authorize=None):
     """The same verified worker re-enables reception; nothing is spawned, and the next call says Hello.
 
     Refused while a receive holds the consumer locks: its in-flight heartbeat could otherwise
     restore the old epoch after this reset. Receive takes those locks before the control lock.
+    `authorize` re-reads the persisted binding under the control lock, so a worker superseded by a
+    rebind (and possibly an owner stop) while this command waited cannot re-enable reception.
     """
     from quorum_listener import locked
     from quorum_live import supervisor_running
     with control_lock(ledger):
+        if authorize is not None: authorize()
         if locked(ledger.root / 'listener.lock') or supervisor_running(ledger.root):
             raise ValueError('worker_already_running')
         ledger.setting(CONTROL, {'enabled': True})

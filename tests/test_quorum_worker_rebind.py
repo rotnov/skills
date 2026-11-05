@@ -125,6 +125,51 @@ class WorkerRebindTests(Harness):
         self.assertEqual(ledger.setting('delivery:' + M1)['state'], 'offered')
 
     @isolated_profiles
+    def test_superseded_start_cannot_rearm_after_rebind_and_owner_stop(self):
+        from quorum_native_inbox import rebind, stop
+        api = Api(inbox=[message(M1)])
+        ledger, record = self.bound(api)
+        def rebind_then_stop():
+            with OtherConnection(ledger.root) as other:
+                with caller(self.home, sid=NEW): rebind(Api(), other, record, PARENT)
+                stop(other, other.setting('session-agent'))
+        api.hooks['session_requirements'] = rebind_then_stop
+        with caller(self.home):
+            code, result, text = self.cli(api, 'session', 'start')
+        self.assertNotIn('session_requirements', api.hooks, 'the rebind and stop ran inside the old start')
+        self.assertEqual((code, result['code']), (3, 'native_worker_binding_denied'), text)
+        self.assertEqual(ledger.setting('tool-inbox-control'), {'enabled': False})
+        self.assertEqual(ledger.setting('session-agent')['worker_binding']['session_ref'], NEW)
+        with caller(self.home, sid=NEW):
+            code, stopped, _ = self.cli(api, 'session', '--session-id', CHILD, 'receive', '--wait-seconds', '0')
+        self.assertEqual((code, stopped['data']['state']), (0, 'stopped'))
+
+    @isolated_profiles
+    def test_superseded_delegate_task_check_and_peers_are_refused(self):
+        class PeerApi(Api):
+            def answer(self, operation, payload):
+                if operation == 'session_peers': return [{'agent_id': AGENT, 'role': 'private-peer-role'}]
+                return super().answer(operation, payload)
+        cases = (('delegate', ('delegate', '--coordinator-role', 'coordinator'), 'resolve_role'),
+                 ('task-check', ('task-check', M1), 'session_requirements'),
+                 ('peers', ('peers',), 'session_peers'))
+        for name, argv, operation in cases:
+            with self.subTest(command=name):
+                self.setUp()
+                api = PeerApi()
+                ledger, record = self.bound(api)
+                self.rebind_during(api, ledger, record, operation)
+                with caller(self.home):
+                    code, result, text = self.cli(api, 'session', *argv)
+                self.assertNotIn(operation, api.hooks, 'the rebind ran inside the old command')
+                self.assertEqual((code, result['code']), (3, 'native_worker_binding_denied'), text)
+                self.assertNotIn('private-peer-role', text)
+                self.assertNotIn('session_task_authority', api.ops())
+                latest = ledger.setting('session-agent')
+                self.assertEqual(latest['worker_binding']['session_ref'], NEW)
+                self.assertEqual(latest.get('delegation'), record.get('delegation'))
+
+    @isolated_profiles
     def test_same_worker_recover_is_unchanged_and_repeat_rebind_is_idempotent(self):
         api = Api()
         ledger, record = self.bound(api)
