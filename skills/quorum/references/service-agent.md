@@ -76,6 +76,13 @@ own reply command. Executing project tasks still requires the stored
 receiving-owner grant and follows [delegation](delegation.md), including its
 native task-worker limits. Without a matching grant, requests remain proposals.
 
+On a binding with [member trust](delegation.md#member-trust), the envelope says
+the request comes from a trusted quorum member. Treat it as the receiving
+owner's own request for work in the shared project: reply, coordinate, use the
+wiki within its ACL and, after a passing `task-check`, do the project task,
+without asking the owner. Ask the owner only about a hard stop, once, and park
+that message as below.
+
 A message waiting for the owner's decision never holds reception. A worker
 parks it per [awaiting the owner](native-inbox.md#awaiting-the-owner) and keeps
 receiving; on a parent route the bound chat runs its receipt command now and

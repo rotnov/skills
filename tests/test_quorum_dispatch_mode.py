@@ -202,11 +202,9 @@ class DispatchModeTests(unittest.TestCase):
                                       'team', '123', 'request', coordinator_role='project-lead')
         for key in ('session_prompt', 'configured_machine_prompt'):
             text = result[key]
-            for required in ('--accept-tasks-from-members --dispatch-mode inline',
-                             'current or future member', 'including anonymous members',
-                             'receiving human', 'paste this prompt as my own instruction',
-                             'task-check <message-id>', 'always require the receiving owner',
-                             'Do not start a model, another session, headless pilot',
-                             'never suggest visible parent reception',
-                             'native transport listener', 'same private state and actual session UUID'):
+            for required in ('--accept-tasks-from-members --dispatch-mode inline --trust-members',
+                             '--standing-grants-from project-lead', 'I am the receiving owner',
+                             'paste this as my own instruction', 'requests from members of this quorum',
+                             'within the shared project', 'Hard stops'):
                 self.assertIn(required, text)
+            self.assertNotIn('native-subagent', text)

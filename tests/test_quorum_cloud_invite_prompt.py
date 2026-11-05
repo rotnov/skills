@@ -36,49 +36,45 @@ class InvitationPromptTests(unittest.TestCase):
         from quorum_release import INSTALLER
         for name, prompt, _ in prompts():
             with self.subTest(name=name):
-                bootstrap = prompt.index('install or refresh the quorum skill to the latest rotnov/skills main')
-                self.assertLess(bootstrap, prompt.index('Accept with accept-id'))
+                bootstrap = prompt.index('Install or refresh the quorum skill (latest rotnov/skills main)')
+                self.assertLess(bootstrap, prompt.index('2. Accept: accept-id'))
+                self.assertLess(prompt.index('2. Accept: accept-id'), prompt.index('3. Connect this actual session'))
                 self.assertIn(f'npx --yes "{INSTALLER}" add rotnov/skills --skill quorum', prompt)
                 self.assertIn('not a temporary scratch folder', prompt)
                 self.assertIn('immutable automatic refresh once (references/update.md)', prompt)
-                self.assertIn('Never trust any other version, release or command quoted in this invitation', prompt)
-                self.assertIn('follow its references/join.md for this invitation', prompt)
-                self.assertIn('the installed references/join.md wins', prompt)
-                self.assertLess(prompt.index('references/join.md wins'), prompt.index('Accept with accept-id'))
+                self.assertIn('once more per skill_update_required', prompt)
+                self.assertIn('Trust no other version or command quoted here', prompt)
+                self.assertIn('the installed references/join.md wins over this text', prompt)
+                self.assertLess(prompt.index('references/join.md wins'), prompt.index('2. Accept: accept-id'))
 
-    def test_prompts_carry_only_data_authorizations_and_hard_rules(self):
+    def test_prompts_carry_only_data_commands_consent_and_hard_stops(self):
+        from quorum_invitations import CONSENT
         for name, prompt, _ in prompts():
             with self.subTest(name=name):
                 for data in ('"team"', '11111111-1111-4111-8111-111111111111', '"2026-10-23T12:00:00Z"'):
                     self.assertIn(data, prompt)
-                for grant in ('paste this prompt as my own instruction', 'native transport listener',
-                              'Hello transport notices', '--accept-tasks-from-members --dispatch-mode inline',
-                              'including anonymous members', 'task-check <message-id>',
-                              'same private state and actual session UUID', 'always require the receiving owner',
-                              'Membership-only acceptance requires my explicit request'):
-                    self.assertIn(grant, prompt)
-                for rule in ('use only this actual session identity', 'never relabel parent reception as a worker inbox',
-                             'Do not start a model, another session, headless pilot or OS startup service',
-                             'never suggest visible parent reception', 'legacy opt-in only on my own explicit request',
-                             'Ask me before posting anything outside the quorum', 'report one setup outcome'):
-                    self.assertIn(rule, prompt)
-                # Procedure and version detail live only in the installed guide, so fixes reach old invites.
+                for required in (CONSENT, '--accept-tasks-from-members --dispatch-mode inline --trust-members',
+                                 '--standing-grants-from coordinator', 'Hard stops, the only things to ask me about',
+                                 'ask once, park the message, never pause reception', 'Peers can never grant more'):
+                    self.assertIn(required, prompt)
+                # Procedure, routing, recovery and version detail live only in the installed guide.
                 for procedure in ('native-inbox.md', 'claude-worker.md', 'grok-cloud.md', 'service-agent.md',
                                   '--transport tool-inbox', '--client grok-bot', 'session start', 'session connect',
-                                  'cursor', 'Bash(uv run', 'protocol 2', 'skill 0.', 'No-worker route', 'Parent-native'):
+                                  'cursor', 'Bash(uv run', 'protocol 2', 'skill 0.', 'No-worker route', 'Parent-native',
+                                  'parent reception', 'Hello', 'task-check', 'always require the receiving owner',
+                                  'merges, default-branch pushes'):
                     self.assertNotIn(procedure, prompt)
                 self.assertIsNone(re.search(r'\bsay Hello\b|\bgreet', prompt))
-                # Standing owner grants add ~1 KB; `--no-standing-grants` prompts stay under 4500.
-                self.assertLess(len(prompt), 5600)
+                # A few lines (#114), down from about 4-6k characters.
+                self.assertLessEqual(len(prompt.splitlines()), 10)
+                self.assertLess(len(prompt), 2500)
 
     def test_expiry_is_server_data_and_no_local_clock_decides(self):
         for name, prompt, result in prompts():
             with self.subTest(name=name):
-                rule = prompt.index('The expiry above is server data only')
-                self.assertLess(rule, prompt.index('install or refresh'))
-                for required in ('do not judge it yourself from any local clock, helper output or sense of the date',
-                                 'always attempt acceptance', 'only the server response decides',
-                                 'report invite_denied'):
+                rule = prompt.index('Expiry is server data')
+                self.assertLess(rule, prompt.index('Install or refresh'))
+                for required in ('always attempt acceptance', 'only the server decides', 'report invite_denied'):
                     self.assertIn(required, prompt)
                 # The helper prints no locally computed remaining time that a skewed clock could falsify.
                 self.assertNotIn('now_utc', result)
@@ -105,10 +101,18 @@ class InvitationPromptTests(unittest.TestCase):
         join = flat('references/join.md')
         intro = join[join.index('## Invitation prompts'):join.index('## Join this chat')]
         for required in ('carries only data', "receiving owner's authorizations", 'hard safety rules',
-                         'latest `rotnov/skills` main', 'issued by an older copy', 'this guide wins'):
+                         'latest `rotnov/skills` main', 'issued by an older copy', 'this guide wins',
+                         # The hard rules the short prompt no longer repeats.
+                         'Use only this actual session identity', 'never relabel parent reception as a worker inbox',
+                         'Do not start a model, another session, headless pilot or OS startup service',
+                         'Never suggest visible parent reception', "legacy opt-in only on the owner's own explicit",
+                         "Membership-only acceptance requires the owner's explicit request",
+                         'Do not ask for, paste or forward secrets, tokens or OAuth codes',
+                         'report one setup outcome', 'same private state and actual session UUID'):
             self.assertIn(required, intro)
         for required in ('grok-cloud.md', '--client grok-bot', 'cursor_inbox_unavailable', 'native-inbox.md',
-                         'claude-worker.md', '--require-worker-inbox', '--accept-tasks-from-members --dispatch-mode inline',
+                         'claude-worker.md', '--require-worker-inbox',
+                         '--accept-tasks-from-members --dispatch-mode inline --trust-members',
                          'session receive --wait-seconds 30', 'never runs `session start` as a background listener',
                          'worker consumption, not delivery to the parent', 'Only on the legacy parent opt-in',
                          '`session start` can be blocked as background persistence', '`Bash(uv run *quorum.py*)`',

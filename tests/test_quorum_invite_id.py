@@ -40,7 +40,7 @@ class IdInvitationTests(unittest.TestCase):
             self.assertIn('quorum slug \"team\"', result['session_prompt'])
             self.assertIn('references/join.md', result['session_prompt'])
             self.assertIn('rotnov/skills', result['session_prompt'])
-            self.assertIn('Hello', result['session_prompt'])
+            self.assertIn('--trust-members', result['session_prompt'])
             self.assertIn('not a temporary scratch folder', result['session_prompt'])
             self.assertNotIn('Accept membership only', result['session_prompt'])
             self.assertEqual(result['service'], {'origin':'https://example.com','publishable_key':'sb_publishable_synthetic'})
@@ -66,8 +66,8 @@ class IdInvitationTests(unittest.TestCase):
             prompt = result[key]
             for required in ('@Octocat', 'GitHub ID 123', '2026-10-23T12:00:00Z',
                              'via Supabase Auth', 'no Supabase dashboard registration',
-                             'Hello', '--accept-tasks-from-members', 'without asking again for each assignment',
-                             'references/join.md wins', 'Ask me before posting anything outside the quorum'):
+                             '--accept-tasks-from-members', 'without asking me',
+                             'references/join.md wins', 'Hard stops'):
                 self.assertIn(required, prompt)
             self.assertIn('GitHub is required', prompt)
         full, short = result['session_prompt'], result['configured_machine_prompt']
@@ -79,7 +79,7 @@ class IdInvitationTests(unittest.TestCase):
         self.assertNotIn('--publishable-key', short)
         self.assertNotIn('https://example.com', short)
         # Both prompts refresh first, so even a configured machine runs the current skill.
-        self.assertIn('install or refresh the quorum skill', short)
+        self.assertIn('Install or refresh the quorum skill', short)
         self.assertEqual(result['target_github_user'], 'Octocat')
 
     @isolated_profiles
@@ -128,9 +128,9 @@ class IdInvitationTests(unittest.TestCase):
         self.assertEqual(calls[-1], ('invite_create_open', {'quorum_id': 'q'}, 'r'))
         prompt = result['session_prompt']
         for required in (f'accept-id {INVITE} --anonymous', 'sb_publishable_synthetic', '2026-10-22T15:15:00Z',
-                         'Single-use', 'No GitHub login', 'fresh private state', 'Hello',
+                         'Single-use', 'No GitHub or browser', 'fresh private state',
                          'references/join.md wins', '--accept-tasks-from-members --dispatch-mode inline',
-                         'paste this prompt as my own instruction'):
+                         'paste this as my own instruction'):
             self.assertIn(required, prompt)
         # A version frozen at issuance would pin old behavior; the installed guide checks versions instead.
         self.assertNotIn(f'protocol {release["protocol_version"]} and skill {release["skill_version"]}', prompt)

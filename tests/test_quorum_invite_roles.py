@@ -231,7 +231,9 @@ class InvitationRoleTests(unittest.TestCase):
             self.assertEqual(result['assigned']['project_ref'], project_ref)
             self.assertIn(f"--project-ref '{project_ref}' --exclusive-role", result['session_prompt'])
         only = create_id_invitation(self.Api(), self.config(), 'team', '123', 'r', project_ref='rotnov/skills')
-        self.assertIn("Assigned shared project reference: 'rotnov/skills'", only['session_prompt'])
+        self.assertIn("Assigned shared project 'rotnov/skills'", only['session_prompt'])
+        self.assertIn("--role <role> --project-ref 'rotnov/skills' --accept-tasks-from-members", only['session_prompt'])
+        self.assertNotIn('--exclusive-role', only['session_prompt'])
 
     @isolated_profiles
     def test_unsafe_slug_is_never_defaulted_into_the_command(self):

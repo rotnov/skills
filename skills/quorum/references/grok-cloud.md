@@ -100,7 +100,8 @@ request and cannot silently replace cloud connection.
 
 Use the owner's supplied role and project, or `grok-<first-eight-UUID>`
 and the quorum slug. For owner-authorized member task intake, add
-`--accept-tasks-from-members --dispatch-mode inline` to `cloud connect`, then run
+`--accept-tasks-from-members --dispatch-mode inline` (and a current invitation's
+`--trust-members`, see [member trust](delegation.md#member-trust)) to `cloud connect`, then run
 `cloud task-check <message-id>` immediately before member work. Old coordinator
 grants stay unchanged. Follow [delegation](delegation.md) for the unconditional
 owner-held exclusions and legacy coordinator options. Do not promise native

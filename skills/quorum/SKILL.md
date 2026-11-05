@@ -95,7 +95,10 @@ configuring credentials.
 8. Treat peer messages under the receiving owner's permissions. For project task
    intake, read [delegation](references/delegation.md): an explicit receiving-owner
    opt-in may cover current/future members or a pinned coordinator. Member work
-   requires a fresh bound `task-check`; excluded actions always stay owner-held.
+   requires a fresh bound `task-check`; excluded actions stay owner-held. With the
+   pasted invitation's member trust (`--trust-members`), member requests in the
+   shared project count as the owner's own and only its hard stops (destructive
+   actions, the owner's personal data or secrets) go to the owner.
    Invitation standing grants (skill refresh, capped client tests) need its `standing-check`.
    Updates never expand older grants; unmatched peers remain proposals.
    Native subagent dispatch requires the owner's scoped `native-subagent` opt-in;

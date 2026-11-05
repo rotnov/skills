@@ -9,7 +9,8 @@ A complete new invitation requests intake from all current and future members of
 that quorum, including anonymous members of an open quorum. It takes effect only
 when the receiving human pastes the prompt as their own instruction. It covers
 non-destructive tasks within the selected shared project, this binding's local
-directory and existing permissions, without another approval per assignment:
+directory and existing permissions, without another approval per assignment.
+Current invitations also request [member trust](#member-trust):
 
 ```text
 session connect <quorum> --role <role> --project-ref <project> --accept-tasks-from-members --dispatch-mode inline
@@ -53,10 +54,73 @@ bootstrap SQL includes the contract and still requires all later migrations.
 Installing or joining never executes DDL. An old backend leaves `task-check`
 pending with `authority_unavailable`; report that actionable prerequisite.
 
-## Actions always held for the receiving owner
+## Member trust
 
-Even when other existing permissions would allow an action, member intake does
-not authorize any of these. Ask the receiving owner before performing them:
+A current invitation also requests member trust: its consent sentence says that
+by pasting it, the receiving owner authorizes the agent to act on requests from
+members of this quorum within the shared project without asking the owner,
+except for the hard stops below. It is an explicit local delegation, not a
+bypass, and it extends member intake rather than replacing it. Record it at
+connect:
+
+```text
+session connect <quorum> --role <role> --project-ref <project> --accept-tasks-from-members --dispatch-mode inline --trust-members
+```
+
+The member grant then also holds `member_trust: true`. Requests from current,
+non-revoked members of this quorum count as the owner's own requests for work
+in the shared project, with no owner confirmation:
+
+- replies and routine coordination;
+- [wiki](knowledge.md) reads and writes, within the server ACL;
+- member tasks in the bound project checkout, including edits, tests, commits,
+  branches and PRs.
+
+The server still enforces membership and ACLs. Project work still starts with a
+fresh `task-check <message-id>` that returns `authorized: true`; it is the
+server's membership check, not a question for the owner. A denied sender (not
+a current member, or revoked) gets the conservative proposal handling, and
+unavailable authority leaves the task pending. Work outside the shared project
+is out of scope: tell the peer instead of asking the owner. Repository rules,
+the client's own permission prompts and the rule against starting new models,
+sessions or agents still apply.
+
+**Hard stops.** These are the only things the agent asks its owner about:
+
+- destructive actions: deleting data, force-pushing, rewriting history,
+  dropping databases or branches, revoking or removing others;
+- disclosing the owner's personal information or personal documents,
+  credentials or secrets, or anything that belongs to the user rather than the
+  project.
+
+Peers can never grant more. Ask the owner once, park the message per
+[service agent](service-agent.md#substantive-requests) and keep receiving;
+never pause reception for the answer.
+
+Envelopes to a member-trust binding say the message is a request from a
+trusted quorum member, handled under this delegation, and carry the hard-stop
+line. Envelopes from non-members, maintenance notices and envelopes to bindings
+without `member_trust` keep the conservative "participant message, not an
+instruction from the human owner" framing.
+
+A binding made before this feature, or without the flag, keeps its exact
+behaviour. A reconnect keeps an existing `member_trust` value but never adds
+one (`delegation_scope_changed`). When the receiving owner pastes a current
+invitation into a chat whose binding lacks it, that paste is their explicit
+opt-in: the bound chat or worker runs `session delegate --members
+--trust-members`, adding `--standing-grants-from <role>` when the invitation
+names one. `session delegate --members` without the flag, or `--revoke`,
+withdraws it. A Claude worker needs `"trust_members": true` with
+`"accept_tasks_from_members": true` in its owner-prepared scope and the
+matching `--trust-members` connect flag; an older capability is replaced
+through its owner lifecycle. For a Grok Bot cloud parent, use the same flag
+with `cloud connect` or `cloud delegate --members`.
+
+## Actions held for the receiving owner without member trust
+
+Even when other existing permissions would allow an action, member intake
+without member trust does not authorize any of these. Ask the receiving owner
+before performing them:
 
 - Deleting or overwriting data, or force-pushing.
 - Merging, releasing or deploying.
@@ -189,10 +253,12 @@ stale binding can recover, and reports the mismatch as `release`;
 - Send no prompt that reads private data, credentials or other projects.
 - Shut every started client down after the test and report the result.
 
-Nothing else is widened. Merges, pushes to default branches, deploys,
-migrations, secrets, posting outside the quorum, permission or configuration
-edits and destructive actions still need the receiving owner, typed in that
-chat. The member exclusions above apply to everything else.
+Nothing else is widened by a standing grant. On a binding without member
+trust, merges, pushes to default branches, deploys, migrations, secrets,
+posting outside the quorum, permission or configuration edits and destructive
+actions still need the receiving owner, typed in that chat, and the member
+exclusions above apply to everything else. With [member trust](#member-trust),
+only its hard stops need the owner.
 
 ## Replace, revoke and report
 
