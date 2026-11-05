@@ -231,7 +231,8 @@ def main(argv=None):
             safe.update({'update_request_invalid', 'update_notice_denied', 'update_target_changed',
                          'update_fetch_failed', 'update_tool_missing', 'update_invalid_copy',
                          'update_validation_failed', 'update_cache_conflict', 'update_unsafe_cache',
-                         'update_in_progress', 'session_not_connected', 'python_provisioning_failed'})
+                         'update_in_progress', 'session_not_connected', 'python_provisioning_failed',
+                         'update_node_too_old'})
             safe.update({'grok_transport_unavailable', 'session_binding_denied', 'coordinator_changed',
                          'claude_pipe_unavailable', 'listener_stop_pending', 'session_delivery_unknown',
                          'session_delivery_unsent', 'session_reconcile_denied',
@@ -240,6 +241,9 @@ def main(argv=None):
                          'worker_already_running', 'standing_grants_require_members', 'invalid_coordinator_role'})
         code = str(error) if str(error) in safe else 'operation_failed'
         data = error.diagnostic() if code == 'auth_profile_conflict' and hasattr(error, 'diagnostic') else {}
+        if code in ('update_node_too_old', 'python_provisioning_failed'):
+            from quorum_update import diagnostic as update_diagnostic
+            data = update_diagnostic(error, code)
         print(json.dumps({'ok': False, 'code': code, 'data': data}))
         return 3
     finally:

@@ -46,6 +46,13 @@ class NodeTooOld(ValueError):
         self.data = {'found': found, 'required': '%d.%d' % INSTALLER_NODE}
 
 
+def diagnostic(error, code):
+    """Safe JSON data for a known updater code; shared by every CLI entry point."""
+    data = dict(error.data) if isinstance(error, NodeTooOld) else {}
+    if code in HINTS: data['hint'] = HINTS[code]
+    return data
+
+
 def check_node(node, run):
     """Fail before npx when node is unparseable or older than the installer's minimum."""
     # No shell; a minimal environment keeps NODE_OPTIONS and similar hooks out of the probe.
@@ -246,9 +253,7 @@ def main(argv=None):
         return 0
     except (ValueError, OSError, subprocess.SubprocessError) as error:
         code = str(error) if str(error) in ERRORS else 'update_failed'
-        data = dict(error.data) if isinstance(error, NodeTooOld) else {}
-        if code in HINTS: data['hint'] = HINTS[code]
-        print(json.dumps({'ok': False, 'code': code, 'data': data}))
+        print(json.dumps({'ok': False, 'code': code, 'data': diagnostic(error, code)}))
         return 3
 
 
