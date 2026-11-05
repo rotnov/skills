@@ -350,8 +350,11 @@ def add_worker_commands(actions):
     waiting = steps.add_parser('await-binding')
     waiting.add_argument('slot', type=slot_uuid)
     waiting.add_argument('--wait-seconds', type=int, choices=range(1, 61), default=60, metavar='1..60')
-    for name in ('status', 'stop'):
-        steps.add_parser(name).add_argument('slot', type=slot_uuid)
+    steps.add_parser('status').add_argument('slot', type=slot_uuid)
+    stop = steps.add_parser('stop')
+    stop.add_argument('slot', type=slot_uuid)
+    stop.add_argument('--leave', action='store_true',
+                      help="Adopt slot only: also retire that worker's own agent with the owner's login")
 
 
 def add_commands(commands):

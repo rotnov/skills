@@ -1380,6 +1380,7 @@ class OwnerApi(Api):
     def answer(self, operation, payload):
         if operation.startswith('knowledge_'): return {'ok': True}
         if operation == 'session_update_status': return {'operation_id': payload['operation_id'], 'agents': []}
+        if operation == 'agent_leave': return {'left': True}
         return super().answer(operation, payload)
 
 
@@ -1613,6 +1614,83 @@ class AdoptTests(Bound):
             self.assertNotIn('knowledge', self.setting(self.prepare(scope)['slot_id'])['scope']['operations'])
             self.denied('native_worker_binding_denied', self.prepare, {**scope, 'operations': ['connect', 'update']})
         self.assertEqual(api.calls, [])
+
+    def owner_leave(self, api, agent_id):
+        """The existing owner `leave` from the parent chat, with the owner's login."""
+        from quorum_api import ServiceConfig
+        with patch('quorum_profiles.resolve_profile', return_value=(ServiceConfig(ORIGIN, KEY), Store())), \
+                patch('quorum.QuorumApi', return_value=api), patch('quorum.token_provider'):
+            return self.cli(api, 'leave', '--request-id', 'retire-1', '--json-stdin',
+                            stdin=json.dumps({'agent_id': agent_id}).encode())
+
+    def replacement_refused(self):
+        error = self.denied('native_worker_binding_denied', self.prepare, self.adopt_scope())
+        self.assertEqual(error.reason, 'previous_worker_agent_active')
+        diagnostic = error.diagnostic()
+        self.assertEqual(diagnostic['previous_worker'], {'slot_id': self.slot, 'agent_id': AGENT})
+        self.assertIn('session worker stop ' + self.slot + ' --leave', diagnostic['next_step'])
+        self.assertIn(AGENT, diagnostic['next_step'])
+
+    @isolated_profiles
+    def test_stopped_connected_worker_blocks_a_replacement_until_its_agent_leaves(self):
+        import quorum_claude_worker as worker
+        api = OwnerApi()
+        self.adopted(api)
+        with claude(): worker.stop_slot(self.root, self.slot)
+        self.assertNotIn('agent_leave', api.ops(), 'a plain stop never leaves')
+        self.replacement_refused()
+        code, result, text = self.cli(None, 'session', 'worker', 'prepare', '--json-stdin',
+                                      stdin=json.dumps(self.adopt_scope()).encode())
+        self.assertEqual((code, result['data']['reason']), (3, 'previous_worker_agent_active'), text)
+        # The existing owner leave of that agent, from the parent chat, releases the claim.
+        code, _, text = self.owner_leave(api, AGENT)
+        self.assertEqual(code, 0, text)
+        self.assertEqual(api.calls[-1], ('agent_leave', {'agent_id': AGENT}, 'retire-1'))
+        self.assertTrue(self.prepare(self.adopt_scope())['slot_id'])
+
+    @isolated_profiles
+    def test_owner_stop_with_leave_retires_the_worker_agent(self):
+        api = OwnerApi()
+        self.adopted(api)
+        # Leaving another agent records nothing for this worker.
+        code, _, text = self.owner_leave(api, PEER)
+        self.assertEqual(code, 0, text)
+        code, result, text = self.cli(api, 'session', 'worker', 'stop', self.slot, '--leave')
+        self.assertEqual(code, 0, text)
+        self.assertEqual((result['data']['state'], result['data']['worker_agent']), ('terminal', 'retired'))
+        self.assertEqual(api.calls[-1], ('agent_leave', {'agent_id': AGENT}, 'leave:' + AGENT))
+        self.assertTrue(self.prepare(self.adopt_scope())['slot_id'])
+        # A repeated stop --leave is stable and sends nothing more.
+        before = len(api.calls)
+        self.assertEqual(self.cli(api, 'session', 'worker', 'stop', self.slot, '--leave')[1]['data']['worker_agent'],
+                         'retired')
+        self.assertEqual(len(api.calls), before)
+
+    @isolated_profiles
+    def test_failed_leave_and_expiry_keep_the_claim(self):
+        api = OwnerApi()
+        self.adopted(api)
+        api.fail['agent_leave'] = ['auth_required']
+        code, result, text = self.cli(api, 'session', 'worker', 'stop', self.slot, '--leave')
+        self.assertEqual((code, result['code']), (3, 'auth_required'), text)
+        self.assertEqual(self.setting(self.slot)['state'], 'terminal', 'the stop itself still holds')
+        self.replacement_refused()
+        # Expiry is fail-closed too: it never leaves, and the next prepare demands the retirement step.
+        self.now += 7200
+        self.replacement_refused()
+        self.assertEqual(api.ops().count('agent_leave'), 1)
+        # Only adopt slots retire their agent through stop.
+        other = self.prepare(self.accept_scope())['slot_id']
+        code, result, text = self.cli(api, 'session', 'worker', 'stop', other, '--leave')
+        self.assertEqual((code, result['data']['reason']), (3, 'operation_denied'), text)
+
+    @isolated_profiles
+    def test_expired_connected_worker_blocks_a_replacement(self):
+        api = OwnerApi()
+        self.adopted(api)
+        self.now += 7200
+        self.replacement_refused()
+        self.assertNotIn('agent_leave', api.ops())
 
     @isolated_profiles
     def test_one_live_adopting_worker_per_parent_agent(self):

@@ -29,6 +29,7 @@ PREFIX = 'claude-worker:'
 SLOT_KEY = 'claude-worker-slot'
 INDEX = 'claude-worker-actor:'
 ADOPTED = 'claude-worker-adopt:'
+RETIRED = 'claude-worker-retired:'
 JSON_LIMIT = 16384
 PENDING_SECONDS = 120
 DEFAULT_TTL, TTL_LIMIT = 900, 3600
@@ -778,14 +779,44 @@ def _index_setting(root, key, value=None):
 
 
 def _adoption_free(root, agent_id):
-    """Caller holds the index lock. An earlier adopting slot blocks until it is terminal (stopped or expired)."""
+    """Caller holds the index lock. An earlier adopting slot blocks until it is terminal (stopped or expired)
+    and, if it ever connected, until its own agent is confirmed retired: never two live agents on one role."""
     claimed = _index_setting(root, ADOPTED + agent_id)
     if not isinstance(claimed, dict): return
-    try: earlier = _effective(_view(root, _slot_uuid(claimed.get('slot_id'))))[0]
+    try: earlier = _view(root, _slot_uuid(claimed.get('slot_id')))
     except NativeInboxError as error:
         if error.reason == 'recovery_needed': raise
         return  # A slot whose ledger was never written holds nothing.
-    if earlier != 'terminal': raise _denied('actor_claimed')
+    if _effective(earlier)[0] != 'terminal': raise _denied('actor_claimed')
+    worker_agent = (earlier.get('target') or {}).get('agent_id')
+    if worker_agent and _index_setting(root, RETIRED + worker_agent) is None:
+        raise NativeInboxError('native_worker_binding_denied', 'previous_worker_agent_active',
+                               previous={'slot_id': earlier['slot_id'], 'agent_id': worker_agent})
+
+
+def record_retired(ledger, agent_id):
+    """The owner's confirmed `leave` of an agent; read only to release an adoption claim."""
+    if isinstance(agent_id, str) and CANONICAL.fullmatch(agent_id):
+        ledger.setting(RETIRED + agent_id, {'retired_at': now()})
+
+
+def _retire(root, record):
+    """Owner `stop --leave`: retire this adopt slot's own worker agent with the owner's login and pinned service."""
+    from quorum_live import api_for
+    agent_id = (record.get('target') or {}).get('agent_id')
+    if not agent_id: return 'none'
+    if _index_setting(root, RETIRED + agent_id) is not None: return 'retired'
+    context = {'scope': record['scope'], 'state_root': str(root)}
+    service_check(context)
+    ledger = root_ledger(root)
+    try:
+        api, config, _ = api_for(ledger)
+        same_resolved(context, config)
+        # Only a confirmed leave counts: a denial cannot be told apart from an authentication failure.
+        api.call('agent_leave', {'agent_id': agent_id}, 'leave:' + agent_id)
+        record_retired(ledger, agent_id)
+    finally: ledger.db.close()
+    return 'retired'
 
 
 def _write_capability(root, slot_id, token):
@@ -886,14 +917,18 @@ def slot_status(state_root, slot_id):
     return _summary(root, record)
 
 
-def stop_slot(state_root, slot_id, *, sid=None):
-    """Terminal revocation of this slot, then a stop request for its exact active run only."""
+def stop_slot(state_root, slot_id, *, sid=None, leave=False):
+    """Terminal revocation of this slot, then a stop request for its exact active run only.
+
+    `leave` (owner, adopt slots only) then retires the worker's own agent; expiry never does.
+    """
     import quorum_native_inbox as inbox
     sid = sid or actual_session()
     root = _state_root(state_root)
     slot_id = _slot_uuid(slot_id)
     with _slot(root, slot_id, sid) as ledger:
         record = _settle(ledger, ledger.setting(SLOT_KEY))
+        if leave and record['scope']['mode'] != 'adopt': raise _denied('operation_denied')
         if record['state'] != 'terminal':
             record = {**record, 'state': 'terminal', 'terminal_reason': 'stopped', 'terminal_at': now()}
             ledger.setting(SLOT_KEY, record)
@@ -908,6 +943,7 @@ def stop_slot(state_root, slot_id, *, sid=None):
             # Unresolved offers stay; nothing is acknowledged automatically.
             if agent: inbox.stop(session, agent)
         finally: session.db.close()
+    if leave: return {**_summary(root, record), 'worker_agent': _retire(root, record)}
     return _summary(root, record)
 
 
@@ -1117,7 +1153,7 @@ def manage(args):
         if action == 'attest': return attest(args.state, args.slot, args.native_handle, args.spawn_tool_use_id)
         if action == 'await-binding': return await_binding(args.state, args.slot, args.wait_seconds)
         if action == 'status': return slot_status(args.state, args.slot)
-        if action == 'stop': return stop_slot(args.state, args.slot)
+        if action == 'stop': return stop_slot(args.state, args.slot, leave=getattr(args, 'leave', False))
         raise _denied('operation_denied')
     # A logical selector is metadata-only supervision by the exact owning actual SID.
     if args.action not in ('status', 'stop'): raise _denied('management_only')

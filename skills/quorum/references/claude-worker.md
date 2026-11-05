@@ -206,6 +206,15 @@ refused: the worker runs `Q knowledge <action> --json-stdin --worker-capability
 never on a peer's request. The scope pins the quorum; a stopped or expired
 capability refuses them.
 
+To replace an adopting worker that ever connected, first retire its own agent;
+stop or expiry alone leaves it registered under the role. Until then a new adopt
+prepare refuses with reason `previous_worker_agent_active`, naming the slot and
+agent. In this chat run `Q session worker stop <slot-uuid> --leave` (adopt
+slots only; it stops the slot and runs `agent_leave` for that worker's agent),
+or the existing `leave` for that `agent_id`. Only a confirmed leave releases the
+claim. Expiry never leaves on its own. A worker that never connected releases
+its claim once it is stopped or expired.
+
 ## Supervision and stop
 
 ```text

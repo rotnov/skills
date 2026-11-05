@@ -178,6 +178,10 @@ def main(argv=None):
                     request_id = args.request_id or str(uuid.uuid4())
                     value = api.call(operations[args.command], data,
                                      None if args.command == 'context' else request_id)
+                    if args.command == 'leave':
+                        # A confirmed retirement can release an adopting Claude worker's claim.
+                        from quorum_claude_worker import record_retired
+                        record_retired(ledger, data.get('agent_id'))
                     if args.command == 'create' and args.access == 'open':
                         value.update(api.call('quorum_set_access', {'quorum_id': value['quorum_id'], 'access': 'open'},
                                               'access:' + value['quorum_id']))
