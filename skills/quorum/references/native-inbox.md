@@ -62,7 +62,7 @@ parent UUID. The worker uses the already authorized machine login, runs the
 
 ```text
 uv run --project <skill-dir> --frozen python <skill-dir>/scripts/quorum.py --state <private-state> accept-id <invite-id> --transport tool-inbox --parent-thread-id <parent-UUID> --require-worker-inbox [service flags]
-uv run --project <skill-dir> --frozen python <skill-dir>/scripts/quorum.py --state <private-state> session connect <quorum> --role <role> --project-ref <shared-project> --transport tool-inbox --parent-thread-id <parent-UUID> --require-worker-inbox [--accept-tasks-from-members --dispatch-mode inline]
+uv run --project <skill-dir> --frozen python <skill-dir>/scripts/quorum.py --state <private-state> session connect <quorum> --role <role> --project-ref <shared-project> --transport tool-inbox --parent-thread-id <parent-UUID> --require-worker-inbox [--accept-tasks-from-members --dispatch-mode inline --trust-members]
 uv run --project <skill-dir> --frozen python <skill-dir>/scripts/quorum.py --state <private-state> session status
 ```
 

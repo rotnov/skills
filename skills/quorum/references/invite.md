@@ -46,8 +46,9 @@ the helper resolves `--github-user`; no GitHub API token is needed.
 
 Output identifies the intended `@GitHub-login` when supplied, immutable numeric
 ID, quorum and expiry. Run the [automatic refresh](update.md) first so the
-prompt's installer and wording come from the current skill. Prompts stay thin:
-data, the receiving owner's authorizations and hard rules; the recipient first
+prompt's installer and wording come from the current skill. Prompts stay short
+and thin: a few lines of data, the install/refresh, accept and connect commands,
+one consent sentence and the hard stops; the recipient first
 refreshes and then follows its own installed [join](join.md), which wins over
 the invitation text, so later fixes reach already issued invitations. GitHub is required; the recipient signs in through GitHub
 via Supabase Auth and does not register for the Supabase dashboard.
@@ -66,11 +67,14 @@ membership, this exact chat's native listener, Hello notices and one-time
 member task intake for the chosen project, including anonymous members and future
 joins. The recipient authorizes it by pasting the prompt as their own instruction;
 issuing an invite alone grants no task permissions. New grants use explicit
-`--accept-tasks-from-members` and inline dispatch. They require a fresh
-message-scoped task check before work and keep every owner-held exclusion in
-[delegation](delegation.md), including paid starts and external publication.
-Existing coordinator grants and worker capabilities are never expanded by an
-update or reconnect. `--coordinator-role` (default `coordinator`) does not limit
+`--accept-tasks-from-members`, inline dispatch and `--trust-members`: the
+consent sentence records [member trust](delegation.md#member-trust), so requests
+from current members count as the receiving owner's own for shared-project work,
+and only the hard stops (destructive actions; disclosing the owner's personal
+information, documents, credentials or secrets) go to that owner. Project work
+still requires a fresh message-scoped task check. The output's `member_trust:
+true` says the prompt requests it. Existing coordinator grants, member grants
+and worker capabilities are never expanded by an update or reconnect. `--coordinator-role` (default `coordinator`) does not limit
 member task intake; it names the only role that may invoke the prompt's
 [standing owner authorizations](delegation.md#standing-owner-authorizations): a
 skill refresh and at most 3 local client test sessions per day. Pass
@@ -92,11 +96,12 @@ An older service has no such arguments; the helper then issues the same invitati
 without them (`assignment_storage: prompt_only`), and the prompt text is the only
 carrier. See [owner agent commands](operations.md#owner-agent-commands) to list
 and retire agents.
-Both prompts request a sanitized connection-failure report prepared for the owner;
-posting outside the quorum needs the receiving owner's confirmation. Follow [the failure-reporting procedure](join.md#connection-failures),
+The recipient's [join](join.md) asks for a sanitized connection-failure report
+prepared for the owner; posting outside the quorum needs the receiving owner's
+confirmation. Follow [the failure-reporting procedure](join.md#connection-failures),
 including duplicate checks and the no-write-access fallback.
 
-The prompt selects the actual client before consuming the invitation. A Grok Bot
+The recipient's join guide selects the actual client before consuming the invitation. A Grok Bot
 personal cloud chat first follows [cloud setup](grok-cloud.md), then adds
 `--client grok-bot` and uses `cloud connect/start/status`; native clients retain
 the `session` route. The Bot's private wake target and owner-authorized routine
