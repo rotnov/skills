@@ -207,6 +207,8 @@ def add_commands(commands):
     parser.add_argument('--owner-refresh', action='store_true',
                         help='Receiving owner explicitly authorizes one canonical refresh for --apply-notice')
     parser.add_argument('--after-agent', help='Status pagination cursor returned by the server')
+    parser.add_argument('--worker-capability', type=Path,
+                        help='Adopted Claude worker capability file; identity comes from that worker binding')
 
 
 def dispatch(args, auth):
@@ -214,21 +216,29 @@ def dispatch(args, auth):
     from quorum_native_inbox import require_worker
     from quorum_session import current_session, require_caller
     from quorum_state import LocalLedger
-    sid = current_session()
-    with_ledger = LocalLedger(auth.root/'sessions'/sid)
+    context = getattr(args, 'worker_context', None)
+    worker_api = check_worker = None
+    if context is not None:
+        # An adopted Claude worker acts only as its own connected binding, under its capability.
+        from quorum_claude_worker import owner_binding
+        with_ledger, record, check_worker, worker_api = owner_binding(context, auth)
+    else:
+        sid = current_session()
+        with_ledger = LocalLedger(auth.root/'sessions'/sid)
     try:
         record = with_ledger.setting('session-agent')
         if not record or record.get('quorum') != args.quorum:
             raise ValueError('session_not_connected')
         saved = _binding(record)
         def authorize():
-            require_caller(sid, record['engine'])
+            if check_worker is not None: check_worker()
+            else: require_caller(sid, record['engine'])
             latest = with_ledger.setting('session-agent')
             def same_current():
                 return (isinstance(latest, dict) and _binding(latest) == saved
                         and str(Path.cwd().resolve()) == saved.get('cwd'))
             if not same_current(): raise ValueError('session_binding_denied')
-            if latest.get('transport') == 'tool-inbox':
+            if latest.get('transport') == 'tool-inbox' and check_worker is None:
                 require_worker(latest)
                 # Worker discovery can also block; do not dispatch using a
                 # binding or directory changed while proof was being checked.
@@ -237,7 +247,7 @@ def dispatch(args, auth):
         authorize()
         if args.owner_refresh and not args.apply_notice: raise ValueError('update_request_invalid')
         if not args.status: _request(args.request_id)
-        api, _, _ = api_for(auth)
+        api = worker_api if worker_api is not None else api_for(auth)[0]
         options = {'current':Path(__file__).resolve().parents[1],
                    'cache':Path.home()/'.local/share/quorum/skill-updates', 'authorize':authorize}
         if args.status:
