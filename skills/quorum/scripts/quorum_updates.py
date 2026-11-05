@@ -242,7 +242,8 @@ def add_commands(commands):
                         help='Receiving owner explicitly authorizes one canonical refresh for --apply-notice')
     parser.add_argument('--after-agent', help='Status pagination cursor returned by the server')
     parser.add_argument('--worker-capability', type=Path,
-                        help='Adopted Claude worker capability file; identity comes from that worker binding')
+                        help='Claude worker capability file (adopt scope, or a create/accept scope with "update": true); '
+                             'identity comes from that worker binding')
 
 
 def dispatch(args, auth):

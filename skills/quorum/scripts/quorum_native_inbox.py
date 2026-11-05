@@ -63,7 +63,9 @@ class NativeInboxError(ValueError):
                'target_mismatch', 'service_mismatch', 'service_unconfigured', 'wait_invalid', 'selector_conflict',
                'management_only', 'create_unresolved', 'evidence_unpersisted', 'recovery_needed', 'parent_route_visible',
                'parent_binding_missing', 'parent_binding_running', 'previous_worker_agent_active',
-               'previous_worker_registration_unresolved'}
+               'previous_worker_registration_unresolved',
+               # Claude worker rebind after a parent chat restart.
+               'rebound', 'rebind_pending', 'reception_stopped', 'agent_revoked'}
     # Existing fixed local codes a failure after dispatch keeps, now with its remote effect.
     DISPATCHED_CODES = {'operation_failed', 'session_delivery_unknown', 'session_binding_denied',
                         'session_not_connected', 'binding_conflict', 'coordinator_changed', 'invalid_response',
@@ -178,6 +180,17 @@ class NativeInboxError(ValueError):
         elif self.code == 'native_inbox_park_denied':
             result['next_step'] = ('Nothing was parked. This message is no longer an open offer of this binding: it '
                                    'was already receipted, answered or dismissed. Check session awaiting and status.')
+        elif self.reason == 'rebound':
+            result['next_step'] = ('This slot was handed to a new native worker by session worker rebind; its handle '
+                                   'no longer acts for the agent. Use the successor slot from the rebind (session '
+                                   'worker status <slot-uuid> shows rebound_to). Nothing was sent.')
+        elif self.reason == 'rebind_pending':
+            result['next_step'] = ('Another rebind successor for this binding is still pending. Nothing was changed. '
+                                   'Attest that slot, or wait until it expires, then run session worker rebind again.')
+        elif self.reason in ('reception_stopped', 'agent_revoked'):
+            result['next_step'] = ('This binding was stopped or its agent was revoked, so it cannot be rebound. '
+                                   'Nothing was prepared or registered. Joining again needs a new owner decision '
+                                   '(references/claude-worker.md#rebind-after-a-parent-restart).')
         elif self.reason == 'supersede_not_in_scope':
             result['next_step'] = ('Nothing was sent or registered. Retiring another agent is outside every worker '
                                    'scope. The owner retires the stale agent with leave from the parent chat, '

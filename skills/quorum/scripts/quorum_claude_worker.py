@@ -44,6 +44,8 @@ OPERATIONS = {'create': ('create', 'connect', 'receive', 'received', 'reply', 's
 # A create/accept scope may carry an optional member knowledge subset; it adds the `knowledge` operation for
 # exactly these commands (`write` only as `propose`). Verification, administration, audit, catalog, sources and
 # capture stay with an owner binding. The server's own space ACL still decides every call.
+# It may also opt in to `update` (`"update": true`): the same `update` commands as an adopt scope, run as this
+# worker's own agent on the parent's brief; the server still decides owner-only operations (`owner_required`).
 KNOWLEDGE = ('search', 'read', 'propose')
 KNOWLEDGE_ACTIONS = {'search': 'search', 'read': 'read', 'write': 'propose'}
 # standing-check is added to a scope's operations only when it carries standing grants.
@@ -545,7 +547,7 @@ def normalize_scope(raw):
     optional = {'coordinator_role', 'dispatch_mode', 'lifetime', 'ttl_seconds', 'operations', 'accept_tasks_from_members',
                 'standing_grants_from', 'trust_members'} | (
         {'access'} if mode == 'accept' else set()) | (
-        {'knowledge'} if mode in ('create', 'accept') else set())
+        {'knowledge', 'update'} if mode in ('create', 'accept') else set())
     if not required <= set(raw) or set(raw) - required - optional: raise _denied('scope_invalid')
     service = raw['service']
     if not isinstance(service, dict) or set(service) != {'origin', 'publishable_key_sha256'}:
@@ -610,9 +612,11 @@ def normalize_scope(raw):
                 or len(set(knowledge)) != len(knowledge)):
             raise _denied('scope_invalid')
         scope['knowledge'] = [item for item in KNOWLEDGE if item in knowledge]
-    # standing-check exists only for a scope that carries standing grants; others keep their exact operations.
-    allowed = (OPERATIONS[mode] + (('standing-check',) if standing is not None else ())
-               + (('knowledge',) if knowledge is not None else ()))
+    # Omission (or false) adds nothing; only an explicit true is stored, so legacy scopes keep their hash.
+    if 'update' in raw:
+        if type(raw['update']) is not bool: raise _denied('scope_invalid')
+        if raw['update']: scope['update'] = True
+    allowed = _allowed(scope, standing)
     operations = raw.get('operations', list(allowed))
     if (not isinstance(operations, list) or not operations or len(set(map(str, operations))) != len(operations)
             or any(not isinstance(item, str) or item not in allowed for item in operations)):
@@ -620,6 +624,13 @@ def normalize_scope(raw):
     scope.update(coordinator_role=coordinator, dispatch_mode=dispatch_mode, lifetime=lifetime, ttl_seconds=ttl,
                  operations=[item for item in allowed if item in operations])
     return scope
+
+
+def _allowed(scope, standing):
+    """A scope's admissible operations in canonical order; standing-check, knowledge and update only when opted in."""
+    return (OPERATIONS[scope['mode']] + (('standing-check',) if standing is not None else ())
+            + (('knowledge',) if 'knowledge' in scope else ())
+            + (('update',) if scope.get('update') is True and 'update' not in OPERATIONS[scope['mode']] else ()))
 
 
 def _effective(record):
@@ -657,11 +668,16 @@ def _create_state(record, state):
 
 def _summary(root, record, *, session=True):
     state, reason = _effective(record)
-    return {'slot_id': record['slot_id'], 'state': state, 'terminal_reason': reason,
-            'lifetime': record['lifetime'], 'pending_expires_at': record['pending_expires_at'],
-            'permission_expires_at': record['permission_expires_at'], 'binding': _public(record),
-            'target': dict(record.get('target') or {}), 'create': _create_state(record, state),
-            'session': _session_status(root, record) if session else None}
+    result = {'slot_id': record['slot_id'], 'state': state, 'terminal_reason': reason,
+              'lifetime': record['lifetime'], 'pending_expires_at': record['pending_expires_at'],
+              'permission_expires_at': record['permission_expires_at'], 'binding': _public(record),
+              'target': dict(record.get('target') or {}), 'create': _create_state(record, state),
+              'session': _session_status(root, record) if session else None}
+    # Rebind links only: slot IDs, never a handle, path or token.
+    if record.get('rebound_to'): result['rebound_to'] = record['rebound_to']
+    if isinstance(record.get('rebind'), dict):
+        result['rebind'] = {key: record['rebind'][key] for key in ('previous_slot_id', 'count')}
+    return result
 
 
 def _held(directory, name):
@@ -730,12 +746,16 @@ def prepare(state_root, scope):
     """Pending slot only: no profile, auth, API, membership or receive right."""
     sid = actual_session()
     root = _state_root(state_root)
-    scope = normalize_scope(scope)
+    raw, scope = scope, normalize_scope(scope)
     if scope['cwd'] != str(Path.cwd().resolve()): raise _denied('cwd_mismatch')
     target = {}
     if scope['mode'] == 'adopt':
         # The target comes from this chat's own existing binding in this state, never from the input.
-        parent = parent_binding(root, sid, scope)
+        parent, policy = parent_binding(root, sid, scope, policy=True)
+        if policy and not DELEGATION_KEYS & set(raw):
+            # The owner's intake policy recorded at this chat's connect carries over when the scope names none,
+            # so the worker's own connect stores the matching grant for its own agent (nothing is copied).
+            scope = normalize_scope({**raw, **policy})
         scope['adopt'] = parent
         target = {'quorum_id': parent['quorum_id']}
     prepared = now()
@@ -754,12 +774,45 @@ def prepare(state_root, scope):
         if adopt: _index_setting(root, ADOPTED + scope['adopt']['agent_id'], {'slot_id': slot_id})
         _write_slot(root, sid, scope, slot_id, target, prepared, pending, permission)
     result = {'slot_id': slot_id, 'state': 'pending', 'lifetime': scope['lifetime'], 'pending_expires_at': pending,
-              'permission_expires_at': permission, 'bootstrap_command': _bootstrap(root, slot_id)}
+              'permission_expires_at': permission, 'bootstrap_command': _bootstrap(root, slot_id),
+              'connect_flags': connect_flags(scope)}
     if adopt: result['adopt'] = dict(scope['adopt'])
     return result
 
 
-def _write_slot(root, sid, scope, slot_id, target, prepared, pending, permission):
+# Scope keys that state a delegation policy; an adopt scope naming none inherits the parent's.
+DELEGATION_KEYS = {'coordinator_role', 'accept_tasks_from_members', 'standing_grants_from', 'trust_members',
+                   'dispatch_mode'}
+
+
+def connect_flags(scope):
+    """The intake flags the worker's `session connect` must pass for this scope (they must equal it)."""
+    flags = []
+    if scope.get('coordinator_role'): flags += ['--accept-tasks-from', scope['coordinator_role']]
+    if scope.get('accept_tasks_from_members'): flags.append('--accept-tasks-from-members')
+    if scope.get('standing_grants_from'): flags += ['--standing-grants-from', scope['standing_grants_from']]
+    if scope.get('trust_members'): flags.append('--trust-members')
+    return flags + ['--dispatch-mode', scope['dispatch_mode']]
+
+
+def _parent_policy(record):
+    """The delegation policy of this chat's own parent binding as scope keys; {} without one."""
+    from quorum_delegation import member_trust, standing_grants
+    policy = record.get('delegation')
+    if not isinstance(policy, dict): return {}
+    if policy.get('scope') == 'members':
+        result = {'accept_tasks_from_members': True}
+        standing = standing_grants(record)
+        if standing is not None: result['standing_grants_from'] = standing['from_role']
+        if member_trust(record): result['trust_members'] = True
+        return result
+    role = policy.get('coordinator_role')
+    if isinstance(role, str) and _name(role):
+        return {'coordinator_role': role, 'dispatch_mode': policy.get('dispatch_mode', 'inline')}
+    return {}
+
+
+def _write_slot(root, sid, scope, slot_id, target, prepared, pending, permission, extra=None):
     with _directory(root, 'claude-workers') as workers:
         if workers is None: raise _unavailable('path_unsafe')
         _mkdir_new(slot_id, workers)
@@ -769,17 +822,19 @@ def _write_slot(root, sid, scope, slot_id, target, prepared, pending, permission
               'prepared_at': prepared, 'pending_expires_at': pending, 'permission_expires_at': permission,
               'generation': 1, 'binding': None, 'token_hash': None, 'target': target}
     if scope['mode'] == 'create': record.update(create_request_id=str(uuid.uuid4()), create=None)
+    if extra: record.update(extra)
     ledger = _ledger(root, ('claude-workers', slot_id), SLOT_KINDS, create=True)
     try: ledger.setting(SLOT_KEY, record)
     finally: ledger.db.close()
 
 
-def parent_binding(root, sid, scope):
+def parent_binding(root, sid, scope, *, policy=False):
     """This chat's own stopped parent-route binding for exactly the scoped quorum, role and project.
 
     Read-only from the verified `sessions/<actual SID>` ledger; the state's public service must be the pinned
     one. A running parent listener or enabled parent reception refuses: two live agents on one role make
-    role sends ambiguous. Returns the parent's quorum and agent IDs, which pin the worker's target.
+    role sends ambiguous. Returns the parent's quorum and agent IDs, which pin the worker's target, and with
+    `policy` also its delegation policy as scope keys.
     """
     if not os.path.isdir(root): raise _denied('parent_binding_missing')
     names = ('sessions', sid)
@@ -803,7 +858,8 @@ def parent_binding(root, sid, scope):
     # The held listener lock, not a recorded state, proves a run; enabled reception would restart one.
     if running or (settings.get('session-reception') or {}).get('enabled') is True:
         raise _denied('parent_binding_running')
-    return {'quorum_id': record['quorum_id'], 'agent_id': record['agent_id']}
+    found = {'quorum_id': record['quorum_id'], 'agent_id': record['agent_id']}
+    return (found, _parent_policy(record)) if policy else found
 
 
 def _index_setting(root, key, value=None):
@@ -988,6 +1044,10 @@ def attest(state_root, slot_id, native_handle, spawn_tool_use_id=None):
     handle = _label(native_handle)
     tool = None if spawn_tool_use_id is None else _label(spawn_tool_use_id)
     check_root(root)
+    # A rebind slot also writes its predecessor: recover both before the index lock is taken.
+    _recover(root, slot_id)
+    marker = _view(root, slot_id).get('rebind')
+    if isinstance(marker, dict): _recover(root, _slot_uuid(marker.get('previous_slot_id')))
     with _slot(root, slot_id, sid, index=True) as ledger:
         record = _settle(ledger, ledger.setting(SLOT_KEY))
         if record['state'] == 'terminal': raise _terminal(record['terminal_reason'])
@@ -996,6 +1056,7 @@ def attest(state_root, slot_id, native_handle, spawn_tool_use_id=None):
             if binding['native_worker_handle'] != handle or binding.get('spawn_tool_use_id') != tool:
                 raise _denied('binding_changed')
             return _public(record)
+        if record.get('rebind') is not None: return _attest_rebind(root, sid, ledger, record, handle, tool)
         actor = str(uuid.uuid5(uuid.UUID(sid), handle))
         session_ref = PREFIX + actor
         index = _ledger(root)
@@ -1021,6 +1082,300 @@ def attest(state_root, slot_id, native_handle, spawn_tool_use_id=None):
                   'token_hash': hashlib.sha256(token.encode()).hexdigest()}
         ledger.setting(SLOT_KEY, record)
         return _public(record)
+
+
+def _new_binding(record, sid, handle, tool, actor, session_ref):
+    """The slot's binding for this attested native handle, sealed by its authority hash."""
+    binding = {'provider': PROVIDER, 'binding_version': 1, 'provider_session_id': sid,
+               'native_worker_handle': handle, 'logical_actor_id': actor, 'session_ref': session_ref,
+               'slot_id': record['slot_id'], 'generation': record['generation'],
+               'attestation': 'owner-parent-native-receipt'}
+    if tool is not None: binding['spawn_tool_use_id'] = tool
+    binding['authority_hash'] = _digest({**binding, 'scope_hash': record['scope_hash'],
+                                         'lifetime': record['lifetime'], 'state_root': record['state_root'],
+                                         'permission_expires_at': record['permission_expires_at']})
+    return binding
+
+
+# --- Rebind after a parent chat restart ------------------------------------------------------
+
+def _actor_binding(root, binding):
+    """The `worker_binding` a connected actor ledger stores for this slot binding (as `_worker_binding`)."""
+    return {key: binding[key] for key in ('provider', 'session_ref', 'slot_id', 'logical_actor_id',
+                                          'provider_session_id', 'native_worker_handle', 'authority_hash')} | {
+        'capability_file': str(_slot_path(root, binding['slot_id']) / 'capability.json')}
+
+
+# An unactivated successor that ended this way never acted; its predecessor's hand-over may be repeated.
+LAPSED = ('pending_expired', 'await_timeout')
+
+
+def _unactivated(successor):
+    """Check a superseded slot's successor that never activated: pending refuses, an owner stop stays a stop."""
+    state, reason = _effective(successor)
+    if state != 'terminal': raise _denied('rebind_pending')
+    if reason not in LAPSED: raise _terminal(reason)
+
+
+def _rebind_source(root, record):
+    """The connected slot a rebind continues from: this active slot, or, after an interrupted rebind whose
+    successor never activated and has lapsed, the superseded slot itself. Activated successors are followed."""
+    for _ in range(64):
+        state, reason = _effective(record)
+        if state == 'active': return record
+        if state == 'pending': raise _denied('slot_pending')
+        if reason != 'rebound': raise _terminal(reason)
+        successor = _view(root, _slot_uuid(record.get('rebound_to')))
+        if successor.get('binding'):
+            record = successor
+            continue
+        _unactivated(successor)
+        return record
+    raise _denied('slot_invalid')
+
+
+def _limbo(root, record):
+    """An unactivated rebind successor whose predecessor was already superseded: the hand-over is unfinished,
+    so this slot speaks for the actor (no handle can act until it activates)."""
+    marker = record.get('rebind')
+    if record.get('binding') or not isinstance(marker, dict): return False
+    try: previous = _view(root, _slot_uuid(marker.get('previous_slot_id')))
+    except NativeInboxError: return False
+    return previous.get('terminal_reason') == 'rebound' and previous.get('rebound_to') == record['slot_id']
+
+
+def _connected(root, record):
+    """Read-only: the actor ledger's agent record for this slot, which must still have reception enabled."""
+    from quorum_native_inbox import CONTROL
+    binding, target = record['binding'], record.get('target') or {}
+    if not target.get('agent_id') or _unresolved(record): raise _denied('target_pending')
+    names = ('sessions', actor_directory(binding['session_ref']))
+    with _components(root, names, ACTOR_KINDS[:2]) as fds:
+        rows = None if fds is None else _read_db(
+            fds[-1], root.joinpath(*names, 'ledger.sqlite'),
+            lambda db: db.execute("select key,data from settings where key in ('session-agent', ?)",
+                                  (CONTROL,)).fetchall(), ledger='actor')
+    settings = {key: json.loads(data) for key, data in rows or ()}
+    agent = settings.get('session-agent')
+    if (not isinstance(agent, dict) or agent.get('session_ref') != binding['session_ref']
+            or agent.get('agent_id') != target['agent_id'] or agent.get('quorum_id') != target.get('quorum_id')):
+        raise _denied('target_pending')
+    # A stopped worker stays stopped: rebind never re-enables reception.
+    if (settings.get(CONTROL) or {}).get('enabled') is not True: raise _denied('reception_stopped')
+    return agent
+
+
+def _rebind_scope(scope, knowledge, update):
+    """The predecessor's exact scope; the owner may only add the member opt-ins to a create/accept scope."""
+    if not knowledge and not update: return dict(scope)
+    if (scope['mode'] not in ('create', 'accept') or any(item not in KNOWLEDGE for item in knowledge)
+            or type(update) is not bool):
+        raise _denied('scope_invalid')
+    result = dict(scope)
+    if knowledge:
+        result['knowledge'] = [item for item in KNOWLEDGE if item in knowledge or item in scope.get('knowledge', ())]
+    if update: result['update'] = True
+    added = [name for name in ('knowledge', 'update') if name in result and name not in scope]
+    allowed = _allowed(result, result.get('standing_grants_from'))
+    result['operations'] = [item for item in allowed if item in scope['operations'] or item in added]
+    return result
+
+
+def rebind(state_root, slot_id, *, knowledge=(), update=False):
+    """Owner-parent: a pending successor slot that hands this connected worker binding to a new native handle.
+
+    For the same actual `CLAUDE_CODE_SESSION_ID` after the parent chat restarted and its native worker is gone.
+    The agent, its session reference and actor ledger, role, delegation, scope and deliveries stay; nothing is
+    registered or accepted, and the permission deadline is the predecessor's. Attesting the successor
+    supersedes the predecessor (`native_worker_slot_terminal` reason `rebound` for the old handle). A stopped,
+    expired or service-revoked binding, another session or a still-pending successor is refused.
+    """
+    from quorum_session import agent_revoked
+    sid = actual_session()
+    root = _state_root(state_root)
+    slot_id = _slot_uuid(slot_id)
+    knowledge = list(knowledge or ())
+    check_root(root)
+    _recover(root, slot_id)
+    named = _view(root, slot_id)
+    if named.get('provider_session_id') != sid: raise _denied('session_mismatch')
+    source = _rebind_source(root, named)
+    if source.get('provider_session_id') != sid: raise _denied('session_mismatch')
+    if source['scope']['cwd'] != str(Path.cwd().resolve()): raise _denied('cwd_mismatch')
+    scope = _rebind_scope(source['scope'], knowledge, update)
+    agent = _connected(root, source)
+    # The agent must still be live at the service: rebind never revives a revoked agent or membership.
+    with _owner_api(root, source) as (_, api):
+        try: api.call('agent_status', {'agent_id': agent['agent_id']})
+        except QuorumError as error:
+            if agent_revoked(error): raise _denied('agent_revoked') from None
+            raise
+    prepared = now()
+    permission = source['permission_expires_at']
+    if permission is not None and prepared >= permission: raise _terminal('permission_expired')
+    pending = prepared + PENDING_SECONDS if permission is None else min(prepared + PENDING_SECONDS, permission)
+    successor = str(uuid.uuid4())
+    binding = source['binding']
+    marker = {'previous_slot_id': source['slot_id'], 'previous_scope_hash': source['scope_hash'],
+              'session_ref': binding['session_ref'], 'logical_actor_id': binding['logical_actor_id'],
+              'agent_id': agent['agent_id'], 'count': (source.get('rebind') or {}).get('count', 0) + 1}
+    carried = {key: source[key] for key in ('registration', 'create', 'create_request_id') if key in source}
+    key = REBINDING + binding['session_ref']
+    with _lock(root, ('claude-workers',), 'index.lock'):
+        # Attest also runs under this lock: the source cannot change hands between this check and the write.
+        if _rebind_source(root, _view(root, slot_id))['slot_id'] != source['slot_id']: raise _denied('rebind_pending')
+        reserved = _reserved(root, _index_setting(root, key), source['slot_id'])
+        if reserved is not None:
+            # A repeated rebind (for example after a lost response) returns the same pending successor.
+            if reserved['scope_hash'] != _digest(scope): raise _denied('rebind_pending')
+            return _rebind_result(root, reserved)
+        # Reserve first: a crash before the slot is written leaves a reservation of nothing, which is replaced.
+        _index_setting(root, key, {'slot_id': successor, 'previous_slot_id': source['slot_id']})
+        _write_slot(root, sid, scope, successor, dict(source.get('target') or {}), prepared, pending, permission,
+                    extra={**carried, 'rebind': marker})
+    return _rebind_result(root, _view(root, successor))
+
+
+# One reserved pending successor per actor: `claude-worker-rebinding:<session_ref>` -> its slot and source.
+REBINDING = 'claude-worker-rebinding:'
+
+
+def _reserved(root, reservation, source_id):
+    """The still-valid pending successor this reservation names for `source_id`, else None (absent, never
+    written, lapsed, activated or superseded reservations are replaceable)."""
+    if not isinstance(reservation, dict): return None
+    try: record = _view(root, _slot_uuid(reservation.get('slot_id')))
+    except NativeInboxError as error:
+        if error.reason == 'recovery_needed': raise
+        return None
+    if _effective(record)[0] != 'pending' or record.get('binding'): return None
+    if (record.get('rebind') or {}).get('previous_slot_id') != source_id: raise _denied('rebind_pending')
+    return record
+
+
+def _rebind_result(root, record):
+    """The rebind answer for a pending successor; identical for a repeated request. IDs only, never a token."""
+    marker = record['rebind']
+    return {'slot_id': record['slot_id'], 'state': 'pending', 'lifetime': record['lifetime'],
+            'pending_expires_at': record['pending_expires_at'],
+            'permission_expires_at': record['permission_expires_at'],
+            'bootstrap_command': _bootstrap(root, record['slot_id']),
+            'rebind': {key: marker[key] for key in ('previous_slot_id', 'session_ref', 'agent_id', 'count')},
+            'connect_flags': connect_flags(record['scope'])}
+
+
+@contextmanager
+def _held_slot(root, slot_id):
+    """A second slot's lock and writable ledger while the caller already holds the index lock."""
+    with _lock(root, ('claude-workers', slot_id), 'slot.lock'):
+        ledger = _ledger(root, ('claude-workers', slot_id), SLOT_KINDS)
+        if ledger is None: raise _denied('slot_invalid')
+        try: yield ledger
+        finally: ledger.db.close()
+
+
+def _alias_free(root, sid, alias, session_ref):
+    """The new handle's own derived actor may be unclaimed or claimed by this same actor's slots only."""
+    index = _ledger(root)
+    if index is None: raise _unavailable('path_unsafe')
+    try: claimed = index.setting(INDEX + alias)
+    finally: index.db.close()
+    if claimed is None: return
+    try: owner = _view(root, _slot_uuid(claimed.get('slot_id') if isinstance(claimed, dict) else None))
+    except NativeInboxError: owner = None
+    if owner is None or claimed.get('provider_session_id') != sid or owner.get('provider_session_id') != sid:
+        raise _denied('actor_claimed')
+    # An activated slot proves its actor by its binding; a never-activated rebind successor (this same
+    # hand-over interrupted after its index step, or an earlier lapsed one) by its owner-written rebind marker.
+    marker = owner.get('rebind') if not owner.get('binding') else None
+    actor = ((owner.get('binding') or {}).get('session_ref') if marker is None
+             else marker.get('session_ref') if isinstance(marker, dict) else None)
+    if actor != session_ref: raise _denied('actor_claimed')
+
+
+def _attest_rebind(root, sid, ledger, record, handle, tool):
+    """Activate a pending rebind slot; the caller holds the index lock and this slot's lock.
+
+    Crash-safe order, each step repeated unchanged by an identical retry: (1) the successor's capability file
+    while it is still pending (authorization refuses a pending slot); (2) the predecessor turns terminal
+    `rebound`, which excludes the old handle; (3) the actor ledger names the new binding, under its control
+    lock and refused while a receive runs; (4) the root index names the successor; (5) it activates. Before (5)
+    no handle can act; a retried attest, or a new rebind after this successor lapsed, completes the hand-over.
+    """
+    import quorum_native_inbox as inbox
+    from quorum_listener import locked
+    from quorum_live import supervisor_running
+    marker = record['rebind']
+    source_id = _slot_uuid(marker.get('previous_slot_id'))
+    session_ref = marker['session_ref']
+    alias = PREFIX + str(uuid.uuid5(uuid.UUID(sid), handle))
+    # The predecessor's slot lock is held until the successor activates: an owner stop of the old slot lands
+    # either before (the hand-over is refused) or after (the old slot is superseded and stops nothing live).
+    with _held_slot(root, source_id) as source_ledger:
+        source = _settle(source_ledger, source_ledger.setting(SLOT_KEY))
+        if (not isinstance(source, dict) or source.get('slot_id') != source_id
+                or source.get('provider_session_id') != sid or source.get('scope_hash') != marker['previous_scope_hash']
+                or (source.get('binding') or {}).get('session_ref') != session_ref
+                or (source.get('target') or {}) != (record.get('target') or {})):
+            raise _denied('binding_changed')
+        unfinished = None
+        if source['state'] != 'active':
+            if source.get('terminal_reason') != 'rebound': raise _terminal(source.get('terminal_reason'))
+            unfinished = _slot_uuid(source.get('rebound_to'))
+            if unfinished != record['slot_id']:
+                # Only a hand-over to a successor that never activated and lapsed may be repeated.
+                other = _view(root, unfinished)
+                if other.get('binding'): raise _terminal('rebound')
+                _unactivated(other)
+        if alias != session_ref: _alias_free(root, sid, alias, session_ref)
+        binding = _new_binding(record, sid, handle, tool, marker['logical_actor_id'], session_ref)
+        actor = _actor_ledger(root, session_ref)
+        if actor is None: raise _denied('target_pending')
+        try:
+            # The control lock serializes with receive start, stop and the worker's connect write; the immediate
+            # transaction makes the actor record a compare-and-set against every other writer of it.
+            with inbox.control_lock(actor), actor.db:
+                actor.db.execute('begin immediate')
+                row = actor.db.execute("select data from settings where key='session-agent'").fetchone()
+                current = None if row is None else json.loads(row[0])
+                bound = (current or {}).get('worker_binding') or {}
+                allowed = {source_id, record['slot_id'], unfinished} - {None}
+                if (not isinstance(current, dict) or current.get('session_ref') != session_ref
+                        or current.get('agent_id') != marker['agent_id'] or bound.get('slot_id') not in allowed
+                        or (bound.get('slot_id') == source_id and bound != _actor_binding(root, source['binding']))):
+                    raise _denied('binding_changed')
+                # A stopped worker stays stopped: only an enabled binding is handed over.
+                if not inbox.enabled(actor): raise _denied('reception_stopped')
+                # The previous worker may still be inside a receive; never take its offer or epoch mid-call.
+                if locked(actor.root / 'listener.lock') or supervisor_running(actor.root):
+                    raise ValueError('worker_already_running')
+                token = secrets.token_urlsafe(32)
+                _write_capability(root, record['slot_id'], token)
+                if source['state'] == 'active' or unfinished != record['slot_id']:
+                    source_ledger.setting(SLOT_KEY, {**source, 'state': 'terminal', 'terminal_reason': 'rebound',
+                                                     'terminal_at': source.get('terminal_at') or now(),
+                                                     'rebound_to': record['slot_id']})
+                updated = {**current, 'worker_binding': _actor_binding(root, binding), 'claude_worker_rebind': {
+                    'slot_id': record['slot_id'], 'previous_slot_id': source_id, 'rebound_at': int(now()),
+                    'count': marker['count']}}
+                actor.db.execute("update settings set data=? where key='session-agent'", (json.dumps(updated),))
+                # The new worker's first receive says Hello with a fresh presence epoch.
+                actor.db.execute("delete from settings where key='presence-epoch'")
+        finally: actor.db.close()
+        index = _ledger(root)
+        if index is None: raise _unavailable('path_unsafe')
+        try:
+            claim = {'slot_id': record['slot_id'], 'provider_session_id': sid}
+            index.setting(INDEX + session_ref, claim)
+            if alias != session_ref: index.setting(INDEX + alias, claim)
+            adopted = _adopted(record['scope'])
+            if adopted and (index.setting(ADOPTED + adopted) or {}).get('slot_id') in (source_id, unfinished):
+                index.setting(ADOPTED + adopted, {'slot_id': record['slot_id']})
+        finally: index.db.close()
+        record = {**record, 'state': 'active', 'binding': binding, 'activated_at': now(),
+                  'token_hash': hashlib.sha256(token.encode()).hexdigest()}
+        ledger.setting(SLOT_KEY, record)
+    return {**_public(record), 'rebind': {'previous_slot_id': source_id, 'count': marker['count']}}
 
 
 def await_binding(state_root, slot_id, wait_seconds=AWAIT_DEFAULT):
@@ -1071,7 +1426,13 @@ def stop_slot(state_root, slot_id, *, sid=None, leave=False, register_agent=None
         if record['state'] != 'terminal':
             record = {**record, 'state': 'terminal', 'terminal_reason': 'stopped', 'terminal_at': now()}
             ledger.setting(SLOT_KEY, record)
+    if _superseded(root, record):
+        # The agent and its actor ledger now belong to the activated successor slot: stop that one instead.
+        if leave: raise _terminal('rebound')
+        return {**_summary(root, record, session=False), 'rebound_to': record['rebound_to']}
     binding = record.get('binding')
+    # An unfinished hand-over's successor speaks for the actor: its stop also stops the agent's reception.
+    if not binding and _limbo(root, record): binding = {'session_ref': record['rebind']['session_ref']}
     try: session = binding and _actor_ledger(root, binding['session_ref'])
     except NativeInboxError as error:
         # The slot is already terminal locally; an unsafe actor path is reported and left unchanged.
@@ -1084,6 +1445,14 @@ def stop_slot(state_root, slot_id, *, sid=None, leave=False, register_agent=None
         finally: session.db.close()
     if leave: return {**_summary(root, record), 'worker_agent': _retire(root, record, register_agent)}
     return _summary(root, record)
+
+
+def _superseded(root, record):
+    """A slot handed over by a rebind whose successor activated; until then the hand-over is unfinished."""
+    if record.get('terminal_reason') != 'rebound': return False
+    try: successor = _view(root, _slot_uuid(record.get('rebound_to')))
+    except NativeInboxError: return False
+    return bool(successor.get('binding'))
 
 
 def resolve_actor(state_root, session_ref):
@@ -1330,6 +1699,9 @@ def manage(args, register_agent=None):
         if action == 'stop':
             return stop_slot(args.state, args.slot, leave=getattr(args, 'leave', False), register_agent=register_agent)
         if action == 'verify-retired': return verify_retired(args.state, args.slot, register_agent)
+        if action == 'rebind':
+            return rebind(args.state, args.slot, knowledge=getattr(args, 'knowledge', None) or (),
+                          update=bool(getattr(args, 'update_maintenance', False)))
         raise _denied('operation_denied')
     # A logical selector is metadata-only supervision by the exact owning actual SID.
     if args.action not in ('status', 'stop'): raise _denied('management_only')
@@ -1443,7 +1815,7 @@ def _api(auth_ledger, context, explicit=None):
 
 def owner_binding(context, auth_ledger):
     """The connected worker's own ledger, record, provenance check and pinned API for its scoped knowledge and
-    (adopt only) update commands; the caller closes the ledger. Never the parent's session or ledger.
+    update (adopt, or an opted-in create/accept scope) commands; the caller closes the ledger. Never the parent's session or ledger.
 
     The check re-reads the persisted binding: a changed slot or worker binding refuses the call and its result."""
     context = {**guard(context), 'arguments': context['arguments']}
@@ -1477,11 +1849,17 @@ def session_dispatch(args, auth_ledger, register_agent, context):
     if action == 'stop':
         return stop_slot(context['state_root'], context['slot_id'], sid=context['binding']['provider_session_id'])
     context = {**guard(context), 'arguments': context['arguments']}
-    check = lambda: guard(context)
     session_ref = context['session_ref']
     # Verified before any profile or API work; only connect may create the actor's private ledger.
     ledger = _actor_ledger(_state_root(context['state_root']), session_ref, create=action == 'connect')
     if ledger is None: raise ValueError('session_not_connected')
+    def check():
+        # The binding guard: the slot capability and the persisted actor binding must both still name this
+        # worker. A rebind that completes after this command's proof (while it waits on the service or for the
+        # receive locks) refuses every later operation and disclosure of the previous handle.
+        guard(context)
+        current = ledger.setting('session-agent')
+        if current is not None: _record_matches(current, context)
     try:
         record = ledger.setting('session-agent')
         if record is not None: _record_matches(record, context)
@@ -1554,7 +1932,11 @@ def _session_action(args, auth_ledger, register_agent, context, ledger, record, 
             if previous and previous['coordinator_id'] != peer['agent_id']: raise ValueError('coordinator_changed')
             fresh['delegation'] = grant(fresh, peer['agent_id'], scope['coordinator_role'],
                                         dispatch_mode=scope['dispatch_mode'])
-        ledger.setting('session-agent', fresh)
+        with inbox.control_lock(ledger):
+            # Under the lock a rebind takes: a rebind that landed after this connect's last check refuses here,
+            # so the previous handle can never write its binding back over the successor's.
+            check()
+            ledger.setting('session-agent', fresh)
         reception = inbox.initialize_control(ledger, new_binding=record is None)
         return {**result, 'session_ref': session_ref, 'transport': TRANSPORT, 'reception': reception,
                 'listener': 'offline', 'worker_binding': fresh['worker_binding'],

@@ -45,7 +45,9 @@ appended, after `connect`:
   `audit`) and `write` with `operation: "propose"`. Verification, administration,
   other write operations, `catalog`, sources, `index`, capture and `--owner-action`
   are refused with `native_worker_binding_denied` reason `operation_denied` before
-  any service call. A scope without the key has no knowledge operation.
+  any service call. A scope without the key has no knowledge operation. An
+  existing connected worker gains the key without a new invitation through the
+  owner's [rebind](claude-worker.md#rebind-after-a-parent-restart) opt-in.
 - An adopt scope keeps the owner maintenance in
   [Claude worker](claude-worker.md#adopting-this-chats-binding).
 
