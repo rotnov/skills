@@ -266,7 +266,7 @@ def add_commands(commands):
                          help='Current explicit receiving-owner instruction for administration, verification or audit')
     command.add_argument('--material-result',action='store_true',help='Capture a material task result under its finite grant')
     command.add_argument('--worker-capability',type=Path,
-                         help='Adopted Claude worker capability file; identity comes from that worker binding')
+                         help='Claude worker capability file (adopt scope or its pinned knowledge subset); identity comes from that worker binding')
 
 
 def dispatch(args,auth_ledger):
@@ -284,11 +284,15 @@ def dispatch_bounded(args,auth_ledger):
     if len(raw)>131072: raise KnowledgeError('knowledge_request_too_large')
     try: data=json.loads(raw)
     except (ValueError,UnicodeError,RecursionError): raise KnowledgeError() from None
+    if context is not None:
+        # A create/accept worker's pinned member subset (search, read, propose) before validation or any call.
+        from quorum_claude_worker import knowledge_request
+        knowledge_request(context,args.action,data)
     if args.action not in ('capture','capture-source','capture-grant'):
         validate(args.action,data,request_id=args.request_id,owner_action=args.owner_action)
     worker_api=None
     if context is not None:
-        # An adopted Claude worker acts only as its own connected binding, under its capability.
+        # A Claude worker acts only as its own connected binding, under its capability's knowledge scope.
         from quorum_claude_worker import owner_binding
         ledger,record,check_worker,worker_api=owner_binding(context,auth_ledger)
         sid,engine=record['session_ref'],'claude'
