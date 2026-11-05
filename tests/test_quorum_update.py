@@ -5,6 +5,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 import shutil
 import subprocess
@@ -50,10 +51,19 @@ class UpdateTests(unittest.TestCase):
                               cwd=kwargs['cwd'], env=kwargs['env'], stdin=kwargs['stdin'],
                               capture_output=True, text=True, timeout=30)
 
-    def refresh(self, engine='codex', runner=None):
+    @staticmethod
+    def node(output, returncode=0):
+        def probe(command, **kwargs):
+            assert command[1:] == ['--version'] and 'shell' not in kwargs and kwargs['timeout'] <= 10
+            assert 'NODE_OPTIONS' not in kwargs['env']
+            return subprocess.CompletedProcess(command, returncode, output, b'')
+        return probe
+
+    def refresh(self, engine='codex', runner=None, probe=None):
         with patch('quorum_update.shutil.which', side_effect=lambda name: name):
             return self.module.refresh(self.current, self.cache, engine,
-                                       run=runner or self.runner)
+                                       run=runner or self.runner,
+                                       probe=probe or self.node(b'v22.20.0\n'))
 
     def test_changed_code_publishes_both_copies_and_preserves_active_tree_and_state(self):
         (self.source / 'new-version.txt').write_text('new-public-code')
@@ -121,6 +131,60 @@ class UpdateTests(unittest.TestCase):
                 self.module.refresh(self.current, self.cache, 'codex',
                                     run=lambda *_args, **_kwargs: self.fail('network call'))
         self.assertFalse(self.cache.exists())
+
+    def test_old_node_blocks_with_found_and_required_version_before_npx(self):
+        never = lambda *_args, **_kwargs: self.fail('npx must not run')
+        with patch.dict(os.environ, {'NODE_OPTIONS': '--require=evil.js'}):
+            with self.assertRaisesRegex(ValueError, '^update_node_too_old$') as caught:
+                self.refresh(runner=never, probe=self.node(b'v20.11.1\n'))
+        self.assertEqual(caught.exception.data, {'found': '20.11.1', 'required': '22.20'})
+        self.assertFalse(self.cache.exists())
+        self.assertEqual((self.current / 'active-reader.txt').read_text(), 'old-code-must-remain')
+
+    def test_node_minimum_and_newer_versions_pass(self):
+        for version in (b'v22.20.0\n', b'v22.21.3', b'v26.13.0\r\n', b'v23.0.0'):
+            with self.subTest(version=version):
+                self.assertGreaterEqual(self.module.check_node('node', self.node(version)), (22, 20, 0))
+        self.assertEqual(self.refresh(probe=self.node(b'v22.20.0\n'))['status'], 'updated')
+        for version in (b'v22.19.9', b'v21.99.0', b'v8.0.0'):
+            with self.subTest(version=version), self.assertRaisesRegex(ValueError, '^update_node_too_old$'):
+                self.module.check_node('node', self.node(version))
+
+    def test_unparseable_or_failing_node_is_too_old_and_absent_node_is_missing(self):
+        never = lambda *_args, **_kwargs: self.fail('npx must not run')
+        for probe in (self.node(b'secret-token'), self.node(b''), self.node(b'v22.20'),
+                      self.node(b'v22.20.0', returncode=1), self.node(b'v22.20.0\nextra'),
+                      lambda *_a, **_k: (_ for _ in ()).throw(subprocess.TimeoutExpired('node', 10)),
+                      lambda *_a, **_k: (_ for _ in ()).throw(OSError('denied'))):
+            with self.subTest(probe=probe), self.assertRaisesRegex(ValueError, '^update_node_too_old$') as caught:
+                self.refresh(runner=never, probe=probe)
+            self.assertEqual(caught.exception.data, {'found': None, 'required': '22.20'})
+        with patch('quorum_update.shutil.which', side_effect=lambda name: None if name == 'node' else name):
+            with self.assertRaisesRegex(ValueError, '^update_tool_missing$'):
+                self.module.refresh(self.current, self.cache, 'codex', run=never,
+                                    probe=lambda *_a, **_k: self.fail('node probe'))
+        self.assertFalse(self.cache.exists())
+
+    def test_cli_reports_old_node_with_versions_and_hint_only(self):
+        with patch('quorum_update.shutil.which', side_effect=lambda name: name), \
+                patch('quorum_update.subprocess.run', side_effect=self.node(b'v20.11.1\n')), \
+                contextlib.redirect_stdout(io.StringIO()) as output:
+            code = self.module.main(['--engine', 'claude', '--cache-root', str(self.cache)])
+        self.assertEqual(code, 3)
+        result = json.loads(output.getvalue())
+        self.assertEqual(result['code'], 'update_node_too_old')
+        self.assertEqual({key: result['data'][key] for key in ('found', 'required')},
+                         {'found': '20.11.1', 'required': '22.20'})
+        self.assertIn('22.20', result['data']['hint'])
+
+    def test_documented_node_minimum_matches_the_canonical_constant(self):
+        from quorum_release import INSTALLER_NODE
+        minimum = '%d.%d' % INSTALLER_NODE
+        for path in ('README.md', 'references/update.md', 'references/pilot.md'):
+            with self.subTest(path=path):
+                text = (SCRIPTS.parent / path).read_text(encoding='utf-8')
+                self.assertIn(minimum, text)
+                self.assertEqual(set(re.findall(r'Node\.js (?:>=\s*)?([0-9]+\.[0-9]+)', text)) - {minimum}, set())
 
     def test_incomplete_or_different_client_copy_is_never_published(self):
         for corruption in ('missing-lock', 'missing-release', 'invalid-release', 'oversized-release', 'different-client', 'invalid-python', 'symlink'):

@@ -15,7 +15,7 @@ import tomllib
 
 sys.dont_write_bytecode = True
 from quorum_os import FileLock, protect, reject_link
-from quorum_release import INSTALLER
+from quorum_release import INSTALLER, INSTALLER_NODE
 
 CLIENTS = {'codex': '.agents/skills/quorum', 'claude': '.claude/skills/quorum',
            'grok': '.agents/skills/quorum'}
@@ -23,7 +23,7 @@ GENERATED = {'.venv', '__pycache__', '.git', 'node_modules'}
 REQUIRED = ('SKILL.md', 'pyproject.toml', 'uv.lock', 'scripts/quorum.py',
             'scripts/quorum_update.py', 'references/update.md', 'references/join.md',
             'references/invitations.md', 'assets/release.json', 'scripts/quorum_release.py')
-ERRORS = {'update_tool_missing', 'update_fetch_failed', 'update_invalid_copy',
+ERRORS = {'update_tool_missing', 'update_node_too_old', 'update_fetch_failed', 'update_invalid_copy',
           'update_validation_failed', 'update_cache_conflict', 'update_unsafe_cache',
           'update_in_progress', 'python_provisioning_failed'}
 # uv's own messages when it cannot find, download or link a managed CPython. Matched on the
@@ -33,7 +33,34 @@ PROVISIONING = (b'python minor version link', b'no interpreter found', b'failed 
                 b'failed to install python', b'failed to download python')
 HINTS = {'python_provisioning_failed': 'uv could not provision CPython 3.12. Make `uv python find 3.12` '
          'succeed, set UV_PYTHON_INSTALL_DIR to the directory uv uses for managed Pythons, or set '
-         'UV_PYTHON to an existing CPython 3.12, then retry.'}
+         'UV_PYTHON to an existing CPython 3.12, then retry.',
+         'update_node_too_old': 'The skills installer needs Node.js %d.%d or newer. Put a supported '
+         'node/npx first on PATH, then retry.' % INSTALLER_NODE}
+NODE_VERSION = re.compile(rb'\s*v?([0-9]{1,6})\.([0-9]{1,6})\.([0-9]{1,6})\s*')
+
+
+class NodeTooOld(ValueError):
+    """Carries only the parsed version (never raw output) and the required minimum."""
+    def __init__(self, found):
+        super().__init__('update_node_too_old')
+        self.data = {'found': found, 'required': '%d.%d' % INSTALLER_NODE}
+
+
+def check_node(node, run):
+    """Fail before npx when node is unparseable or older than the installer's minimum."""
+    # No shell; a minimal environment keeps NODE_OPTIONS and similar hooks out of the probe.
+    env = {key: os.environ[key] for key in ('PATH', 'SystemRoot', 'SYSTEMROOT') if key in os.environ}
+    try:
+        result = run([node, '--version'], env=env, stdin=subprocess.DEVNULL,
+                     capture_output=True, timeout=10)
+        output = result.stdout if isinstance(result.stdout, bytes) else str(result.stdout or '').encode()
+        match = None if result.returncode else NODE_VERSION.fullmatch(output[:64])
+    except (OSError, subprocess.SubprocessError, UnicodeError):
+        match = None
+    if match is None: raise NodeTooOld(None)
+    found = tuple(int(part) for part in match.groups())
+    if found[:2] < INSTALLER_NODE: raise NodeTooOld('%d.%d.%d' % found)
+    return found
 
 
 def content_hash(root):
@@ -140,7 +167,7 @@ def provisioning_failed(result):
     return any(marker in output.lower() for marker in PROVISIONING)
 
 
-def refresh(current, cache, engine, *, run=subprocess.run):
+def refresh(current, cache, engine, *, run=subprocess.run, probe=None):
     current, cache = Path(current).resolve(), Path(cache)
     if not cache.is_absolute(): raise ValueError('update_unsafe_cache')
     if engine not in CLIENTS: raise ValueError('update_invalid_copy')
@@ -150,6 +177,7 @@ def refresh(current, cache, engine, *, run=subprocess.run):
         raise ValueError('update_unsafe_cache')
     tools = {name: shutil.which(name) for name in ('npx', 'node', 'git', 'uv')}
     if not all(tools.values()): raise ValueError('update_tool_missing')
+    check_node(tools['node'], probe or subprocess.run)
     cache.mkdir(mode=0o700, parents=True, exist_ok=True)
     protect(cache, directory=True)
     guard = FileLock(cache / 'update.lock')
@@ -218,7 +246,8 @@ def main(argv=None):
         return 0
     except (ValueError, OSError, subprocess.SubprocessError) as error:
         code = str(error) if str(error) in ERRORS else 'update_failed'
-        data = {'hint': HINTS[code]} if code in HINTS else {}
+        data = dict(error.data) if isinstance(error, NodeTooOld) else {}
+        if code in HINTS: data['hint'] = HINTS[code]
         print(json.dumps({'ok': False, 'code': code, 'data': data}))
         return 3
 
