@@ -3186,5 +3186,104 @@ class PromptTests(unittest.TestCase):
         self.assertNotIn('worker-capability', description)
 
 
+class HolderApi(Api):
+    """`resolve_role` names the single live holder of a role (or none); `agent_status` succeeds only for the
+    caller's own agents, so another identity's holder is denied with `agent_denied`."""
+    FOREIGN = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    OWN = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'
+
+    def __init__(self, holder=None, **kwargs):
+        super().__init__(**kwargs)
+        self.holder = holder
+
+    def answer(self, operation, payload):
+        from quorum_api import QuorumError
+        if operation == 'resolve_role':
+            if self.holder is None: raise QuorumError('recipient_ambiguous_or_missing')
+            return {'agent_id': self.holder}
+        if operation == 'agent_status' and payload['agent_id'] == self.FOREIGN:
+            raise QuorumError('auth_required', denial='agent_denied')
+        return super().answer(operation, payload)
+
+
+@OWNER_PROOF
+class ExclusiveRoleWorkerTests(Bound):
+    """Issue #105 on the attested Claude worker route: the same `--exclusive-role` check as `session connect`;
+    `--supersede` would retire another agent, which no worker scope permits, so it is refused."""
+    adopt_scope = AdoptTests.adopt_scope
+    parent = AdoptTests.parent
+
+    def exclusive(self, api, *extra):
+        self.slot, self.cap, _ = self.joined(api, connect=False)
+        return self.connect(api, self.cap, *extra)
+
+    def registered(self, api):
+        return bool({'device_register', 'agent_join'} & set(api.ops()))
+
+    @isolated_profiles
+    def test_free_role_connects_after_checking_the_pinned_quorum(self):
+        api = HolderApi()
+        code, result, text = self.exclusive(api, '--exclusive-role')
+        self.assertEqual(code, 0, text)
+        self.assertEqual(result['data']['agent_id'], AGENT)
+        checked = [payload for operation, payload, _ in api.calls if operation == 'resolve_role']
+        self.assertEqual(checked, [{'quorum_id': QUORUM, 'role': 'service-worker', 'project_ref': 'team/project'}])
+
+    @isolated_profiles
+    def test_role_of_another_identity_is_refused_before_registration(self):
+        api = HolderApi(HolderApi.FOREIGN)
+        code, result, text = self.exclusive(api, '--exclusive-role')
+        self.assertEqual((code, result['code']), (3, 'role_held_by_other_identity'), text)
+        self.assertNotIn('agent_id', result['data'])
+        self.assertFalse(self.registered(api))
+        self.assertNotIn('agent_id', self.setting(self.slot)['target'])
+
+    @isolated_profiles
+    def test_own_other_agent_is_refused_with_its_id_and_never_left(self):
+        api = HolderApi(HolderApi.OWN)
+        code, result, text = self.exclusive(api, '--exclusive-role')
+        self.assertEqual((code, result['code'], result['data']['agent_id']),
+                         (3, 'role_held_by_own_agent', HolderApi.OWN), text)
+        self.assertFalse(self.registered(api))
+        self.assertNotIn('agent_leave', api.ops())
+
+    @isolated_profiles
+    def test_supersede_is_outside_every_worker_scope_and_refused_before_any_service_call(self):
+        api = HolderApi(HolderApi.OWN)
+        self.slot, self.cap, _ = self.joined(api, connect=False)
+        before = len(api.calls)
+        code, result, text = self.connect(api, self.cap, '--supersede')
+        self.assertEqual((code, result['code'], result['data'].get('reason')),
+                         (3, 'native_worker_binding_denied', 'supersede_not_in_scope'), text)
+        self.assertEqual(api.calls[before:], [])
+
+    @isolated_profiles
+    def test_reconnect_of_the_same_worker_keeps_its_agent(self):
+        api = HolderApi()
+        self.assertEqual(self.exclusive(api, '--exclusive-role')[0], 0)
+        api.holder = AGENT
+        code, result, text = self.connect(api, self.cap, '--exclusive-role')
+        self.assertEqual(code, 0, text)
+        self.assertEqual(result['data']['agent_id'], AGENT)
+
+    @isolated_profiles
+    def test_adopted_parent_agent_is_the_expected_predecessor(self):
+        api = HolderApi(PARENT_AGENT)
+        self.parent()
+        slot = self.prepare(self.adopt_scope())['slot_id']
+        self.attest(slot)
+        code, result, text = self.connect(api, self.capability(slot), '--exclusive-role')
+        self.assertEqual(code, 0, text)
+        self.assertEqual(result['data']['agent_id'], AGENT)
+        self.assertNotIn('agent_leave', api.ops())
+
+    @isolated_profiles
+    def test_without_the_option_the_worker_connect_is_unchanged(self):
+        api = HolderApi(HolderApi.FOREIGN)
+        code, result, text = self.exclusive(api)
+        self.assertEqual(code, 0, text)
+        self.assertNotIn('resolve_role', api.ops())
+
+
 if __name__ == '__main__':
     unittest.main()

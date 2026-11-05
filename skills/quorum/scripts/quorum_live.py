@@ -77,7 +77,13 @@ def add_commands(commands):
     target_id = invite_id.add_mutually_exclusive_group(required=True)
     target_id.add_argument('--github-user')
     target_id.add_argument('--github-id')
-    target_id.add_argument('--open', action='store_true', help='Single-use 15-minute invitation for an open quorum')
+    target_id.add_argument('--open', action='store_true',
+                           help='Single-use invitation for an open quorum; the server sets expires_at '
+                                '(60 minutes on current servers)')
+    invite_id.add_argument('--role', help="Recipient's assigned role, written into the prompt as a binding "
+                                          'instruction (exact role, no fallback, --exclusive-role connect)')
+    invite_id.add_argument('--project-ref', help="Recipient's shared project reference (default with --role: "
+                                                 'the quorum slug)')
     access = commands.add_parser('access', help='Owner: require GitHub or allow open invitations')
     access.add_argument('quorum')
     access.add_argument('mode', choices=('github', 'open'))
@@ -166,12 +172,14 @@ def dispatch(args, ledger, register_agent):
     if args.command == 'invite-id' and args.open:
         from quorum_invitations import create_open_invitation
         return create_open_invitation(api, config, args.quorum, args.request_id, coordinator_role=args.coordinator_role,
-                                      standing_grants=getattr(args, 'standing_grants', True))
+                                      standing_grants=getattr(args, 'standing_grants', True),
+                                      role=getattr(args, 'role', None), project_ref=getattr(args, 'project_ref', None))
     if args.command == 'invite-id':
         from quorum_invitations import create_id_invitation, github_id
         target = args.github_id or github_id(args.github_user)
         return create_id_invitation(api, config, args.quorum, target, args.request_id, github_user=args.github_user, coordinator_role=args.coordinator_role,
-                                    standing_grants=getattr(args, 'standing_grants', True))
+                                    standing_grants=getattr(args, 'standing_grants', True),
+                                    role=getattr(args, 'role', None), project_ref=getattr(args, 'project_ref', None))
     if args.command == 'invite-file':
         from quorum_invitations import create_invitation, github_id
         target = args.github_id or github_id(args.github_user)

@@ -322,6 +322,15 @@ way when `session connect` finds the service's denial. `binding_conflict` means 
 chat is bound to a still active agent with another quorum, role, project or
 directory; its `data` names that role, quorum and agent and the next step.
 
+Add `--exclusive-role` to `session connect` to keep one agent per role: before
+registering, it refuses with `role_held_by_other_identity` when another identity
+holds the role in that quorum and project, or `role_held_by_own_agent` (with that
+agent's ID) when another of your own chats, workers or devices holds it. Use
+`--supersede` instead only when that own holder is stale: it retires it with
+`leave` first and reports `superseded_agent_id`. The same chat's reconnect and a
+free or already ambiguous role register as before. A quorum owner has no command
+to retire another member's agent; only that agent's owner can `leave` it.
+
 API/authentication/revocation failures stop reception and leave undelivered data
 in the service. Inspect the private per-session `listener.log` and status.
 If the listener process dies without reporting, status shows `state: error`,

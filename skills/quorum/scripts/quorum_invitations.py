@@ -137,6 +137,36 @@ def authorizations(coordinator_role, standing=True):
             'project reference if present. ' + (standing_authorizations(coordinator_role) if standing else ''))
 
 
+ROLE = re.compile('[a-z][a-z0-9-]{0,47}')
+# A conservative charset that is inert inside single quotes in bash, zsh and PowerShell alike (no quote, `$`,
+# backtick, space or glob), still covering slugs, owner/repo, paths and URL-like references; no leading `-`.
+PROJECT_REF = re.compile('[A-Za-z0-9._/:@][A-Za-z0-9._/:@-]{0,499}')
+
+
+def assignment(slug, role=None, project_ref=None):
+    """The owner's binding role/project for this recipient, validated before any invitation is issued.
+
+    The service stores no role with an invitation, so the prompt carries it as a binding instruction and the
+    recipient's `--exclusive-role` connect refuses a role another identity or another own agent already holds.
+    """
+    if role is None and project_ref is None: return None, ''
+    if role is not None and not ROLE.fullmatch(role): raise ValueError('invalid_role')
+    if role is not None and project_ref is None: project_ref = slug
+    # Checked before any server call: the value is pasted into a shell command on the recipient's machine.
+    if not isinstance(project_ref, str) or not PROJECT_REF.fullmatch(project_ref):
+        raise ValueError('invalid_project_ref')
+    if role is None:
+        return {'role': None, 'project_ref': project_ref}, (
+            f"Assigned shared project reference: '{project_ref}'; use exactly it as --project-ref. ")
+    return {'role': role, 'project_ref': project_ref}, (
+        f'Assigned binding (binding instruction, not a suggestion): connect this session with exactly role '
+        f"{json.dumps(role)} and shared project reference {json.dumps(project_ref)}, i.e. session connect with "
+        f"--role {role} --project-ref '{project_ref}' --exclusive-role, or the same role and project in "
+        'a Claude worker scope. This overrides every default or fallback role; never choose, derive or append '
+        'another role. If connect returns role_held_by_other_identity or role_held_by_own_agent, stop and report '
+        'that code to me; do not pick a different role. ')
+
+
 SAFETY = ('Hard rules: use only this actual session identity; never spoof another client, session or export, and '
           'never relabel parent reception as a worker inbox. Do not start a model, another session, headless pilot '
           'or OS startup service, and never suggest visible parent reception: it is a legacy opt-in only on my own '
@@ -157,11 +187,12 @@ def issue_id_invitation(api, config, slug, operation, payload, request_id):
 
 
 def create_id_invitation(api, config, slug, target, request_id, *, github_user=None, coordinator_role='coordinator',
-                         standing_grants=True):
+                         standing_grants=True, role=None, project_ref=None):
     if not re.fullmatch(r'[0-9]{1,20}', target): raise ValueError('invitation_arguments_invalid')
     if github_user is not None and not re.fullmatch(r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?', github_user):
         raise ValueError('github_user_invalid')
-    granted = authorizations(coordinator_role, standing_grants)
+    assigned, binding = assignment(slug, role, project_ref)
+    granted = binding + authorizations(coordinator_role, standing_grants)
     invite_id, quorum_id, expires_at, service = issue_id_invitation(
         api, config, slug, 'invite_create_id', {'target_github_id': target}, request_id)
     target_label = (f'@{github_user}, ' if github_user else '') + f'GitHub ID {target}'
@@ -177,12 +208,14 @@ def create_id_invitation(api, config, slug, target, request_id, *, github_user=N
                   'blockers; never infer a server from the invitation UUID. ' + granted + SAFETY)
     return {'invite_id': invite_id, 'quorum': slug, 'quorum_id': quorum_id, 'target_github_id': target,
             'target_github_user': github_user, 'expires_at': expires_at, 'service': service,
-            'standing_grants': standing_grants,
+            'standing_grants': standing_grants, **({'assigned': assigned} if assigned else {}),
             'session_prompt': prompt, 'configured_machine_prompt': configured}
 
 
-def create_open_invitation(api, config, slug, request_id, *, coordinator_role='coordinator', standing_grants=True):
-    granted = authorizations(coordinator_role, standing_grants)
+def create_open_invitation(api, config, slug, request_id, *, coordinator_role='coordinator', standing_grants=True,
+                           role=None, project_ref=None):
+    assigned, binding = assignment(slug, role, project_ref)
+    granted = binding + authorizations(coordinator_role, standing_grants)
     invite_id, quorum_id, expires_at, service = issue_id_invitation(
         api, config, slug, 'invite_create_open', {}, request_id)
     prompt = (f'Single-use open Quorum invitation: quorum slug {json.dumps(slug)}, invite ID {invite_id}, expires at '
@@ -192,7 +225,8 @@ def create_open_invitation(api, config, slug, request_id, *, coordinator_role='c
               + f'Accept with accept-id {invite_id} --anonymous and --origin and --publishable-key from this public '
               f'service locator: {json.dumps(service)}. ' + granted + SAFETY)
     return {'invite_id': invite_id, 'quorum': slug, 'quorum_id': quorum_id, 'access': 'open',
-            'expires_at': expires_at, 'service': service, 'standing_grants': standing_grants, 'session_prompt': prompt}
+            'expires_at': expires_at, 'service': service, 'standing_grants': standing_grants,
+            **({'assigned': assigned} if assigned else {}), 'session_prompt': prompt}
 
 
 def accept_id_invitation(args, ledger):
