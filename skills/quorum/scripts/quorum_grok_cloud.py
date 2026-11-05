@@ -12,7 +12,7 @@ import sys
 import time
 import uuid
 from quorum_api import QuorumError
-from quorum_delegation import (grant, instruction, member_grant, member_trust, opening, task_check,
+from quorum_delegation import (grant, held_status, instruction, member_grant, member_trust, opening, task_check,
                                save_grant_binding, trusted)
 from quorum_release import ReleaseGuard, ReleaseMismatch, diagnostic
 
@@ -452,7 +452,8 @@ def status(ledger, record, conversation):
             'connected': record is not None, 'session_ref': SESSION_PREFIX + conversation, 'transport': TRANSPORT,
             'webhook_configured': configured, 'wakes': {state: counts.get(state, 0) for state in (*states, 'other')},
             'pending_receipts': deliveries.count('offered'),
-            'delegation': record.get('delegation') if record else None, 'release': diagnostic(ledger)}
+            'delegation': record.get('delegation') if record else None,
+            'owner_held_actions': held_status(record), 'release': diagnostic(ledger)}
 
 
 def start(auth_ledger, ledger, api):

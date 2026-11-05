@@ -176,8 +176,9 @@ the same worker runs `session --worker-capability <capability-file> task-check
 cannot add member scope or run member checks. A scope with `standing_grants_from`
 also needs the matching connect `--standing-grants-from <role>`. Its connect
 stores the same member grant that `session connect` writes, and it adds
-`standing-check`; see [standing owner authorizations](delegation.md#standing-owner-authorizations). All owner-held exclusions in
-[delegation](delegation.md) still apply; a stopped/expired capability denies a
+`standing-check`; see [standing owner authorizations](delegation.md#standing-owner-authorizations). The owner-held set in
+[delegation](delegation.md) still applies (the hard stops under member trust,
+otherwise the member exclusions); a stopped/expired capability denies a
 check even when its read-only RPC is in flight. Create
 JSON may hold only the approved `slug` and `role`; the stable request ID comes
 from the slot. Before any profile or token, the state's public service config

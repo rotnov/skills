@@ -12,7 +12,8 @@ from quorum_api import QuorumError, rpc_missing
 from quorum_listener import Control, abandon_start, locked, run_listener, spawn_background, stop_listener
 from quorum_os import FileLock
 from quorum_state import LocalLedger
-from quorum_delegation import (grant, instruction, member_grant, member_trust, opening, task_check, trusted,
+from quorum_delegation import (grant, held_status, instruction, member_grant, member_trust, opening, task_check,
+                               trusted,
                                save_grant_binding, standing_check, standing_grants, standing_status,
                                STANDING_ACTIONS)
 from quorum_release import ReleaseGuard, ReleaseMismatch, diagnostic
@@ -886,8 +887,8 @@ def _dispatch(args, auth_ledger, register_agent):
         ledger.setting('listener-mode','codex_tool_inbox' if tool else 'native_'+engine+'_session')
         if args.action=='status':
             if tool: return {**inbox.status(ledger,record),'session_id':sid,
-                             'delegation':record.get('delegation'),'standing_grants':standing_status(record,ledger),
-                             'release':diagnostic(ledger)}
+                             'delegation':record.get('delegation'),'owner_held_actions':held_status(record),
+                             'standing_grants':standing_status(record,ledger),'release':diagnostic(ledger)}
             deliveries = [(key,json.loads(raw)) for key,raw in
                           ledger.db.execute("select key,data from settings where key like 'delivery:%'")]
             pending = sum(value['state']=='submitted' for _,value in deliveries)
@@ -897,6 +898,7 @@ def _dispatch(args, auth_ledger, register_agent):
                     'unknown_attempts':unknown,
                     **({'retired_binding':retired_summary(ledger)} if not record and retired_summary(ledger) else {}),
                     'delegation':record.get('delegation') if record else None,
+                    'owner_held_actions':held_status(record),
                     'standing_grants':standing_status(record,ledger) if record else None, 'release':diagnostic(ledger)}
         if args.action=='stop':
             # Exact-SID supervision: a parent may stop its worker but never act as it.

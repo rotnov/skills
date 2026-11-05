@@ -32,7 +32,8 @@ session task-check <message-id>
 
 Use the same installed helper, private state and exact bound selector as the
 message. Require `authorized: true` for that message and binding, then evaluate
-the exclusions below. The helper rereads the current local grant and directory
+its `owner_held_actions`: the hard stops for a [member-trust](#member-trust)
+binding, otherwise the exclusions below. The helper rereads the current local grant and directory
 before and after the authenticated RPC. The server derives the sender from the
 addressed stored message and requires a current nonrevoked sender agent, device
 and quorum membership in the same project. Anonymous members are included.

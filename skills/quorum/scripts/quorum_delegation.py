@@ -71,6 +71,18 @@ def opening(record, message):
     return TRUSTED_OPENING if trusted(record, message) else UNTRUSTED_OPENING
 
 
+def owner_held(record):
+    """The actions this binding still holds for its owner: the hard stops under member trust, else the legacy
+    member exclusions. Every check result and envelope uses this one choice, so they never contradict."""
+    return list(HARD_STOPS) if member_trust(record) else list(MEMBER_EXCLUSIONS)
+
+
+def held_status(record):
+    """Status's local view of the owner-held set for a member grant; None for any other binding."""
+    policy = (record or {}).get('delegation')
+    return owner_held(record) if isinstance(policy, dict) and policy.get('scope') == 'members' else None
+
+
 # Standing owner grants come from pasted invitation text and persist only in this binding's member
 # grant. They name one invoking coordinator role and two bounded actions; nothing else is widened.
 STANDING_ACTIONS = ('skill-refresh', 'client-test')
@@ -171,7 +183,7 @@ def standing_check(api, record, message_id, action, current, ledger, *, authoriz
         ledger.db.execute('insert into settings values (?,?) on conflict(key) do update set data=excluded.data',
                           (key, json.dumps(value)))
     result = {**base, 'authorized': True, 'state': 'authorized', 'reason': 'coordinator_role',
-              'owner_held_actions': list(MEMBER_EXCLUSIONS)}
+              'owner_held_actions': owner_held(record)}
     if action == 'client-test':
         result.update(client_tests_per_day=standing['client_tests_per_day'], client_tests_used_today=len(value),
                       client_tests_remaining_today=standing['client_tests_per_day'] - len(value), day_utc=day)
@@ -277,7 +289,7 @@ def task_check(api, record, message_id, current, *, authorize=None):
         if str(uuid.UUID(result['sender_id'])) != result['sender_id']: return pending('authority_invalid')
     except (ValueError, TypeError, AttributeError): return pending('authority_invalid')
     return {**result, 'state': 'authorized' if result['authorized'] else 'pending',
-            'owner_held_actions': list(MEMBER_EXCLUSIONS)}
+            'owner_held_actions': owner_held(record)}
 
 
 def standing_instruction(record, message_id, status_label='session status'):

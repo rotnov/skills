@@ -522,6 +522,83 @@ class OldInvitationTests(unittest.TestCase):
         self.assertRaises(StopIteration, connect_flags, old)
 
 
+class Authority:
+    """A current-member task authority plus a resolve_role naming the same sender."""
+    def call(self, operation, payload, request_id=None):
+        if operation == 'session_task_authority':
+            return dict(authorized=True, reason='current_member', message_id=payload['message_id'], agent_id=AGENT,
+                        session_ref=SESSION, quorum_id=QUORUM, project_ref='project', sender_id=SENDER)
+        if operation == 'resolve_role': return {'agent_id': SENDER}
+        raise AssertionError(operation)
+
+
+class OwnerHeldTests(unittest.TestCase):
+    """Check results, envelopes and status name one owner-held set: hard stops under trust, else exclusions."""
+    def record(self, trust):
+        from quorum_delegation import member_grant
+        record = binding(cwd=str(Path.cwd().resolve()))
+        record['delegation'] = member_grant(record, 'lead', trust)
+        return record
+
+    def test_task_and_standing_checks_return_the_matching_owner_held_set(self):
+        from quorum_delegation import HARD_STOPS, MEMBER_EXCLUSIONS, standing_check, task_check
+        from quorum_state import LocalLedger
+        for trust, expected in ((True, list(HARD_STOPS)), (False, list(MEMBER_EXCLUSIONS))):
+            with self.subTest(trust=trust), tempfile.TemporaryDirectory() as root:
+                record = self.record(trust)
+                checked = task_check(Authority(), record, MESSAGE, lambda: record)
+                self.assertTrue(checked['authorized'])
+                self.assertEqual(checked['owner_held_actions'], expected)
+                ledger = LocalLedger(Path(root))
+                self.addCleanup(ledger.db.close)
+                standing = standing_check(Authority(), record, MESSAGE, 'skill-refresh', lambda: record, ledger)
+                self.assertTrue(standing['authorized'])
+                self.assertEqual(standing['owner_held_actions'], expected)
+
+    def test_envelopes_and_status_agree_with_the_checks(self):
+        from quorum_delegation import HARD_STOP_LINE, MEMBER_LIMITS, held_status, instruction, grant
+        trusted, legacy = self.record(True), self.record(False)
+        self.assertIn(HARD_STOP_LINE, instruction(trusted, message()))
+        self.assertNotIn(MEMBER_LIMITS, instruction(trusted, message()))
+        self.assertIn(MEMBER_LIMITS, instruction(legacy, message()))
+        self.assertNotIn(HARD_STOP_LINE, instruction(legacy, message()))
+        self.assertEqual(held_status(trusted), ['destructive', 'personal_disclosure'])
+        self.assertIn('merge_release_deploy', held_status(legacy))
+        coordinator = binding()
+        coordinator['delegation'] = grant(coordinator, SENDER, 'lead')
+        self.assertIsNone(held_status(coordinator))
+        self.assertIsNone(held_status(binding()))
+        self.assertIsNone(held_status(None))
+
+    def test_session_and_cloud_status_report_the_owner_held_set(self):
+        from quorum_grok_cloud import status as cloud_status
+        from quorum_session import dispatch
+        from quorum_state import LocalLedger
+        environment = {key: value for key, value in os.environ.items()
+                       if key not in ('CODEX_THREAD_ID', 'CLAUDE_CODE_SESSION_ID', 'GROK_SESSION_ID')}
+        environment['CODEX_THREAD_ID'] = SESSION
+        with tempfile.TemporaryDirectory() as root, patch.dict(os.environ, environment, clear=True), \
+                patch('quorum_live.api_for', return_value=(Remote(), None, None)), \
+                patch('quorum_session.shutil.which', return_value='/synthetic/codex'):
+            auth = LocalLedger(Path(root))
+            self.addCleanup(auth.db.close)
+            dispatch(SimpleNamespace(
+                session_id=SESSION, action='connect', role='receiver', quorum='team', project_ref='project',
+                accept_tasks_from=None, accept_tasks_from_members=True, dispatch_mode='inline',
+                standing_grants_from=None, trust_members=True), auth, lambda *_, **__: dict(agent_id=AGENT,
+                                                                                           quorum_id=QUORUM))
+            status = dispatch(SimpleNamespace(session_id=SESSION, action='status'), auth, None)
+            self.assertEqual(status['owner_held_actions'], ['destructive', 'personal_disclosure'])
+        with tempfile.TemporaryDirectory() as root:
+            ledger = LocalLedger(Path(root))
+            self.addCleanup(ledger.db.close)
+            for trust, held in ((True, ['destructive', 'personal_disclosure']), (False, None)):
+                record = self.record(trust) if trust else None
+                with self.subTest(trust=trust):
+                    self.assertEqual(cloud_status(ledger, record, '88888888-8888-4888-8888-888888888888')
+                                     ['owner_held_actions'], held)
+
+
 class ReferenceTests(unittest.TestCase):
     def test_references_route_member_trust(self):
         for path, required in (
