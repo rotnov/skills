@@ -6,7 +6,14 @@ automatic recovery for that binding. This page does not apply to cloud chats.
 A Codex native worker tool inbox recovers with the
 [worker rebind](native-inbox.md#worker-rebind) in the same `session recover`
 command; the optional startup hook below only reminds its parent chat to run it.
-For a native Claude chat, reconnecting first preserves the old endpoint until
+A Claude Code background worker (a `claude-worker:` binding from
+`session worker prepare`) does not survive a Claude Code restart. The resumed
+chat, with the same `CLAUDE_CODE_SESSION_ID`, runs `session worker rebind
+<slot-uuid>` and attests one new native worker. That keeps the agent, role,
+delegation, scope and queued deliveries, with no invitation and no second agent.
+See [rebind after a parent restart](claude-worker.md#rebind-after-a-parent-restart),
+which also lists the manual fallback for older installs and its leave order.
+`session recover` does not apply to that worker. For a native Claude chat, reconnecting first preserves the old endpoint until
 start or authorized recovery stops and rebinds its listener.
 See [Claude transport recovery](sessions.md#claude-code--macos-linux-and-windows)
 and [delivery reconciliation](sessions.md#failure-and-recovery) for definite

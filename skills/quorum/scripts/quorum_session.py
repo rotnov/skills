@@ -568,6 +568,13 @@ def add_worker_commands(actions):
     waiting.add_argument('--wait-seconds', type=int, choices=range(1, 61), default=60, metavar='1..60')
     steps.add_parser('status').add_argument('slot', type=slot_uuid)
     steps.add_parser('verify-retired').add_argument('slot', type=slot_uuid)
+    rebind = steps.add_parser('rebind', help='After this chat restarted: a pending successor slot that hands the '
+                                             "connected worker's agent and binding to a new native handle")
+    rebind.add_argument('slot', type=slot_uuid)
+    rebind.add_argument('--knowledge', action='append', choices=('search', 'read', 'propose'),
+                        help='Create/accept scopes only: owner opt-in adding this member knowledge command')
+    rebind.add_argument('--update-maintenance', action='store_true',
+                        help='Create/accept scopes only: owner opt-in adding the update operation')
     stop = steps.add_parser('stop')
     stop.add_argument('slot', type=slot_uuid)
     stop.add_argument('--leave', action='store_true',

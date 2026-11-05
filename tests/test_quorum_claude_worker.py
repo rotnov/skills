@@ -341,7 +341,8 @@ class SlotTests(Harness):
         self.assertEqual(code, 0, text)
         for value in (result, cli['data']):
             self.assertEqual(set(value), {'slot_id', 'state', 'lifetime', 'pending_expires_at',
-                                          'permission_expires_at', 'bootstrap_command'})
+                                          'permission_expires_at', 'bootstrap_command', 'connect_flags'})
+            self.assertEqual(value['connect_flags'], ['--dispatch-mode', 'inline'])
             self.assertEqual((value['state'], value['lifetime']), ('pending', 'bounded'))
             self.assertEqual((value['pending_expires_at'], value['permission_expires_at']), (T0 + 120, T0 + 900))
             self.assertEqual(str(uuid.UUID(value['slot_id'])), value['slot_id'])
