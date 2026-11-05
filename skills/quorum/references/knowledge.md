@@ -16,6 +16,8 @@ after profile/token/proof waits and before transport or returning results.
 Codex and Claude use the same commands and contract; an existing logical Claude
 worker capability does not authorize these operations. Use an authorized native
 binding or report the blocker; do not substitute another session.
+`binding_revoked` means this chat's binding belongs to an agent that left or was
+revoked; run `session connect` again from this chat, then retry.
 
 ```text
 uv run --project <skill-dir> --frozen python <skill-dir>/scripts/quorum.py --state <state> knowledge <action> --json-stdin [--request-id <stable-id>] [--owner-action]

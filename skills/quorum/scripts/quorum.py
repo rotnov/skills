@@ -13,7 +13,7 @@ from quorum_api import QuorumApi, ServiceConfig, QuorumError
 from quorum_auth import token_provider
 from quorum_state import LocalLedger
 from quorum_grok_leader import GrokBindingError
-from quorum_session import RecipientUnresolved, UnsupportedClient
+from quorum_session import BindingError, RecipientUnresolved, UnsupportedClient
 from quorum_grok_cloud import CloudError
 from quorum_native_inbox import NativeInboxError
 from quorum_debug import DebugError
@@ -182,6 +182,13 @@ def main(argv=None):
                         # A confirmed retirement can release an adopting Claude worker's claim.
                         from quorum_claude_worker import record_retired
                         record_retired(ledger, data.get('agent_id'))
+                        # Leaving this chat's own bound agent also retires its local binding, so the next
+                        # connect registers anew instead of reusing or conflicting with the revoked agent.
+                        # A local failure here never hides the confirmed leave: connect rechecks this marker.
+                        from quorum_session import retire_after_leave
+                        try: local = retire_after_leave(ledger.root, data.get('agent_id'))
+                        except (ValueError, OSError): local = None
+                        if local == 'retired' and isinstance(value, dict): value = {**value, 'local_binding': 'retired'}
                     if args.command == 'create' and args.access == 'open':
                         value.update(api.call('quorum_set_access', {'quorum_id': value['quorum_id'], 'access': 'open'},
                                               'access:' + value['quorum_id']))
@@ -209,6 +216,10 @@ def main(argv=None):
         return 3
     except UnsupportedClient as error:
         print(json.dumps({'ok': False, 'code': 'unsupported_client', 'data': error.diagnostic()}))
+        return 3
+    except BindingError as error:
+        # This chat's own role, quorum and agent with fixed guidance; never a path, token or server body.
+        print(json.dumps({'ok': False, 'code': error.code, 'data': error.diagnostic()}))
         return 3
     except RecipientUnresolved as error:
         # The caller's own role and fixed guidance only; never agent IDs or a server body.
@@ -242,7 +253,8 @@ def main(argv=None):
                          'session_delivery_unsent', 'session_reconcile_denied',
                          'session_recovery_denied', 'delegation_scope_changed', 'member_intake_requires_inline',
                          'private_acl_unavailable', 'private_acl_access_denied', 'unsafe_link', 'browser_unavailable', 'login_timeout',
-                         'worker_already_running', 'standing_grants_require_members', 'invalid_coordinator_role'})
+                         'worker_already_running', 'standing_grants_require_members', 'invalid_coordinator_role',
+                         'binding_conflict'})
         code = str(error) if str(error) in safe else 'operation_failed'
         data = error.diagnostic() if code == 'auth_profile_conflict' and hasattr(error, 'diagnostic') else {}
         if code in ('update_node_too_old', 'python_provisioning_failed'):

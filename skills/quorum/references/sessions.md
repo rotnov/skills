@@ -314,6 +314,14 @@ separate stores, so this is owner-attested recovery, not a provider exactly-once
 guarantee. The next explicit owner-authorized `session start` may make one new
 attempt; another ambiguous result blocks again with a new attempt UUID.
 
+`leave` of this chat's own bound agent also retires the chat's local binding
+(`local_binding: retired`). `session status` then shows `retired_binding`, other
+commands return `binding_revoked`, and the next `session connect` registers a new
+agent with any role. A binding whose agent was revoked elsewhere is retired the same
+way when `session connect` finds the service's denial. `binding_conflict` means the
+chat is bound to a still active agent with another quorum, role, project or
+directory; its `data` names that role, quorum and agent and the next step.
+
 API/authentication/revocation failures stop reception and leave undelivered data
 in the service. Inspect the private per-session `listener.log` and status.
 If the listener process dies without reporting, status shows `state: error`,

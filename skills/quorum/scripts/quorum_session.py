@@ -61,6 +61,117 @@ class RecipientUnresolved(ValueError):
             'retry this send with the same request ID. If no agent holds the role, check the role name.')}
 
 
+class BindingError(ValueError):
+    """This chat's own stored binding blocks the command; only its role, quorum, agent and fixed guidance cross."""
+    NEXT_STEPS = {
+        'binding_conflict': (
+            'Nothing was registered. This chat is already bound to a different quorum, role, project or '
+            'working directory, and that agent is still active. Keep the existing binding, or have its owner '
+            'retire it from this chat with `leave --request-id <stable-ID> --json-stdin` and '
+            '{"agent_id":"<agent_id>"}; then run the same `session connect` again.'),
+        'binding_revoked': (
+            'Nothing was sent. This chat\'s stored binding belongs to an agent that left the quorum or was '
+            'revoked. Run `session connect <quorum> --role <role> --project-ref <project>` from this chat '
+            'to register a new agent, then retry this command.'),
+    }
+
+    def __init__(self, code, record):
+        super().__init__(code)
+        self.code = code
+        record = record if isinstance(record, dict) else {}
+        self.binding = {key: record.get(key) if isinstance(record.get(key), str) else None
+                        for key in ('role', 'quorum', 'agent_id')}
+
+    def diagnostic(self):
+        return {**self.binding, 'next_step': self.NEXT_STEPS[self.code]}
+
+
+# This chat's retired binding (summary only) and the count of retired bindings, in its own session ledger.
+RETIRED_BINDING = 'session-agent-retired'
+BINDING_GENERATION = 'session-generation'
+
+
+def session_device_key(ledger, sid):
+    """Each binding generation registers its own device: the service keeps one agent per device and session."""
+    generation = ledger.setting(BINDING_GENERATION) or 0
+    return 'session-device:' + sid + (':' + str(generation) if generation else '')
+
+
+def left_locally(root, record):
+    """True when this state recorded the owner's confirmed `leave` of the binding's agent; never creates a ledger."""
+    from quorum_claude_worker import RETIRED
+    agent_id = (record or {}).get('agent_id')
+    if not isinstance(agent_id, str) or not (Path(root) / 'ledger.sqlite').exists(): return False
+    index = LocalLedger(Path(root))
+    try: return index.setting(RETIRED + agent_id) is not None
+    finally: index.db.close()
+
+
+def agent_revoked(error):
+    """The service's explicit denial for this login's own revoked agent (or device); nothing else qualifies."""
+    return isinstance(error, QuorumError) and str(error) == 'auth_required' and error.denial == 'agent_denied'
+
+
+def require_live_binding(ledger, record, sid):
+    """A missing binding after a retirement says so, instead of a generic or auth error."""
+    if record and record.get('session_ref') == sid: return record
+    if not record and ledger.setting(RETIRED_BINDING): raise BindingError('binding_revoked', ledger.setting(RETIRED_BINDING))
+    raise ValueError('session_not_connected')
+
+
+def retire_binding(ledger, record, reason):
+    """Retire this chat's own binding to a left or revoked agent; the next connect registers a new one.
+
+    Only an unchanged record is retired. Reception is disabled and any run is asked to stop; a run also stops
+    by itself once the binding is gone. Delivery markers of the old agent are archived with it: the service
+    can no longer acknowledge them, and an unresolvable intent must not block the new binding.
+    """
+    with FileLock(ledger.root / 'listener-control.lock'):
+        if ledger.setting('session-agent') != record: return False
+        deliveries = {key: json.loads(raw) for key, raw in
+                      ledger.db.execute("select key,data from settings where key like 'delivery:%'")}
+        summary = {**{key: record.get(key) for key in ('agent_id', 'role', 'quorum', 'quorum_id', 'project_ref')},
+                   'reason': reason, 'retired_at': ledger.clock(), 'deliveries': deliveries}
+        generation = (ledger.setting(BINDING_GENERATION) or 0) + 1
+        upsert = 'insert into settings values (?,?) on conflict(key) do update set data=excluded.data'
+        with ledger.db:
+            ledger.db.execute("delete from settings where key='session-agent' or key like 'delivery:%'")
+            ledger.db.executemany(upsert, [(RETIRED_BINDING, json.dumps(summary)),
+                                           (BINDING_GENERATION, json.dumps(generation)),
+                                           ('session-reception', json.dumps({'enabled': False}))])
+        Control(ledger, holding_control=True).request_stop()
+    return True
+
+
+def retire_after_leave(root, agent_id):
+    """After a confirmed `leave`: retire the calling chat's own binding only when it names that exact agent."""
+    try: sid = current_session()
+    except ValueError: return None
+    path = Path(root) / 'sessions' / sid
+    if not (path / 'ledger.sqlite').exists(): return None
+    ledger = LocalLedger(path)
+    try:
+        record = ledger.setting('session-agent')
+        if not record or record.get('agent_id') != agent_id or record.get('session_ref') != sid: return None
+        return 'retired' if retire_binding(ledger, record, 'left') else None
+    finally: ledger.db.close()
+
+
+def retired_summary(ledger):
+    retired = ledger.setting(RETIRED_BINDING)
+    if not retired: return None
+    return {key: retired.get(key) for key in ('agent_id', 'role', 'quorum', 'reason', 'retired_at')}
+
+
+class _RetiredDuringConnect(ValueError):
+    """Internal: connect retired this chat's left or revoked binding and runs once more.
+
+    A second retirement in that one rerun means the binding changed concurrently; it then
+    surfaces as the fixed `session_binding_denied` code, never as a traceback.
+    """
+    def __init__(self): super().__init__('session_binding_denied')
+
+
 def current_engine():
     engines = [engine for engine, key in (('codex','CODEX_THREAD_ID'), ('claude','CLAUDE_CODE_SESSION_ID'),
                                         ('grok','GROK_SESSION_ID'))
@@ -624,6 +735,13 @@ def reconcile_absent(api, ledger, record, message_id, attempt_id):
 
 
 def dispatch(args, auth_ledger, register_agent):
+    try: return _dispatch(args, auth_ledger, register_agent)
+    except _RetiredDuringConnect:
+        # The revoked binding is retired; this connect now registers a new agent exactly once.
+        return _dispatch(args, auth_ledger, register_agent)
+
+
+def _dispatch(args, auth_ledger, register_agent):
     from quorum_live import api_for
     import quorum_native_inbox as inbox
     context = getattr(args, 'worker_context', None)
@@ -657,6 +775,7 @@ def dispatch(args, auth_ledger, register_agent):
                        for key,value in deliveries if value['state']=='intent']
             return {**Control(ledger).status(),'session_id':sid,'pending_receipts':pending,
                     'unknown_attempts':unknown,
+                    **({'retired_binding':retired_summary(ledger)} if not record and retired_summary(ledger) else {}),
                     'delegation':record.get('delegation') if record else None,
                     'standing_grants':standing_status(record,ledger) if record else None, 'release':diagnostic(ledger)}
         if args.action=='stop':
@@ -723,8 +842,19 @@ def dispatch(args, auth_ledger, register_agent):
                 from quorum_grok_leader import binding
                 transport = binding(sid, data['cwd'])
             old=ledger.setting('session-agent')
-            if old and (old['registration']!=data or old['role']!=args.role or old['quorum']!=args.quorum):
-                raise ValueError('binding_conflict')
+            if old:
+                conflict = old['registration']!=data or old['role']!=args.role or old['quorum']!=args.quorum
+                left = retired = left_locally(auth_ledger.root, old)
+                if conflict and not retired:
+                    # Only a conflict asks the service; its explicit agent denial proves the old agent revoked.
+                    try: api.call('agent_status', {'agent_id':old['agent_id']})
+                    except QuorumError as error:
+                        if not agent_revoked(error): raise
+                        retired = True
+                if retired:
+                    retire_binding(ledger, old, 'left' if left else 'revoked')
+                    raise _RetiredDuringConnect()
+                if conflict: raise BindingError('binding_conflict', old)
             previous = (old or {}).get('delegation')
             if old and ((members and (previous or {}).get('scope', 'coordinator') != 'members')
                              or (coordinator and (previous or {}).get('scope') == 'members')):
@@ -735,7 +865,12 @@ def dispatch(args, auth_ledger, register_agent):
             if old and members and standing_from is not None and (kept or {}).get('from_role') != standing_from:
                 raise ValueError('delegation_scope_changed')
             if old and members: standing_from = (kept or {}).get('from_role')
-            result=register_agent(api,auth_ledger,args.quorum,args.role,data,device_key='session-device:'+sid)
+            try: result=register_agent(api,auth_ledger,args.quorum,args.role,data,device_key=session_device_key(ledger,sid))
+            except QuorumError as error:
+                # A same-binding reconnect checks its saved agent first; a revoked one is retired, not reused.
+                if not (old and agent_revoked(error)): raise
+                retire_binding(ledger, old, 'revoked')
+                raise _RetiredDuringConnect() from None
             record={**result,**data,'registration':data,'role':args.role,'quorum':args.quorum}
             # Reconnect must not hide an old generation's endpoint from start.
             # start alone owns the serialized stop-before-rebind transition.
@@ -769,7 +904,7 @@ def dispatch(args, auth_ledger, register_agent):
                 return {**result,'session_ref':sid,'transport':inbox.TRANSPORT,'reception':reception,
                         'listener':'offline','worker_binding':proved,'delegation':record.get('delegation')}
             return {**result,'session_ref':sid,'transport':'offline','delegation':record.get('delegation')}
-        if not record or record['session_ref']!=sid: raise ValueError('session_not_connected')
+        record = require_live_binding(ledger, record, sid)
         if args.action == 'delegate':
             snapshot = dict(record)
             if args.revoke: record.pop('delegation', None)
