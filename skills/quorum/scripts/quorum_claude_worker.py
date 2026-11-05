@@ -678,13 +678,16 @@ def _session_status(root, record):
     with _components(root, names, ACTOR_KINDS[:2]) as fds:
         if fds is None: return None
         rows = _read_db(fds[-1], root.joinpath(*names, 'ledger.sqlite'), lambda db: db.execute(
-            "select key,data from settings where key in ('listener', 'hello', ?) or key like 'delivery:%'",
+            "select key,data from settings where key in ('listener', 'hello', ?) or key like 'delivery:%' order by rowid",
             (CONTROL,)).fetchall(),
                         ledger='actor')
         if rows is None: return None
         running = _held(fds[-1], 'listener.lock')
     settings = {key: json.loads(data) for key, data in rows}
     listener = settings.get('listener') or {}
+    from quorum_native_inbox import awaiting_summary
+    # The same awaiting-owner fields as the Codex status; rows keep their ledger order.
+    awaiting = awaiting_summary([(key, value) for key, value in settings.items() if key.startswith('delivery:')])
     state = listener.get('state', 'stopped')
     # A recorded live run whose lock is free ended without reporting; reported, not rewritten here.
     if not running and state in LIVE_STATES: state = 'exited'
@@ -693,7 +696,8 @@ def _session_status(root, record):
             'pending_receipts': sum(value.get('state') == 'offered' for key, value in settings.items()
                                     if key.startswith('delivery:')),
             # The last connection's Hello outcome; a summary string only, never a message body.
-            'hello': (settings.get('hello') or {}).get('summary') if isinstance(settings.get('hello'), dict) else None}
+            'hello': (settings.get('hello') or {}).get('summary') if isinstance(settings.get('hello'), dict) else None,
+            **awaiting}
 
 
 def _bootstrap(root, slot_id):

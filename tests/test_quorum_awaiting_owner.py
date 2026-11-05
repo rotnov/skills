@@ -321,6 +321,36 @@ class ClaudeAwaitingOwnerTests(claude_base.Bound):
                          [M1])
 
     @isolated_profiles
+    def test_claude_status_reports_parked_items_and_a_hold_like_codex(self):
+        clock = Clock()
+        api = claude_base.Api(inbox=[claude_base.message(M1, body='private decision body'), claude_base.message(M2)])
+        self.bound(api)
+        with patch('quorum_native_inbox.wall', clock):
+            self.offer(api)
+            self.assertEqual(self.worker(api, 'park', M1)[0], 0)
+            later = self.offer(api)
+            self.assertEqual((later['message_id'], later['awaiting_owner']), (M2, 1))
+            self.assertEqual(later['park_after'], int(clock.now + 600))
+            code, held, text = self.worker(api, 'hold', M2, '--seconds', '300')
+            self.assertEqual(code, 0, text)
+            hold = {'message_id': M2, 'until': int(clock.now + 300), 'reason': 'explicit_hold'}
+            self.assertEqual(held['data']['reception_hold'], hold)
+            # The worker's own capability status and the owner-parent's slot view report the same fields.
+            own = self.worker(api, 'status')[1]['data']['session']
+            code, parent, text = self.cli(api, 'session', 'worker', 'status', self.slot)
+            self.assertEqual(code, 0, text)
+            for view in (own, parent['data']['session']):
+                self.assertEqual((view['awaiting_owner'], view['reception_hold'], view['pending_receipts']),
+                                 (1, hold, 1))
+                self.assertNotIn('private decision body', json.dumps(view))
+            clock.now += 301
+            self.assertNotIn('reception_hold', self.worker(api, 'status')[1]['data']['session'])
+            code, result, text = self.receive(api)
+            self.assertEqual((code, result['data']['state'], result['data']['awaiting_owner']), (0, 'timeout', 2), text)
+            self.assertEqual(self.cli(api, 'session', 'worker', 'status', self.slot)[1]['data']['session']
+                             ['awaiting_owner'], 2)
+
+    @isolated_profiles
     def test_claude_resolve_needs_the_scope_reply_operation(self):
         api = claude_base.Api(inbox=[claude_base.message(M1)])
         scope = self.accept_scope(operations=['accept', 'connect', 'receive', 'received', 'status', 'stop'])

@@ -497,21 +497,27 @@ def status(ledger, record):
               ledger.db.execute("select data from settings where key like 'delivery:%'")]
     result = {**Control(ledger).status(), 'transport': TRANSPORT,
               'reception': 'enabled' if enabled(ledger) else 'disabled', 'pending_receipts': states.count('offered'),
-              'awaiting_owner': states.count('parked'), 'worker_binding': (record or {}).get('worker_binding')}
-    hold = reception_hold(ledger)
-    if hold: result['reception_hold'] = hold
-    return result
+              'worker_binding': (record or {}).get('worker_binding')}
+    rows = [(key, json.loads(raw)) for key, raw in
+            ledger.db.execute("select key,data from settings where key like 'delivery:%' order by rowid")]
+    return {**result, **awaiting_summary(rows)}
 
 
-def reception_hold(ledger):
-    """An explicit, still running hold on one repeating offer; None when reception is not held."""
-    for key, raw in ledger.db.execute("select key,data from settings where key like 'delivery:%' order by rowid"):
-        value = json.loads(raw)
+def awaiting_summary(deliveries, now=None):
+    """The awaiting-owner count and any running explicit hold, from (key, delivery) pairs in insertion order.
+
+    Shared by the Codex status and the Claude read-only status view so both report the same fields;
+    metadata only, never a message body.
+    """
+    now = wall() if now is None else now
+    summary = {'awaiting_owner': sum(value.get('state') == 'parked' for _, value in deliveries)}
+    for key, value in deliveries:
         if value.get('state') == 'offered' and isinstance(value.get('hold_until'), (int, float)) \
-                and value['hold_until'] > wall():
-            return {'message_id': key[len('delivery:'):], 'until': int(value['hold_until']),
-                    'reason': 'explicit_hold'}
-    return None
+                and value['hold_until'] > now:
+            summary['reception_hold'] = {'message_id': key[len('delivery:'):], 'until': int(value['hold_until']),
+                                         'reason': 'explicit_hold'}
+            break
+    return summary
 
 
 def stop(ledger, record):

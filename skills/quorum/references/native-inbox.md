@@ -187,8 +187,8 @@ uv run --project <skill-dir> --frozen python <skill-dir>/scripts/quorum.py --sta
 worker's `session start` re-arms reception, spawning nothing. `start` is refused
 with `worker_already_running` while a receive holds the consumer locks, so no
 in-flight heartbeat can restore the old epoch after the reset. Status shows
-`transport: tool-inbox`, `reception`, `pending_receipts` and `listener`
-(`running` only during a receive). A killed call is reported as lost from the
+`transport: tool-inbox`, `reception`, `pending_receipts`, `awaiting_owner`, an
+active `reception_hold` and `listener` (`running` only during a receive). A killed call is reported as lost from the
 lock, never from a PID. The presence epoch persists across calls: a
 heartbeat whose response is unknown stays pending and is retried with the same
 Hello epoch, however late, before any rotation; otherwise a gap of 60 seconds
