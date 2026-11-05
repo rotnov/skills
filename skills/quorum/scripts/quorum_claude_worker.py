@@ -829,6 +829,11 @@ def _owner_api(root, record):
     finally: ledger.db.close()
 
 
+def _adopted(scope):
+    """The parent agent an adopt scope hands over from; the service lets exactly it share the role meanwhile."""
+    return (scope.get('adopt') or {}).get('agent_id') if scope.get('mode') == 'adopt' else None
+
+
 def _registration(record):
     """The adopting worker's exact pinned registration: payload, device key and stable join request ID."""
     scope, session_ref = record['scope'], record['binding']['session_ref']
@@ -856,7 +861,8 @@ def _reconcile(root, record, ledger, api, register_agent):
     if register_agent is None: raise _denied('operation_denied')
     data, device_key, _ = _registration(record)
     result = register_agent(api, ledger, record['scope']['quorum_slug'], record['scope']['role'], data,
-                            device_key=device_key, expected_quorum_id=record['target']['quorum_id'])
+                            device_key=device_key, expected_quorum_id=record['target']['quorum_id'],
+                            keep_agent_id=_adopted(record['scope']))
     agent_id = result.get('agent_id') if isinstance(result, dict) else None
     if not isinstance(agent_id, str) or not CANONICAL.fullmatch(agent_id): raise QuorumError('invalid_response')
     with _slot(root, record['slot_id'], record['provider_session_id']) as slot:
@@ -1470,9 +1476,16 @@ def _session_action(args, auth_ledger, register_agent, context, ledger, record, 
         if scope['mode'] == 'adopt' and not context['target'].get('agent_id'):
             # Persisted before any device or agent request: a lost answer can never release the claim.
             mark_registration(context)
-        result = register_agent(guarded, auth_ledger, scope['quorum_slug'], scope['role'], data,
-                                device_key='session-device:' + session_ref,
-                                expected_quorum_id=context['target']['quorum_id'])
+        from quorum_session import role_refusal
+        try:
+            # An adopt scope's parent agent may coexist with this worker until its owner retires it.
+            result = register_agent(guarded, auth_ledger, scope['quorum_slug'], scope['role'], data,
+                                    device_key='session-device:' + session_ref,
+                                    expected_quorum_id=context['target']['quorum_id'], keep_agent_id=_adopted(scope))
+        except QuorumError as error:
+            refusal = role_refusal(error, scope['role'])
+            if refusal is not None: raise refusal from None
+            raise
         with _effect({'state': 'completed', 'operation': 'agent_join', 'quorum_id': result['quorum_id'],
                       'agent_id': result['agent_id']}):
             pin_target(context, result['quorum_id'], result['agent_id'])

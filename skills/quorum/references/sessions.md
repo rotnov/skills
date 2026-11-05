@@ -174,8 +174,9 @@ repeat the same priority.
 `recipient_ambiguous_or_missing` means the role does not name exactly one
 registered agent, often because an old binding was never retired; nothing was
 sent. Use `session peers` (a stale duplicate shows `unavailable` /
-`receipt_timeout`); only its owner retires it with `leave`, as in
-[replacing a pilot](#claude-code--macos-linux-and-windows). Then retry the same
+`receipt_timeout`); its owner retires it with `leave`, as in
+[replacing a pilot](#claude-code--macos-linux-and-windows), or the quorum owner
+with [`agent-retire`](operations.md#owner-agent-commands). Then retry the same
 request ID.
 
 Incoming envelopes start with `[Quorum · <quorum-name> · <sender-role>]` and
@@ -326,10 +327,17 @@ Add `--exclusive-role` to `session connect` to keep one agent per role: before
 registering, it refuses with `role_held_by_other_identity` when another identity
 holds the role in that quorum and project, or `role_held_by_own_agent` (with that
 agent's ID) when another of your own chats, workers or devices holds it. Use
-`--supersede` instead only when that own holder is stale: it retires it with
-`leave` first and reports `superseded_agent_id`. The same chat's reconnect and a
-free or already ambiguous role register as before. A quorum owner has no command
-to retire another member's agent; only that agent's owner can `leave` it.
+`--supersede` instead only when that own holder is stale: it retires your own
+holders and reports `superseded_agent_id` (and `superseded_agent_ids` when there
+were several). A service with the
+[role-assignment extension](server.md#invitation-roles-and-owner-retire) enforces
+the same rule on every join, with or without these options, and retires the own
+holder inside the join itself; on an older service the helper retires it with
+`leave` first. The same chat's reconnect returns its original agent. A membership
+accepted from an invitation with a stored role refuses any other role or project
+with `role_assignment_mismatch` (`data.assigned` names the binding). Another
+member's agent is retired by its owner with `leave`, or by the quorum owner with
+[`agent-retire`](operations.md#owner-agent-commands).
 
 API/authentication/revocation failures stop reception and leave undelivered data
 in the service. Inspect the private per-session `listener.log` and status.

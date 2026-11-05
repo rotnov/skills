@@ -8,7 +8,7 @@ import subprocess
 import sys
 import time
 import uuid
-from quorum_api import QuorumError
+from quorum_api import QuorumError, rpc_missing
 from quorum_listener import Control, abandon_start, locked, run_listener, spawn_background, stop_listener
 from quorum_os import FileLock
 from quorum_state import LocalLedger
@@ -87,29 +87,50 @@ class BindingError(ValueError):
 
 
 class RoleHeld(ValueError):
-    """An `--exclusive-role` connect found the role already held; nothing was registered.
+    """A connect found the role already held, or outside this membership's assignment; nothing was registered.
 
-    Only the caller's role and, for the caller's own other agent, that agent's ID cross the CLI boundary.
+    Only the caller's role, its own assignment and, for the caller's own other agent, that agent's ID cross the
+    CLI boundary.
     """
     NEXT_STEPS = {
         'role_held_by_other_identity': (
             'Nothing was registered. Another identity already holds this role in this quorum and project. Do '
-            'not pick a different role on your own: report this code to the owner who assigned the role. Only '
-            'that agent\'s owner can retire it with `leave`; a quorum owner otherwise needs a server-side retire.'),
+            'not pick a different role on your own: report this code to the owner who assigned the role. That '
+            'agent\'s owner can retire it with `leave`, or the quorum owner with `agent-retire`.'),
         'role_held_by_own_agent': (
             'Nothing was registered. Another agent of this same identity (an earlier chat, worker or device) '
             'already holds this role in this quorum and project. If that registration is stale, rerun this '
             'connect with `--supersede` to retire it first, or retire it yourself with `leave --request-id '
             '<stable-ID> --json-stdin` and {"agent_id":"<agent_id>"}. Keep it if that chat is still in use.'),
+        'role_assignment_mismatch': (
+            'Nothing was registered. The invitation this membership accepted assigned a role and shared project '
+            'reference, and the service accepts only those. Connect with exactly the `assigned` role and project; '
+            'do not pick another role. Ask the owner for a new invitation if the assignment should change.'),
     }
 
-    def __init__(self, code, role, agent_id=None):
+    def __init__(self, code, role, agent_id=None, assigned=None):
         super().__init__(code)
-        self.code, self.role, self.agent_id = code, role, agent_id
+        self.code, self.role, self.agent_id, self.assigned = code, role, agent_id, assigned
 
     def diagnostic(self):
         return {'role': self.role, **({'agent_id': self.agent_id} if self.agent_id else {}),
-                'next_step': self.NEXT_STEPS[self.code]}
+                **({'assigned': self.assigned} if self.assigned else {}), 'next_step': self.NEXT_STEPS[self.code]}
+
+
+def role_refusal(error, role):
+    """The service's own role refusal as the same RoleHeld a client-side check raises; anything else is None."""
+    if not isinstance(error, QuorumError) or str(error) not in RoleHeld.NEXT_STEPS: return None
+    code = str(error)
+    return RoleHeld(code, role, agent_id=error.detail if code == 'role_held_by_own_agent' else None,
+                    assigned=error.detail if code == 'role_assignment_mismatch' else None)
+
+
+def retire_superseded(auth_ledger, result):
+    """Record the service-retired own agents like `leave` does, so a chat bound to one retires its binding."""
+    from quorum_claude_worker import record_retired
+    ids = [agent_id for agent_id in (result.get('superseded') or []) if isinstance(agent_id, str)]
+    for agent_id in ids: record_retired(auth_ledger, agent_id)
+    return ids
 
 
 def claim_role(api, auth_ledger, sid, quorum_id, role, project_ref, old, *, supersede=False, expected=()):
@@ -570,7 +591,8 @@ def add_commands(commands):
     exclusive.add_argument('--exclusive-role', action='store_true',
                            help='Refuse before registering when another identity or another own agent holds this role')
     exclusive.add_argument('--supersede', action='store_true',
-                           help='Like --exclusive-role, but first retire this identity\'s own other agent holding it')
+                           help='Like --exclusive-role, but retire this identity\'s own other agents holding it '
+                                '(in the service\'s join transaction where supported)')
     add_transport_arguments(connect)
     delegation = actions.add_parser('delegate', help='Receiving-owner task intake permission for this exact binding')
     choice = delegation.add_mutually_exclusive_group(required=True)
@@ -950,18 +972,39 @@ def _dispatch(args, auth_ledger, register_agent):
                 raise ValueError('delegation_scope_changed')
             if old and members: standing_from = (kept or {}).get('from_role')
             superseded = None
-            if getattr(args, 'exclusive_role', False) or getattr(args, 'supersede', False):
+            supersede = getattr(args, 'supersede', False)
+            if getattr(args, 'exclusive_role', False) or supersede:
+                # Read-only, before any device or agent request: another identity's holder always refuses.
+                # The caller's own holder is left to the service's supersede, or the fallback below.
                 quorum_id = api.call('quorum_lookup', {'slug':args.quorum})['quorum_id']
-                superseded = claim_role(api, auth_ledger, sid, quorum_id, args.role, args.project_ref, old,
-                                        supersede=getattr(args, 'supersede', False))
-            try: result=register_agent(api,auth_ledger,args.quorum,args.role,data,device_key=session_device_key(ledger,sid))
+                try: claim_role(api, auth_ledger, sid, quorum_id, args.role, args.project_ref, old)
+                except RoleHeld as held:
+                    if not (supersede and held.code == 'role_held_by_own_agent'): raise
+            def register(server_supersede):
+                return register_agent(api, auth_ledger, args.quorum, args.role, data,
+                                      device_key=session_device_key(ledger, sid), supersede=server_supersede)
+            try:
+                try: result = register(supersede)
+                except QuorumError as error:
+                    # An older service has no supersede argument: retire the own holder client-side first.
+                    if not (supersede and rpc_missing(error)): raise
+                    quorum_id = api.call('quorum_lookup', {'slug':args.quorum})['quorum_id']
+                    superseded = claim_role(api, auth_ledger, sid, quorum_id, args.role, args.project_ref, old,
+                                            supersede=True)
+                    result = register(False)
             except QuorumError as error:
+                refusal = role_refusal(error, args.role)
+                if refusal is not None: raise refusal from None
                 # A same-binding reconnect checks its saved agent first; a revoked one is retired, not reused.
                 if not (old and agent_revoked(error)): raise
                 retire_binding(ledger, old, 'revoked')
                 raise _RetiredDuringConnect() from None
+            retired_ids = retire_superseded(auth_ledger, result)
+            result = {key: value for key, value in result.items() if key != 'superseded'}
+            if retired_ids: superseded = retired_ids[0]
             record={**result,**data,'registration':data,'role':args.role,'quorum':args.quorum}
             if superseded: result = {**result, 'superseded_agent_id': superseded}
+            if len(retired_ids) > 1: result = {**result, 'superseded_agent_ids': retired_ids}
             # Reconnect must not hide an old generation's endpoint from start.
             # start alone owns the serialized stop-before-rebind transition.
             if endpoint is not None: record['messaging_socket']=old.get('messaging_socket', endpoint) if old else endpoint

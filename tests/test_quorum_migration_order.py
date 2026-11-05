@@ -25,6 +25,20 @@ SERIALIZATION_PINS = {
     'public.invite_accept_id(uuid,text)': 'd61c6972108e7feafa0a77ab32c436c8ec4971cacedf2c219fd4f7d6dc9e0fa4',
     'public.session_requirements()': '6e9752bcaedbbdfc4b2b8197cb44598306ee8d79044d654836017aab86031eef',
 }
+ROLES = '20261105140000_role_assignment_and_owner_retire.sql'
+# prosrc hashes after the reviewed tail through 190000; tests/quorum-backend recomputes them by drift injection.
+ROLE_PINS = {
+    'quorum_private.call(text,jsonb,text)': 'ca718afbcda8682ade19ea6b246ccc2f1bfd5523eb7d1076cf4e9583e24f3ab7',
+    'public.invite_create_id(uuid,text,text)': '3879f923b48fda8b9c67a76b5774d6cc132a8f4736ad451c6811b2de0c3d436b',
+    'public.invite_create_open(uuid,text)': SERIALIZATION_PINS['public.invite_create_open(uuid,text)'],
+    'public.agent_join(uuid,uuid,text,text,text,text,text)':
+        '732ca06801a141867e97e14e678df538a55eb3b346ec83ae85aed75c0832551d',
+    'public.invite_accept_id(uuid,text)': SERIALIZATION_PINS['public.invite_accept_id(uuid,text)'],
+    'public.resolve_role(uuid,text,text)': 'c75b3982fce17a7c32caa7d81f2e74d4bc3aa903b88a54f939ee6849ab68aea1',
+    'quorum_private.member(uuid,uuid)': '155cf2dcc2b2d61c5ff55a7533b13eae931b9e077420f3aaf2408b7a22ca7435',
+    'quorum_private.verified_actor(uuid)': 'f20291c082af61a232754c29480b65877d7994c177c06ce079b655af6b0f832b',
+    'public.session_requirements()': SERIALIZATION_PINS['public.session_requirements()'],
+}
 
 
 def defining(signature):
@@ -154,7 +168,8 @@ class MigrationOrderTests(unittest.TestCase):
         names = [path.name for path in MIGRATIONS]
         ttl = next(name for name in names if name.endswith('_open_invite_ttl.sql'))
         self.assertGreater(ttl, '20261103180000_hello_roster_visibility.sql')
-        self.assertEqual(names[-1], ttl)
+        # Only the reviewed role-assignment release (#105) follows it.
+        self.assertEqual(names[names.index(ttl) + 1:], [ROLES])
         body = (SKILL / 'supabase/migrations' / ttl).read_text(encoding='utf-8')
         pins = dict(re.findall(r"'([a-z_.]+\([a-z,]*\))','([0-9a-f]{64})'", body))
         self.assertEqual(pins, {'quorum_private.call_priority_core(text,jsonb,text)':
@@ -175,6 +190,59 @@ class MigrationOrderTests(unittest.TestCase):
         for doc in ('references/join.md', 'references/invite.md', 'references/invitations.md', 'README.md'):
             text = ' '.join((SKILL / doc).read_text(encoding='utf-8').split())
             self.assertIn('60 minutes', text, doc)
+
+    def test_role_assignment_follows_the_tail_pins_reviewed_bodies_and_grants_only_authenticated(self):
+        names = [path.name for path in MIGRATIONS]
+        self.assertEqual(names[-1], ROLES)
+        self.assertGreater(ROLES, '20261103190000_open_invite_ttl.sql')
+        body = (SKILL / 'supabase/migrations' / ROLES).read_text(encoding='utf-8')
+        pins = dict(re.findall(r"'([a-z_.]+\([a-z,]*\))','([0-9a-f]{64})'", body))
+        self.assertEqual(pins, ROLE_PINS)
+        # The dispatcher pin is the one the maintenance extension (140000) applied against.
+        maintenance = (SKILL / 'supabase/migrations/20261030140000_owner_update_maintenance.sql').read_text()
+        self.assertIn("'quorum_private.call(text,jsonb,text)','" + ROLE_PINS['quorum_private.call(text,jsonb,text)'] + "'",
+                      maintenance)
+        guard = body.split('end $migration$;', 1)[0]
+        self.assertIn("raise exception 'role_assignment_present'", guard)
+        self.assertIn("raise exception 'owner_update_maintenance_required'", guard)
+        self.assertIn("raise exception 'reviewed_dispatcher_changed: %',f;", guard)
+        # Every check runs before the only rename; nothing else changes inside the guard.
+        self.assertLess(guard.index("reviewed_dispatcher_changed"), guard.index('rename to call_role_core'))
+        self.assertEqual(guard.lower().count('alter function'), 1)
+        # Every new function is a pinned-search-path security definer.
+        created = re.findall(r'create function ([a-z_.]+)\(', body)
+        self.assertEqual(created, ['quorum_private.call', 'public.invite_create_id', 'public.invite_create_open',
+                                   'public.agent_join', 'public.agent_retire', 'public.quorum_agents'])
+        for chunk in body.split('create function ')[1:]:
+            header = chunk.split(' as $', 1)[0]
+            self.assertIn('security definer set search_path=pg_catalog', ' '.join(header.split()), header[:60])
+        self.assertEqual(defining('public.agent_join(')[-1].name, ROLES)
+        # Replaced entry points are dropped, never overloaded.
+        for old in ('public.invite_create_id(uuid,text,text)', 'public.invite_create_open(uuid,text)',
+                    'public.agent_join(uuid,uuid,text,text,text,text,text)'):
+            self.assertIn(f'drop function {old};', body)
+        lowered = ' '.join(body.lower().split())
+        self.assertIn('revoke all on function quorum_private.call_role_core(text,jsonb,text) '
+                      'from public,anon,authenticated,service_role;', lowered)
+        self.assertIn('revoke all on function quorum_private.call(text,jsonb,text) '
+                      'from public,anon,authenticated,service_role;', lowered)
+        self.assertIn('revoke all on quorum_private.agent_supersessions from public,anon,authenticated,service_role;',
+                      lowered)
+        grants = re.findall(r'grant [^;]*;', lowered)
+        self.assertEqual(len(grants), 1)
+        self.assertTrue(grants[0].endswith(' to authenticated;'))
+        self.assertNotRegex(grants[0], r'quorum_private\.')
+        # No required-release change and no table exposure.
+        self.assertNotIn('function public.session_requirements', body)
+        self.assertNotRegex(lowered, r'grant [^;]* on (table )?quorum_private\.')
+        # The owner roster returns binding metadata only.
+        roster = body.split('create function public.quorum_agents(', 1)[1]
+        for secret in ('session_ref', 'token', 'label', 'device_id', 'request_id'):
+            self.assertNotIn(secret + ' ', roster.split('from quorum_private.agents a', 1)[0].replace('owner_label', ''))
+        guide = (SKILL / 'references/server.md').read_text(encoding='utf-8')
+        section = guide.split('## Invitation roles and owner retire', 1)[1].split('\n## ', 1)[0]
+        self.assertIn(ROLES, section)
+        self.assertIn('after `20261103190000_open_invite_ttl.sql`', section)
 
 
 if __name__ == '__main__':
