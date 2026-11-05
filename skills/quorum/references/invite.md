@@ -76,6 +76,13 @@ member task intake; it names the only role that may invoke the prompt's
 skill refresh and at most 3 local client test sessions per day. Pass
 `--no-standing-grants` to issue the prompt without them.
 Read [join](join.md) for default role/project selection and delivery checks.
+To assign the recipient's binding, add `--role <role>` and optionally
+`--project-ref <shared-project>` (default with `--role`: the quorum slug) to either
+form of `invite-id`. Output repeats them as `assigned`, and every prompt carries a
+binding instruction: connect with exactly that role and project and
+`--exclusive-role`, with no fallback role, and report `role_held_by_other_identity`
+or `role_held_by_own_agent` instead of choosing another role. The server stores
+no role with the invitation, so this is prompt text, not server enforcement.
 Both prompts request a sanitized connection-failure report prepared for the owner;
 posting outside the quorum needs the receiving owner's confirmation. Follow [the failure-reporting procedure](join.md#connection-failures),
 including duplicate checks and the no-write-access fallback.

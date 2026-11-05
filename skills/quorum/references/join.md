@@ -126,8 +126,12 @@ confirmation unless the owner has explicitly requested membership only:
 1. Read [sessions](sessions.md). Use only the current client's exported session
    identity. Use the owner's role and shared project reference when supplied;
    otherwise use `<engine>-<first-eight-characters-of-session-UUID>` as the role
-   and the quorum slug as the project reference. Report these choices.
-2. Run `session connect <quorum> --role <role> --project-ref <shared-project>`,
+   and the quorum slug as the project reference. Report these choices. An
+   invitation's `Assigned binding` is mandatory: use exactly its role and project
+   with `--exclusive-role`, never the fallback role, and report
+   `role_held_by_other_identity` or `role_held_by_own_agent` as a blocker.
+2. Run `session connect <quorum> --role <role> --project-ref <shared-project>
+   --exclusive-role`,
    then `session start` and `session status`, using the same installed helper,
    frozen uv project and private state as acceptance. Reuse a matching existing
    binding; a conflicting binding is a blocker, not permission to replace it.

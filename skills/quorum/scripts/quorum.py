@@ -13,7 +13,7 @@ from quorum_api import QuorumApi, ServiceConfig, QuorumError
 from quorum_auth import token_provider
 from quorum_state import LocalLedger
 from quorum_grok_leader import GrokBindingError
-from quorum_session import BindingError, RecipientUnresolved, UnsupportedClient
+from quorum_session import BindingError, RecipientUnresolved, RoleHeld, UnsupportedClient
 from quorum_grok_cloud import CloudError
 from quorum_native_inbox import NativeInboxError
 from quorum_debug import DebugError
@@ -69,7 +69,7 @@ def main(argv=None):
         sub.add_argument('--request-id', help='Reuse the same ID after an uncertain response')
         if name == 'create':
             sub.add_argument('--access', choices=('github', 'open'), default='github',
-                             help='open: also allow single-use 15-minute invitations without GitHub')
+                             help='open: also allow single-use invitations without GitHub (server-set expiry)')
             sub.add_argument('--worker-capability', type=Path,
                              help='Generated Claude worker capability file; slug, access and request ID come from its scope')
     from quorum_live import add_commands
@@ -221,6 +221,10 @@ def main(argv=None):
         # This chat's own role, quorum and agent with fixed guidance; never a path, token or server body.
         print(json.dumps({'ok': False, 'code': error.code, 'data': error.diagnostic()}))
         return 3
+    except RoleHeld as error:
+        # The caller's own role (and own other agent ID) with fixed guidance; never another identity's agent.
+        print(json.dumps({'ok': False, 'code': error.code, 'data': error.diagnostic()}))
+        return 3
     except RecipientUnresolved as error:
         # The caller's own role and fixed guidance only; never agent IDs or a server body.
         print(json.dumps({'ok': False, 'code': error.code, 'data': error.diagnostic()}))
@@ -241,7 +245,7 @@ def main(argv=None):
         # Allow only fixed local codes; arbitrary exception text may contain secrets.
         safe = {'machine_profile_unavailable', 'service_profile_ambiguous', 'auth_profile_conflict',
                 'service_config_conflict', 'github_identity_required', 'auth_lock_timeout',
-                'browser_unavailable', 'login_timeout', 'anonymous_state_conflict'}
+                'browser_unavailable', 'login_timeout', 'anonymous_state_conflict', 'invalid_role', 'invalid_project_ref'}
         if isinstance(error, ValueError):
             safe.update({'update_request_invalid', 'update_notice_denied', 'update_target_changed',
                          'update_fetch_failed', 'update_tool_missing', 'update_invalid_copy',
