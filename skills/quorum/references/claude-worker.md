@@ -90,8 +90,16 @@ open scope in a fresh private state (no GitHub `config.json` or credentials).
 To hand this chat's existing parent-route binding to a worker, see
 [adopting this chat's binding](#adopting-this-chats-binding).
 Optional keys: `coordinator_role`, `accept_tasks_from_members` (boolean; defaults
-to false and excludes `coordinator_role`), `dispatch_mode` (`native-subagent`
+to false and excludes `coordinator_role`), `standing_grants_from` (a role; needs
+`accept_tasks_from_members`), `dispatch_mode` (`native-subagent`
 needs a coordinator; member intake is inline), `operations` (a subset only) and the permission lifetime:
+
+- An invitation with member intake and standing grants (`--accept-tasks-from-members
+  --dispatch-mode inline` and `--standing-grants-from <role>`) maps to
+  `"accept_tasks_from_members": true, "standing_grants_from": "<role>"` with no
+  `coordinator_role`. `coordinator_role` alone stays coordinator-only intake. A
+  binding persists one delegation policy, so it cannot be combined with member
+  intake.
 
 - `lifetime: "bounded"` is the default for finite QA: `ttl_seconds` 1..3600,
   default 900, measured from prepare.
@@ -149,7 +157,10 @@ for GitHub is refused with `anonymous_state_conflict`. Member intake requires `a
 the original owner scope and the matching connect flag. Before member task work,
 the same worker runs `session --worker-capability <capability-file> task-check
 <message-id>`; an earlier envelope or status is insufficient. Legacy capabilities
-cannot add member scope or run member checks. All owner-held exclusions in
+cannot add member scope or run member checks. A scope with `standing_grants_from`
+also needs the matching connect `--standing-grants-from <role>`. Its connect
+stores the same member grant that `session connect` writes, and it adds
+`standing-check`; see [standing owner authorizations](delegation.md#standing-owner-authorizations). All owner-held exclusions in
 [delegation](delegation.md) still apply; a stopped/expired capability denies a
 check even when its read-only RPC is in flight. Create
 JSON may hold only the approved `slug` and `role`; the stable request ID comes

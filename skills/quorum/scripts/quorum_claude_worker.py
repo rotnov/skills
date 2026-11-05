@@ -41,8 +41,9 @@ OPERATIONS = {'create': ('create', 'connect', 'receive', 'received', 'reply', 's
               # knowledge and update (owner maintenance) run only through this worker, on the parent's request.
               'adopt': ('connect', 'receive', 'received', 'reply', 'status', 'stop', 'task-check', 'knowledge',
                         'update')}
-KNOWN = tuple(dict.fromkeys(name for names in OPERATIONS.values() for name in names))
-SESSION_ACTIONS = ('connect', 'receive', 'received', 'reply', 'status', 'stop', 'task-check')
+# standing-check is added to a scope's operations only when it carries standing grants.
+KNOWN = tuple(dict.fromkeys([name for names in OPERATIONS.values() for name in names] + ['standing-check']))
+SESSION_ACTIONS = ('connect', 'receive', 'received', 'reply', 'status', 'stop', 'task-check', 'standing-check')
 COMPETING = ('CODEX_THREAD_ID', 'GROK_SESSION_ID', 'GROK_LEADER_SOCKET', 'CURSOR_CONVERSATION_ID')
 NAME = re.compile('[a-z][a-z0-9-]{0,47}')
 DIGEST = re.compile('[0-9a-f]{64}')
@@ -535,7 +536,8 @@ def normalize_scope(raw):
     mode = raw['mode']
     required = {'mode', 'service', 'quorum_slug', 'role', 'project_ref', 'cwd'} | (
         {'create': {'access'}, 'accept': {'invite_id'}}.get(mode, set()))
-    optional = {'coordinator_role', 'dispatch_mode', 'lifetime', 'ttl_seconds', 'operations', 'accept_tasks_from_members'} | (
+    optional = {'coordinator_role', 'dispatch_mode', 'lifetime', 'ttl_seconds', 'operations', 'accept_tasks_from_members',
+                'standing_grants_from'} | (
         {'access'} if mode == 'accept' else set())
     if not required <= set(raw) or set(raw) - required - optional: raise _denied('scope_invalid')
     service = raw['service']
@@ -570,19 +572,27 @@ def normalize_scope(raw):
     coordinator = raw.get('coordinator_role')
     if coordinator is not None and not _name(coordinator): raise _denied('scope_invalid')
     members = raw.get('accept_tasks_from_members', False)
+    # One binding persists one delegation policy: coordinator-only intake (`coordinator_role`, optionally
+    # native-subagent) or member intake (inline). They cannot both be the binding's grant.
     if type(members) is not bool or (members and coordinator): raise _denied('scope_invalid')
+    # Standing grants name the coordinator role whose requests a member binding may honour for the owner's
+    # bounded standing actions; like `session connect --standing-grants-from`, they need member intake.
+    standing = raw.get('standing_grants_from')
+    if 'standing_grants_from' in raw and (not members or not _name(standing)): raise _denied('scope_invalid')
     dispatch_mode = raw.get('dispatch_mode', 'inline')
     if dispatch_mode not in ('inline', 'native-subagent') or (dispatch_mode == 'native-subagent' and not coordinator):
         raise _denied('scope_invalid')
     # Omission preserves the exact legacy scope/hash; updates cannot widen it.
     if 'accept_tasks_from_members' in raw: scope['accept_tasks_from_members'] = members
+    if standing is not None: scope['standing_grants_from'] = standing
     lifetime = raw.get('lifetime', 'bounded')
     if lifetime not in ('bounded', 'until-owner-stop'): raise _denied('scope_invalid')
     if 'ttl_seconds' in raw:
         ttl = raw['ttl_seconds']
         if lifetime != 'bounded' or type(ttl) is not int or not 1 <= ttl <= TTL_LIMIT: raise _denied('scope_invalid')
     else: ttl = DEFAULT_TTL if lifetime == 'bounded' else None
-    allowed = OPERATIONS[mode]
+    # standing-check exists only for a scope that carries standing grants; others keep their exact operations.
+    allowed = OPERATIONS[mode] + (('standing-check',) if standing is not None else ())
     operations = raw.get('operations', list(allowed))
     if (not isinstance(operations, list) or not operations or len(set(map(str, operations))) != len(operations)
             or any(not isinstance(item, str) or item not in allowed for item in operations)):
@@ -1100,11 +1110,17 @@ def _check_arguments(record, operation, arguments):
         require(get('quorum') == scope['quorum_slug'] and get('role') == scope['role']
                 and get('project_ref') == scope['project_ref'] and get('accept_tasks_from') == scope['coordinator_role']
                 and bool(get('accept_tasks_from_members')) == scope.get('accept_tasks_from_members', False)
+                and get('standing_grants_from') == scope.get('standing_grants_from')
                 and get('dispatch_mode', 'inline') == scope['dispatch_mode'])
         # No registration until the approved membership or creation (including open access) is known.
         if not target.get('quorum_id') or (scope['mode'] == 'create'
                                            and (record.get('create') or {}).get('state') != 'done'):
             raise _denied('target_pending')
+    elif operation == 'standing-check':
+        from quorum_delegation import STANDING_ACTIONS
+        require(scope.get('standing_grants_from') is not None and get('standing_action') in STANDING_ACTIONS
+                and isinstance(get('message_id'), str) and CANONICAL.fullmatch(get('message_id')))
+        if not target.get('agent_id'): raise _denied('target_pending')
     elif operation == 'task-check':
         require(scope.get('accept_tasks_from_members') is True
                 and isinstance(get('message_id'), str) and CANONICAL.fullmatch(get('message_id')))
@@ -1279,9 +1295,9 @@ def preflight(args):
             raise NativeInboxError('native_inbox_transport_conflict')
         operation = args.action
         names = {'connect': ('quorum', 'role', 'project_ref', 'transport', 'parent_thread_id', 'accept_tasks_from',
-                             'dispatch_mode', 'accept_tasks_from_members'),
+                             'dispatch_mode', 'accept_tasks_from_members', 'standing_grants_from'),
                  'receive': ('wait_seconds',), 'received': ('message_id',), 'reply': ('message_id', 'priority'),
-                 'task-check': ('message_id',)}
+                 'task-check': ('message_id',), 'standing-check': ('message_id', 'standing_action')}
         arguments = {name: getattr(args, name, None) for name in names.get(operation, ())}
     elif args.command == 'create':
         operation = 'create'
@@ -1351,6 +1367,10 @@ def _record_matches(record, context):
     policy = record.get('delegation')
     if isinstance(policy, dict) and ((policy.get('scope') == 'members')
                                     != context['scope'].get('accept_tasks_from_members', False)):
+        raise _denied('scope_mismatch')
+    from quorum_delegation import standing_grants
+    if isinstance(policy, dict) and policy.get('scope') == 'members' and (
+            (standing_grants(record) or {}).get('from_role') != context['scope'].get('standing_grants_from')):
         raise _denied('scope_mismatch')
 
 
@@ -1422,7 +1442,7 @@ def session_dispatch(args, auth_ledger, register_agent, context):
 def _session_action(args, auth_ledger, register_agent, context, ledger, record, guarded, check):
     """One capability-scoped action over the shared delivery code; `guarded` tracks what was dispatched."""
     import quorum_native_inbox as inbox
-    from quorum_delegation import grant, member_grant, task_check
+    from quorum_delegation import grant, member_grant, standing_check, task_check
     from quorum_release import ReleaseGuard
     from quorum_session import PRIORITIES
     action, session_ref, scope = args.action, context['session_ref'], context['scope']
@@ -1449,7 +1469,9 @@ def _session_action(args, auth_ledger, register_agent, context, ledger, record, 
             guarded.check()
         fresh = {**result, **data, 'registration': data, 'role': scope['role'], 'quorum': scope['quorum_slug'],
                  'transport': TRANSPORT, 'worker_binding': _worker_binding(context)}
-        if scope.get('accept_tasks_from_members'): fresh['delegation'] = member_grant(fresh)
+        # The same persisted member grant `session connect --accept-tasks-from-members --standing-grants-from` writes.
+        if scope.get('accept_tasks_from_members'):
+            fresh['delegation'] = member_grant(fresh, scope.get('standing_grants_from'))
         # Only this scope's coordinator, resolved now: no grant is copied from a parent or another binding.
         if scope['coordinator_role']:
             peer = guarded.call('resolve_role', {'quorum_id': fresh['quorum_id'], 'role': scope['coordinator_role'],
@@ -1467,6 +1489,20 @@ def _session_action(args, auth_ledger, register_agent, context, ledger, record, 
     # The shared delivery code reuses this tracker, so every dispatched operation stays known.
     if action == 'receive':
         return inbox.receive(guarded, auth_ledger, ledger, record, args.wait_seconds, authorize=check)
+    if action == 'standing-check':
+        current = lambda: ledger.setting('session-agent')
+        if args.standing_action != 'skill-refresh':
+            ReleaseGuard(guarded, ledger).check()
+            return standing_check(guarded, record, args.message_id, args.standing_action, current, ledger,
+                                  authorize=check)
+        # As on the parent route: a refresh request is how a stale binding recovers, so a release mismatch is
+        # reported, never a reason to refuse; every authority check is unchanged.
+        from quorum_release import ReleaseMismatch
+        try: release = {'installed': ReleaseGuard(guarded, ledger, stop_on_mismatch=False).check(),
+                        'update_required': False}
+        except ReleaseMismatch as mismatch: release = mismatch.diagnostic
+        return {**standing_check(guarded, record, args.message_id, args.standing_action, current, ledger,
+                                 authorize=check), 'release': release}
     ReleaseGuard(guarded, ledger).check()
     if action == 'task-check':
         return task_check(guarded, record, args.message_id, lambda: ledger.setting('session-agent'), authorize=check)
