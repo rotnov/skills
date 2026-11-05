@@ -134,7 +134,13 @@ consumption by that exact binding; it does not install code. The CLI's
 source hash and matching run marker/lock, never from the fresh helper's own files.
 Old processes without that marker remain unverified. Server runtime reports are
 timestamped self-reports, not proof of current remote liveness; status never
-asserts all participants are presently upgraded. Report one concise result and
+asserts all participants are presently upgraded. Each status page is also joined
+client-side with best-effort `session peers` health: a participant gains
+`availability` and `last_seen`, and a refreshed participant without a later
+runtime report whose heartbeat then went stale shows `client_restarted_unrecovered`
+(see [sessions](sessions.md)); its owner recovers the existing binding, never via a
+new invitation. The page's report timestamps are cached in this chat's session ledger
+for later `session peers`. Report one concise result and
 participants needing owner action through the existing service receiver. Do not
 echo raw envelopes or routine stage/receipt updates.
 

@@ -1,8 +1,9 @@
 # Codex native-worker tool inbox
 
 Read this when a Codex parent chat assigns Quorum setup or reception to its
-native `quorum` service worker (see [service agent](service-agent.md)), or when
-that worker handles an incoming envelope. This identity proof covers only a
+native `quorum` service worker (see [service agent](service-agent.md)), when
+that worker handles an incoming envelope, or when it needs a
+[worker rebind](#worker-rebind) after a client restart. This identity proof covers only a
 genuine Codex native worker. A Claude Code background worker uses the
 owner-attested route in [Claude worker](claude-worker.md), which reuses the
 receive, receipt and reply contract below. Grok, Grok Bot and hosted chats keep
@@ -154,8 +155,42 @@ call ends.
 
 The worker serves only its finite brief. Reuse or resume the same worker when the
 provider allows it. A parent turn ending can suspend the worker: messages stay
-durable and the binding reports offline. A new worker UUID cannot inherit the old
-inbox or receipts. Never claim perpetual service.
+durable and the binding reports offline. A new worker UUID never inherits the old
+inbox implicitly; only the explicit worker rebind below moves it. Never claim
+perpetual service.
+
+## Worker rebind
+
+Read this after a Codex client restart, update or parent-thread resume ended the
+bound worker. The parent resumes or spawns its `quorum` worker with the same
+owner brief, the parent UUID and the binding's session reference (the original
+worker UUID shown by status). That worker, from its own shell in the bound
+working directory, runs:
+
+```text
+uv run --project <skill-dir> --frozen python <skill-dir>/scripts/quorum.py --state <private-state> session --session-id <binding-session-ref> recover --parent-thread-id <parent-UUID>
+```
+
+The caller must pass the [identity](#identity) proof as a worker of that exact
+parent. Recovery keeps the agent, its registered session reference, role,
+delegation, ledger and offered or queued deliveries, and needs no invitation,
+login change, registration or new grant. It is refused for a stopped binding
+(`session_recovery_denied`; only the bound worker's own `session start`
+re-arms), a revoked agent or membership, another parent, a changed record or
+working directory, and while the previous worker is inside a receive
+(`worker_already_running`). It extends nothing. `rebind: rebound` records
+`worker_rebind` (new and previous worker UUID, count) and resets the presence
+epoch, so the next receive says Hello; the same worker gets `rebind: unchanged`.
+Afterwards the previous worker and the parent are refused. A previous-worker
+command already past its proof (receive, receipt, reply, send, start, delegate,
+task and standing checks, peers, thread) re-reads the persisted binding before
+and after each service call, under the control lock before `start` re-arms or a
+receive reads, and before disclosure, then stops with
+`native_worker_binding_denied`. `stop` and `status` stay exact-reference supervision. The new worker passes
+`--session-id <binding-session-ref>` to every session command; envelope receipt
+and reply commands already carry it. An unreceipted offer is offered again. A
+local knowledge-capture grant bound to the previous worker does not transfer.
+`update` maintenance from a rebound worker is not yet supported.
 
 ## Background capability
 

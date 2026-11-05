@@ -30,6 +30,8 @@ CANONICAL = re.compile(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f
 # Any other client context makes the caller ambiguous; copied exports never prove a worker.
 COMPETING = ('CLAUDE_CODE_SESSION_ID', 'CLAUDE_CODE_HOST_SESSION_ID', 'CLAUDE_CODE_MESSAGING_SOCKET',
              'CLAUDE_CODE_MESSAGING_TOKEN', 'GROK_SESSION_ID', 'GROK_LEADER_SOCKET', 'CURSOR_CONVERSATION_ID')
+# A recorded worker rebind: the agent keeps its registered session_ref; only the bound worker UUID moves.
+REBIND_KEYS = {'session_ref', 'previous_session_ref', 'rebound_at', 'count'}
 MESSAGE_FIELDS = ('id', 'sender_id', 'sender_role', 'recipient_id', 'conversation_id', 'sequence',
                   'body', 'priority', 'reply_to', 'notification', 'created_at', 'maintenance')
 
@@ -423,14 +425,35 @@ def prove_worker(parent_thread_id):
     return {'provider': PROVIDER, 'session_ref': native, 'parent_thread_id': parent_thread_id}
 
 
+def worker_session(record):
+    """The worker UUID bound to this agent: the registered one, or the one a recorded rebind selected.
+
+    The agent's own `session_ref` (its service registration and local ledger key) never changes.
+    """
+    if not isinstance(record, dict): return None
+    rebound = record.get('worker_rebind')
+    if rebound is None: return record.get('session_ref')
+    if (not isinstance(rebound, dict) or set(rebound) != REBIND_KEYS or not isinstance(rebound['session_ref'], str)
+            or not _canonical(rebound['session_ref']) or not isinstance(rebound['previous_session_ref'], str)
+            or not _canonical(rebound['previous_session_ref']) or type(rebound['count']) is not int
+            or rebound['count'] < 1):
+        raise NativeInboxError('native_worker_binding_denied', 'binding_invalid')
+    return rebound['session_ref']
+
+
+def _check_binding(record):
+    binding = record.get('worker_binding') if isinstance(record, dict) else None
+    if (not isinstance(record, dict) or record.get('transport') != TRANSPORT or record.get('engine') != PROVIDER
+            or not isinstance(binding, dict) or set(binding) != {'provider', 'session_ref', 'parent_thread_id'}
+            or binding['provider'] != PROVIDER or binding['session_ref'] != worker_session(record)
+            or (record.get('registration') or {}).get('session_ref') != record.get('session_ref')):
+        raise NativeInboxError('native_worker_binding_denied', 'binding_invalid')
+    return binding
+
+
 def require_worker(record):
     """Re-prove the persisted worker against its expected parent for every bound action."""
-    binding = record.get('worker_binding') if isinstance(record, dict) else None
-    if (record.get('transport') != TRANSPORT or record.get('engine') != PROVIDER or not isinstance(binding, dict)
-            or set(binding) != {'provider', 'session_ref', 'parent_thread_id'} or binding['provider'] != PROVIDER
-            or binding['session_ref'] != record.get('session_ref')
-            or (record.get('registration') or {}).get('session_ref') != binding['session_ref']):
-        raise NativeInboxError('native_worker_binding_denied', 'binding_invalid')
+    binding = _check_binding(record)
     if prove_worker(binding['parent_thread_id']) != binding:
         raise NativeInboxError('native_worker_binding_denied', 'binding_changed')
     return binding
@@ -473,9 +496,11 @@ def status(ledger, record):
     from quorum_listener import Control
     states = [json.loads(raw).get('state') for (raw,) in
               ledger.db.execute("select data from settings where key like 'delivery:%'")]
-    return {**Control(ledger).status(), 'transport': TRANSPORT,
-            'reception': 'enabled' if enabled(ledger) else 'disabled', 'pending_receipts': states.count('offered'),
-            'worker_binding': (record or {}).get('worker_binding')}
+    value = {**Control(ledger).status(), 'transport': TRANSPORT,
+             'reception': 'enabled' if enabled(ledger) else 'disabled', 'pending_receipts': states.count('offered'),
+             'worker_binding': (record or {}).get('worker_binding')}
+    if (record or {}).get('worker_rebind') is not None: value['worker_rebind'] = record['worker_rebind']
+    return value
 
 
 def stop(ledger, record):
@@ -487,20 +512,77 @@ def stop(ledger, record):
     return status(ledger, record)
 
 
-def arm(ledger, record):
+def arm(ledger, record, *, authorize=None):
     """The same verified worker re-enables reception; nothing is spawned, and the next call says Hello.
 
     Refused while a receive holds the consumer locks: its in-flight heartbeat could otherwise
     restore the old epoch after this reset. Receive takes those locks before the control lock.
+    `authorize` re-reads the persisted binding under the control lock, so a worker superseded by a
+    rebind (and possibly an owner stop) while this command waited cannot re-enable reception.
     """
     from quorum_listener import locked
     from quorum_live import supervisor_running
     with control_lock(ledger):
+        if authorize is not None: authorize()
         if locked(ledger.root / 'listener.lock') or supervisor_running(ledger.root):
             raise ValueError('worker_already_running')
         ledger.setting(CONTROL, {'enabled': True})
         with ledger.db: ledger.db.execute("delete from settings where key='presence-epoch'")
     return status(ledger, record)
+
+
+def binding_guard(ledger, binding):
+    """Authority for one already proven worker command: the persisted binding must still name this worker.
+
+    A rebind that completes after the caller's proof (for example while it waits on a service call or
+    for the receive locks) refuses every later operation and disclosure of the previous worker.
+    """
+    def authorize():
+        try: current = _check_binding(ledger.setting('session-agent'))
+        except NativeInboxError: current = None
+        if current != binding: raise NativeInboxError('native_worker_binding_denied', 'binding_changed')
+    return authorize
+
+
+def rebind(api, ledger, record, parent_thread_id, *, clock=time.time):
+    """Re-establish this existing binding for a new verified worker of the same parent thread.
+
+    After a client restart or parent resume the provider may give the parent's `quorum` worker a new
+    thread UUID. The agent, role, delegation, ledger and offered deliveries stay; only the bound worker
+    changes. This is recovery, not a grant: a stopped, revoked or changed binding is refused, nothing
+    is registered, extended or re-armed, and the previous worker fails closed (`binding_changed`).
+    """
+    from quorum_listener import locked
+    from quorum_live import supervisor_running
+    from quorum_session import agent_revoked
+    if not isinstance(parent_thread_id, str) or not _canonical(parent_thread_id):
+        raise NativeInboxError('native_worker_binding_denied', 'parent_invalid')
+    proved = prove_worker(parent_thread_id)
+    binding = _check_binding(record)
+    if binding['parent_thread_id'] != parent_thread_id:
+        raise NativeInboxError('native_worker_binding_denied', 'parent_mismatch')
+    if str(Path.cwd().resolve()) != record.get('cwd'): raise ValueError('session_binding_denied')
+    # A stopped worker stays stopped: only an explicit start by the bound worker re-arms it.
+    if not enabled(ledger): raise ValueError('session_recovery_denied')
+    try: api.call('agent_status', {'agent_id': record['agent_id']})
+    except QuorumError as error:
+        if agent_revoked(error): raise ValueError('session_recovery_denied') from None
+        raise
+    with control_lock(ledger):
+        if ledger.setting('session-agent') != record or not enabled(ledger):
+            raise ValueError('session_recovery_denied')
+        if proved == binding: return {**status(ledger, record), 'rebind': 'unchanged'}
+        # The previous worker may still be inside a receive; never take its offer or presence epoch mid-call.
+        if locked(ledger.root / 'listener.lock') or supervisor_running(ledger.root):
+            raise ValueError('worker_already_running')
+        updated = {**record, 'worker_binding': proved, 'worker_rebind': {
+            'session_ref': proved['session_ref'], 'previous_session_ref': binding['session_ref'],
+            'rebound_at': int(clock()), 'count': (record.get('worker_rebind') or {}).get('count', 0) + 1}}
+        with ledger.db:
+            ledger.db.execute('update settings set data=? where key=?', (json.dumps(updated), 'session-agent'))
+            # The new worker's first receive says Hello with a fresh presence epoch.
+            ledger.db.execute("delete from settings where key='presence-epoch'")
+    return {**status(ledger, updated), 'rebind': 'rebound'}
 
 
 def selector(record):
@@ -637,6 +719,8 @@ def receive(api, auth_ledger, ledger, record, wait_seconds, *, waiter=None, pres
                 'transport': TRANSPORT, 'wait_seconds': wait_seconds, **hello_once(ledger)}
     with LocalSupervisorLock(ledger.root), FileLock(ledger.root / 'listener.lock'):
         with control_lock(ledger):
+            # A rebind completed before these locks were taken excludes this caller before any read.
+            if authorize is not None: api.check()
             if not enabled(ledger): return result('stopped', None)
             run_id = str(uuid.uuid4())
             # Publish this exact generation and its release marker together under the control lock.

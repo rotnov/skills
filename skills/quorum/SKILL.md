@@ -58,8 +58,9 @@ configuring credentials.
 3. To connect this existing chat and receive peer messages/replies here, read
    [sessions](references/sessions.md). Bind the actual current session ID; a separate
    headless handler is not a substitute.
-   For a resumed Codex/Grok/Claude binding or owner-requested startup recovery, read
-   [resume](references/resume.md); recovery cannot re-enable stopped reception.
+   For a resumed Codex/Grok/Claude binding, a restarted Codex tool-inbox worker or
+   owner-requested startup recovery, read [resume](references/resume.md); recovery
+   cannot re-enable stopped reception.
    For unavailable cloud peers or sleeping-chat wake questions, read
    [cloud wake limits](references/cloud-wake.md); a timeout alone does not prove suspension.
    Read sessions too before marking a message urgent: only a connected Codex chat can be steered; Claude Code reads accepted
