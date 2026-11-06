@@ -167,6 +167,12 @@ PARITY_CASES = (
      ('fail', 'machine_profile_unavailable', None)),
     ('legacy only, unconfigured', lambda t: t.legacy(), ('fail', 'service_not_configured', None)),
     ('legacy only, configured: adopted in place', lambda t: t.legacy_configured(), ('ok', 'present', None)),
+    ('adopted legacy store, fresh access token', lambda t: t.adopted(), ('ok', 'present', None)),
+    ('adopted legacy store, expired access token', lambda t: t.adopted(expires=1), ('ok', 'present', None)),
+    ('adopted legacy store, signed out', lambda t: t.adopted(signed_out=True), ('ok', 'missing', None)),
+    ('adopted legacy store used by another state', lambda t: t.adopted() and 'state-new', ('ok', 'present', None)),
+    ('legacy unidentified, adoption needs GitHub', lambda t: t.legacy_configured(identity='none'),
+     ('fail', 'github_identity_required', None)),
     ('legacy unbound, machine login present', lambda t: t.machine() and t.legacy(), ('ok', PENDING, None)),
     ('legacy unbound, machine signed out', lambda t: t.machine_signed_out() and t.legacy(),
      ('fail', 'auth_profile_conflict', 'machine_login_missing')),
@@ -233,9 +239,17 @@ class InspectResolveParityTests(unittest.TestCase):
             ORIGIN, session('legacy-access-secret', 'legacy-refresh-secret', **values))
         return 'state-two'
 
-    def legacy_configured(self):
-        self.legacy()
+    def legacy_configured(self, **values):
+        self.legacy(**values)
         quorum_profiles.write_config(self.root / 'state-two' / 'config.json', CONFIG)
+        return 'state-two'
+
+    def adopted(self, signed_out=False, **values):
+        """A legacy state whose own credentials became the machine profile's credential root."""
+        self.legacy_configured(**values)
+        _, store = resolve_profile(self.root / 'state-two')
+        self.assertEqual(store.backend.root, self.root / 'state-two' / 'credentials')
+        if signed_out: store.delete(ORIGIN)
         return 'state-two'
 
     def bound(self, drop_legacy=False, drop_machine=False, rotate_machine=False):

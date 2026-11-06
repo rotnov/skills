@@ -412,8 +412,11 @@ def _existing_directory(path):
     return path
 
 
-def _read_only(path, limit=FileCredentials.limit):
-    """A private file's bytes or None, opened read-only; never removes temporaries or changes its ACL."""
+def _read_only(path, limit=16384, too_large='unsafe_config_file'):
+    """A private file's bytes or None, opened read-only; never removes temporaries or changes its ACL.
+
+    The defaults match read_private_json; the registry passes FileCredentials' limit and code.
+    """
     reject_link(path)
     try:
         fd = open_private(path, os.O_RDONLY | getattr(os, 'O_NONBLOCK', 0))
@@ -422,7 +425,7 @@ def _read_only(path, limit=FileCredentials.limit):
     with os.fdopen(fd, 'rb') as source:
         FileCredentials._check(os.fstat(source.fileno()))
         raw = source.read(limit + 1)
-    if len(raw) > limit: raise ValueError('unsafe_config_file')
+    if len(raw) > limit: raise ValueError(too_large)
     return raw
 
 
@@ -431,7 +434,7 @@ def _stored_session(root, profile):
     if root is None: return None
     # The single code CredentialStore.load reports for any unreadable or invalid login.
     try:
-        raw = _read_only(root / (hashlib.sha256(profile.encode()).hexdigest() + '.json'))
+        raw = _read_only(root / (hashlib.sha256(profile.encode()).hexdigest() + '.json'), FileCredentials.limit)
         if raw is None: return None
         session = json.loads(raw)
         CredentialStore._validate(session)
@@ -443,25 +446,33 @@ def _stored_session(root, profile):
 def inspect_profile(state):
     """Non-verifying, read-only counterpart of resolve_profile for health checks.
 
-    It reaches resolve_profile's outcome on every branch that needs no network, but takes no lock
-    file, adopts no registry record, publishes no config, contacts no Auth server, refreshes no
-    token and writes no binding. Only a legacy login whose binding resolve_profile would prove at
-    the Auth server, after every offline check passed, is `pending_binding_verification`. Returns {'service': 'configured', 'login': <state>} with
-    login `present`, `missing` or `pending_binding_verification`, or raises the resolution code.
+    It follows _resolve_state, check_legacy_binding, verify_legacy_principal and SharedCredentials.load
+    branch by branch (each step is labelled below) and reaches their outcome on every branch that needs
+    no network. It takes no lock file, adopts no registry record, publishes no config, contacts no Auth
+    server, refreshes no token and writes no binding. Only a legacy login whose binding resolve_profile
+    would prove at the Auth server, after every offline check passed, is `pending_binding_verification`.
+    Returns {'service': 'configured', 'login': 'present'|'missing'|'pending_binding_verification'},
+    or raises the code resolve_profile (and loading its store) would raise.
     """
+    # _resolve_profile: the state directory (resolve_profile would create a missing one).
     state = _existing_directory(state)
     saved = None
     if state is not None:
-        raw = _read_only(state / 'config.json', 16384)
+        # read_state_config.
+        raw = _read_only(state / 'config.json')
         saved = None if raw is None else ServiceConfig(**json.loads(raw))
-        anonymous = _existing_directory(state / 'anonymous-credentials')
-        if anonymous is not None:
+        # resolve_anonymous: an existing anonymous store needs this state's config.
+        anonymous = state / 'anonymous-credentials'
+        if anonymous.exists() or anonymous.is_symlink():
             if saved is None: raise QuorumError('service_not_configured')
-            present = _stored_session(anonymous, saved.origin) is not None
+            present = _stored_session(_existing_directory(anonymous), saved.origin) is not None
             return {'service': 'configured', 'login': 'present' if present else 'missing'}
-    profiles = _existing_directory(profiles_root())
+    # MachineProfiles().read() (a missing registry directory reads as no records).
+    root = profiles_root()
+    profiles = _existing_directory(root)
     records = parse_registry(None if profiles is None else _read_only(
-        profiles / (hashlib.sha256(b'registry').hexdigest() + '.json')))
+        profiles / (hashlib.sha256(b'registry').hexdigest() + '.json'), FileCredentials.limit,
+        'credential_file_too_large'))
     config = saved
     if config is None:
         if not records: raise QuorumError('service_not_configured')
@@ -474,28 +485,34 @@ def inspect_profile(state):
     record = records.get(config.origin)
     if record is not None and record['publishable_key'] != config.publishable_key:
         raise ValueError('service_config_conflict')
-    legacy_root = None if state is None else _existing_directory(state / 'credentials')
-    legacy = _stored_session(legacy_root, config.origin)
+    legacy_root = None if state is None else state / 'credentials'
+    if legacy_root is not None and legacy_root == root:
+        raise ValueError('unsafe_profile_directory')
+    legacy = None if legacy_root is None else _stored_session(_existing_directory(legacy_root), config.origin)
     if record is None:
-        # First real use adopts this state's own login in place, or starts a new machine login.
+        # Adoption: this state's own login in place, else a new machine credential root.
         if legacy is not None:
             github_identity(legacy)
-            return {'service': 'configured', 'login': 'present'}
-        fresh = _existing_directory(profiles_root() / hashlib.sha256(config.origin.encode()).hexdigest())
-        return {'service': 'configured',
-                'login': 'missing' if _stored_session(fresh, config.origin) is None else 'present'}
-    credential_root = Path(record['credential_root'])
-    if _existing_directory(credential_root) is None: raise ValueError('machine_profile_unavailable')
+            credential_root, github_id = legacy_root, None
+        else:
+            credential_root, github_id = root / hashlib.sha256(config.origin.encode()).hexdigest(), None
+        return _loaded(_stored_session(_existing_directory(credential_root), config.origin), None, github_id)
+    credential_root = _existing_directory(record['credential_root'])
+    if credential_root is None: raise ValueError('machine_profile_unavailable')
     machine = _stored_session(credential_root, config.origin)
-    conflict = lambda reason: AuthProfileConflict(reason, state / 'credentials', record['credential_root'])
+    if credential_root == legacy_root:
+        # This state's credentials were adopted as the machine login: no binding is checked.
+        return _loaded(machine, None, record['github_id'])
+    # check_legacy_binding.
+    conflict = lambda reason: AuthProfileConflict(reason, legacy_root, record['credential_root'])
 
     def pending():
-        # verify_legacy_principal's offline outcomes stay failures; only its Auth server proof is pending.
+        # verify_legacy_principal: its offline outcomes stay failures; only the Auth server proof is pending.
+        _loaded(machine, None, record['github_id'])  # SharedCredentials.load on the machine login.
         if machine is None: raise conflict('machine_login_missing')
         if legacy.get('expires_at', 0) <= time.time() + 30: raise conflict('legacy_login_unverified')
         return {'service': 'configured', 'login': 'pending_binding_verification'}
 
-    principal = None
     if legacy is not None:
         if record['github_id'] is None: raise conflict('machine_login_missing')
         try:
@@ -503,25 +520,28 @@ def inspect_profile(state):
         except ValueError:
             claimed = None
         if claimed not in (None, record['github_id']): raise conflict('different_principal')
-    raw = None if state is None else _read_only(state / 'auth-binding.json', 16384)
+    raw = None if state is None else _read_only(state / 'auth-binding.json')
     if raw is None:
-        if legacy is not None: return pending()
-    else:
-        binding = json.loads(raw)
-        expected = binding_for(config, record, None)
-        if (not isinstance(binding, dict) or not set(binding) <= set(expected)
-                or any(binding.get(key) != expected[key] for key in ('origin', 'credential_root', 'github_id'))):
-            raise conflict('binding_mismatch')
-        principal = binding.get('auth_user_id')
-        if (not isinstance(principal, str) or not principal
-                or auth_user_id(legacy) not in (None, principal)
-                or (machine is not None and auth_user_id(machine) != principal)):
-            if legacy is None: raise conflict('bound_principal_unverifiable')
-            return pending()
-    if machine is None: return {'service': 'configured', 'login': 'missing'}
-    # SharedCredentials.load: the pinned principal and the recorded GitHub identity must both match.
-    if principal is not None and auth_user_id(machine) != principal: raise ValueError('auth_profile_conflict')
-    if record['github_id'] not in (None, github_identity(machine)): raise ValueError('auth_profile_conflict')
+        return pending() if legacy is not None else _loaded(machine, None, record['github_id'])
+    binding = json.loads(raw)
+    expected = binding_for(config, record, None)
+    if (not isinstance(binding, dict) or not set(binding) <= set(expected)
+            or any(binding.get(key) != expected[key] for key in ('origin', 'credential_root', 'github_id'))):
+        raise conflict('binding_mismatch')
+    principal = binding.get('auth_user_id')
+    if (not isinstance(principal, str) or not principal
+            or auth_user_id(legacy) not in (None, principal)
+            or (machine is not None and auth_user_id(machine) != principal)):
+        if legacy is None: raise conflict('bound_principal_unverifiable')
+        return pending()
+    return _loaded(machine, principal, record['github_id'])
+
+
+def _loaded(session, principal, github_id):
+    """SharedCredentials.load's outcome: the pinned principal and recorded GitHub identity must match."""
+    if session is None: return {'service': 'configured', 'login': 'missing'}
+    if principal is not None and auth_user_id(session) != principal: raise ValueError('auth_profile_conflict')
+    if github_id not in (None, github_identity(session)): raise ValueError('auth_profile_conflict')
     return {'service': 'configured', 'login': 'present'}
 
 
