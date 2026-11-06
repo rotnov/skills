@@ -33,9 +33,10 @@ class HelloDedupeTests(unittest.TestCase):
         setup = (ROOT / 'tests/quorum_backend_fixture.sql').read_text()
         setup += (ROOT / 'skills/quorum/references/server-bootstrap.sql').read_text()
         names = sorted((ROOT / 'skills/quorum/supabase/migrations').glob('*.sql'))
-        # pgvector extensions are optional and need another image; the dedupe file does not depend on them.
+        # pgvector knowledge (and its default-role release) needs another image; the dedupe file does not depend on it.
         setup += ''.join(path.read_text() for path in names if path.name <= MIGRATION
-                         and not path.name.endswith(('_project_knowledge.sql', '_llm_wiki.sql')))
+                         and not path.name.endswith(('_project_knowledge.sql', '_llm_wiki.sql',
+                                                    '_knowledge_member_default_role.sql')))
         cls.cluster.sql('hello_dedupe', setup, single=True)
         cls.cluster.sql('hello_dedupe', f"""
           insert into auth.users(id,raw_user_meta_data) values('{OWNER}','{{}}');

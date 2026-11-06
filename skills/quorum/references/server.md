@@ -307,3 +307,35 @@ These tests use the local immutable image with `--pull never --network none`, no
 ports and a uniquely named disposable container that is removed after the run.
 Auth fixtures and vectors are synthetic; no cloud configuration is read. The
 PGlite legacy backend suite does not substitute for actual pgvector tests.
+
+## Knowledge member default role
+
+Optional, for servers that deployed project knowledge and the retained-source
+wiki. After reviewing the source and obtaining administrator deployment
+authorization, apply
+[`20261106100000_knowledge_member_default_role.sql`](../supabase/migrations/20261106100000_knowledge_member_default_role.sql)
+in one transaction after `20261103075741_llm_wiki.sql`. It refuses to run
+without both (`knowledge_wiki_required`), pins the scope check, the
+administration entry point, the binding check, the request-journal helpers
+and every caller of the scope check, and refuses drift or reapplication
+before any change. It does not change the required release, quorum
+permissions or existing grants.
+
+- `knowledge_admin` gains the owner operation `default_role` (`space_id`,
+  `permission`: `reader`, `writer` or `none`). One private
+  `knowledge_member_defaults` row per space holds it; `none` removes it.
+- The scope check uses that default only when the caller has no explicit
+  grant, and only after the reviewed checks admitted the caller: a live agent,
+  device and non-revoked membership of a quorum attached to the space for the
+  agent's project. Owner-only operations stay with the owner.
+
+The previous scope check and administration body stay as private functions.
+Refresh PostgREST's schema cache after applying. To roll back, in one
+transaction drop the new `quorum_private.knowledge_scope` and
+`public.knowledge_admin`, rename `knowledge_scope_before_default_role` back to
+`knowledge_scope`, move `knowledge_admin_before_default_role` back to `public`
+as `knowledge_admin`, grant it to `authenticated` again and drop
+`knowledge_member_defaults`. Explicit grants are unaffected. The pgvector
+PostgreSQL suite `test_quorum_knowledge_default_role_backend.py` (same image and
+`QUORUM_KNOWLEDGE_DOCKER=1` as above) covers the guards, the contract and the
+default-change races.

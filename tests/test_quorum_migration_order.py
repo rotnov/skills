@@ -27,6 +27,7 @@ SERIALIZATION_PINS = {
 }
 ROLES = '20261105140000_role_assignment_and_owner_retire.sql'
 STATUS = '20261105160000_peer_status_visibility.sql'
+DEFAULT_ROLE = '20261106100000_knowledge_member_default_role.sql'
 DEDUPE = '20261106120000_hello_reconnect_dedupe.sql'
 # prosrc hashes after the reviewed tail through 190000; tests/quorum-backend recomputes them by drift injection.
 ROLE_PINS = {
@@ -171,8 +172,8 @@ class MigrationOrderTests(unittest.TestCase):
         names = [path.name for path in MIGRATIONS]
         ttl = next(name for name in names if name.endswith('_open_invite_ttl.sql'))
         self.assertGreater(ttl, '20261103180000_hello_roster_visibility.sql')
-        # Only the reviewed role-assignment (#105), peer status (#113) and Hello dedupe (#126) releases follow it.
-        self.assertEqual(names[names.index(ttl) + 1:], [ROLES, STATUS, DEDUPE])
+        # Only the reviewed role-assignment release (#105) follows it.
+        self.assertEqual(names[names.index(ttl) + 1:], [ROLES, STATUS, DEFAULT_ROLE, DEDUPE])
         body = (SKILL / 'supabase/migrations' / ttl).read_text(encoding='utf-8')
         pins = dict(re.findall(r"'([a-z_.]+\([a-z,]*\))','([0-9a-f]{64})'", body))
         self.assertEqual(pins, {'quorum_private.call_priority_core(text,jsonb,text)':
@@ -196,7 +197,7 @@ class MigrationOrderTests(unittest.TestCase):
 
     def test_role_assignment_follows_the_tail_pins_reviewed_bodies_and_grants_only_authenticated(self):
         names = [path.name for path in MIGRATIONS]
-        self.assertEqual(names[names.index(ROLES) + 1:], [STATUS, DEDUPE])
+        self.assertEqual(names[names.index(ROLES) + 1:], [STATUS, DEFAULT_ROLE, DEDUPE])
         self.assertGreater(ROLES, '20261103190000_open_invite_ttl.sql')
         body = (SKILL / 'supabase/migrations' / ROLES).read_text(encoding='utf-8')
         pins = dict(re.findall(r"'([a-z_.]+\([a-z,]*\))','([0-9a-f]{64})'", body))
@@ -250,7 +251,7 @@ class MigrationOrderTests(unittest.TestCase):
 
     def test_peer_status_follows_roles_pins_reviewed_bodies_and_grants_only_authenticated(self):
         names = [path.name for path in MIGRATIONS]
-        self.assertEqual(names[names.index(STATUS) + 1:], [DEDUPE])
+        self.assertEqual(names[names.index(STATUS) + 1:], [DEFAULT_ROLE, DEDUPE])
         body = (SKILL / 'supabase/migrations' / STATUS).read_text(encoding='utf-8')
         self.assertTrue(body.startswith('-- SOURCE ONLY.'))
         pins = dict(re.findall(r"'([a-z_.]+\([a-z,]*\))','([0-9a-f]{64})'", body))
@@ -301,6 +302,71 @@ class MigrationOrderTests(unittest.TestCase):
         section = guide.split('## Peer status extension', 1)[1].split('\n## ', 1)[0]
         self.assertIn(STATUS, section)
         self.assertIn('after `20261105140000_role_assignment_and_owner_retire.sql`', section)
+
+
+    def test_knowledge_default_role_follows_the_wiki_pins_every_scope_caller_and_grants_only_authenticated(self):
+        names = [path.name for path in MIGRATIONS]
+        self.assertEqual(names[names.index(DEFAULT_ROLE) + 1:], [DEDUPE])
+        self.assertGreater(DEFAULT_ROLE, '20261103075741_llm_wiki.sql')
+        body = (SKILL / 'supabase/migrations' / DEFAULT_ROLE).read_text(encoding='utf-8')
+        self.assertTrue(body.startswith('-- SOURCE ONLY.'))
+        pins = dict(re.findall(r"'([a-z_.]+\([a-z,\[\]]*\))','([0-9a-f]{64})'", body))
+        # Every function that calls the scope check is pinned, so its writer/owner-only arguments are reviewed.
+        callers = set()
+        for path in MIGRATIONS:
+            for chunk in path.read_text(encoding='utf-8').split('create ')[1:]:
+                head = re.match(r'(?:or replace )?function (public\.[a-z_]+)\(', chunk)
+                if head and 'quorum_private.knowledge_scope(' in chunk.split('$$;', 1)[0]:
+                    callers.add(head.group(1))
+        self.assertTrue(callers)
+        self.assertEqual(callers - {name.split('(')[0] for name in pins}, set())
+        for required in ('quorum_private.knowledge_scope(uuid,text,uuid,boolean,boolean)',
+                         'public.knowledge_admin(uuid,text,text,jsonb,text)', 'quorum_private.knowledge_binding(uuid,text)',
+                         'quorum_private.knowledge_mutation_lock(uuid)', 'quorum_private.knowledge_cached(text,jsonb,text)'):
+            self.assertIn(required, pins)
+        status = (SKILL / 'supabase/migrations' / STATUS).read_text(encoding='utf-8')
+        self.assertIn("'quorum_private.native_session(uuid,text)','" + pins['quorum_private.native_session(uuid,text)'] + "'", status)
+        guard = body.split('end $migration$;', 1)[0]
+        for code in ('knowledge_default_role_present', 'knowledge_wiki_required'):
+            self.assertIn(f"raise exception '{code}'", guard)
+        self.assertIn("raise exception 'reviewed_dispatcher_changed: %',f;", guard)
+        for change in ('alter ', 'create ', 'drop ', 'insert ', 'update ', 'grant '):
+            self.assertNotIn(change, guard.split('begin', 1)[1].lower())
+        created = re.findall(r'create function ([a-z_.]+)\(', body)
+        self.assertEqual(created, ['quorum_private.knowledge_scope', 'public.knowledge_admin'])
+        for chunk in body.split('create function ')[1:]:
+            header = chunk.split(' as $', 1)[0]
+            self.assertIn('security definer set search_path=pg_catalog', ' '.join(header.split()), header[:60])
+        # The copied scope body differs from the reviewed one only by the default lookup.
+        reviewed = (SKILL / 'supabase/migrations/20261030142000_project_knowledge.sql').read_text(encoding='utf-8')
+        old = reviewed.split('create function quorum_private.knowledge_scope(', 1)[1].split('end $$;', 1)[0]
+        new = body.split('create function quorum_private.knowledge_scope(', 1)[1].split('end $function$;', 1)[0]
+        old_lines = old.replace('$$', '$function$').splitlines()
+        added = [line.strip() for line in new.splitlines() if line not in old_lines]
+        self.assertEqual([line for line in added if not line.startswith('--')], [
+            'if not found then',
+            'select permission into permitted from quorum_private.knowledge_member_defaults',
+            'where space_id=s for share;',
+            "if not found then raise insufficient_privilege using message='knowledge_denied'; end if;",
+            'end if;',
+            "if writer and permitted<>'writer' then"])
+        # Only the explicit-grant denial moved inside the fallback; no reviewed check was dropped.
+        removed = [line.strip() for line in old_lines if line not in new.splitlines()]
+        self.assertEqual(removed, ["if not found or (writer and permitted<>'writer') then"])
+        code = '\n'.join(line.split('--', 1)[0] for line in body.splitlines())
+        lowered = ' '.join(code.lower().split())
+        for moved in ('knowledge_scope_before_default_role(uuid,text,uuid,boolean,boolean)',
+                      'knowledge_admin_before_default_role(uuid,text,text,jsonb,text)',
+                      'knowledge_scope(uuid,text,uuid,boolean,boolean)'):
+            self.assertIn(f'revoke all on function quorum_private.{moved} from public,anon,authenticated,service_role;', lowered)
+        self.assertIn('revoke all on quorum_private.knowledge_member_defaults from public,anon,authenticated,service_role;', lowered)
+        grants = re.findall(r'grant [^;]*;', lowered)
+        self.assertEqual(grants, ['grant execute on function public.knowledge_admin(uuid,text,text,jsonb,text) to authenticated;'])
+        self.assertNotIn('function public.session_requirements', body)
+        guide = (SKILL / 'references/server.md').read_text(encoding='utf-8')
+        section = guide.split('## Knowledge member default role', 1)[1].split('\n## ', 1)[0]
+        self.assertIn(DEFAULT_ROLE, section)
+        self.assertIn('after `20261103075741_llm_wiki.sql`', section)
 
 
     def test_hello_dedupe_follows_status_pins_reviewed_bodies_and_grants_nothing(self):
