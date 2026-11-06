@@ -29,6 +29,7 @@ ROLES = '20261105140000_role_assignment_and_owner_retire.sql'
 STATUS = '20261105160000_peer_status_visibility.sql'
 DEFAULT_ROLE = '20261106100000_knowledge_member_default_role.sql'
 DEDUPE = '20261106120000_hello_reconnect_dedupe.sql'
+UNRECEIPTED = '20261106140000_session_message_unreceipted.sql'
 # prosrc hashes after the reviewed tail through 190000; tests/quorum-backend recomputes them by drift injection.
 ROLE_PINS = {
     'quorum_private.call(text,jsonb,text)': 'ca718afbcda8682ade19ea6b246ccc2f1bfd5523eb7d1076cf4e9583e24f3ab7',
@@ -173,7 +174,7 @@ class MigrationOrderTests(unittest.TestCase):
         ttl = next(name for name in names if name.endswith('_open_invite_ttl.sql'))
         self.assertGreater(ttl, '20261103180000_hello_roster_visibility.sql')
         # Only the reviewed role-assignment release (#105) follows it.
-        self.assertEqual(names[names.index(ttl) + 1:], [ROLES, STATUS, DEFAULT_ROLE, DEDUPE])
+        self.assertEqual(names[names.index(ttl) + 1:], [ROLES, STATUS, DEFAULT_ROLE, DEDUPE, UNRECEIPTED])
         body = (SKILL / 'supabase/migrations' / ttl).read_text(encoding='utf-8')
         pins = dict(re.findall(r"'([a-z_.]+\([a-z,]*\))','([0-9a-f]{64})'", body))
         self.assertEqual(pins, {'quorum_private.call_priority_core(text,jsonb,text)':
@@ -197,7 +198,7 @@ class MigrationOrderTests(unittest.TestCase):
 
     def test_role_assignment_follows_the_tail_pins_reviewed_bodies_and_grants_only_authenticated(self):
         names = [path.name for path in MIGRATIONS]
-        self.assertEqual(names[names.index(ROLES) + 1:], [STATUS, DEFAULT_ROLE, DEDUPE])
+        self.assertEqual(names[names.index(ROLES) + 1:], [STATUS, DEFAULT_ROLE, DEDUPE, UNRECEIPTED])
         self.assertGreater(ROLES, '20261103190000_open_invite_ttl.sql')
         body = (SKILL / 'supabase/migrations' / ROLES).read_text(encoding='utf-8')
         pins = dict(re.findall(r"'([a-z_.]+\([a-z,]*\))','([0-9a-f]{64})'", body))
@@ -251,7 +252,7 @@ class MigrationOrderTests(unittest.TestCase):
 
     def test_peer_status_follows_roles_pins_reviewed_bodies_and_grants_only_authenticated(self):
         names = [path.name for path in MIGRATIONS]
-        self.assertEqual(names[names.index(STATUS) + 1:], [DEFAULT_ROLE, DEDUPE])
+        self.assertEqual(names[names.index(STATUS) + 1:], [DEFAULT_ROLE, DEDUPE, UNRECEIPTED])
         body = (SKILL / 'supabase/migrations' / STATUS).read_text(encoding='utf-8')
         self.assertTrue(body.startswith('-- SOURCE ONLY.'))
         pins = dict(re.findall(r"'([a-z_.]+\([a-z,]*\))','([0-9a-f]{64})'", body))
@@ -306,7 +307,7 @@ class MigrationOrderTests(unittest.TestCase):
 
     def test_knowledge_default_role_follows_the_wiki_pins_every_scope_caller_and_grants_only_authenticated(self):
         names = [path.name for path in MIGRATIONS]
-        self.assertEqual(names[names.index(DEFAULT_ROLE) + 1:], [DEDUPE])
+        self.assertEqual(names[names.index(DEFAULT_ROLE) + 1:], [DEDUPE, UNRECEIPTED])
         self.assertGreater(DEFAULT_ROLE, '20261103075741_llm_wiki.sql')
         body = (SKILL / 'supabase/migrations' / DEFAULT_ROLE).read_text(encoding='utf-8')
         self.assertTrue(body.startswith('-- SOURCE ONLY.'))
@@ -371,7 +372,7 @@ class MigrationOrderTests(unittest.TestCase):
 
     def test_hello_dedupe_follows_status_pins_reviewed_bodies_and_grants_nothing(self):
         names = [path.name for path in MIGRATIONS]
-        self.assertEqual(names[-1], DEDUPE)
+        self.assertEqual(names[-2:], [DEDUPE, UNRECEIPTED])
         body = (SKILL / 'supabase/migrations' / DEDUPE).read_text(encoding='utf-8')
         self.assertTrue(body.startswith('-- SOURCE ONLY.'))
         pins = dict(re.findall(r"'([a-z_.]+\([a-z,]*\))','([0-9a-f]{64})'", body))
@@ -419,6 +420,33 @@ class MigrationOrderTests(unittest.TestCase):
         section = guide.split('## Reconnect Hello dedupe', 1)[1].split('\n## ', 1)[0]
         self.assertIn(DEDUPE, section)
         self.assertIn('after `20261105160000_peer_status_visibility.sql`', section)
+
+    def test_message_unreceipted_is_read_only_pinned_and_grants_only_authenticated(self):
+        names = [path.name for path in MIGRATIONS]
+        self.assertEqual(names[-1], UNRECEIPTED)
+        body = (SKILL / 'supabase/migrations' / UNRECEIPTED).read_text(encoding='utf-8')
+        self.assertIn('SOURCE ONLY', body)
+        self.assertIn('No required-release change', body)
+        self.assertEqual(defining('public.session_message_unreceipted('), [SKILL / 'supabase/migrations' / UNRECEIPTED])
+        for pin in ('quorum_private.session_inbox_before_updates(uuid,text)', 'quorum_private.native_session(uuid,text)',
+                    'public.session_requirements()'):
+            self.assertIn(pin, body.split('begin', 1)[0])
+        self.assertIn("raise exception 'message_unreceipted_present'", body)
+        self.assertIn("raise exception 'reviewed_dispatcher_changed: %',f", body)
+        function = body.split('$function$')[1]
+        self.assertIn('quorum_private.native_session(p_agent_id,p_session_ref)', function)
+        self.assertNotRegex(function, r'(?i)\b(insert|update|delete)\b')
+        self.assertNotIn('m.body', function)
+        self.assertIn('from public,anon,authenticated,service_role', body)
+        self.assertRegex(body, r'grant execute on function public\.session_message_unreceipted\(uuid,text,uuid\) to authenticated;')
+        # The pin is the inbox body this predicate copies, as owner maintenance recorded it.
+        maintenance = next(path for path in MIGRATIONS if path.name.endswith('_owner_update_maintenance.sql'))
+        pinned = re.search(r"session_inbox_before_updates\(uuid,text\)','([0-9a-f]{64})'", body).group(1)
+        self.assertIn("'public.session_inbox(uuid,text)','" + pinned + "'", maintenance.read_text(encoding='utf-8'))
+        guide = (SKILL / 'references/server.md').read_text(encoding='utf-8')
+        section = guide.split('## Exact unreceipted lookup', 1)[1].split('\n## ', 1)[0]
+        self.assertIn(UNRECEIPTED, section)
+        self.assertIn('after `20261106120000_hello_reconnect_dedupe.sql`', section)
 
 
 if __name__ == '__main__':

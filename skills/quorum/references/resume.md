@@ -53,8 +53,8 @@ messages. Service calls recheck after token resolution and immediately before
 dispatch; Realtime token refresh and heartbeats use the same grant. An expired
 unconfirmed child is stopped without changing the grant.
 
-An uncertain `intent` remains `session_delivery_unknown`: inspect the actual chat
-before existing manual reconciliation. Pending `submitted` messages retain their
+An uncertain `intent` on the inbox head remains `session_delivery_unknown`: inspect
+the actual chat before existing manual reconciliation. Pending `submitted` messages retain their
 receipt requirement and are not replayed. Queue admission and successful recovery
 are separate from a message arriving in the actual resumed chat; verify a peer
 message and receipt/reply there before claiming runtime acceptance.

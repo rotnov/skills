@@ -29,11 +29,11 @@ def without_client_session():
 
 
 class RequirementsApi:
-    def __init__(self): self.calls = []
+    def __init__(self): self.calls, self.inbox = [], []
     def call(self, operation, payload, request_id=None):
         if operation == 'session_requirements': return {'protocol_version':2, 'skill_version':'0.3.0'}
         self.calls.append((operation, payload))
-        if operation == 'session_inbox': return []
+        if operation == 'session_inbox': return self.inbox
         if operation == 'conversation_read': return [{'sequence': 1, 'body': 'synthetic'}]
         raise AssertionError(operation)
 
@@ -479,7 +479,7 @@ class SessionTests(unittest.TestCase):
         def run(command, **kwargs):
             seen.append(command)
             return subprocess.CompletedProcess(command,0,'queued','')
-        with patch('quorum_session.subprocess.run',side_effect=run), \
+        with patch('quorum_session.run_child',side_effect=run), \
              patch('quorum_session.shutil.which',return_value='/synthetic/codex'):
             enqueue({'session_ref':SID,'quorum':'test-local'},message,Path('/private/state'))
         self.assertEqual(seen[0][1:4],['queue','--thread',SID])
@@ -709,6 +709,7 @@ class NativeBindingTests(unittest.TestCase):
         old = self.generation()
         self.live = [old]
         self.ledger.setting('delivery:'+MID, {'state':'intent'})
+        self.api.inbox = [{'id':MID}]
         with self.assertRaisesRegex(ValueError, 'session_delivery_unknown'):
             self.dispatch('start')
         self.assert_unchanged(old)

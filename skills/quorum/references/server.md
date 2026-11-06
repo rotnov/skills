@@ -258,6 +258,23 @@ one transaction drop the new `session_heartbeat_before_status` and
 `session_health_streak` trigger and function, and drop `session_streaks` and
 `session_hello_sent`.
 
+## Exact unreceipted lookup
+
+After reviewing the source and obtaining administrator deployment authorization,
+apply
+[`20261106140000_session_message_unreceipted.sql`](../supabase/migrations/20261106140000_session_message_unreceipted.sql)
+in one transaction after `20261106120000_hello_reconnect_dedupe.sql`. It pins the
+reviewed inbox predicate, the binding check and the release, and refuses drift or
+reapplication before any change. It does not change the required release, table
+access or task authority.
+
+`session_message_unreceipted` tells the caller's own native session whether one
+exact message is still unreceipted, so `session reconcile --confirmed-absent`
+works behind a newer urgent head. It returns the message UUID and one boolean,
+never a body or sender, and writes nothing. A client on a server without it falls
+back to the inbox head and fails closed. To roll back, in one transaction drop
+`public.session_message_unreceipted(uuid,text,uuid)`.
+
 ## Hello reporting extension
 
 After reviewing the source and obtaining administrator deployment authorization,

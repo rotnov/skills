@@ -17,12 +17,14 @@ import asyncio
 import json
 import os
 from pathlib import Path
+import re
 import socket
 import stat
 import struct
 import sys
 import time
 import uuid
+from quorum_claude_pipe import DeliveryUnsent
 
 CLIENT = {'name': 'quorum-session', 'version': '1'}
 FRAME_LIMIT = 262144
@@ -33,6 +35,10 @@ PAGE_LIMIT = 100
 PAGES = 20
 #: None where the platform has no Unix-domain sockets, as on Windows builds.
 AF_UNIX = getattr(socket, 'AF_UNIX', None)
+#: JSON-RPC invalid request, the code of every refusal `turn/steer` documents.
+INVALID_REQUEST = -32600
+#: The exact server texts for the two documented failures: no active turn and a wrong expectedTurnId.
+TURN_REFUSAL = re.compile(r'no active turn to steer|expected active turn id `[^`]*` but found `[^`]*`')
 
 
 class SteerUnavailable(ValueError):
@@ -126,6 +132,7 @@ class Client:
         self.deadline = time.monotonic()+timeout
         self.ref, self.received = 0, 0
         self.connection, self.aborted = None, False
+        self.steering = False  # Set once the steering frame's write begins.
 
     async def open(self, path):
         try: from websockets.asyncio.client import connect
@@ -158,10 +165,11 @@ class Client:
     async def write(self, frame, *, ambiguous=False):
         from websockets.protocol import State
         raw = json.dumps(frame, ensure_ascii=False, separators=(',', ':'))
-        if len(raw.encode()) > FRAME_LIMIT: raise ValueError('invalid_message')
+        if len(raw.encode()) > FRAME_LIMIT: raise SteerUnavailable('frame_too_large')
         # A closed connection or an elapsed deadline means nothing was written.
         if self.connection.protocol.state is not State.OPEN: raise SteerUnavailable('daemon_closed')
         left = self.remaining()
+        self.steering = ambiguous
         try:
             # send() returns once the frame is handed to the transport and its
             # buffer has drained below the write limit; both wait under the deadline.
@@ -272,9 +280,19 @@ def not_steerable(data):
     return not_steerable(data.get('codexErrorInfo'))
 
 
+def refused(error):
+    """A completed error frame that documents no append: not steerable, no active turn, wrong turn or shutdown."""
+    data = error.get('data')
+    if not_steerable(data): return True
+    if error.get('code') != INVALID_REQUEST: return False
+    message = error.get('message')
+    return ((isinstance(data, dict) and data.get('reason') == 'serverShuttingDown')
+            or (isinstance(message, str) and TURN_REFUSAL.fullmatch(message) is not None))
+
+
 async def steer(client, record, session_ref, turn_id, message_id, text):
     if not isinstance(text, str) or not text or len(text.encode()) > 48000:
-        raise ValueError('invalid_message')
+        raise DeliveryUnsent()
     client.ref += 1
     ref = client.ref
     await client.write({'id': ref, 'method': 'turn/steer', 'params': {'threadId': session_ref,
@@ -285,7 +303,7 @@ async def steer(client, record, session_ref, turn_id, message_id, text):
     answer = frame.get('result')
     if isinstance(answer, dict) and answer.get('turnId') == turn_id: return 'submitted'
     error = frame.get('error')
-    if isinstance(error, dict) and not_steerable(error.get('data')): return 'rejected'
+    if isinstance(error, dict) and refused(error): return 'rejected'
     # Any other error is opaque. A later completion or replacement of that turn
     # does not prove the append never happened, so it is never a rejection.
     raise ValueError('session_delivery_unknown')
@@ -294,10 +312,11 @@ async def steer(client, record, session_ref, turn_id, message_id, text):
 def submit(record, message_id, build, timeout=25):
     """Steer one message into the running turn of this exact existing chat.
 
-    Returns 'submitted' or 'rejected'. Only the documented not-steerable
-    refusal is a rejection. A rejection and SteerUnavailable both prove that
-    nothing reached the chat, so the caller queues the message once. Every
-    other post-write outcome raises session_delivery_unknown for reconciliation.
+    Returns 'submitted' or 'rejected'. Only a documented no-append refusal is
+    a rejection. A rejection and SteerUnavailable both prove that nothing
+    reached the chat, so the caller queues the message once. DeliveryUnsent
+    means the prompt itself cannot be built. Every other post-write outcome
+    raises session_delivery_unknown for reconciliation.
     """
     session_ref = str(uuid.UUID(record['session_ref']))
     message_id = str(uuid.UUID(message_id))
@@ -318,5 +337,12 @@ async def exchange(path, record, session_ref, message_id, build, timeout):
         turn_id = await active_turn(client, record, session_ref)
         # Queue order is preserved whenever the chat is not inside a turn.
         if turn_id is None: raise SteerUnavailable('no_active_turn')
-        return await steer(client, record, session_ref, turn_id, message_id, build())
+        try: text = build()
+        except Exception: raise DeliveryUnsent() from None
+        return await steer(client, record, session_ref, turn_id, message_id, text)
+    except (SteerUnavailable, DeliveryUnsent): raise
+    except Exception:
+        # Only a failure once the steering write began can have reached the chat.
+        if client.steering: raise ValueError('session_delivery_unknown') from None
+        raise SteerUnavailable('invalid_daemon_response') from None
     finally: await client.close()

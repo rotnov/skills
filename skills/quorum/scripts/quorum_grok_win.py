@@ -17,6 +17,7 @@ GENERIC_RW, OPEN_EXISTING = 0x80000000 | 0x40000000, 3
 # Identification-level client: the leader may learn who we are but can never act as us.
 SQOS_IDENTIFICATION = 0x00100000 | 0x00010000
 BROKEN = (109, 232, 233)  # ERROR_BROKEN_PIPE, ERROR_NO_DATA, ERROR_PIPE_NOT_CONNECTED
+NO_DATA = 232  # A non-blocking write's "nothing accepted yet"; a real closure also fails PeekNamedPipe.
 PIPE_BUSY, PIPE_NOWAIT = 231, 1
 EPOCH = 116444736000000000  # FILETIME of 1970-01-01, in 100 ns units
 
@@ -213,11 +214,17 @@ class Pipe:
         while data:
             written = w.DWORD()
             if not kernel.WriteFile(self.handle, data, len(data), ctypes.byref(written), None):
-                raise OSError('pipe_unavailable')
+                if ctypes.get_last_error() != NO_DATA or not self.connected():
+                    raise OSError('pipe_unavailable')
+                written.value = 0
             data = data[written.value:]
             if data and not written.value:
                 if time.monotonic() >= deadline: raise TimeoutError
                 time.sleep(.01)
+
+    def connected(self):
+        ctypes, w, kernel = self.api[:3]
+        return bool(kernel.PeekNamedPipe(self.handle, None, 0, None, ctypes.byref(w.DWORD()), None))
 
     def recv(self, count):
         ctypes, w, kernel = self.api[:3]

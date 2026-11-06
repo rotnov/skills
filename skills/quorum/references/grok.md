@@ -168,8 +168,10 @@ exact-session metadata and `session/prompt` with a stable Quorum prompt ID.
 It never sends `initialize`, `session/new`, `session/load`, provider credentials,
 permission overrides or model settings. Queue admission is only `submitted`:
 the **same receiving chat** must run the envelope's `session received` command
-or reply before delivery is confirmed. Close-between-check-and-send remains
-uncertain; inspect the actual chat and ledger rather than blindly replaying.
+or reply before delivery is confirmed. A failure before the whole prompt frame is
+written is `session_delivery_unsent`. Once it is written without a queue confirmation
+the outcome stays uncertain; inspect the actual chat and ledger rather than blindly
+replaying. [Failure and recovery](sessions.md#failure-and-recovery) has both paths.
 Replies with `reply_to` are displayed and acknowledged without an answer loop.
 
 Verification: real framed local IPC fixtures cover binding, exact-session

@@ -32,6 +32,10 @@ class Api:
         if operation == 'session_requirements': return {'protocol_version':2, 'skill_version':'0.3.0'}
         if operation == 'session_inbox': return self.messages
         if operation == 'session_ack': return {'queued':True}
+        if operation == 'session_message_unreceipted':
+            return {'message_id':payload['message_id'], 'unreceipted':any(
+                item['id'] == payload['message_id'] and item['recipient_id'] == payload['agent_id']
+                for item in self.messages)}
         raise AssertionError(operation)
 
 
@@ -357,7 +361,7 @@ class ClaudeResumeTests(unittest.TestCase):
         self.assertNotIn('synthetic-token', json.dumps(result))
 
     @isolated_profiles
-    def test_absence_fails_closed_if_original_is_not_current_unreceived_inbox_head(self):
+    def test_absence_fails_closed_if_original_is_no_longer_unreceipted_for_this_agent(self):
         self.intent()
         for messages in ([], [{'id':LATER, 'recipient_id':'native-agent'}],
                          [{'id':MID, 'recipient_id':'other-agent'}]):
@@ -374,7 +378,8 @@ class ClaudeResumeTests(unittest.TestCase):
         self.addCleanup(receiver.db.close)
         call = self.api.call
         def receipt(operation, payload, request_id=None):
-            if operation == 'session_inbox': receiver.setting('delivery:'+MID, {'state':'acked'})
+            if operation == 'session_message_unreceipted':
+                receiver.setting('delivery:'+MID, {'state':'acked'})
             return call(operation, payload, request_id)
         self.api.call = receipt
         with self.assertRaisesRegex(ValueError, '^session_reconcile_denied$'): self.dispatch()

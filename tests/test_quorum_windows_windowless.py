@@ -7,7 +7,7 @@ import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 SCRIPTS = Path(__file__).resolve().parents[1] / 'skills/quorum/scripts'
 sys.path.insert(0, str(SCRIPTS))
@@ -19,6 +19,13 @@ MID = '22222222-2222-4222-8222-222222222222'
 # wait covers enqueue's owned deadline plus Python startup/scheduler margin.
 ENQUEUE_TIMEOUT = 30
 PROBE_TIMEOUT = ENQUEUE_TIMEOUT + 15
+
+
+def finished_child():
+    child = MagicMock(returncode=0)
+    child.__enter__.return_value = child
+    child.communicate.return_value = (b'', b'')
+    return child
 
 
 class WindowlessHelpersTests(unittest.TestCase):
@@ -40,25 +47,25 @@ class WindowlessHelpersTests(unittest.TestCase):
             self.assertEqual(result, {'listener_console': 0, 'acl_children': 0, 'queue_console': 0})
 
     def test_windows_codex_queue_cannot_allocate_a_console(self):
-        import quorum_session
+        import quorum_claude_pipe, quorum_session
         host = SimpleNamespace(name='nt')
-        with patch.object(quorum_session, 'os', host), \
+        with patch.object(quorum_session, 'os', host), patch.object(quorum_claude_pipe, 'os', host), \
              patch.object(subprocess, 'CREATE_NO_WINDOW', NO_WINDOW, create=True), \
              patch.object(quorum_session.shutil, 'which', return_value='synthetic-codex.exe'), \
-             patch.object(subprocess, 'run', return_value=SimpleNamespace(returncode=0)) as run:
+             patch.object(subprocess, 'Popen', return_value=finished_child()) as popen:
             quorum_session.enqueue({'session_ref': SID}, {'id': MID}, Path('/synthetic/state'))
-        self.assertEqual(run.call_args.kwargs.get('creationflags', 0), NO_WINDOW)
-        self.assertEqual(run.call_args.args[0][1:4], ['queue', '--thread', SID])
-        self.assertEqual(run.call_args.kwargs['timeout'], ENQUEUE_TIMEOUT)
+        self.assertEqual(popen.call_args.kwargs.get('creationflags', 0), NO_WINDOW)
+        self.assertEqual(popen.call_args.args[0][1:4], ['queue', '--thread', SID])
+        self.assertEqual(popen.return_value.communicate.call_args.kwargs['timeout'], ENQUEUE_TIMEOUT)
 
     def test_windows_claude_io_helper_cannot_allocate_a_console(self):
         import quorum_claude_pipe
         with patch.object(quorum_claude_pipe, 'os', SimpleNamespace(name='nt')), \
              patch.object(subprocess, 'CREATE_NO_WINDOW', NO_WINDOW, create=True), \
-             patch.object(subprocess, 'run', return_value=SimpleNamespace(returncode=0)) as run:
+             patch.object(subprocess, 'Popen', return_value=finished_child()) as popen:
             quorum_claude_pipe.submit(SID, MID, 'synthetic message')
-        self.assertEqual(run.call_args.kwargs.get('creationflags', 0), NO_WINDOW)
-        self.assertEqual(run.call_args.kwargs['timeout'], 10)
+        self.assertEqual(popen.call_args.kwargs.get('creationflags', 0), NO_WINDOW)
+        self.assertEqual(popen.return_value.communicate.call_args.kwargs['timeout'], 10)
 
 
 NEW_GROUP, DETACHED, SUSPENDED = 0x200, 0x8, 0x4

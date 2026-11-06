@@ -184,7 +184,7 @@ class WindowsBindingTests(unittest.TestCase):
             for change in ({'leader_pid': 201}, {'leader_start': TUI_START}, {'leader_pipe': 'grok-leader-0000000000000001'}):
                 with self.subTest(change=change):
                     code, leader = run({**transport, **change})
-                    self.assertEqual(code, 1)
+                    self.assertEqual(code, 2)  # Definite unsent: no leader was contacted.
                     leader.assert_not_called()
 
     @isolated_profiles

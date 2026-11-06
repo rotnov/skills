@@ -33,6 +33,8 @@ const status = '20261105160000_peer_status_visibility.sql';
 const defaultRole = '20261106100000_knowledge_member_default_role.sql';
 // Per-recipient Hello dedupe on listener reconnects inside a presence streak (#126).
 const dedupe = '20261106120000_hello_reconnect_dedupe.sql';
+// Exact unreceipted lookup behind owner-attested confirmed absence (#142).
+const unreceipted = '20261106140000_session_message_unreceipted.sql';
 // Installations that deployed native coordination before open access apply the
 // older-dated open access file late; the final session requirements must match.
 const late = name => name.endsWith('_open_access_quorums.sql');
@@ -219,7 +221,7 @@ try {
     await drifted(fn, 'reviewed_dispatcher_changed: ' + fn, [...fresh, priority], serialization, unserialized);
   }
   const portableTail = [priority, serialization, maintenance, memberAuthority];
-  const reviewedTail = [...portableTail, knowledge, wiki, hello, ttl, roles, status, defaultRole, dedupe];
+  const reviewedTail = [...portableTail, knowledge, wiki, hello, ttl, roles, status, defaultRole, dedupe, unreceipted];
   if (JSON.stringify(all.filter(name => name >= priority)) !== JSON.stringify(reviewedTail)) {
     throw new Error('unreviewed migration after the close serialization');
   }
@@ -389,6 +391,29 @@ try {
     } finally {
       await dedupeDb.exec('rollback');
       await dedupeDb.close();
+    }
+  }
+  // The exact lookup pins the inbox predicate it copies, the binding check and the release;
+  // it refuses drift or reapplication, changing nothing.
+  const noLookup = async (db, label) => {
+    const result = await db.query(`select to_regprocedure('public.session_message_unreceipted(uuid,text,uuid)') f`);
+    if (result.rows[0].f !== null) throw new Error(label + ': partial lookup apply');
+  };
+  const beforeLookup = [...beforeDedupe, dedupe];
+  await gated([...beforeLookup, unreceipted], read(migrations + unreceipted), 'message_unreceipted_present',
+    'lookup reapplied');
+  for (const fn of ['quorum_private.session_inbox_before_updates(uuid,text)',
+    'quorum_private.native_session(uuid,text)', 'public.session_requirements()']) {
+    await drifted(fn, 'reviewed_dispatcher_changed: ' + fn, beforeLookup, unreceipted, noLookup);
+  }
+  {
+    const lookupDb = await database([...beforeLookup, unreceipted]);
+    try {
+      await release(lookupDb, current);
+      await lookupDb.exec(suite('quorum_message_unreceipted_backend.sql'));
+    } finally {
+      await lookupDb.exec('rollback');
+      await lookupDb.close();
     }
   }
   // A server without project knowledge refuses the default-role migration before any change.
