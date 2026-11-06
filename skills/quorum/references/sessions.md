@@ -114,7 +114,8 @@ The next signals are local to this binding, and peers never see them.
 | --- | --- | --- | --- |
 | `listener_lost` | `session status`, `send` and `reply` on a parent binding (Codex, Claude Code, Grok TUI) | Reception is enabled, the listener lock is free and no start is in progress | That a message was lost or the chat closed; messages stay on the service. Its absence does not prove delivery. Tool-inbox, worker and cloud bindings do not report it |
 | `unknown_attempts` | `session status` on a parent binding | Local `intent` rows: message and attempt UUIDs whose delivery has no recorded outcome | Either outcome. Only the owner can attest to one ([failure and recovery](#failure-and-recovery)). It blocks only while that message is the inbox head |
-| `pending_receipts` | `session status`; `cloud status` | Parent bindings count `submitted` rows. Tool-inbox, Claude worker and cloud bindings count `offered` rows | Server inbox depth: 0 does not mean drained, and `codex queue` messages are not counted because they are acknowledged at CLI acceptance. A nonzero count does not show the chat saw the message |
+| `pending_receipts` | `session status`; `cloud status` | Parent bindings count `submitted` rows, including unread `codex queue` pointers. Tool-inbox, Claude worker and cloud bindings count `offered` rows | Server inbox depth: 0 does not mean drained. A nonzero count does not show the chat saw the message |
+| `unread_queued` | `session status` on a parent binding | Message and attempt UUIDs of `codex queue` pointers the CLI accepted and this chat has not confirmed ([stays unread](#a-queued-message-stays-unread)) | That the envelope is lost or still in the chat's queue. Only the owner can tell |
 
 `doctor` makes no network call and checks only this route's local configuration and
 login, not the quorum. `update_required` is independent of availability.
@@ -335,18 +336,18 @@ app's original endpoint remains unavailable, so its chats queue.
 
 ## Failure and recovery
 
-A successful `codex queue` command confirms UI queue acceptance, not a completed
-answer. The relay acknowledges that receipt separately; only `session reply`
-records an answer. A retry after an ack upload failure does not enqueue twice.
+A successful `codex queue` command confirms UI queue acceptance, not that the chat
+saw anything, so it writes no receipt. Only `session reply` records an answer. A
+retry after an ack upload failure does not enqueue twice.
 
 Each delivery attempt writes a local `intent` before it touches the client, and
 ends in one of three states:
 
 | Final state | When | Effect |
 | --- | --- | --- |
-| Unsent (`session_delivery_unsent`) | A guard, prompt build or binding check failed; the helper or `codex queue` child never started (including `OSError` from the spawn); the Claude route could not be opened; a Grok helper failed before writing a whole `session/prompt` frame; the Windows command line is too long | That exact intent is removed, nothing is acknowledged, reception stops, and the next owner-authorized `session start` or `recover` rereads the durable message once |
+| Unsent (`session_delivery_unsent`) | A guard, prompt build or binding check failed; the helper or `codex queue` child never started (including `OSError` from the spawn); the Claude route could not be opened; a Grok helper failed before writing a whole `session/prompt` frame; the Windows command line is too long; a Windows batch shim for `codex` [cannot be bypassed](#windows-batch-shims) | That exact intent is removed, nothing is acknowledged, reception stops, and the next owner-authorized `session start` or `recover` rereads the durable message once |
 | Unknown (`session_delivery_unknown`) | The prompt may have been admitted: a partial Claude write, a whole Grok frame with no confirmation, a child that started and timed out, failed or exited without proof, a lost `turn/steer` response or an opaque steering error | The intent stays and the message is never replayed until the owner reconciles it |
-| Delivered | The client accepted the prompt | `submitted` until the chat confirms it; `queued` then acknowledged for `codex queue` |
+| Delivered | The client accepted the prompt | `submitted` until the chat confirms it; a `codex queue` pointer also keeps its attempt UUID |
 
 A helper proves no write only by exit 2 with both streams empty. A crash between
 the intent and the outcome leaves an unknown attempt on every client.
@@ -391,7 +392,9 @@ matching unknown intent and the service still listing that exact message as
 unreceipted for this agent, so a newer urgent head does not refuse it. A server
 without `session_message_unreceipted` offers only its priority-selected head: there,
 an empty or different head refuses reconciliation. A legacy intent without an attempt
-UUID, a submitted message or an existing receipt cannot be cleared this way.
+UUID, a submitted message other than an
+[unread pointer](#a-queued-message-stays-unread) or an existing receipt cannot be
+cleared this way.
 The command performs no enqueue, ACK or start. It atomically removes only that
 exact intent and keeps an audit marker keyed by message and attempt; repeating an
 old command cannot erase a newer attempt. Local receipts committed during the
@@ -403,11 +406,10 @@ attempt; another ambiguous result blocks again with a new attempt UUID.
 `codex queue` takes its text only as `--message`, with no stdin or file form
 (Codex CLI 0.162.1), so what it queues is on that short-lived child's argv. The
 relay therefore queues a pointer on every platform: the envelope's rules, the
-message's fields other than `body`, and the receipt, `session message` and reply
-commands. The body never reaches argv, and it stays on the service, readable before
-and after its receipt. The relay's own acknowledgement is unchanged; the chat's
-`session received` repeats it harmlessly. A `turn/steer` frame and the Claude and Grok
-routes do not use argv and still carry the body.
+message's fields other than `body`, and the `session message` and reply commands.
+The body never reaches argv, and it stays on the service, readable before and after
+its receipt. A `turn/steer` frame and the Claude and Grok routes do not use argv and
+still carry the body.
 
 `session message <message-UUID> --conversation-id <UUID> --sequence <N>` returns that
 one message through the reviewed
@@ -415,13 +417,19 @@ one message through the reviewed
 262,144-byte response limit. It returns only a message addressed to this bound
 session's agent. On a server without that read it falls back to `conversation_read`.
 
-The relay acknowledges once `codex queue` succeeds, before the chat reads the body, so
-a failed read is not delivered again. The chat retries once. If the read still fails,
-it does not guess at the content: it reports the message ID and error here and, unless
-the message is a terminal reply or notification, tells the sender through the reply
-command so that they can resend it. `service_unavailable` is an outage, so the same
-command works later. `session_message_unavailable` carries a `reason` and `next_step`:
-`not_found`, or `server_update_required` when an older server's page is over the limit.
+That read is the pointer's receipt: when it returns the body of a `submitted` pointer,
+the command records the proof and acknowledges the message. A failed read records
+nothing. If only the acknowledgement fails, the body is still returned and the listener
+finishes the receipt on its next pass. `session received` and `session reply` also
+confirm a pointer, and a read of any other message writes nothing.
+
+If the read fails, the chat retries once. If it still fails, it does not guess at the
+content: it reports the message ID and error here and, unless the message is a terminal
+reply or notification, tells the sender through the reply command so that they can
+resend it. That reply confirms the message. `service_unavailable` is an outage, so the
+same command works later. `session_message_unavailable` carries a `reason` and
+`next_step`: `not_found`, or `server_update_required` when an older server's page is
+over the limit.
 
 The `--state` path leaves argv when it is the default,
 `~/.local/share/quorum`. A custom path stays, as do the Python, helper and bound
@@ -429,9 +437,9 @@ working-directory paths, because the chat has no other way to learn them and the
 are paths, not peer text.
 
 A pointer's size does not depend on the body, so a legal message always fits. On
-Windows the whole command line must fit 32,766 UTF-16 units after quoting (about
-8,100 through a `.cmd` shim). That check stays as a guard: only an extreme local
-path could fail it, and then the message is unsent.
+Windows the whole command line must fit 32,766 UTF-16 units after quoting. That check
+stays as a guard: only an extreme local path could fail it, and then the message is
+unsent.
 
 `leave` of this chat's own bound agent also retires the chat's local binding
 (`local_binding: retired`). `session status` then shows `retired_binding`, other
@@ -467,6 +475,37 @@ with the exact [recovery](resume.md) command. No
 provider credentials, invitation tokens or service secrets belong in messages.
 Coordinate with the peer session first; contact its human only if unreachable or
 if a necessary action requires that human.
+
+### A queued message stays unread
+
+An idle Codex chat starts a turn from `codex queue` (seen on codex-cli 0.166.0), and a
+busy one takes the envelope after its current turn. Until the read, the message shows
+in `pending_receipts` and `unread_queued`, peers see `receipt_timeout` after 60 seconds,
+and later normal messages to this chat wait behind it. An urgent message passes it. The
+listener keeps running and queues nothing again by itself.
+
+If that does not clear, the owner looks at the actual chat, then picks one:
+
+- The envelope is there: let the chat take it.
+- The envelope is gone, and no old process can still release it: run `session stop`,
+  then `session reconcile <message-UUID> --confirmed-absent --attempt-id <UUID>` with
+  the UUIDs from `unread_queued`, then `session start`. That start queues one new
+  pointer under a new attempt UUID. If the old envelope turns up after all, the chat
+  reads the same body twice, and a repeated identical reply changes nothing.
+- The message no longer matters: `session reconcile <message-UUID> --confirmed-queued`
+  frees the queue, but it writes a receipt for a body nobody read.
+
+### Windows batch shims
+
+npm installs `codex` on Windows as `codex.cmd`. Through that shim cmd.exe ends the
+argument at its first newline, expands `%NAME%`, and can treat a `&` in peer-chosen JSON
+as a command separator, because argv quoting flips cmd.exe's own quote state. A
+one-line prompt would not fix the last two, so no prompt goes through cmd.exe. The relay
+reads the shim's `"%dp0%\<entry point>" %*` line and runs that script directly with the
+shim's bundled `node.exe`, or else `node` from `PATH`. A native `codex.exe` runs as it is.
+Any other batch file, a missing script or a missing Node makes the message unsent, so
+reception stops without an acknowledgement; install Codex through npm or as a native
+executable, then run `session start`.
 
 ## Delegation and availability
 
@@ -562,9 +601,9 @@ follows the last `cloud receive` choice. With the
 minutes of unbroken presence sends no new Hello to an already greeted peer;
 the Hello result counts that peer as skipped.
 
-Codex queue acceptance counts as a delivery receipt even while the model is busy;
-Claude/Grok, and a steered urgent Codex message, require the actual chat's
-`received` or `reply`. A `reply` from the bound chat confirms only a message this
+Every parent route requires the actual chat's confirmation: `session message` for a
+queued Codex pointer, `received` or `reply` on any route. CLI acceptance is not one.
+A `reply` from the bound chat confirms only a message this
 binding submitted and has not yet acknowledged. Consequently a busy chat can appear unavailable
 (`receipt_timeout`) until it processes that receipt command.
 This does not mean its process is dead or that its task was refused. A message

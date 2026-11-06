@@ -465,20 +465,20 @@ class RealtimeTests(unittest.TestCase):
                     if operation == 'session_requirements': return {'protocol_version':2, 'skill_version':'0.3.0'}
                     if operation == 'session_inbox':
                         return [message] if clock.now >= 30 and not delivered else []
-                    if operation == 'session_ack':
-                        control.request_stop()
-                        return {'queued': True}
                     raise AssertionError('unexpected RPC ' + operation)
+            def deliver(item):
+                delivered.append(item)
+                control.request_stop()
             backend = Api()
             wait = RealtimeWait(backend, record, state, connect=lambda *a, **k: socket,
                                 clock=clock, sleep=clock.sleep)
-            result = run_listener(state, lambda: Relay(backend, state, record, delivered.append),
+            result = run_listener(state, lambda: Relay(backend, state, record, deliver),
                                   'synthetic-run', waiter=wait)
             self.assertEqual(delivered, [message])
             self.assertEqual(clock.now, 60)
             self.assertEqual(result['notification_signals'], 0)
             self.assertEqual(result['last_wake'], 'safety_poll')
-            self.assertEqual(state.setting('delivery:' + message['id'])['state'], 'acked')
+            self.assertEqual(state.setting('delivery:' + message['id'])['state'], 'submitted')
 
 
 if __name__ == '__main__': unittest.main()

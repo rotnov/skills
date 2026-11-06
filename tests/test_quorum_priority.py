@@ -66,7 +66,7 @@ class PriorityTests(unittest.TestCase):
              patch('quorum_session.shutil.which', return_value='/synthetic/codex'), \
              patch('quorum_codex_steer.submit', side_effect=AssertionError('steered a normal message')), \
              patch.dict(os.environ, {'CODEX_THREAD_ID': SID}):
-            self.assertIsNone(enqueue(record, message, Path('/private/state')))
+            self.assertEqual(enqueue(record, message, Path('/private/state')), 'pointer')
         self.assertEqual(len(seen), 1)
         self.assertNotIn('urgent', seen[0][-1])
 
@@ -118,13 +118,13 @@ class PriorityTests(unittest.TestCase):
                      patch('quorum_session.shutil.which', return_value='/synthetic/codex'), \
                      patch('quorum_codex_steer.submit', side_effect=steer), \
                      patch.dict(os.environ, {'CODEX_THREAD_ID': SID}):
-                    self.assertIsNone(enqueue(record, message, Path('/private/state')))
+                    self.assertEqual(enqueue(record, message, Path('/private/state')), 'pointer')
                 self.assertEqual(len(seen), 1)
                 self.assertEqual(seen[0][1:4], ['queue', '--thread', SID])
                 prompt = seen[0][-1]
                 self.assertIn('queued in order and is', prompt)
                 self.assertNotIn('steered into the turn', prompt)
-                self.assertIn('receipt command', prompt)
+                self.assertIn('read it with this command', prompt)
 
     @isolated_profiles
     def test_an_ambiguous_steer_never_queues_a_duplicate_fallback(self):
