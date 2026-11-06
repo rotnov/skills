@@ -121,6 +121,13 @@ def main(argv=None):
             from quorum_release import installed_release
             print(json.dumps({'ok':True, 'code':'ok', 'data':installed_release()}))
             return 0
+        if args.command == 'doctor':
+            # The participant's actual route decides health; the default ACP worker gate stays reported.
+            # Before the ledger exists: doctor reads state read-only and offline, and never creates it.
+            from quorum_doctor import diagnose
+            ok, code, exit_code, value = diagnose(args.state.expanduser().absolute(), args.route)
+            print(json.dumps({'ok': ok, 'code': code, 'data': value}))
+            return exit_code
         if getattr(args, 'worker_capability', None) is not None or args.command == 'session':
             import quorum_claude_worker as claude_worker
             # A Claude worker route validates its capability and arguments before the root ledger exists.
@@ -173,12 +180,6 @@ def main(argv=None):
             from quorum_profiles import resolve_profile
             value = create_worker(args, args.worker_context, resolve_profile,
                                   lambda config, store: QuorumApi(config, token_provider(config, store)))
-        elif args.command == 'doctor':
-            # The participant's actual route decides health; the default ACP worker gate stays reported.
-            from quorum_doctor import diagnose
-            ok, code, exit_code, value = diagnose(ledger.root, args.route)
-            print(json.dumps({'ok': ok, 'code': code, 'data': value}))
-            return exit_code
         else:
             from quorum_profiles import resolve_profile, ensure_login, auth_lock
             # Only explicit login may refresh an older state's own token family.

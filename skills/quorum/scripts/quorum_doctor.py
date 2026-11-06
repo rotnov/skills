@@ -1,7 +1,8 @@
 """Route-aware health check: is this participant's actual Quorum route usable?
 
 It reuses the `capabilities` route detection, checks only what that route needs locally (service
-configuration and a stored login, never their values), makes no network call and starts nothing.
+configuration and a stored login, never their values), reads state without writing it, makes no
+network call and starts nothing.
 The default ACP worker and Codex runner gate is reported as informational `pilot_gate` unless the
 explicit `acp-worker` route is checked; the gate itself is never relaxed here.
 """
@@ -56,20 +57,16 @@ def diagnose(state, route=None, environ=None):
     if route in GATED_ROUTES:
         # The explicit default worker route is the one the gate blocks; report it as the failure.
         return fail(gate)
-    from quorum_profiles import auth_lock, resolve_profile
+    # Read-only and offline: never resolve_profile, which may adopt, verify at Auth, refresh or bind.
+    from quorum_profiles import inspect_profile
     try:
-        config, store = resolve_profile(state)
-    except (QuorumError, ValueError) as error:
-        data['checks']['service'] = 'failed'
-        return fail(_code(error))
-    data['checks']['service'] = 'configured'
-    try:
-        with auth_lock(store):
-            present = store.load(config.origin) is not None
-    except (QuorumError, ValueError) as error:
-        data['checks']['login'] = 'failed'
-        return fail(_code(error))
-    data['checks']['login'] = 'present' if present else 'missing'
-    if not present:
+        profile = inspect_profile(state)
+    except (QuorumError, ValueError, TypeError) as error:
+        code = _code(error)
+        data['checks']['service' if code.startswith('service_') else 'login'] = 'failed'
+        return fail(code)
+    data['checks'].update(profile)
+    if profile['login'] == 'missing':
         return fail('auth_required')
+    # A legacy login awaiting its one-time Auth binding is verified by the next real command, not here.
     return True, 'ok', 0, data

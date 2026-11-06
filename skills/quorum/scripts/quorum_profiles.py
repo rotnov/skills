@@ -78,24 +78,30 @@ def github_identity(session):
     return ids.pop()
 
 
+def parse_registry(raw):
+    data = {} if raw is None else json.loads(raw)
+    if not isinstance(data, dict): raise ValueError('invalid_profile_registry')
+    for origin, record in data.items():
+        if not isinstance(record, dict) or set(record) != {'publishable_key', 'credential_root', 'github_id'}:
+            raise ValueError('invalid_profile_registry')
+        ServiceConfig(origin, record['publishable_key'])
+        if record['github_id'] is not None and (not isinstance(record['github_id'], str) or not record['github_id'].isdigit()):
+            raise ValueError('invalid_profile_registry')
+    return data
+
+
+def profiles_root():
+    configured = os.environ.get('QUORUM_PROFILE_ROOT')
+    return Path(configured) if configured else Path.home() / '.local/share/quorum/machine-profiles'
+
+
 class MachineProfiles:
     def __init__(self):
-        configured = os.environ.get('QUORUM_PROFILE_ROOT')
-        self.root = private_directory(Path(configured) if configured else
-                                      Path.home() / '.local/share/quorum/machine-profiles', create=True)
+        self.root = private_directory(profiles_root(), create=True)
         self.files = FileCredentials(self.root)
 
     def read(self):
-        raw = self.files.read('registry')
-        data = {} if raw is None else json.loads(raw)
-        if not isinstance(data, dict): raise ValueError('invalid_profile_registry')
-        for origin, record in data.items():
-            if not isinstance(record, dict) or set(record) != {'publishable_key', 'credential_root', 'github_id'}:
-                raise ValueError('invalid_profile_registry')
-            ServiceConfig(origin, record['publishable_key'])
-            if record['github_id'] is not None and (not isinstance(record['github_id'], str) or not record['github_id'].isdigit()):
-                raise ValueError('invalid_profile_registry')
-        return data
+        return parse_registry(self.files.read('registry'))
 
     def write(self, records):
         self.files.write('registry', json.dumps(records).encode())
@@ -389,6 +395,116 @@ def resolve_profile(state, explicit=None, *, anonymous=False, refresh_legacy=Fal
         # Anonymous states return before any legacy binding, so never get here.
         verify_legacy_principal(pending, refresh_legacy)
         return _resolve_profile(state, explicit, anonymous)
+
+
+def _existing_directory(path):
+    """The private directory if it exists, else None; never creates, protects or cleans anything."""
+    path = Path(path)
+    if not path.is_absolute() or '..' in path.parts:
+        raise ValueError('unsafe_profile_directory')
+    for component in [*reversed(path.parents), path]:
+        reject_link(component)
+    if not path.exists(): return None
+    if not path.is_dir(): raise ValueError('machine_profile_unavailable')
+    info = path.stat()
+    if os.name != 'nt' and (info.st_uid != os.getuid() or info.st_mode & 0o077):
+        raise ValueError('unsafe_profile_directory')
+    return path
+
+
+def _read_only(path, limit=FileCredentials.limit):
+    """A private file's bytes or None, opened read-only; never removes temporaries or changes its ACL."""
+    reject_link(path)
+    try:
+        fd = open_private(path, os.O_RDONLY | getattr(os, 'O_NONBLOCK', 0))
+    except FileNotFoundError:
+        return None
+    with os.fdopen(fd, 'rb') as source:
+        FileCredentials._check(os.fstat(source.fileno()))
+        raw = source.read(limit + 1)
+    if len(raw) > limit: raise ValueError('unsafe_config_file')
+    return raw
+
+
+def _stored_session(root, profile):
+    """A validated stored login or None, read where FileCredentials keeps it; for presence checks only."""
+    if root is None: return None
+    raw = _read_only(root / (hashlib.sha256(profile.encode()).hexdigest() + '.json'))
+    if raw is None: return None
+    try:
+        session = json.loads(raw)
+        CredentialStore._validate(session)
+    except ValueError:
+        raise ValueError('credential_store_unavailable') from None
+    return session
+
+
+def inspect_profile(state):
+    """Non-verifying, read-only counterpart of resolve_profile for health checks.
+
+    It follows the same resolution decisions but takes no lock file, adopts no registry record,
+    publishes no config, contacts no Auth server, refreshes no token and writes no binding. A
+    legacy login that resolve_profile would first verify at the Auth server is reported as
+    `pending_binding_verification`. Returns {'service': 'configured', 'login': <state>} with
+    login `present`, `missing` or `pending_binding_verification`, or raises the resolution code.
+    """
+    state = _existing_directory(state)
+    saved = None
+    if state is not None:
+        raw = _read_only(state / 'config.json', 16384)
+        saved = None if raw is None else ServiceConfig(**json.loads(raw))
+        anonymous = _existing_directory(state / 'anonymous-credentials')
+        if anonymous is not None:
+            if saved is None: raise QuorumError('service_not_configured')
+            present = _stored_session(anonymous, saved.origin) is not None
+            return {'service': 'configured', 'login': 'present' if present else 'missing'}
+    profiles = _existing_directory(profiles_root())
+    records = parse_registry(None if profiles is None else _read_only(
+        profiles / (hashlib.sha256(b'registry').hexdigest() + '.json')))
+    config = saved
+    if config is None:
+        if not records: raise QuorumError('service_not_configured')
+        if len(records) != 1: raise ValueError('service_profile_ambiguous')
+        origin, record = next(iter(records.items()))
+        config = ServiceConfig(origin, record['publishable_key'])
+    if any(origin != config.origin and origin_identity(origin) == origin_identity(config.origin)
+           for origin in records):
+        raise ValueError('service_config_conflict')
+    record = records.get(config.origin)
+    if record is not None and record['publishable_key'] != config.publishable_key:
+        raise ValueError('service_config_conflict')
+    legacy_root = None if state is None else _existing_directory(state / 'credentials')
+    legacy = _stored_session(legacy_root, config.origin)
+    if record is None:
+        # First real use adopts this state's own login in place, or starts a new machine login.
+        return {'service': 'configured', 'login': 'present' if legacy else 'missing'}
+    machine = _stored_session(_existing_directory(record['credential_root']), config.origin)
+    if machine is not None and record['github_id'] not in (None, github_identity(machine)):
+        raise ValueError('auth_profile_conflict')
+    login = 'present' if machine is not None else 'missing'
+    conflict = lambda reason: AuthProfileConflict(reason, state / 'credentials', record['credential_root'])
+    if legacy is not None:
+        if record['github_id'] is None: raise conflict('machine_login_missing')
+        try:
+            claimed = github_identity(legacy)
+        except ValueError:
+            claimed = None
+        if claimed not in (None, record['github_id']): raise conflict('different_principal')
+    raw = None if state is None else _read_only(state / 'auth-binding.json', 16384)
+    if raw is None:
+        return {'service': 'configured', 'login': login if legacy is None else 'pending_binding_verification'}
+    binding = json.loads(raw)
+    expected = binding_for(config, record, None)
+    if (not isinstance(binding, dict) or not set(binding) <= set(expected)
+            or any(binding.get(key) != expected[key] for key in ('origin', 'credential_root', 'github_id'))):
+        raise conflict('binding_mismatch')
+    principal = binding.get('auth_user_id')
+    if (not isinstance(principal, str) or not principal
+            or auth_user_id(legacy) not in (None, principal)
+            or (machine is not None and auth_user_id(machine) != principal)):
+        if legacy is None: raise conflict('bound_principal_unverifiable')
+        return {'service': 'configured', 'login': 'pending_binding_verification'}
+    return {'service': 'configured', 'login': login}
 
 
 def _resolve_profile(state, explicit, anonymous):

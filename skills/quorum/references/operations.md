@@ -23,8 +23,10 @@ not a working cross-machine connection. No worker or model starts from join.
 
 `status` works without service credentials. `doctor [--route <route>]` checks
 the participant's actual route, detected like `capabilities`: the route itself,
-the service configuration and a stored login, offline and without printing
-values. A healthy route returns `ok: true` even while the default ACP worker gate
+the service configuration and a stored login. It is offline and read-only: it
+prints no values, refreshes no token and writes no state. A legacy login whose
+machine binding the next command verifies reports `pending_binding_verification`.
+A healthy route returns `ok: true` even while the default ACP worker gate
 stands; `pilot_gate` reports that gate's `state` (for example
 `engine_acceptance_pending`), `applies_to` and whether it `applies`. Only
 `--route acp-worker`, the default worker and Codex runner, fails on the gate.
