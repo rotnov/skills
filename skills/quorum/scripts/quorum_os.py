@@ -4,6 +4,14 @@ from pathlib import Path
 
 FILE_ALL_ACCESS = 0x1F01FF
 READ_CONTROL, WRITE_DAC, WRITE_OWNER = 0x00020000, 0x00040000, 0x00080000
+GENERIC_READ, GENERIC_WRITE = 0x80000000, 0x40000000
+# Append-only: without FILE_WRITE_DATA the kernel writes every byte at the current end of file.
+FILE_APPEND_DATA, FILE_READ_ATTRIBUTES, SYNCHRONIZE = 0x4, 0x80, 0x00100000
+APPEND_ACCESS = FILE_APPEND_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE
+# FILE_SHARE_READ | FILE_SHARE_WRITE, then with FILE_SHARE_DELETE. Share delete is what lets another
+# opener rename or delete a name while this handle is open. It does not help `os.replace` onto that
+# name: MoveFileEx refuses an open target with ERROR_ACCESS_DENIED under any share mode.
+SHARE_READ_WRITE, SHARE_ALL = 3, 7
 
 
 class AnchoredPath(type(Path())):
@@ -176,8 +184,27 @@ def background_flags(extra=0):
     return {'creationflags': subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP | extra}
 
 
-def open_private(path, flags, mode=0o600):
-    """Open the link itself on Windows, then reject reparse points before use."""
+def windows_open_request(flags):
+    """(desired access, creation disposition) for `flags`; pure, so every host can test it.
+
+    SetEndOfFile needs FILE_WRITE_DATA, which an append-only handle must not have, so O_APPEND with
+    O_TRUNC is refused rather than silently widened.
+    """
+    if flags & os.O_APPEND and flags & (os.O_RDWR | os.O_WRONLY):
+        if flags & os.O_TRUNC: raise ValueError('unsupported_open_flags')
+        access = APPEND_ACCESS | (GENERIC_READ if flags & os.O_RDWR else 0)
+    elif flags & os.O_RDWR: access = GENERIC_READ | GENERIC_WRITE
+    elif flags & os.O_WRONLY: access = GENERIC_WRITE
+    else: access = GENERIC_READ
+    return access, 1 if flags & os.O_EXCL else (4 if flags & os.O_CREAT else 3)
+
+
+def open_private(path, flags, mode=0o600, *, share=SHARE_ALL):
+    """Open the link itself on Windows, then reject reparse points before use.
+
+    `share` is the Windows share mode. The default keeps a short-lived read or append from blocking
+    a rename or delete of that file; a handle that must pin its name passes SHARE_READ_WRITE.
+    """
     reject_link(path)
     if os.name != 'nt':
         child = path.anchored_child() if isinstance(path, AnchoredPath) else None
@@ -192,11 +219,8 @@ def open_private(path, flags, mode=0o600):
     kernel.CreateFileW.restype = wintypes.HANDLE
     kernel.CloseHandle.argtypes = [wintypes.HANDLE]
     kernel.GetFileInformationByHandleEx.argtypes = [wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD]
-    access = 0x80000000
-    if flags & os.O_RDWR: access |= 0x40000000
-    elif flags & os.O_WRONLY: access = 0x40000000
-    creation = 1 if flags & os.O_EXCL else (4 if flags & os.O_CREAT else 3)
-    handle = kernel.CreateFileW(str(Path(path)), access, 7, None, creation, 0x00200080, None)
+    access, creation = windows_open_request(flags)
+    handle = kernel.CreateFileW(str(Path(path)), access, share, None, creation, 0x00200080, None)
     if handle == ctypes.c_void_p(-1).value:
         code = ctypes.get_last_error()
         if code in (2, 3): raise FileNotFoundError(str(path))
@@ -221,9 +245,10 @@ def open_private(path, flags, mode=0o600):
 
 
 class FileLock:
+    """Exclusive advisory lock. On Windows a held lock's name cannot be renamed, replaced or deleted."""
     def __init__(self, path): self.path = path if isinstance(path, Path) else Path(path)
     def __enter__(self):
-        self.fd = open_private(self.path, os.O_CREAT | os.O_RDWR)
+        self.fd = open_private(self.path, os.O_CREAT | os.O_RDWR, share=SHARE_READ_WRITE)
         try:
             if os.name == 'nt':
                 import msvcrt

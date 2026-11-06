@@ -261,17 +261,35 @@ class HeadOnlyBlockingTests(Harness):
                 with self.ledger.db: self.ledger.db.execute("delete from settings where key like 'delivery:%'")
 
     def test_a_stuck_attempt_behind_an_urgent_head_does_not_block_rebinding(self):
-        from quorum_listener import Control
+        from quorum_listener import Control, StartGuard
         from quorum_session import rebind
         self.bind('grok')
         self.intent()
         api = Api(message(URGENT, priority='urgent'), message())
         inbox = lambda: api.call('session_inbox', {})
-        rebind(self.ledger, Control(self.ledger), SID, {'leader_socket':'/new'}, inbox=inbox, engine='grok')
-        self.assertEqual(self.ledger.setting('session-agent')['grok_transport'], {'leader_socket':'/new'})
-        api.messages = [message()]
-        with self.assertRaisesRegex(ValueError, '^session_delivery_unknown$'):
-            rebind(self.ledger, Control(self.ledger), SID, {'leader_socket':'/next'}, inbox=inbox, engine='grok')
+        with StartGuard(self.ledger) as guard:
+            rebind(self.ledger, Control(self.ledger), SID, {'leader_socket':'/new'}, guard, inbox=inbox, engine='grok')
+            self.assertEqual(self.ledger.setting('session-agent')['grok_transport'], {'leader_socket':'/new'})
+            api.messages = [message()]
+            with self.assertRaisesRegex(ValueError, '^session_delivery_unknown$'):
+                rebind(self.ledger, Control(self.ledger), SID, {'leader_socket':'/next'}, guard, inbox=inbox,
+                       engine='grok')
+
+    def test_a_stop_during_the_head_read_wins_before_the_listener_is_disturbed(self):
+        from quorum_listener import Control, STOP_INTENT, StartGuard
+        from quorum_session import rebind
+        record = self.bind('grok')
+        control = Control(self.ledger)
+        api = Api()
+        def stopped_meanwhile():
+            self.ledger.setting(STOP_INTENT, {'generation':1})
+            return api.call('session_inbox', {})
+        with StartGuard(self.ledger) as guard, patch.object(control, 'request_stop') as request_stop:
+            with self.assertRaisesRegex(ValueError, '^listener_start_stopped$'):
+                rebind(self.ledger, control, SID, {'leader_socket':'/new'}, guard, inbox=stopped_meanwhile,
+                       engine='grok', authorize=guard.check)
+        request_stop.assert_not_called()
+        self.assertEqual(self.ledger.setting('session-agent'), record)
 
 
 class ConfirmedAbsentTests(Harness):

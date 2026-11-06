@@ -84,7 +84,7 @@ def safe_root(root):
 
 def configure(ledger, values):
     """Store the owner-supplied {url,key}; return only nonsecret diagnostics."""
-    from quorum_listener import locked
+    from quorum_listener import START_LOCK, locked
     if not isinstance(values, dict) or set(values) != {'url', 'key'}: raise invalid()
     target = WebhookTarget(values['url'], values['key'])
     root = safe_root(ledger.root)
@@ -95,7 +95,7 @@ def configure(ledger, values):
         if str(error) == 'worker_already_running': raise ValueError('cloud_relay_running') from None
         raise invalid() from None
     try:
-        if locked(root / 'listener.lock'): raise ValueError('cloud_relay_running')
+        if locked(root / START_LOCK) or locked(root / 'listener.lock'): raise ValueError('cloud_relay_running')
         write_private(root, data)
     finally: control.__exit__()
     return {'webhook':'configured', 'provider':'grok-bot', 'auth':'bearer'}

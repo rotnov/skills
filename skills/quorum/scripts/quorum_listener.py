@@ -1,4 +1,5 @@
 """Explicit continuous Claude listener; no automatic service or login installation."""
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
@@ -15,6 +16,14 @@ from quorum_release import ReleaseGuard, ReleaseMismatch, installed_release
 LIVE_STATES = ('starting', 'waiting', 'checking', 'degraded')
 # Outage backoff in seconds after consecutive failures, capped; the run itself has no deadline.
 RETRY_DELAYS = (10, 20, 40, 60)
+# listener-control.lock guards short ledger transitions only. listener-start.lock serializes one whole
+# start, RPCs and waits included, and is never taken by a stop. Waiting order: start, control, supervisor,
+# listener. StartGuard alone takes start under control, but never waits for it, so no cycle exists.
+START_LOCK = 'listener-start.lock'
+# Replaced by every owner stop, including one with no run to target yet; a start compares it to its snapshot.
+STOP_INTENT = 'listener-stop-intent'
+CONTROL_SECONDS, STOP_SECONDS, READY_SECONDS = 10, 120, 90
+UPSERT = 'insert into settings values (?,?) on conflict(key) do update set data=excluded.data'
 
 
 def locked(path):
@@ -24,6 +33,55 @@ def locked(path):
     except ValueError as error:
         if str(error) == 'worker_already_running': return True
         raise
+
+
+@contextmanager
+def control_lock(ledger, *, seconds=None):
+    """Short lifecycle transitions only; never held through an RPC or a wait."""
+    deadline = time.monotonic() + (CONTROL_SECONDS if seconds is None else seconds)
+    while True:
+        guard = FileLock(ledger.root / 'listener-control.lock')
+        try:
+            guard.__enter__()
+            break
+        except ValueError as error:
+            if str(error) != 'worker_already_running' or time.monotonic() >= deadline: raise
+            time.sleep(.1)
+    try: yield
+    finally: guard.__exit__()
+
+
+class StartGuard:
+    """One start attempt: excludes other starts for its whole length and yields to any owner stop.
+
+    Every step that a stop must win against runs in `section`, which rechecks the stop intent under
+    the control lock. A stop therefore lands either before that step, which then never happens, or
+    after it, when the stop's own writes already name the published run.
+    """
+    def __init__(self, ledger):
+        self.ledger, self.lock = ledger, FileLock(ledger.root / START_LOCK)
+
+    def __enter__(self):
+        # Atomic with a stop: once this start holds its lock, every later stop differs from `intent`.
+        with control_lock(self.ledger):
+            self.lock.__enter__()
+            try: self.intent = self.ledger.setting(STOP_INTENT)
+            except BaseException:
+                self.lock.__exit__()
+                raise
+        return self
+
+    def __exit__(self, *_):
+        self.lock.__exit__()
+
+    def check(self):
+        if self.ledger.setting(STOP_INTENT) != self.intent: raise ValueError('listener_start_stopped')
+
+    @contextmanager
+    def section(self):
+        with control_lock(self.ledger):
+            self.check()
+            yield
 
 
 class Control:
@@ -62,7 +120,9 @@ class Control:
         """Mark a live run lost only when no start/stop transition is in progress."""
         def lost():
             current = self.ledger.setting('listener') or {}
+            # A start publishes its run before its child can take listener.lock.
             if (current.get('run_id') == record.get('run_id') and current.get('state') in LIVE_STATES
+                    and not locked(self.ledger.root / START_LOCK)
                     and not locked(self.ledger.root / 'listener.lock')):
                 self.mark_lost(current['run_id'])
         if self.holding_control: return lost()
@@ -131,6 +191,21 @@ class Control:
         record = self.ledger.setting('listener') or {}
         selected = run_id or record.get('run_id')
         if selected: self.ledger.setting('listener-stop', {'run_id': selected})
+        return self.status()
+
+    def stop_rows(self):
+        """Settings rows of one owner stop: a new intent for any start and the published run's stop flag."""
+        rows = {STOP_INTENT: str(uuid.uuid4())}
+        run_id = (self.ledger.setting('listener') or {}).get('run_id')
+        if run_id: rows['listener-stop'] = {'run_id': run_id}
+        return [(key, json.dumps(value)) for key, value in rows.items()]
+
+    def owner_stop(self, *, revoke_reception=False):
+        """One transaction, so no crash can leave reception revoked without the stop flag."""
+        rows = self.stop_rows()
+        # An owner stop wins even if the listener itself has already exited.
+        if revoke_reception: rows.append(('session-reception', json.dumps({'enabled': False})))
+        with self.ledger.db: self.ledger.db.executemany(UPSERT, rows)
         return self.status()
 
 
@@ -231,6 +306,39 @@ def run_listener(ledger, make_worker, run_id, *, sleep=time.sleep, stop_event=No
     return control.status()
 
 
+def ready(status):
+    return status['listener'] == 'running' and status['state'] in ('waiting', 'checking') and not status['stop_requested']
+
+
+def await_started(control, guard, run_id, child, *, check=None, commit=None, seconds=READY_SECONDS):
+    """The owned child's ready status, or None once it failed and was abandoned.
+
+    `commit` runs in the guard's section, so a stop either precedes it or sees what it wrote. Any
+    refusal, an owner stop included, abandons the child: it never stays up unconfirmed.
+    """
+    check = check or guard.check
+    deadline = time.monotonic() + seconds
+    try:
+        while time.monotonic() < deadline:
+            check()
+            status = control.status()
+            if status.get('run_id') == run_id:
+                if ready(status):
+                    with guard.section():
+                        check()
+                        if commit: commit()
+                    return status
+                if status['state'] in ('error', 'unknown', 'stopped'): break
+            if child.poll() is not None: break
+            time.sleep(.1)
+    except ValueError:
+        abandon_start(control, run_id, child)
+        raise
+    abandon_start(control, run_id, child)
+    guard.check()  # The child ending because of an owner stop is that stop, not a start failure.
+    return None
+
+
 def abandon_start(control, run_id, child, *, grace=10):
     """Stop this start's exact unconfirmed child and record an unreported exit."""
     control.request_stop(run_id)
@@ -271,7 +379,7 @@ def start_listener(ledger, toolchain, timeout, approved):
     from quorum_api import QuorumError
     ExecutionPolicy(1, timeout, 'subscription', True, approved).validate()
     control = Control(ledger)
-    with FileLock(ledger.root / 'listener-control.lock'):
+    with StartGuard(ledger) as guard:
         from quorum_live import api_for
         api, _, _ = api_for(ledger)
         release = ReleaseGuard(api, ledger)
@@ -284,23 +392,14 @@ def start_listener(ledger, toolchain, timeout, approved):
                    'listen', 'run', '--toolchain', str(Path(toolchain).resolve()),
                    '--approve-subscription', '--timeout', str(timeout), '--run-id', run_id]
         # Publish before spawn so a concurrent stop can target this exact run.
-        control.begin(run_id, timeout)
+        with guard.section(): control.begin(run_id, timeout)
         try:
             process = spawn_background(command, ledger)
         except Exception as error:
             control.update(run_id, 'error', 0, timeout=timeout, code=error_code(error))
             raise QuorumError('listener_start_failed') from None
-        deadline = time.monotonic() + 90
-        while time.monotonic() < deadline:
-            status = control.status()
-            if status.get('run_id') == run_id:
-                if (not status['stop_requested'] and status['listener'] == 'running'
-                        and status['state'] in ('waiting', 'checking')):
-                    return status
-                if status['state'] in ('error', 'unknown', 'stopped'): break
-            if process.poll() is not None: break
-            time.sleep(.1)
-        abandon_start(control, run_id, process)
+        status = await_started(control, guard, run_id, process)
+        if status is not None: return status
         diagnostic = ledger.setting('release') or {}
         if diagnostic.get('update_required'):
             control.update(run_id, 'error', 0, timeout=timeout, code='skill_update_required')
@@ -310,24 +409,12 @@ def start_listener(ledger, toolchain, timeout, approved):
 
 def stop_listener(ledger, *, revoke_reception=False):
     from quorum_api import QuorumError
-    deadline = time.monotonic() + 120
-    while True:
-        guard = FileLock(ledger.root / 'listener-control.lock')
-        try:
-            guard.__enter__()
-        except ValueError as error:
-            if str(error) != 'worker_already_running': raise
-            if time.monotonic() >= deadline: raise QuorumError('listener_stop_failed') from None
-            time.sleep(.1)
-            continue
-        try:
-            if revoke_reception:
-                # Atomic with start/recovery under listener-control.lock. An owner
-                # stop wins even if the listener itself has already exited.
-                ledger.setting('session-reception', {'enabled':False})
-            return Control(ledger, holding_control=True).request_stop()
-        finally:
-            guard.__exit__()
+    try:
+        with control_lock(ledger, seconds=STOP_SECONDS):
+            return Control(ledger, holding_control=True).owner_stop(revoke_reception=revoke_reception)
+    except ValueError as error:
+        if str(error) != 'worker_already_running': raise
+        raise QuorumError('listener_stop_failed') from None
 
 
 def add_commands(commands):

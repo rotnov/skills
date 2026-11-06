@@ -9,7 +9,6 @@ from pathlib import Path
 import re
 import subprocess
 import sys
-import time
 import uuid
 from quorum_api import QuorumError
 from quorum_delegation import (grant, held_status, instruction, member_grant, member_trust, opening, task_check,
@@ -518,33 +517,23 @@ def status(ledger, record, conversation):
 
 
 def start(auth_ledger, ledger, api):
-    from quorum_listener import Control, abandon_start, locked, spawn_background
-    from quorum_os import FileLock
-    with FileLock(ledger.root / 'listener-control.lock'):
+    from quorum_listener import Control, StartGuard, await_started, locked, spawn_background
+    with StartGuard(ledger) as guard:
         control = Control(ledger)
         release = ReleaseGuard(api, ledger)
         release.check()
         release.running()
         if locked(ledger.root / 'listener.lock'): return control.status()
         run_id = str(uuid.uuid4())
-        control.begin(run_id, 0)
+        with guard.section(): control.begin(run_id, 0)
         try:
             # The child inherits only this parent's own exports; it re-checks them itself.
             child = spawn_background(command(auth_ledger, 'run', '--run-id', run_id), ledger)
         except Exception:
             control.update(run_id, 'error', 0, timeout=0, code='session_start_failed')
             raise QuorumError('listener_start_failed') from None
-        deadline = time.monotonic() + 90
-        while time.monotonic() < deadline:
-            current = control.status()
-            if current.get('run_id') == run_id:
-                if (current['listener'] == 'running' and current['state'] in ('waiting', 'checking')
-                        and not current['stop_requested']):
-                    return current
-                if current['state'] in ('error', 'unknown', 'stopped'): break
-            if child.poll() is not None: break
-            time.sleep(.1)
-        abandon_start(control, run_id, child)
+        current = await_started(control, guard, run_id, child)
+        if current is not None: return current
         if (ledger.setting('release') or {}).get('update_required'):
             control.update(run_id, 'error', 0, timeout=0, code='skill_update_required')
             raise ReleaseMismatch(ledger.setting('release'))
