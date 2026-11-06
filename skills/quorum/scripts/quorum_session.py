@@ -876,6 +876,12 @@ def add_commands(commands):
     receive = actions.add_parser('receive', help='Tool-inbox worker: one bounded foreground receive in its own tool result')
     receive.add_argument('--wait-seconds', type=int, choices=range(0, 61), default=30, metavar='0..60')
     show_transport_notices(receive)
+    from quorum_native_inbox import WAIT_BOUND
+    wait = actions.add_parser('wait', help='Claude worker: one background command, no model, that exits when a '
+                                           'message is available, on a stop or a fatal code, or at the bound')
+    wait.add_argument('--max-seconds', type=int, choices=range(1, WAIT_BOUND + 1), default=WAIT_BOUND,
+                      metavar='1..' + str(WAIT_BOUND))
+    show_transport_notices(wait)
     actions.add_parser('stop')
     from quorum_native_inbox import add_commands as add_awaiting_commands
     add_awaiting_commands(actions)
@@ -1193,6 +1199,8 @@ def _dispatch(args, auth_ledger, register_agent):
     if context is not None:
         from quorum_claude_worker import session_dispatch
         return session_dispatch(args, auth_ledger, register_agent, context)
+    # Only a Claude worker has a client that a command's exit wakes; no other route has that (#164).
+    if args.action == 'wait': raise inbox.NativeInboxError('native_inbox_transport_conflict')
     requested = getattr(args, 'transport', None) or 'native'
     proved = None
     if args.action == 'connect':

@@ -175,7 +175,7 @@ as a background listener. A bound Claude worker connects with its capability
 file exactly as its owner-approved scope. Each receipts its own envelopes (worker
 consumption, not delivery to the parent) and reports one setup outcome: quorum,
 role, project, transport `tool-inbox` with reception enabled (offline between
-receive calls) and the persistent skill path.
+receive calls or waits) and the persistent skill path.
 
 After a successful Codex or Grok connection, the setup report may add one
 sentence offering the optional [startup hook](resume.md#optional-provider-startup-hook)

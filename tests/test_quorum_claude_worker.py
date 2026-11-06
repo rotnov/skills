@@ -3317,7 +3317,8 @@ class PromptTests(unittest.TestCase):
         for required in ('create <slug> --access github --json-stdin --worker-capability <capability-file>',
                          'accept-id <invite-id> --transport tool-inbox --worker-capability <capability-file>',
                          'session --worker-capability <capability-file> connect <slug>',
-                         'session --worker-capability <capability-file> receive --wait-seconds 30',
+                         'session --worker-capability <capability-file> receive --wait-seconds 0',
+                         'session --worker-capability <capability-file> wait',
                          'never in arguments, output or chat'):
             self.assertIn(required, text)
         commands = [line for line in self.reference(raw=True).splitlines() if line.startswith('Q ') or 'quorum.py' in line]

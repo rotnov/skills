@@ -13,11 +13,11 @@ import stat
 import sys
 import time
 import uuid
-from quorum_api import QuorumError, guarded_call
+from quorum_api import QuorumError, guarded_call, is_transient_service
 from quorum_delivery import Deliveries, PULL_STATES, server_ack
 from quorum_delivery_status import MARK_HINT, Reports, StatusWatch, reportable
 from quorum_listener import control_lock
-from quorum_os import FileLock
+from quorum_os import FileLock, ancestor_probes
 from quorum_presence import Presence, hello_once
 from quorum_realtime import RealtimeWait
 import quorum_notices
@@ -50,10 +50,28 @@ RECEIVE_LOOP = ('Keep calling session receive through empty waits: a timeout (co
                 'stop, however many arrive in a row. Stop only at the owner brief\'s limit (its deadline or message '
                 'count), on state stopped (owner stop) or on a fatal error, then report the stop reason to the '
                 'parent as one of brief_deadline, brief_count, owner_stop or fatal:<code>.')
+# The Claude worker's wait route (#164). No model runs while `wait` blocks; its exit wakes the worker.
+# Claude Code stops a background command at 30 minutes by default in an unattended session and sets no limit in
+# an interactive one; 25 minutes stays under that default without relying on the worker passing a longer timeout.
+WAIT_BOUND = 1500
+WAIT_RUN = 'listener-wait-run'
+WAIT_LOOP = ('Do not repeat session receive through empty waits. Run session wait (the result\'s wait_command) as one '
+             'background command with the client\'s own background option, never with a shell &, then end your turn: '
+             'it uses no model and its exit wakes you. For a finite brief add --max-seconds with the seconds left to '
+             'its deadline. Read its one result: next_step receive means run session receive --wait-seconds 0 once '
+             'and handle the result; next_step wait means start wait again. Resolve each offer (receipt, reply or '
+             'park) before starting wait, because an open offer ends wait at once. worker_already_running from wait '
+             'means one already runs: end your turn. If wait ends with no result line, the host stopped it or it '
+             'crashed: run session receive --wait-seconds 0, then start wait again. Stop only at the owner brief\'s '
+             'limit (its deadline or message count), on next_step report_stop or on a fatal error, then report the '
+             'stop reason to the parent as one of brief_deadline, brief_count, owner_stop or fatal:<code>. Only if '
+             'this client has no background commands, repeat session receive through empty waits instead.')
 # offer() result for a server transport notice it receipted itself; never disclosed.
 NOTICE = object()
 # Patchable wall clock for parked/hold timestamps (persisted across calls, unlike the monotonic budget).
 wall = time.time
+# Patchable pause between a wait's outage retries.
+pause = time.sleep
 
 
 class NativeInboxError(ValueError):
@@ -615,16 +633,22 @@ def notice(record, message, priority):
             'parent once, and later answer it with session awaiting resolve. Never stop receiving or report '
             'listening as paused while a decision is pending. ' + MARK_HINT
             + 'Parking stays private, so needs_owner goes to the sender only if you set it. '
-            'Only this worker may run these commands. Then call session receive again within your brief. '
-            + RECEIVE_LOOP)
+            'Only this worker may run these commands. '
+            + (WAIT_LOOP if record.get('engine') == 'claude' else
+               'Then call session receive again within your brief. ' + RECEIVE_LOOP))
 
 
 def loop_fields(auth_ledger, record, state, wait_seconds):
     """Machine-readable next step for a model-driven worker: continue after an offer or an empty wait."""
     if state == 'stopped':
         return {'continue': False, 'next_step': 'report_stop', 'stop_reason': 'owner_stop'}
-    return {'continue': True, 'next_step': 'handle_then_receive' if state == 'offered' else 'receive',
-            'receive_command': command(auth_ledger, record, 'receive', '--wait-seconds', str(wait_seconds))}
+    fields = {'continue': True, 'next_step': 'handle_then_receive' if state == 'offered' else 'receive',
+              'receive_command': command(auth_ledger, record, 'receive', '--wait-seconds', str(wait_seconds))}
+    # `receive_command` stays for a worker on an older brief; a Claude worker's route is now `wait`.
+    if record.get('engine') == 'claude':
+        fields.update(next_step='handle_then_wait' if state == 'offered' else 'wait',
+                      wait_command=command(auth_ledger, record, 'wait'))
+    return fields
 
 
 def _scope(record):
@@ -809,6 +833,121 @@ def receive(api, auth_ledger, ledger, record, wait_seconds, *, waiter=None, pres
     # immediately before disclosure. A refusal keeps the committed offer and names the dispatched effect.
     if authorize is not None: api.check()
     return disclosed
+
+
+class ParentWatch:
+    """Whether a process above this one has ended, so nothing is left to read a result.
+
+    The direct parent alone proves nothing: a Windows venv launcher or `uv run` stays alive, waiting on this
+    process, after whatever started it has gone.
+    """
+    def __init__(self, probes=None):
+        self.probes = ancestor_probes() if probes is None else probes
+
+    def gone(self): return any(probe() for probe in self.probes)
+
+
+def _held_offer(ledger, message_id):
+    """An explicit hold is the worker's own decision about an offer it already saw: nothing to wake it for."""
+    until = (Deliveries(ledger).get(message_id) or {}).get('hold_until')
+    return type(until) in (int, float) and until > wall()
+
+
+def wait_result(ledger, record, state):
+    """One short fixed line: never a message, an ID, a path or a command."""
+    steps = {'offer_available': (True, 'receive'), 'alert_available': (True, 'receive'), 'rearm': (True, 'wait'),
+             'stopped': (False, 'report_stop'), 'orphaned': (False, 'report_stop')}
+    proceed, step = steps[state]
+    result = {'state': state, 'transport': TRANSPORT, 'continue': proceed, 'next_step': step,
+              'awaiting_owner': _count(ledger, record, 'parked')}
+    if state == 'stopped': result['stop_reason'] = 'owner_stop'
+    if state == 'orphaned': result['stop_reason'] = 'fatal:wait_orphaned'
+    return result
+
+
+def wait(api, auth_ledger, ledger, record, max_seconds=WAIT_BOUND, *, waiter=None, presence=None, clock=None,
+         sleep=None, parent=None, authorize=None):
+    """Block without a model until an offer or alert is available, a stop, a fatal code or the bound.
+
+    It runs as one background command, under the consumer locks `receive` takes, so two consumers cannot run.
+    It keeps the heartbeat and Realtime subscription of `receive` and commits an offer with the same `offer`, so
+    transport notices and elapsed offers are handled here with no model turn. The message itself reaches only
+    the worker's later `receive`. Output is never a receipt, and a killed process leaves the row to be offered
+    again. Unlike a bounded call it waits out a service outage, because its exit would cost a model turn.
+    """
+    from quorum_listener import Control, RETRY_DELAYS, error_code
+    from quorum_live import LocalSupervisorLock
+    if type(max_seconds) is not int or not 1 <= max_seconds <= WAIT_BOUND: raise ValueError('invalid_wait_seconds')
+    if authorize is not None:
+        api = _guarded(api, authorize)
+        api.check()
+    clock, sleep = clock or time.monotonic, sleep or pause
+    parent = parent or ParentWatch()
+    control = Control(ledger)
+    watch = StatusWatch(api, ledger, record, catch_up=False)
+    with LocalSupervisorLock(ledger.root), FileLock(ledger.root / 'listener.lock'):
+        with control_lock(ledger):
+            if authorize is not None: api.check()
+            if not enabled(ledger): return wait_result(ledger, record, 'stopped')
+            run_id = str(uuid.uuid4())
+            control.update(run_id, 'starting', 0, timeout=max_seconds, release=installed_release())
+            ledger.setting(WAIT_RUN, run_id)
+        def stopping(): return control.stopping(run_id) or not enabled(ledger) or parent.gone()
+        began = clock()
+        def bounded(): return clock() - began >= max_seconds
+        def pausing(): return stopping() or bounded()
+        presence = presence or Presence(api, record, ledger, persist_epoch=True, run_id=run_id,
+                                        status=lambda: peer_status(ledger, record))
+        waiter = waiter or RealtimeWait(api, record, ledger, keepalive=presence, stop_aware=True, watch=watch)
+        final, code, state, failures = 'stopped', None, 'stopped', 0
+        try:
+            waiter.prepare(stopping)
+            while not stopping():
+                if bounded():
+                    state = 'rearm'
+                    break
+                try:
+                    control.update(run_id, 'checking', 0, timeout=max_seconds)
+                    waiter.pulse(stopping)
+                    if stopping(): break
+                    watch.tick()
+                    if stopping(): break
+                    envelope = offer(api, auth_ledger, ledger, record, stopping)
+                    if stopping(): break
+                    if envelope is NOTICE: continue
+                    if envelope is not None and not _held_offer(ledger, envelope['message_id']):
+                        state = 'offer_available'
+                        break
+                    if watch.pending():
+                        state = 'alert_available'
+                        break
+                    control.update(run_id, 'waiting', 0, timeout=max_seconds)
+                    waiter.wait(pausing)
+                    failures = 0
+                except Exception as error:
+                    if not is_transient_service(error): raise
+                    control.update(run_id, 'degraded', 0, timeout=max_seconds, code=str(error))
+                    ledger.setting('presence', {'state': 'unreachable', 'code': str(error)})
+                    for _ in range(RETRY_DELAYS[min(failures, len(RETRY_DELAYS) - 1)]):
+                        if pausing(): break
+                        sleep(1)
+                    failures += 1
+            if state == 'stopped' and parent.gone(): state = 'orphaned'
+        except Exception as error:
+            final, code = 'error', error_code(error)
+            raise
+        finally:
+            waiter.close()
+            control.update(run_id, final, 0, timeout=max_seconds, code=code)
+    # As before disclosing an offer: a stop already reports itself, anything else needs current authority.
+    if authorize is not None and state not in ('stopped', 'orphaned'): api.check()
+    return wait_result(ledger, record, state)
+
+
+def yield_wait(ledger):
+    """Ask a running `wait` to exit, so a rebind waits on no process the old client left behind."""
+    run_id = (ledger.setting('listener') or {}).get('run_id')
+    if run_id and ledger.setting(WAIT_RUN) == run_id: ledger.setting('listener-stop', {'run_id': run_id})
 
 
 def offered(ledger, record, message_id):

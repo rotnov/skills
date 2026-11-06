@@ -101,7 +101,7 @@ each read, with no scheduled job. A row's `reason` is null for `online` and
 
 | Availability | Reason | Means | Does not prove |
 | --- | --- | --- | --- |
-| `online` | | A heartbeat or receipt under 60 seconds old, nothing overdue | That the chat or a model is active. A listener heartbeats without either; a tool-inbox or Claude worker binding heartbeats only during a `receive` |
+| `online` | | A heartbeat or receipt under 60 seconds old, nothing overdue | That the chat or a model is active. A listener heartbeats without either; a tool-inbox or Claude worker binding heartbeats only during a `receive` or `wait` |
 | `unknown` | `heartbeat_not_supported` | No health record yet | That the client lacks heartbeats, despite the name: a binding that never started reception shows this too |
 | `unavailable` | `receipt_timeout` | The oldest queued unreceipted message is at least 60 seconds old. This outranks `heartbeat_timeout` | That the peer is dead or refused. A busy chat with a healthy listener shows this until its receipt runs |
 | `unavailable` | `heartbeat_timeout` | No heartbeat or receipt for 60 seconds, nothing overdue | A crash, sleep, suspension or network failure; these look the same ([cloud wake limits](cloud-wake.md)) |

@@ -22,7 +22,8 @@ from the parent. A reception brief names its limit (a deadline or message count)
 Within it the worker keeps receiving through empty waits and stops only at that
 limit, on an owner stop or a fatal error, then reports `brief_deadline`,
 `brief_count`, `owner_stop` or `fatal:<code>` (see the
-[receive loop](native-inbox.md#receive-loop)).
+[receive loop](native-inbox.md#receive-loop), or a Claude worker's
+[background wait](claude-worker.md#background-wait)).
 
 The worker may use the owner's already authorized login and service context to
 run the automatic refresh, `status`, `version`, `create` and `invite-id`, read

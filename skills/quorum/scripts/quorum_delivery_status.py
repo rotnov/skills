@@ -202,6 +202,10 @@ class StatusWatch:
         """Alerts not shown yet, for a route whose own tool result reaches the chat."""
         return self._pending()
 
+    def pending(self):
+        """Whether `take` has anything, without moving it: a wait leaves alerts for the next receive."""
+        return bool(self._state()['pending'])
+
     def _guarded(self, step):
         try: step()
         except Exception as error:

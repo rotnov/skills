@@ -103,7 +103,8 @@ and keeps any already committed offer for later recovery.
 Each result also says what to do next: `continue: true` with `next_step`
 `receive` after an empty wait (`timeout`) or `handle_then_receive` after an
 offer, plus the exact `receive_command`; `stopped` gives `continue: false`,
-`next_step: report_stop` and `stop_reason: owner_stop`.
+`next_step: report_stop` and `stop_reason: owner_stop`. A Claude worker's result
+says `wait` or `handle_then_wait` instead and adds `wait_command`.
 
 The offer is committed locally before output. Output is not a receipt: until the
 worker runs the envelope's `receipt_command` (or answers with `reply_command`,
@@ -138,7 +139,9 @@ automatic answers. `receive` receipts server Hello and roster
 
 ### Receive loop
 
-The worker keeps calling `receive` through empty waits. Any number of
+This is the Codex route, and the Claude route for an older brief; a current
+Claude worker uses the [background wait](claude-worker.md#background-wait). The
+worker keeps calling `receive` through empty waits. Any number of
 `timeout` results in a row is not a reason to stop. It stops only:
 
 - at the owner brief's limit: its deadline (`brief_deadline`) or message count
