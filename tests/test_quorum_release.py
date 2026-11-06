@@ -129,8 +129,10 @@ class ReleaseTests(unittest.TestCase):
             ledger=LocalLedger(Path(root)); api=Backend(); queued=[]
             try:
                 relay=Relay(api,ledger,{'agent_id':AID,'session_ref':SID},lambda m:queued.append(m))
-                self.assertEqual(relay.run_once(),'delivered')
+                self.assertEqual(relay.run_once(),'idle')
                 self.assertEqual(len(queued),1)
+                ledger.setting('delivery:'+MID,{'state':'queued'})  # The chat confirmed; the ACK is left.
+                self.assertEqual(relay.run_once(),'delivered')
                 api.required={'protocol_version':1,'skill_version':'0.2.1'}
                 before=list(api.calls)
                 with self.assertRaisesRegex(QuorumError,'^skill_update_required$'): relay.run_once()
@@ -296,7 +298,7 @@ class RunningReleaseTests(unittest.TestCase):
                 with self.assertRaisesRegex(QuorumError,'^skill_update_required$'):
                     Relay(backend,ledger,{'agent_id':AID,'session_ref':SID},queue).run_once()
                 self.assertEqual(len(queued),1)
-                self.assertEqual(ledger.setting('delivery:'+MID),{'state':'queued'})
+                self.assertEqual(ledger.setting('delivery:'+MID),{'state':'submitted'})
                 self.assertNotIn('session_ack',[op for op,_ in backend.calls])
             finally: ledger.db.close()
 

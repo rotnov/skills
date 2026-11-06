@@ -35,7 +35,7 @@ goes through the dispatcher, which checks the sender agent's owner.
 | Select | `session_inbox` | At most one message with no receipt for this agent: urgent first, then delivery time, conversation and sequence. It adds `notification` and `maintenance` metadata and reads no attempt or lease. |
 | Receipt | `session_ack` | Idempotent. Inserts the receipt and refreshes `session_health`, so a receipt also counts as liveness. This is what moves the queue. |
 | Answer | `session_reply` | One answer per message; a different second body is `reply_already_sent`. Marks the original delivery `answered` and writes no receipt, so the client still acknowledges. |
-| Read one | `session_message` | One message addressed to this agent, or null. Reads no receipt and writes nothing. |
+| Read one | `session_message` | One message addressed to this agent, or null. Reads no receipt and writes nothing; for a queued pointer the client calls `session_ack` after it. |
 | Check one | `session_message_unreceipted` | Whether one exact message is still unreceipted; no body or sender. Used by `session reconcile --confirmed-absent`. |
 | Task check | `session_task_authority` | See the [authority card](#authority-card). |
 
@@ -56,12 +56,18 @@ own delivery rows.
 | Route | Local states | `session_ack` runs | After a crash |
 | --- | --- | --- | --- |
 | Parent pipe, Grok leader frame, Codex `turn/steer` | `intent`, `submitted`, `acked` | When that same chat runs `received` or `reply` | An unproved `intent` is never replayed; it needs [owner reconciliation](sessions.md#failure-and-recovery) |
-| Parent `codex queue` | `intent`, `queued`, `acked` | When the CLI accepts the pointer, before the chat reads the body | As above; after the ack, a failed body read is not redelivered and the sender resends |
+| Parent `codex queue` | `intent`, `submitted`, `queued`, `acked` | When the chat reads the body with `session message`, or runs `received` or `reply`. CLI acceptance writes no receipt | As above. An accepted pointer is never queued again unless the owner [attests its absence](sessions.md#a-queued-message-stays-unread) |
 | Codex tool inbox, Claude worker | `offered`, `parked`, `acked` | On `received`, `reply` or park | An `offered` row is offered again |
 | Grok Bot cloud | `offered`, `acked` | On `received` or `reply` | An `offered` row is offered again |
 
 A proved-unsent attempt removes its `intent` and stops reception; the next
 owner-authorized `session start` or `recover` rereads the message once.
+
+`queued` means the chat's proof is recorded and only the `session_ack` upload is left;
+whichever pass runs next finishes it, and nothing is delivered again. On every
+`intent` and `submitted` route, one unconfirmed message holds later normal messages
+to that recipient, because `session_inbox` returns only the head. An urgent message
+passes it. The sender sees the hold as `receipt_timeout`.
 
 ### Liveness and maintenance
 

@@ -370,7 +370,8 @@ or task authority.
 `session_message` returns one message addressed to the caller's own native session,
 so a Codex chat can read a queued body in a conversation whose 16-row page would pass
 the 262,144-byte response limit. Another agent's message and an unknown one both
-return null. It reads no receipt and writes nothing. A client on a server without it
+return null. It reads no receipt and writes nothing; the client calls `session_ack`
+itself for a queued pointer. A client on a server without it
 falls back to `conversation_read`. To roll back, in one transaction drop
 `public.session_message(uuid,text,uuid)`.
 

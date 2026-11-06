@@ -162,7 +162,7 @@ class CodexReplyReceiptTests(Gate):
         backend = Inbox(installed())
         def deliver(message):
             delivered.append(message['id'])
-            return 'submitted' if message['priority'] == 'urgent' else None
+            return 'submitted' if message['priority'] == 'urgent' else 'pointer'
         relay = Relay(backend, ledger, RECORD, deliver)
         self.assertEqual(relay.run_once(), 'idle')
         self.assertEqual(ledger.setting('delivery:' + MID), {'state': 'submitted'})
@@ -174,13 +174,13 @@ class CodexReplyReceiptTests(Gate):
         self.assertEqual(acks, [MID])
         self.assertEqual(ledger.setting('delivery:' + MID), {'state': 'acked'})
         self.assertEqual(relay.run_once(), 'delivered')
-        # The next inbox message is delivered and acknowledged normally.
-        self.assertEqual(relay.run_once(), 'delivered')
+        # The next inbox message is delivered and waits for its own confirmation.
+        self.assertEqual(relay.run_once(), 'idle')
         self.assertEqual(delivered, [MID, NEXT])
-        self.assertEqual(acks, [MID, NEXT])
+        self.assertEqual(acks, [MID])
         # A repeated reply is idempotent and claims no second receipt.
         self.run_action(backend, 'reply', 'normal')
-        self.assertEqual(acks, [MID, NEXT])
+        self.assertEqual(acks, [MID])
 
     @isolated_profiles
     def test_a_codex_reply_cannot_claim_a_receipt_for_an_unsubmitted_message(self):

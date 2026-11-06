@@ -232,20 +232,6 @@ class FailureTableTests(Harness):
                 self.assertEqual(api.acks(), 0)
                 with self.ledger.db: self.ledger.db.execute("delete from settings where key like 'delivery:%'")
 
-    def test_a_crash_after_queue_acceptance_acknowledges_without_a_second_enqueue(self):
-        record, api = self.bind('codex'), Api(message())
-        original = api.call
-        def die(operation, payload, request_id=None):
-            if operation == 'session_ack': raise Crash()
-            return original(operation, payload, request_id)
-        api.call = die
-        writes = []
-        with self.assertRaises(Crash): self.relay(api, record, writes.append).run_once()
-        self.assertEqual(self.row(), {'state':'queued'})
-        api.call = original
-        self.relay(api, record, writes.append).run_once()
-        self.assertEqual((self.row(), len(writes), api.acks()), ({'state':'acked'}, 1, 1))
-
 
 class HeadOnlyBlockingTests(Harness):
     def test_stuck_attempt_lets_a_newer_urgent_through_and_blocks_again_as_head(self):
@@ -256,8 +242,9 @@ class HeadOnlyBlockingTests(Harness):
                 delivered = []
                 relay = self.relay(api, record, lambda item:delivered.append(item['id']))
                 relay.reconcile()
-                self.assertEqual(relay.run_once(), 'delivered')
+                self.assertEqual(relay.run_once(), 'idle')
                 self.assertEqual(delivered, [URGENT])
+                api.call('session_ack', {'message_id':URGENT})  # The chat confirmed it.
                 for step in (relay.reconcile, relay.run_once):
                     with self.assertRaisesRegex(ValueError, '^session_delivery_unknown$'): step()
                 self.assertEqual(delivered, [URGENT])
@@ -674,14 +661,17 @@ class WindowsPipeSendTests(unittest.TestCase):
 class PointerDeliveryTests(Harness):
     """#150: a queued Codex envelope points at the body, so no body can reach argv or outgrow it."""
     def delivered(self, *messages, patches=()):
+        """Queue each message through a fake CLI, and have the chat confirm it."""
+        from quorum_session import acknowledge
         record = self.bind('codex')
         api = Api(*messages)
-        relay = self.relay(api, record)
         with patch('quorum_claude_pipe.subprocess.Popen', return_value=Child()) as popen, \
              patch('quorum_session.shutil.which', return_value='/synthetic/codex'), \
              contextlib.ExitStack() as stack:
             for item in patches: stack.enter_context(item)
-            for _ in messages: self.assertEqual(relay.run_once(), 'delivered')
+            for item in messages:
+                self.assertEqual(self.relay(api, record).run_once(), 'idle')
+                acknowledge(api, self.ledger, {'agent_id':'agent', 'session_ref':SID}, item['id'])
         return api, [call.args[0] for call in popen.call_args_list]
 
     def forget(self):
@@ -716,9 +706,9 @@ class PointerDeliveryTests(Harness):
         self.assertIn(MID, commands[0][-1])
         self.assertIn(URGENT, commands[1][-1])
         self.assertNotIn(hostile[:32], commands[0][-1])
-        self.assertTrue(fits_windows_command(['C:\\synthetic\\npm\\codex.cmd', *commands[0][1:]]))
+        self.assertTrue(fits_windows_command(commands[0]))
 
-    def test_the_largest_envelope_fits_a_batch_shim_with_long_windows_paths(self):
+    def test_the_largest_envelope_fits_windows_with_long_paths(self):
         from quorum_delegation import member_grant
         from quorum_session import enqueue, fits_windows_command
         long = 'C:\\' + '\\'.join(['d' * 30] * 8)
@@ -735,25 +725,23 @@ class PointerDeliveryTests(Harness):
             with patch('quorum_session.run_child', side_effect=run), \
                  patch('quorum_session.require_caller'), \
                  patch('quorum_session.os', SimpleNamespace(name='nt')), \
-                 patch('quorum_session.shutil.which', return_value=long + '\\codex.cmd'), \
+                 patch('quorum_session.shutil.which', return_value=long + '\\codex.exe'), \
                  patch('quorum_codex_steer.submit', return_value='rejected'):
                 enqueue(record, item, Path(long))
             self.assertEqual(len(sent), 1)
             self.assertTrue(fits_windows_command(sent[0]))
 
-    def test_the_pointer_keeps_the_receipt_first_data_and_reply_rules(self):
+    def test_the_pointer_makes_the_body_read_its_receipt_and_keeps_the_data_and_reply_rules(self):
         _, commands = self.delivered(message(body='peer text'))
         prompt = commands[0][-1]
-        receipt = self.field(prompt, 'receipt command (argument array): ')
         read = self.field(prompt, 'read it with this command (argument array): ')
         reply = self.field(prompt, 'answer text goes to stdin): ')
-        self.assertEqual(receipt[-2:], ['received', MID])
         self.assertEqual(read[-6:], ['message', MID, '--conversation-id', CONVERSATION, '--sequence', '3'])
         self.assertEqual(reply[-3:], ['reply', MID, '--text-stdin'])
-        self.assertEqual(read[:-6], receipt[:-2])
-        self.assertLess(prompt.index('receipt command'), prompt.index('read it with this command'))
+        self.assertEqual(read[:-6], reply[:-3])
+        self.assertNotIn('"received"', prompt)
+        self.assertIn('A successful read is also the receipt', prompt)
         self.assertIn('peer data', prompt)
-        self.assertIn('will not be offered again', prompt)
         self.assertIn('could not be read', prompt)
         self.assertEqual(json.loads(prompt.split('Peer message JSON without its body:\n', 1)[1]),
                          {key:value for key, value in message().items() if key != 'body'})
@@ -784,7 +772,7 @@ class PointerDeliveryTests(Harness):
         self.assertEqual(api.read, {'agent_id':'agent', 'session_ref':SID, 'message_id':MID})
         self.assertEqual(json.loads(output.getvalue())['data']['body'], body)
 
-    def test_a_failed_read_names_its_next_step_and_leaves_the_delivery_acknowledged(self):
+    def test_a_failed_read_names_its_next_step_and_leaves_the_message_unreceipted(self):
         import quorum
         class Missing(Api):
             def call(inner, operation, payload, request_id=None):
@@ -793,7 +781,7 @@ class PointerDeliveryTests(Harness):
         record = self.bind('codex')
         with patch('quorum_claude_pipe.subprocess.Popen', return_value=Child()), \
              patch('quorum_session.shutil.which', return_value='/synthetic/codex'):
-            self.assertEqual(self.relay(api, record).run_once(), 'delivered')
+            self.assertEqual(self.relay(api, record).run_once(), 'idle')
         output = io.StringIO()
         with patch('quorum_live.api_for', return_value=(api, None, None)), \
              patch('quorum_session.Path.cwd', return_value=self.root), contextlib.redirect_stdout(output):
@@ -803,9 +791,9 @@ class PointerDeliveryTests(Harness):
         self.assertEqual((code, result['code']), (5, 'session_message_unavailable'))
         self.assertEqual(result['data']['reason'], 'not_found')
         self.assertIn('resend', result['data']['next_step'])
-        self.assertEqual(self.row()['state'], 'acked')
+        self.assertEqual((self.row()['state'], api.acks()), ('submitted', 0))
 
-    def test_the_receipt_command_stays_idempotent_after_the_relay_acknowledged(self):
+    def test_the_receipt_command_stays_idempotent_after_the_chat_confirmed(self):
         api, _ = self.delivered(message())
         self.assertEqual(self.row()['state'], 'acked')
         self.assertEqual(self.dispatch(api, 'received'), {'confirmed_queued':True})
@@ -813,7 +801,7 @@ class PointerDeliveryTests(Harness):
 
     def test_a_default_state_path_leaves_argv_and_a_custom_one_stays(self):
         _, custom = self.delivered(message())
-        self.assertEqual(custom[0][-1].count('"--state"'), 3)
+        self.assertEqual(custom[0][-1].count('"--state"'), 2)
         self.forget()
         _, default = self.delivered(message(), patches=[
             patch('quorum_session.default_state_root', return_value=self.root)])
@@ -829,6 +817,184 @@ class PointerDeliveryTests(Harness):
                      self.assertRaisesRegex(ValueError, '^session_delivery_unsent$'):
                     relay.run_once()
                 self.assertIsNone(self.row())
+
+
+class Reader(Api):
+    """A service that also serves the single-message read."""
+    missing = False
+    def call(self, operation, payload, request_id=None):
+        if operation != 'session_message': return super().call(operation, payload, request_id)
+        self.calls.append(operation)
+        return None if self.missing else {'id':MID, 'recipient_id':'agent', 'sequence':3, 'body':'peer text'}
+
+
+class UnreadPointerTests(Harness):
+    """#157: a `codex queue` pointer holds its receipt until the chat has read the body."""
+    def setUp(self):
+        super().setUp()
+        self.record = self.bind('codex')
+
+    def accepted(self, api):
+        """One real enqueue through a fake CLI that accepts it; returns the spawned commands."""
+        spawned = patch('quorum_claude_pipe.subprocess.Popen', return_value=Child())
+        with spawned as popen, patch('quorum_session.shutil.which', return_value='/synthetic/codex'):
+            result = self.relay(api, self.record).run_once()
+        return result, [call.args[0] for call in popen.call_args_list]
+
+    def read(self, api):
+        return self.dispatch(api, 'message', conversation_id=CONVERSATION, sequence=3)
+
+    def test_cli_acceptance_writes_no_receipt_and_is_never_queued_twice(self):
+        api = Reader(message(), message(OTHER))
+        self.assertEqual(self.accepted(api)[0], 'idle')
+        row = self.row()
+        self.assertEqual(row['state'], 'submitted')
+        uuid.UUID(row['attempt_id'])
+        self.assertEqual(api.acks(), 0)
+        self.assertEqual(self.accepted(api), ('idle', []))
+        self.assertEqual((self.row(), api.acks()), (row, 0))
+
+    def test_the_body_read_is_the_receipt_and_frees_the_next_message(self):
+        api = Reader(message(), message(OTHER))
+        self.accepted(api)
+        relay = self.relay(api, self.record)
+        with patch('quorum_claude_pipe.subprocess.Popen', return_value=Child()), \
+             patch('quorum_session.shutil.which', return_value='/synthetic/codex'):
+            self.assertEqual(relay.run_once(), 'idle')
+            self.assertEqual(self.read(api)['body'], 'peer text')
+            self.assertEqual((self.row(), api.acks()), ({'state':'acked'}, 1))
+            self.assertEqual(relay.run_once(), 'delivered')
+            self.assertEqual(relay.run_once(), 'idle')
+        self.assertEqual(self.row(OTHER)['state'], 'submitted')
+
+    def test_reading_again_after_the_receipt_writes_nothing(self):
+        api = Reader(message())
+        self.accepted(api)
+        self.read(api)
+        self.read(api)
+        self.assertEqual(api.acks(), 1)
+
+    def test_a_failed_read_keeps_the_message_unreceipted_and_a_retry_confirms_it(self):
+        api = Reader(message())
+        self.accepted(api)
+        row = self.row()
+        api.missing = True
+        with self.assertRaisesRegex(ValueError, '^session_message_unavailable$'): self.read(api)
+        self.assertEqual((self.row(), api.acks()), (row, 0))
+        api.missing = False
+        self.read(api)
+        self.assertEqual((self.row(), api.acks()), ({'state':'acked'}, 1))
+
+    def test_a_failed_ack_upload_still_returns_the_body_and_the_listener_finishes_it(self):
+        from quorum_api import QuorumError
+        api = Reader(message())
+        self.accepted(api)
+        original = api.call
+        def outage(operation, payload, request_id=None):
+            if operation == 'session_ack': raise QuorumError('service_unavailable')
+            return original(operation, payload, request_id)
+        api.call = outage
+        self.assertEqual(self.read(api)['body'], 'peer text')
+        self.assertEqual(self.row(), {'state':'queued'})
+        api.call = original
+        self.assertEqual(self.accepted(api), ('delivered', []))
+        self.assertEqual((self.row(), api.acks()), ({'state':'acked'}, 1))
+
+    def test_a_crash_inside_the_read_keeps_the_proof_and_never_replays(self):
+        api = Reader(message())
+        self.accepted(api)
+        original = api.call
+        def die(operation, payload, request_id=None):
+            if operation == 'session_ack': raise Crash()
+            return original(operation, payload, request_id)
+        api.call = die
+        with self.assertRaises(Crash): self.read(api)
+        api.call = original
+        self.assertEqual(self.row(), {'state':'queued'})
+        self.assertEqual(self.accepted(api), ('delivered', []))
+
+    def test_a_listener_crash_after_acceptance_neither_replays_nor_acknowledges(self):
+        api = Reader(message())
+        self.accepted(api)
+        row = self.row()
+        restarted = self.relay(api, self.record, lambda _:self.fail('replayed an accepted pointer'))
+        restarted.reconcile()
+        self.assertEqual(restarted.run_once(), 'idle')
+        self.assertEqual((self.row(), api.acks()), (row, 0))
+
+    def test_a_read_during_an_unresolved_attempt_returns_the_body_and_claims_nothing(self):
+        api = Reader(message())
+        intent = self.intent()
+        self.assertEqual(self.read(api)['body'], 'peer text')
+        self.assertEqual((self.row(), api.acks()), (intent, 0))
+
+    def test_a_read_confirms_only_a_pointer(self):
+        # A pipe or steered envelope carries its body and its own receipt command.
+        api = Reader(message())
+        self.ledger.setting('delivery:'+MID, {'state':'submitted'})
+        self.read(api)
+        self.assertEqual((self.row(), api.acks()), ({'state':'submitted'}, 0))
+
+    def test_received_and_reply_still_confirm_a_pointer(self):
+        for action, extra in (('received', {}), ('reply', {'priority':'normal'})):
+            with self.subTest(action=action):
+                with self.ledger.db: self.ledger.db.execute("delete from settings where key like 'delivery:%'")
+                api = Reader(message())
+                self.accepted(api)
+                self.dispatch(api, action, **extra)
+                self.assertEqual((self.row(), api.acks()), ({'state':'acked'}, 1))
+
+    def test_an_urgent_message_passes_an_unread_head(self):
+        api = Reader(message(URGENT, priority='urgent'), message())
+        self.ledger.setting('delivery:'+MID, {'state':'submitted', 'attempt_id':ATTEMPT})
+        steered = patch('quorum_codex_steer.submit', return_value='submitted')
+        with steered:
+            relay = self.relay(api, self.record)
+            with patch('quorum_session.shutil.which', return_value='/synthetic/codex'):
+                self.assertEqual(relay.run_once(), 'idle')
+        self.assertEqual(self.row(URGENT), {'state':'submitted'})
+
+    def test_status_names_each_unread_pointer_and_counts_it_as_a_pending_receipt(self):
+        api = Reader(message())
+        self.accepted(api)
+        status = self.dispatch(api, 'status')
+        self.assertEqual(status['pending_receipts'], 1)
+        self.assertEqual(status['unread_queued'], [{'message_id':MID, 'attempt_id':self.row()['attempt_id']}])
+        self.read(api)
+        status = self.dispatch(api, 'status')
+        self.assertEqual((status['pending_receipts'], status['unread_queued']), (0, []))
+
+    def test_a_steered_or_piped_row_is_not_an_unread_pointer(self):
+        self.ledger.setting('delivery:'+MID, {'state':'submitted'})
+        status = self.dispatch(Reader(), 'status')
+        self.assertEqual((status['pending_receipts'], status['unread_queued']), (1, []))
+
+    def absent(self, api, attempt):
+        api.unreceipted.add(MID)
+        return self.dispatch(api, 'reconcile', confirmed_absent=True, confirmed_queued=False, attempt_id=attempt)
+
+    def test_confirmed_absence_redelivers_exactly_once_under_a_new_attempt(self):
+        api = Reader(message())
+        self.accepted(api)
+        attempt = self.row()['attempt_id']
+        self.assertTrue(self.absent(api, attempt)['confirmed_absent'])
+        self.assertIsNone(self.row())
+        self.assertEqual(api.acks(), 0)
+        result, commands = self.accepted(api)
+        self.assertEqual((result, len(commands)), ('idle', 1))
+        self.assertNotEqual(self.row()['attempt_id'], attempt)
+        self.assertTrue(self.absent(api, attempt)['confirmed_absent'])  # A repeat touches the new attempt not at all.
+        self.assertEqual(self.row()['state'], 'submitted')
+
+    def test_confirmed_absence_is_refused_for_a_wrong_attempt_or_a_read_message(self):
+        api = Reader(message())
+        self.accepted(api)
+        row = self.row()
+        with self.assertRaisesRegex(ValueError, '^session_reconcile_denied$'): self.absent(api, ATTEMPT)
+        self.assertEqual(self.row(), row)
+        self.read(api)
+        with self.assertRaisesRegex(ValueError, '^session_reconcile_denied$'): self.absent(api, row['attempt_id'])
+        self.assertEqual(self.row(), {'state':'acked'})
 
 
 class Response(io.BytesIO):
@@ -907,11 +1073,10 @@ class WindowsCommandLimitTests(unittest.TestCase):
         self.assertTrue(fits_windows_command(command(7000)))
         self.assertFalse(fits_windows_command(command(8192)))
 
-    def test_units_are_utf16_and_a_batch_shim_has_the_lower_limit(self):
+    def test_units_are_utf16(self):
         from quorum_session import fits_windows_command
         self.assertTrue(fits_windows_command(['codex.exe', 'x'*30000]))
         self.assertFalse(fits_windows_command(['codex.exe', '\U0001F600'*20000]))
-        self.assertFalse(fits_windows_command(['codex.CMD', 'x'*9000]))
 
 
 class HelperChildTests(unittest.TestCase):

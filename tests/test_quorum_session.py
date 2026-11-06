@@ -251,7 +251,7 @@ class SessionTests(unittest.TestCase):
             finally: ledger.db.close(); receiver.db.close()
 
     @isolated_profiles
-    def test_listener_counts_codex_queue_acceptance_without_a_chat_receipt(self):
+    def test_listener_does_not_count_codex_queue_acceptance_as_a_receipt(self):
         from quorum_listener import Control, run_listener
         from quorum_session import Relay
         from quorum_state import LocalLedger
@@ -267,10 +267,11 @@ class SessionTests(unittest.TestCase):
                         if op=='session_ack': self.acked=True
                         return {'queued':True}
                 control=Control(ledger)
-                result=run_listener(ledger,lambda:Relay(Api(),ledger,{'agent_id':'a','session_ref':SID},lambda _:None),
+                api=Api()
+                result=run_listener(ledger,lambda:Relay(api,ledger,{'agent_id':'a','session_ref':SID},lambda _:'pointer'),
                                     str(uuid.uuid4()),sleep=lambda _:control.request_stop(),timeout=0)
-                self.assertEqual((result['handled'],result['state']),(1,'stopped'))
-                self.assertEqual(ledger.setting('delivery:'+MID),{'state':'acked'})
+                self.assertEqual((result['handled'],result['state'],api.acked),(0,'stopped',False))
+                self.assertEqual(ledger.setting('delivery:'+MID)['state'],'submitted')
             finally: ledger.db.close()
 
     @isolated_profiles
@@ -436,10 +437,12 @@ class SessionTests(unittest.TestCase):
                             raise ValueError('service_unavailable')
                         return {'queued':True}
                 api=Api()
+                # The chat's proof is recorded and only its ACK upload is left.
+                ledger.setting('delivery:'+MID, {'state':'queued'})
                 with self.assertRaisesRegex(ValueError, 'service_unavailable'):
                     Relay(api, ledger, record, queued.append).run_once()
                 Relay(api, ledger, record, queued.append).run_once()
-                self.assertEqual(queued, [message])
+                self.assertEqual(queued, [])
                 self.assertEqual(calls.count('session_ack'), 2)
             finally: ledger.db.close()
 
