@@ -355,5 +355,44 @@ class OwnerUpdateTests(unittest.TestCase):
         self.assertTrue(result['runtime']['verified'], 'the old process is real, but is not the update target')
         self.assertEqual([call[0] for call in self.api.calls], ['session_update_status'])
 
+    def test_a_restarted_listener_reports_under_a_new_request_id_and_a_retry_reuses_its_own(self):
+        from unittest.mock import patch
+        self.notice()
+        target = self.module._notice(self.api, self.record, NOTICE, lambda:None)
+        def report(run_id):
+            active = {'verified':True, 'source':target, 'run_id':run_id}
+            with patch.object(self.module, 'runtime_evidence', return_value=active):
+                self.assertEqual(self.module.report_runtime(self.api, self.ledger, self.record, NOTICE, 'same')['state'],
+                                 'active_reported')
+            return [call for call in self.api.calls if call[0] == 'session_update_report'][-1]
+        first, retry = report(OPID), report(OPID)
+        restarted = report(NOTICE)
+        self.assertEqual(first[2], retry[2])
+        self.assertNotEqual(first[2], restarted[2])
+        self.assertLessEqual(len(restarted[2]), 128)
+        self.assertEqual(restarted[1]['evidence']['run_id'], NOTICE)
+
+    def test_a_named_server_refusal_keeps_its_code_and_is_not_an_unknown_fanout(self):
+        from quorum_api import QuorumError
+        for raised, expected in (('skill_update_required', 'skill_update_required'),
+                                 ('update_target_invalid', 'update_target_invalid'),
+                                 ('update_requires_read_committed', 'update_requires_read_committed'),
+                                 ('idempotency_conflict', 'update_target_changed')):
+            class Refused(Api):
+                def call(self, *args, **kwargs): raise QuorumError(raised)
+            with self.subTest(raised=raised):
+                self.api = Refused()
+                with self.assertRaises(QuorumError) as caught: self.invoke('refused-' + raised)
+                self.assertEqual(str(caught.exception), expected)
+                self.assertEqual(caught.exception.diagnostic['fanout_state'], 'unavailable')
+
+    def test_an_unnamed_failure_still_means_the_extension_is_unavailable(self):
+        from quorum_api import QuorumError
+        for error, expected in ((QuorumError('service_error'), 'update_extension_unavailable'),
+                                (QuorumError('service_error', transient=True), 'service_error')):
+            with self.subTest(transient=error.transient), self.assertRaisesRegex(QuorumError, f'^{expected}$'):
+                self.module._call(type('Failing', (), {'call': lambda *_: (_ for _ in ()).throw(error)})(),
+                                  'session_update_report', {}, 'id', lambda:None)
+
 
 if __name__ == '__main__': unittest.main()
