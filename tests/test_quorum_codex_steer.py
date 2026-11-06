@@ -43,6 +43,14 @@ def short_root(stack):
     return Path(stack.enter_context(tempfile.TemporaryDirectory(prefix='qs', dir=base))).resolve()
 
 
+# The server's own error bodies for failures its documentation says did not append.
+REFUSALS = {
+    'no_active_turn': {'code': -32600, 'message': 'no active turn to steer'},
+    'wrong_turn': {'code': -32600, 'message': 'expected active turn id `one` but found `two`'},
+    'shutting_down': {'code': -32600, 'message': 'server is shutting down', 'data': {'reason': 'serverShuttingDown'}},
+}
+
+
 class FakeAppServer:
     """A real Unix-socket WebSocket server answering like the Codex app server."""
 
@@ -118,6 +126,8 @@ class FakeAppServer:
                         connection.send(json.dumps({'id': ref, 'error': {
                             'code': -32602, 'message': 'refused',
                             'data': {'activeTurnNotSteerable': {'turnKind': 'review'}}}}))
+                    elif self.scenario in REFUSALS:
+                        connection.send(json.dumps({'id': ref, 'error': REFUSALS[self.scenario]}))
                     elif self.scenario == 'turn_changed':
                         connection.send(json.dumps({'id': ref, 'error': {
                             'code': -32602, 'message': 'expected turn mismatch'}}))
@@ -385,6 +395,40 @@ class CodexSteerTests(unittest.TestCase):
         self.assertEqual(self.submit(fixture), 'rejected')
         self.assertEqual(len(fixture.steer_params()), 1)
 
+    def test_every_documented_refusal_frame_is_a_rejection_once(self):
+        for scenario in REFUSALS:
+            with self.subTest(scenario=scenario):
+                fixture = self.fixture(scenario)
+                self.assertEqual(self.submit(fixture), 'rejected')
+                self.assertEqual(fixture.methods().count('turn/steer'), 1)
+
+    def test_only_the_exact_documented_refusal_counts(self):
+        from quorum_codex_steer import refused
+        for error in ({'code': -32602, 'message': 'no active turn to steer'},
+                      {'code': -32600, 'message': 'no active turn to steer, retrying'},
+                      {'code': -32600, 'message': 'expected turn mismatch'},
+                      {'code': -32600, 'message': 'Expected active turn id `a` but found `b`'},
+                      {'code': -32603, 'data': {'reason': 'serverShuttingDown'}},
+                      {'code': -32600, 'data': {'reason': 'other'}, 'message': 7},
+                      {}):
+            with self.subTest(error=error): self.assertFalse(refused(error))
+
+    def test_a_failure_before_the_steering_write_can_queue_and_one_after_cannot(self):
+        from quorum_codex_steer import SteerUnavailable, submit
+        fixture = self.fixture('steerable')
+        with patch('quorum_codex_steer.active_turn', side_effect=TypeError('malformed')):
+            with self.assertRaises(SteerUnavailable) as caught: self.submit(fixture)
+        self.assertEqual(caught.exception.reason, 'invalid_daemon_response')
+        self.assertNotIn('turn/steer', fixture.methods())
+
+    def test_a_prompt_that_cannot_be_built_is_unsent_without_a_write(self):
+        from quorum_claude_pipe import DeliveryUnsent
+        from quorum_codex_steer import submit
+        fixture = self.fixture('steerable')
+        def build(): raise ValueError('message_too_large')
+        with self.assertRaises(DeliveryUnsent): submit(fixture.record, MID, build, timeout=10)
+        self.assertNotIn('turn/steer', fixture.methods())
+
     def test_a_changed_busy_turn_is_ambiguous_not_a_rejection(self):
         for scenario in ('turn_changed', 'other_turn_result'):
             with self.subTest(scenario=scenario):
@@ -406,7 +450,7 @@ class CodexSteerTests(unittest.TestCase):
         message = {'id': MID, 'body': 'peer text', 'sender_role': 'peer', 'reply_to': None,
                    'priority': 'urgent'}
         with patch('quorum_session.shutil.which', return_value=sys.executable), \
-             patch('quorum_session.subprocess.run', side_effect=AssertionError('duplicate fallback')):
+             patch('quorum_session.run_child', side_effect=AssertionError('duplicate fallback')):
             with self.assertRaisesRegex(ValueError, 'session_delivery_unknown'):
                 enqueue(fixture.record, message, Path(fixture.cwd))
         self.assertEqual(fixture.methods().count('turn/steer'), 1)
@@ -603,7 +647,7 @@ class CodexSteerTests(unittest.TestCase):
 
     def test_oversized_steering_text_is_refused_before_any_write(self):
         fixture = self.fixture('steerable')
-        with self.assertRaisesRegex(ValueError, 'invalid_message'):
+        with self.assertRaisesRegex(ValueError, '^session_delivery_unsent$'):
             self.submit(fixture, 'x' * 48001)
         self.assertNotIn('turn/steer', fixture.methods())
 
@@ -640,7 +684,7 @@ class UnixTransportAvailabilityTests(unittest.TestCase):
         with patch.dict(os.environ, {'CODEX_THREAD_ID': SID}), \
              patch('quorum_codex_steer.submit', side_effect=SteerUnavailable('unix_transport_unsupported')), \
              patch('quorum_session.shutil.which', return_value=sys.executable), \
-             patch('quorum_session.subprocess.run', side_effect=queued), \
+             patch('quorum_session.run_child', side_effect=queued), \
              patch('sys.stderr') as stderr:
             for key in CLIENT_SESSION_VARIABLES: os.environ.pop(key, None)
             enqueue(record, message, Path(os.getcwd()))

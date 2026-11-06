@@ -336,7 +336,7 @@ class RunningReleaseTests(unittest.TestCase):
                             patch('quorum_live.api_for',return_value=(backend,None,None)), \
                             patch('quorum_session.sys.stdin',SimpleNamespace(buffer=io.BytesIO(b'reply'))):
                         with self.assertRaisesRegex(QuorumError,'^skill_update_required$'):
-                            dispatch(SimpleNamespace(session_id=SID,action=action,message_id=MID),auth,None)
+                            dispatch(SimpleNamespace(session_id=SID,action=action,message_id=MID,confirmed_queued=True),auth,None)
                     self.assertEqual(local.setting('delivery:'+MID),{'state':'submitted'})
                     self.assertEqual([op for op,_ in backend.calls],['session_requirements'])
                 finally: local.db.close(); auth.db.close()

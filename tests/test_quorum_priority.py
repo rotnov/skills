@@ -62,7 +62,7 @@ class PriorityTests(unittest.TestCase):
         from quorum_session import enqueue
         record, message = self.codex('normal')
         seen = []
-        with patch('quorum_session.subprocess.run', side_effect=queued(seen)), \
+        with patch('quorum_session.run_child', side_effect=queued(seen)), \
              patch('quorum_session.shutil.which', return_value='/synthetic/codex'), \
              patch('quorum_codex_steer.submit', side_effect=AssertionError('steered a normal message')), \
              patch.dict(os.environ, {'CODEX_THREAD_ID': SID}):
@@ -79,7 +79,7 @@ class PriorityTests(unittest.TestCase):
             self.assertEqual((bound, message_id), (record, MID))
             prompts.append(build())
             return 'submitted'
-        with patch('quorum_session.subprocess.run', side_effect=AssertionError('queued an urgent message')), \
+        with patch('quorum_session.run_child', side_effect=AssertionError('queued an urgent message')), \
              patch('quorum_session.shutil.which', return_value='/synthetic/codex'), \
              patch('quorum_codex_steer.submit', side_effect=steer), \
              patch.dict(os.environ, {'CODEX_THREAD_ID': SID}):
@@ -94,11 +94,11 @@ class PriorityTests(unittest.TestCase):
     def test_an_urgent_message_cannot_steer_another_chats_binding(self):
         from quorum_session import enqueue
         record, message = self.codex('urgent')
-        with patch('quorum_session.subprocess.run', side_effect=AssertionError('queued without a binding')), \
+        with patch('quorum_session.run_child', side_effect=AssertionError('queued without a binding')), \
              patch('quorum_session.shutil.which', return_value='/synthetic/codex'), \
              patch('quorum_codex_steer.submit', side_effect=AssertionError('steered an unbound chat')), \
              patch.dict(os.environ, {'CODEX_THREAD_ID': OTHER}):
-            with self.assertRaisesRegex(ValueError, 'session_binding_denied'):
+            with self.assertRaisesRegex(ValueError, '^session_delivery_unsent$'):
                 enqueue(record, message, Path('/private/state'))
 
     @isolated_profiles
@@ -114,7 +114,7 @@ class PriorityTests(unittest.TestCase):
                 def steer(*args, **kwargs):
                     if isinstance(outcome, Exception): raise outcome
                     return outcome
-                with patch('quorum_session.subprocess.run', side_effect=queued(seen)), \
+                with patch('quorum_session.run_child', side_effect=queued(seen)), \
                      patch('quorum_session.shutil.which', return_value='/synthetic/codex'), \
                      patch('quorum_codex_steer.submit', side_effect=steer), \
                      patch.dict(os.environ, {'CODEX_THREAD_ID': SID}):
@@ -130,7 +130,7 @@ class PriorityTests(unittest.TestCase):
     def test_an_ambiguous_steer_never_queues_a_duplicate_fallback(self):
         from quorum_session import enqueue
         record, message = self.codex('urgent')
-        with patch('quorum_session.subprocess.run', side_effect=AssertionError('duplicate fallback')), \
+        with patch('quorum_session.run_child', side_effect=AssertionError('duplicate fallback')), \
              patch('quorum_session.shutil.which', return_value='/synthetic/codex'), \
              patch('quorum_codex_steer.submit', side_effect=ValueError('session_delivery_unknown')), \
              patch.dict(os.environ, {'CODEX_THREAD_ID': SID}):

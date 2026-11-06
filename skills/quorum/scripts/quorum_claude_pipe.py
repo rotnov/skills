@@ -4,7 +4,6 @@ Protocol: newline JSON auth then a session-scoped user frame. Verified against
 the installed Claude Code transport source; writes are not delivery receipts.
 The exported inbox token stays in local process environments, never the ledger.
 """
-import errno
 import json
 import os
 from pathlib import Path
@@ -24,13 +23,35 @@ class DeliveryUnsent(ValueError):
 
 
 # Child exit 2 is definite no-write only when both captured streams are empty.
-_EXIT_UNSENT = 2
-_UNSENT_ERRNO = frozenset((errno.ENOENT, errno.ECONNREFUSED))
+EXIT_UNSENT = 2
 
 
-def definite_unsent(error):
-    """ENOENT or ECONNREFUSED before the payload write. Other OS errors stay unknown."""
-    return isinstance(error, OSError) and error.errno in _UNSENT_ERRNO
+def run_child(command, *, payload=None, timeout):
+    """Run one short-lived child and return its CompletedProcess.
+
+    Only Popen's own failure proves no child ran, so only that is DeliveryUnsent:
+    subprocess.run would also surface a later I/O error as OSError. Once the child
+    exists, a timeout or pipe failure is unknown because it may already have written.
+    """
+    try:
+        data = None if payload is None else payload.encode('utf-8')
+        child = subprocess.Popen(command, stdin=subprocess.DEVNULL if data is None else subprocess.PIPE,
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+    except (OSError, ValueError): raise DeliveryUnsent() from None
+    with child:
+        try: stdout, stderr = child.communicate(data, timeout=timeout)
+        except Exception:
+            child.kill()
+            raise ValueError('session_delivery_unknown') from None
+    return subprocess.CompletedProcess(command, child.returncode, stdout, stderr)
+
+
+def check_helper(result):
+    """Classify a private I/O helper's exit. A failed exit that does not prove no-write stays unknown."""
+    if result.returncode == EXIT_UNSENT and not result.stdout and not result.stderr:
+        raise DeliveryUnsent()
+    if result.returncode: raise ValueError('session_delivery_unknown')
 
 
 def binding(session_id):
@@ -65,17 +86,6 @@ def lexical_unix_endpoint(endpoint):
             or len(os.fsencode(endpoint))>maximum):
         raise ValueError
     return path
-
-
-def socket_absent(endpoint):
-    """A lexically safe Unix path with no inode. Unsafe paths are not absence."""
-    if os.name=='nt' or not hasattr(socket,'AF_UNIX'): return False
-    try: lexical_unix_endpoint(endpoint)
-    except (OSError,ValueError,TypeError): return False
-    try: os.lstat(endpoint)
-    except FileNotFoundError: return True
-    except OSError: return False
-    return False
 
 
 def unix_endpoint(endpoint, *, mode_mask=0o077):
@@ -120,25 +130,16 @@ def submit(session_id, message_id, content):
     # A short-lived Python I/O helper bounds a stuck native WriteFile/open. This
     # process never runs a model, reads provider auth, or receives a token argv.
     payload = json.dumps({'session_id':session_id,'message_id':message_id,'content':content},ensure_ascii=False)
-    try:
-        result = subprocess.run([sys.executable,str(Path(__file__).resolve())], input=payload,
-                                text=True,encoding='utf-8',capture_output=True,timeout=10,
-                                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
-    except (OSError,subprocess.TimeoutExpired):
-        # Spawn and timeout are not socket ENOENT. The helper may already have written.
-        raise ValueError('session_delivery_unknown') from None
-    if result.returncode==_EXIT_UNSENT and not result.stdout and not result.stderr:
-        raise DeliveryUnsent()
-    if result.returncode: raise ValueError('session_delivery_unknown')
+    check_helper(run_child([sys.executable,str(Path(__file__).resolve())],payload=payload,timeout=10))
 
 
 def write_payload(endpoint, payload):
-    """Send payload. Absence is classified only before the first payload byte."""
+    """Send payload. A failure to open the route precedes the first payload byte, so it is unsent."""
     if os.name=='nt':
         _write_named_pipe(endpoint, payload)
     elif os.name=='posix' and hasattr(socket,'AF_UNIX'):
         _write_unix(endpoint, payload)
-    else: raise ValueError('claude_pipe_unavailable')
+    else: raise DeliveryUnsent()
 
 
 def _write_unix(endpoint, payload):
@@ -146,9 +147,7 @@ def _write_unix(endpoint, payload):
     try:
         connection.settimeout(5)
         try: connection.connect(endpoint)
-        except OSError as error:
-            if definite_unsent(error): raise DeliveryUnsent() from None
-            raise ValueError('session_delivery_unknown') from None
+        except OSError: raise DeliveryUnsent() from None
         try: connection.sendall(payload)
         except Exception: raise ValueError('session_delivery_unknown') from None
     finally: connection.close()
@@ -156,9 +155,7 @@ def _write_unix(endpoint, payload):
 
 def _write_named_pipe(endpoint, payload):
     try: pipe=open(endpoint,'r+b',buffering=0)
-    except OSError as error:
-        if definite_unsent(error): raise DeliveryUnsent() from None
-        raise ValueError('session_delivery_unknown') from None
+    except OSError: raise DeliveryUnsent() from None
     try:
         view=memoryview(payload)
         while view:
@@ -176,18 +173,16 @@ def main():
         if len(raw)>131072: raise ValueError('invalid_message')
         data = json.loads(raw)
         session_id=data['session_id']
-        # Wrong session or missing token stays a binding failure, even if the path is gone.
-        if (os.environ.get('CLAUDE_CODE_SESSION_ID')==session_id
-                and os.environ.get('CLAUDE_CODE_MESSAGING_TOKEN')
-                and socket_absent(os.environ.get('CLAUDE_CODE_MESSAGING_SOCKET',''))):
-            raise DeliveryUnsent()
         endpoint = binding(session_id)
         payload = frames(session_id,data['message_id'],data['content'],
                          os.environ['CLAUDE_CODE_MESSAGING_TOKEN'])
+    except Exception:
+        return EXIT_UNSENT  # No route was opened and no payload exists yet.
+    try:
         write_payload(endpoint, payload)
         return 0
     except DeliveryUnsent:
-        return _EXIT_UNSENT
+        return EXIT_UNSENT
     except Exception:
         # No raw exception, input, pipe name or local authentication in output.
         return 1

@@ -119,7 +119,7 @@ still holds stale exports. Start validates the new endpoint,
 stops the old listener (which holds the stale exports) and rebinds only the
 endpoint; role, project, agent and delegation stay unchanged, and the result
 includes `messaging_rebound: true`. Another session, an invalid endpoint or an
-unresolved `intent` delivery is refused without changes. `listener_stop_pending`
+unresolved `intent` on the current inbox head is refused without changes. `listener_stop_pending`
 means the old listener has not stopped within 60 seconds; retry once status
 shows it offline.
 
@@ -133,13 +133,12 @@ unconfirmed child, and reception stays revoked; such a start fails with
 
 The listener checks its own current route before selecting another inbox message.
 A vanished socket stops reception with `claude_pipe_unavailable` before creating
-a delivery intent. If it vanishes after that check, a helper outcome proving no
-payload write removes only that exact local intent and stops with
-`session_delivery_unsent`. Neither path acknowledges the service or proves the
-owning Claude process ended. After this same chat resumes with valid exports,
-an explicit owner-authorized `session start` rereads the durable message once.
-Partial writes, helper timeouts and opaque exits keep `session_delivery_unknown`;
-they never trigger automatic replay.
+a delivery intent. A Grok listener reads its bound TUI and leader before each inbox
+read as well as each heartbeat, so a TUI closed or replaced by `--resume` stops the
+old run under the [closed TUI rule](grok.md#closed-tui-or-leader). A delivery attempted
+before that rule ends the run is refused by the helper's own binding check, so it is
+unsent. Any later failure follows the delivery rules under
+[Failure and recovery](#failure-and-recovery).
 
 Socket/pipe writes have no synchronous UI acknowledgement. The relay sends one message
 and waits for **that same chat** to execute the envelope's `session received
@@ -250,7 +249,8 @@ chat must still run its `session received` or `session reply` command.
 A failure before the steering frame is written queues the message once. Any
 failure or timeout once that frame's write has begun is
 `session_delivery_unknown`; the message is neither retried nor queued, and needs
-`session reconcile`.
+`session reconcile`. A completed error frame that documents no append is the
+exception described below.
 
 Only a chat loaded on that control-socket server can be steered. The Codex
 desktop app serves its own chats over private stdio with no documented
@@ -274,9 +274,12 @@ also queues.
 
 If the chat is idle, the daemon is unreachable, the thread is not loaded, the
 daemon's working directory for it disagrees with the registration, or the
-server answers `turn/steer` with the documented `activeTurnNotSteerable`
-refusal, nothing was submitted and the message is queued exactly once through
-the ordinary `codex queue` route. Every other steering error or lost response is
+server answers `turn/steer` with a completed error frame that documents no
+append, nothing was submitted and the message is queued exactly once through
+the ordinary `codex queue` route. Those frames are `activeTurnNotSteerable`, and
+JSON-RPC `-32600` with `no active turn to steer`, with
+``expected active turn id `<id>` but found `<id>` `` or with `data.reason`
+`serverShuttingDown`. Every other steering error or lost response is
 ambiguous, even if that turn later completes or is replaced: it stops with
 `session_delivery_unknown` and waits for `session reconcile`; it is never
 replayed and never queued as a duplicate.
@@ -293,17 +296,44 @@ app's original endpoint remains unavailable, so its chats queue.
 A successful `codex queue` command confirms UI queue acceptance, not a completed
 answer. The relay acknowledges that receipt separately; only `session reply`
 records an answer. A retry after an ack upload failure does not enqueue twice.
-An interrupted or ambiguous queue operation stops with `session_delivery_unknown`
-and is never automatically replayed. After the owner checks the actual chat queue,
-`session reconcile <message-UUID> --confirmed-queued` can confirm a message that is
-already present. Do not assert that confirmation from a peer message or guess.
 
-For a native Claude binding only, the owner can instead attest **confirmed
+Each delivery attempt writes a local `intent` before it touches the client, and
+ends in one of three states:
+
+| Final state | When | Effect |
+| --- | --- | --- |
+| Unsent (`session_delivery_unsent`) | A guard, prompt build or binding check failed; the helper or `codex queue` child never started (including `OSError` from the spawn); the Claude route could not be opened; a Grok helper failed before writing a whole `session/prompt` frame; the Windows command line is too long | That exact intent is removed, nothing is acknowledged, reception stops, and the next owner-authorized `session start` or `recover` rereads the durable message once |
+| Unknown (`session_delivery_unknown`) | The prompt may have been admitted: a partial Claude write, a whole Grok frame with no confirmation, a child that started and timed out, failed or exited without proof, a lost `turn/steer` response or an opaque steering error | The intent stays and the message is never replayed until the owner reconciles it |
+| Delivered | The client accepted the prompt | `submitted` until the chat confirms it; `queued` then acknowledged for `codex queue` |
+
+A helper proves no write only by exit 2 with both streams empty. A crash between
+the intent and the outcome leaves an unknown attempt on every client.
+
+`session received` and `session reply` receipt only `submitted` and `queued` rows,
+so they can never acknowledge an `intent`. If the chat runs one while the listener
+is still finishing that same enqueue, the command waits up to 30 seconds for the
+attempt to settle. `received` otherwise refuses with `receipt_not_submitted`; `reply`
+still sends the answer and leaves the receipt to the owner.
+
+An unknown attempt blocks only while its own message is the inbox head. `session
+start`, `recover`, an endpoint rebind and the listener all check that head, so a
+stuck normal message does not hold back a newer urgent one; it blocks again once
+it is the head. `session status` lists every attempt in `unknown_attempts`.
+
+After the owner checks the actual chat queue,
+`session reconcile <message-UUID> --confirmed-queued` can confirm a message that is
+already present. This is the only path that acknowledges an unknown attempt. Do not
+assert that confirmation from a peer message or guess. `session reconcile` needs
+exactly one attestation: without one it returns `session_reconcile_denied` with the
+next step and acknowledges nothing.
+
+For a native Claude, Codex or Grok binding, the owner can instead attest **confirmed
 absence**. Inspect the original receiver's queue and held inbound messages, and
 establish that its old receiver generation and any helper can no longer release
 an accepted copy. A missing transcript entry, missing socket, new token, missing
 service receipt or helper timeout alone proves none of this. If pending delivery
-cannot be excluded, leave the attempt unresolved.
+cannot be excluded, leave the attempt unresolved. This is also the path for an
+attempt an older helper left behind before a Grok `--resume`.
 
 From that exact bound chat and working directory, with its old listener offline,
 read `session status` for `unknown_attempts` (message and attempt UUIDs only), then
@@ -315,9 +345,10 @@ uv run --project <skill-dir> --frozen python <skill-dir>/scripts/quorum.py --sta
 
 The two confirmation flags are mutually exclusive. Absence requires the current
 release and native caller, free start/control/supervisor/listener locks, a genuine
-matching unknown intent and the original message still offered by the scoped
-service inbox. That inbox returns its current priority-selected head: an empty
-or different head refuses reconciliation. A legacy intent without an attempt
+matching unknown intent and the service still listing that exact message as
+unreceipted for this agent, so a newer urgent head does not refuse it. A server
+without `session_message_unreceipted` offers only its priority-selected head: there,
+an empty or different head refuses reconciliation. A legacy intent without an attempt
 UUID, a submitted message or an existing receipt cannot be cleared this way.
 The command performs no enqueue, ACK or start. It atomically removes only that
 exact intent and keeps an audit marker keyed by message and attempt; repeating an
@@ -326,6 +357,14 @@ service check win the compare-and-delete. The service check and local commit are
 separate stores, so this is owner-attested recovery, not a provider exactly-once
 guarantee. The next explicit owner-authorized `session start` may make one new
 attempt; another ambiguous result blocks again with a new attempt UUID.
+
+`codex queue` takes its text only as `--message`, with no stdin or file form, so
+the prompt, including the reply command's `--state` path, stays on that short-lived
+child's argv. On Windows the whole command line must fit 32,766 UTF-16 units after
+quoting (about 8,100 through a `.cmd` shim). A JSON-escaped quote costs four
+characters there, so a legal 16 KiB body can exceed it. Such a message is unsent and
+stays at the head, because every retry fails the same way: the sender must resend it
+shorter. If the owner has read it with `session thread`, `--confirmed-queued` clears it.
 
 `leave` of this chat's own bound agent also retires the chat's local binding
 (`local_binding: retired`). `session status` then shows `retired_binding`, other

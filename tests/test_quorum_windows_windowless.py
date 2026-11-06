@@ -7,7 +7,7 @@ import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 SCRIPTS = Path(__file__).resolve().parents[1] / 'skills/quorum/scripts'
 sys.path.insert(0, str(SCRIPTS))
@@ -19,6 +19,13 @@ MID = '22222222-2222-4222-8222-222222222222'
 # wait covers enqueue's owned deadline plus Python startup/scheduler margin.
 ENQUEUE_TIMEOUT = 30
 PROBE_TIMEOUT = ENQUEUE_TIMEOUT + 15
+
+
+def finished_child():
+    child = MagicMock(returncode=0)
+    child.__enter__.return_value = child
+    child.communicate.return_value = (b'', b'')
+    return child
 
 
 class WindowlessHelpersTests(unittest.TestCase):
@@ -40,25 +47,25 @@ class WindowlessHelpersTests(unittest.TestCase):
             self.assertEqual(result, {'listener_console': 0, 'acl_children': 0, 'queue_console': 0})
 
     def test_windows_codex_queue_cannot_allocate_a_console(self):
-        import quorum_session
+        import quorum_claude_pipe, quorum_session
         host = SimpleNamespace(name='nt')
-        with patch.object(quorum_session, 'os', host), \
+        with patch.object(quorum_session, 'os', host), patch.object(quorum_claude_pipe, 'os', host), \
              patch.object(subprocess, 'CREATE_NO_WINDOW', NO_WINDOW, create=True), \
              patch.object(quorum_session.shutil, 'which', return_value='synthetic-codex.exe'), \
-             patch.object(subprocess, 'run', return_value=SimpleNamespace(returncode=0)) as run:
+             patch.object(subprocess, 'Popen', return_value=finished_child()) as popen:
             quorum_session.enqueue({'session_ref': SID}, {'id': MID}, Path('/synthetic/state'))
-        self.assertEqual(run.call_args.kwargs.get('creationflags', 0), NO_WINDOW)
-        self.assertEqual(run.call_args.args[0][1:4], ['queue', '--thread', SID])
-        self.assertEqual(run.call_args.kwargs['timeout'], ENQUEUE_TIMEOUT)
+        self.assertEqual(popen.call_args.kwargs.get('creationflags', 0), NO_WINDOW)
+        self.assertEqual(popen.call_args.args[0][1:4], ['queue', '--thread', SID])
+        self.assertEqual(popen.return_value.communicate.call_args.kwargs['timeout'], ENQUEUE_TIMEOUT)
 
     def test_windows_claude_io_helper_cannot_allocate_a_console(self):
         import quorum_claude_pipe
         with patch.object(quorum_claude_pipe, 'os', SimpleNamespace(name='nt')), \
              patch.object(subprocess, 'CREATE_NO_WINDOW', NO_WINDOW, create=True), \
-             patch.object(subprocess, 'run', return_value=SimpleNamespace(returncode=0)) as run:
+             patch.object(subprocess, 'Popen', return_value=finished_child()) as popen:
             quorum_claude_pipe.submit(SID, MID, 'synthetic message')
-        self.assertEqual(run.call_args.kwargs.get('creationflags', 0), NO_WINDOW)
-        self.assertEqual(run.call_args.kwargs['timeout'], 10)
+        self.assertEqual(popen.call_args.kwargs.get('creationflags', 0), NO_WINDOW)
+        self.assertEqual(popen.return_value.communicate.call_args.kwargs['timeout'], 10)
 
 
 NEW_GROUP, DETACHED, SUSPENDED = 0x200, 0x8, 0x4
@@ -307,25 +314,31 @@ def detached_probe(root):
     kernel = ctypes.WinDLL('kernel32')
     kernel.GetConsoleWindow.restype = ctypes.c_void_p
     result = {'listener_console': kernel.GetConsoleWindow() or 0}
-    original = subprocess.run
+    launches = []
 
-    def execute(command, **kwargs):
-        # Preserve enqueue's launch kwargs, replacing only Codex with a
-        # synthetic console application. Never touch a real client chat.
-        if command[1:3] != ['queue', '--thread']: raise ValueError('unexpected_command')
-        command = [sys.executable, '-c', 'import ctypes; k=ctypes.WinDLL("kernel32"); '
-                   'k.GetConsoleWindow.restype=ctypes.c_void_p; print(k.GetConsoleWindow() or 0)']
-        completed = original(command, **kwargs)
-        if command[0] == sys.executable:
-            result['queue_console'] = int(completed.stdout)
-        return completed
+    class SyntheticCodex(subprocess.Popen):
+        """Every child of this process starts here, so the real launch flags reach the real OS call.
+
+        Preserve enqueue's launch kwargs, replacing only Codex with a synthetic
+        console application. Never touch a real client chat.
+        """
+        def __init__(self, command, **kwargs):
+            launches.append(command)
+            if command[1:3] != ['queue', '--thread']: raise ValueError('unexpected_command')
+            super().__init__([sys.executable, '-c', 'import ctypes; k=ctypes.WinDLL("kernel32"); '
+                              'k.GetConsoleWindow.restype=ctypes.c_void_p; print(k.GetConsoleWindow() or 0)'], **kwargs)
+
+        def communicate(self, *args, **kwargs):
+            stdout, stderr = super().communicate(*args, **kwargs)
+            result['queue_console'] = int(stdout)
+            return stdout, stderr
 
     target = root / 'synthetic-state'
     target.write_text('synthetic only')
-    with patch.object(subprocess, 'run', side_effect=execute) as launched:
+    with patch.object(subprocess, 'Popen', SyntheticCodex):
         # Private ACLs are set in-process: no child, so no console to allocate.
         quorum_os.protect(target)
-        result['acl_children'] = launched.call_count
+        result['acl_children'] = len(launches)
         with patch.object(quorum_session.shutil, 'which', return_value=sys.executable):
             quorum_session.enqueue({'session_ref': SID}, {'id': MID}, root)
     (root / 'result.json').write_text(json.dumps(result))
