@@ -2,6 +2,10 @@
 -- Apply only to a fresh Supabase project, together with all later migrations.
 -- No production users, configuration, memberships, invitations or credentials.
 -- The following creator-gate migration must be applied before exposing this service.
+-- FROZEN HISTORICAL PILOT: inbox_claim, attempt_update, delivery_complete, work_register,
+-- work_admit, work_transition, attempts, leases, work_items and capacity_reservations stay
+-- deployed for the opt-in Claude pilot only. The live contract is native session receipts;
+-- extend those. See references/protocol.md. This note changes no function body.
 CREATE SCHEMA quorum_private;
 CREATE SCHEMA IF NOT EXISTS extensions;
 CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA extensions;

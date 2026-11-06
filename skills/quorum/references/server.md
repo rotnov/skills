@@ -116,6 +116,41 @@ The supplied SQL is tested in disposable PostgreSQL with synthetic Auth fixtures
 Repository developers can run `npm ci --prefix tests/quorum-backend` followed by
 `npm test --prefix tests/quorum-backend`; these tests use no cloud credentials.
 
+## Add server behaviour
+
+For migration authors; every new migration also gets a section in this file.
+
+Do not copy and rename `quorum_private.call`, `public.session_heartbeat` or a
+function in their chains (`call_*_core`, `session_heartbeat_before_status`,
+`session_heartbeat_before_hello`). Copy and rename means moving a function aside
+and pasting a near-copy of its body as the replacement, so the moved ancestor stops
+running. `20261106120000` and `20261106150000` did this for the heartbeat. They stay
+as applied, because later pins hash what they installed. Do not repeat them.
+
+Ship new behaviour in one of these ways, in this order:
+
+1. A new RPC. The template is
+   [`20261106160000_session_message.sql`](../supabase/migrations/20261106160000_session_message.sql):
+   - a `SOURCE ONLY` header naming its predecessor and what it does not change;
+   - a guard block that refuses reapplication, refuses a missing predecessor and
+     compares the `prosrc` SHA-256 of each function it relies on, plus
+     `public.session_requirements()` for the release;
+   - one `create function` with `security definer` and `search_path=pg_catalog`;
+   - `revoke all` from `public,anon,authenticated,service_role`, then
+     `grant execute` to `authenticated`.
+2. A thin wrapper, when an existing RPC must change its answer. The wrapper adds
+   only its own lines and calls the moved function, whose reviewed body keeps
+   running unchanged. See `public.session_heartbeat` in
+   [`20261105160000_peer_status_visibility.sql`](../supabase/migrations/20261105160000_peer_status_visibility.sql).
+   Around `call`, this adds another dispatcher layer, so prefer a new RPC there.
+
+If neither fits, raise it with the owner instead of pasting a body; the baseline
+question is tracked in [#156](https://github.com/rotnov/skills/issues/156).
+
+A new RPC also needs its name in `OPERATIONS` in `quorum_api.py`, any new exception
+name in that file's error table, a client fallback for a server without it, and
+pins in `tests/test_quorum_migration_order.py`.
+
 ## Owner maintenance extension
 
 Only after reviewing the concrete source and obtaining administrator deployment
