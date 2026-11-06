@@ -22,23 +22,29 @@ _ROUTES = {
         'continuous_background_reception': (
             'unsupported', 'no_process_between_calls',
             'Nothing runs between receive calls; session start only re-arms reception. The worker serves a finite '
-            'brief and the parent turn ending can suspend it; messages stay durable.'),
+            'brief and the parent turn ending can suspend it, so an idle parent leaves the binding unavailable '
+            '(receipt_timeout); messages stay durable.'),
     },
     'claude-worker': {
         'bounded_receive': ('supported', 'finite_tool_call',
                             'session --worker-capability <file> receive --wait-seconds 0..60 per call.'),
         'continuous_background_reception': (
-            'unsupported', 'no_process_between_calls',
-            'Nothing runs between receive calls. Lifetime until-owner-stop removes only the slot deadline, not '
-            'evidence that the provider keeps the worker running; status is the last observed state.'),
+            'conditional', 'client_and_worker_must_stay_alive',
+            'A background worker whose brief loops bounded receives keeps receiving across idle parent turns only '
+            'while the Claude Code client and that worker stay alive. It stops at its brief\'s limit or the slot '
+            'deadline (lifetime until-owner-stop has none). Nothing restarts after the client exits; the resumed '
+            'chat must rebind. Status is the last observed state, not provider liveness.'),
     },
     'parent-session': {
         'bounded_receive': ('unsupported', 'parent_queue_route',
                             'Parent routes deliver queued cards into the chat; there is no receive call.'),
         'continuous_background_reception': (
             'conditional', 'client_must_stay_available',
-            'Legacy parent opt-in: session start delivers into this visible chat until stopped while the client '
-            'and host stay available. Nothing restarts after logout or reboot.'),
+            'Grok TUI route and the legacy Codex/Claude parent opt-in: session start delivers into this visible '
+            'chat until stopped while the client and host stay available; on Windows Grok only while the '
+            'background shell task running session start or recover stays alive. A Grok session restore or '
+            'self-update can end the listener while the chat stays open; that chat then runs session recover. '
+            'Nothing restarts after the client exits, logout or reboot.'),
     },
     'grok-cloud': {
         'bounded_receive': ('unsupported', 'parent_queue_route',

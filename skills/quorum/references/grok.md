@@ -1,8 +1,9 @@
-# Existing Grok TUI on macOS
+# Existing Grok TUI on macOS and Windows
 
 Read this only for an owner-authorized connection of the current interactive
-Grok chat. This experimental route supports **Grok Build 1.0.67 and 1.0.70 on macOS**;
-Linux and Windows Grok transports are not supported. Codex and Claude support
+Grok chat. This experimental route supports **Grok Build 1.0.67 and 1.0.70 on macOS**
+and experimental on [Windows 1.0.70 and 1.0.77](#windows-1070-and-1077);
+Linux Grok transports are not supported. Codex and Claude support
 is unchanged. Grok discovers the shared `.agents/skills` directory, including
 the portable copy returned by the [automatic refresh](update.md).
 
@@ -81,8 +82,8 @@ receipt in that chat. It keeps the agent, role, delegation and queue, needs no
 invitation and no relaunch. On Windows, run it as one background shell task that
 stays alive (`block_until_ms: 0`, `<command> ; while ($true) { Start-Sleep 60 }`),
 because Grok kills a tool call's children when the call returns; the helper's own
-`next_step` prints this form. Windows transport support and its recovery are not
-qualified in this release.
+`next_step` prints this form. Recovery is [not yet qualified on Windows](#windows-1070-and-1077).
+The `capabilities` report stays the canonical statement of what each route can do.
 
 Detection, by what the chat does next:
 
@@ -99,8 +100,8 @@ messages. Whether a restore fires `SessionStart` is unverified; do not rely on i
 ### Self-updated `grok` on PATH
 
 The updater repoints `grok` at the new download while a running TUI keeps its own
-image, so the two no longer match. A running **supported** build (see the versions
-above) stays verified when its image is the updater's own
+image, so the two no longer match. On macOS, a running **supported** build (see the
+versions above) stays verified when its image is the updater's own
 `grok-<version>-macos-<arch>` file beside the installed build, owned by this user
 and writable by nobody else, and the leader handshake reports that same version.
 Recovery and delivery then work without a relaunch.
@@ -110,7 +111,8 @@ with `data.running_build`, `data.installed_build` and a `next_step`: the owner
 quits the TUI and relaunches the same conversation with `--resume` to finish the
 update, then runs `session recover`. A newly installed build that is not listed
 above is refused after that relaunch, so report it as a blocker instead of
-relaunching a working chat. Any other executable stays `session_binding_denied`.
+relaunching a working chat. Any other executable stays `session_binding_denied`,
+including on Windows, where the running image must still match `grok` on PATH.
 
 ### Clean launch environment
 
@@ -196,3 +198,47 @@ receipts, without extra probes or reply loops. This qualifies that transport
 and the explicit recovery command; it does not install a startup hook or prove
 automatic recovery on every provider lifecycle. Other versions remain refused.
 Unsupported versions require renewed validation.
+
+## Windows 1.0.70 and 1.0.77
+
+Native Windows uses the same owner-started TUI, exact session flags, registry
+row, ACP handshake and resident-roster check, with these differences:
+
+- Start it with an explicit `--leader-socket <absolute-path>`. Plain `--leader`
+  exports no `GROK_LEADER_SOCKET` on Windows and reports `leader_socket_missing`.
+  The path is only a name: Grok creates no file there and serves the leader on
+  a `\\.\pipe\grok-leader-<16 hex>` named pipe.
+- The pipe name is an undocumented derivation, so the adapter finds it by its
+  server process: the single `grok.exe agent leader` child of this TUI, owned by
+  the current user, with the installed image, born after the TUI. It re-checks
+  that server PID and birth time on every opened handle and connects at
+  identification impersonation level. Two candidate pipes for one TUI are refused.
+- Only Grok 1.0.70 and 1.0.77 are accepted on Windows; 1.0.67 and other builds are refused.
+  Discovery briefly opens each current-user `grok-leader-*` pipe at
+  identification level to learn its server, sends nothing on it, and refuses a
+  second candidate. A busy leader pipe reports `grok_transport_unavailable`.
+- These builds record no process birth time in `active_sessions.json`, and killed
+  TUIs leave stale rows behind. Only rows of a live TUI born no later than the
+  row's `opened_at` count (a newer process is a reused PID), and exactly one
+  such row must match this session and working directory. The registry must pass the same owner
+  and ACL check as other private Windows files.
+- Grok runs each Windows shell tool call in a job that kills its child processes
+  when the call returns, and the job refuses breakaway. A `session start` in an
+  ordinary tool call therefore sends its Hello, then the listener dies
+  (`listener_exited`). Run it in one background shell task that stays alive,
+  `block_until_ms: 0` with `<helper> session start ; while ($true) { Start-Sleep 60 }`,
+  then run `session status` in a normal call. Stopping that task stops the
+  listener; a new start re-greets peers.
+- There is no controlling-terminal check. Grok asks to trust each new working
+  directory, so keep one project folder per connected chat rather than creating
+  fresh directories.
+
+Verification is limited to one owned Windows 11 TUI, signed in with a normal
+subscription. On 1.0.70, real process identity, pipe discovery, protocol-1
+registration and resident metadata passed; a stale row of a closed TUI was
+refused; one `session/prompt` reached the actual chat, which answered it. On
+1.0.77 (`50ca579fa996`) the same checks passed, and a new leader TUI accepted
+an open invitation anonymously, connected with the background-task listener above, and
+sent one PING to a native macOS Claude peer; the peer's PONG reply reached the
+actual Grok chat, and heartbeats kept it online. No `--resume` relaunch or recovery has
+been qualified on Windows yet.

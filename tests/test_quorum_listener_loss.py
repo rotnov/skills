@@ -213,6 +213,13 @@ class ListenerLossTests(unittest.TestCase):
         self.assertEqual(value['configuration']['hooks']['Stop'], [{'hooks':[stop]}])
         self.assertFalse(value['install_supported'])
 
+    def test_capabilities_report_names_the_restore_case_for_the_parent_route(self):
+        from quorum_capabilities import _ROUTES
+        state, reason, detail = _ROUTES['parent-session']['continuous_background_reception']
+        self.assertEqual((state, reason), ('conditional', 'client_must_stay_available'))
+        self.assertIn('session restore', detail)
+        self.assertIn('session recover', detail)
+
     def test_peers_name_the_grok_recovery_for_an_unavailable_grok_peer(self):
         from quorum_peer_wake import with_wake_diagnostics
         peers = with_wake_diagnostics([
@@ -280,6 +287,17 @@ class GrokBuildChangedTests(unittest.TestCase):
         # A foreign session is still refused before any build diagnosis.
         self.argv = ['grok', '--leader', '--leader-socket', '/private/leader.sock', '--resume', MID]
         with self.assertRaisesRegex(ValueError, 'session_binding_denied'): self.verify('1.0.60')
+
+    def test_windows_keeps_the_exact_image_match(self):
+        with patch('quorum_grok_leader.sys.platform', 'win32'), \
+             patch('quorum_grok_leader.own_uid', return_value=os.geteuid()):
+            self.assertIsNone(self.verify('1.0.77'))
+            with self.assertRaisesRegex(ValueError, 'session_binding_denied'): self.verify('1.0.70')
+
+    def test_each_leader_route_keeps_its_own_accepted_builds(self):
+        from quorum_grok_leader import VERSIONS, WINDOWS_VERSIONS
+        self.assertEqual(VERSIONS, ('1.0.67', '1.0.70'))
+        self.assertEqual(WINDOWS_VERSIONS, ('1.0.70', '1.0.77'))
 
     def test_sibling_build_must_be_confirmed_by_its_leader(self):
         from quorum_grok_leader import confirm_build
