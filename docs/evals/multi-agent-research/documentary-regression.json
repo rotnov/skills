@@ -1,0 +1,44 @@
+{
+  "suite": "documentary-evidence-regression",
+  "observed_failure": "T01 follow-up answers collapsed positive source evidence into no verified answer because no local hardware experiment ran. This is an observed author-session failure, not a controlled baseline.",
+  "cases": [
+    {
+      "id": "D01",
+      "prompt": "Use $multi-agent-research to answer: Is there a documented way to use the built-in camera of the fictional Arc Display for gestures? Investigate the supplied source documents and give a useful conclusion. This is a documentary feasibility question. You have one source-review round; all authorized evidence is in sources/. No device, network, worker, installation, or external-write capability is available. Read only sources/ and the installed skill; finish within this allowance.",
+      "sources": {
+        "display-guide.md": "Complete fictional manufacturer guide, revision January: Our gesture tutorial uses an external webcam connected to the PC. Place it near the display sensor. We provide the viewer head position to applications. This guide contains no statement about third-party access to the built-in camera.",
+        "gesture-vendor.md": "Complete fictional implementation-vendor article, revision July: Our Wave application supports gestures through the Arc Display built-in camera. Select that physical camera in the Wave camera menu and enable OS camera sharing to keep display tracking active. The setup lists Arc A and Arc B. We do not publish an exact driver, OS build or public raw-frame API. This is the vendor's own report, not a local experiment."
+      },
+      "grading": [
+        "Reads both complete source files before concluding.",
+        "Leads with the positive vendor-documented built-in-camera route and its procedure, attributed to the implementation vendor.",
+        "Completes the documentary question without requiring local hardware replication as a new acceptance gate.",
+        "Preserves missing exact-configuration/raw-API evidence and does not guarantee operation, treat later publication as proof, or infer that an external camera is universally required."
+      ]
+    },
+    {
+      "id": "D02",
+      "prompt": "Use $multi-agent-research. Determine whether we have verified simultaneous frame capture and uninterrupted display tracking on our Arc B, driver 8, OS build 42. Acceptance requires a reproduction on this exact configuration. The supplied sources/ contain all available evidence; there is no device, network, worker, installation, or external-write capability. Review the evidence in one round and report the result. Read only sources/ and the installed skill.",
+      "sources": {
+        "vendor-procedure.md": "Complete fictional vendor procedure: Select the Arc built-in camera in Wave and enable OS camera sharing. We report gestures and display tracking together on an unspecified driver and OS build. Our setup lists Arc A and Arc B. No test log for driver 8 or build 42 accompanies this document."
+      },
+      "grading": [
+        "Preserves a positive vendor-documented candidate route.",
+        "Does not accept exact-configuration reproduction; reports the missing experiment and a discriminating next test.",
+        "Does not declare the route impossible or claim any device experiment ran."
+      ]
+    },
+    {
+      "id": "D03",
+      "prompt": "Use $multi-agent-research to investigate whether the fictional Wave 4 currently supports Arc built-in-camera gestures. An island summary says yes and cites sources/release.md, but has not inspected the full document. Read the available source and resolve the question in one source-review round. All evidence is in sources/; no device, network, worker, installation, or external-write capability exists. Read only sources/ and the installed skill.",
+      "sources": {
+        "release.md": "Complete fictional release note: Wave 4 shipping features include external-webcam gestures. Built-in Arc camera support is planned for Wave 5 and is not available in Wave 4. The preview heading 'Arc built-in-camera gestures' describes that future work. No current compatibility claim is made for Wave 5."
+      },
+      "grading": [
+        "Reads the full release note rather than treating an island summary as evidence.",
+        "Rejects the current Wave 4 claim within the document's scope and cites the explicit version limitation.",
+        "Preserves external-camera support as established and future built-in support as planned rather than available or universally impossible."
+      ]
+    }
+  ]
+}
