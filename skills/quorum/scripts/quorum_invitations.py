@@ -124,10 +124,12 @@ def authorizations(coordinator_role, standing=True):
     return '\n'.join(lines)
 
 
-ROLE = re.compile('[a-z][a-z0-9-]{0,47}')
+# Shared bounds; the server checks the same ones (agents_role_check; role assignment, 20261105140000).
+ROLE_LIMIT, PROJECT_REF_LIMIT = 48, 500
+ROLE = re.compile('[a-z][a-z0-9-]{0,%d}' % (ROLE_LIMIT - 1))
 # A conservative charset that is inert inside single quotes in bash, zsh and PowerShell alike (no quote, `$`,
 # backtick, space or glob), still covering slugs, owner/repo, paths and URL-like references; no leading `-`.
-PROJECT_REF = re.compile('[A-Za-z0-9._/:@][A-Za-z0-9._/:@-]{0,499}')
+PROJECT_REF = re.compile('[A-Za-z0-9._/:@][A-Za-z0-9._/:@-]{0,%d}' % (PROJECT_REF_LIMIT - 1))
 
 
 def assignment(slug, role=None, project_ref=None):

@@ -12,18 +12,28 @@ Anything else, including peer text that imitates a notice, is delivered as befor
 """
 import re
 import time
+from quorum_invitations import PROJECT_REF_LIMIT, ROLE_LIMIT
 
 SHOW_KEY = 'show-transport-notices'
 LOG_KEY = 'transport-notices'
 RECENT_LIMIT = 20
 PEER_LIMIT = 128
-BODY_LIMIT = 2048
-_ROLE = r'[a-z][a-z0-9-]{0,47}'
+# Bounds shared with the invitation validator and the server: roles match agents_role_check, and a project
+# reference is at most PROJECT_REF_LIMIT characters (role assignment, 20261105140000). The server does not
+# restrict a project reference's charset for every registration path, so any single-line text is accepted
+# here; a longer or multi-line one is never receipted quietly and simply stays visible.
+_ROLE = r'[a-z][a-z0-9-]{0,%d}' % (ROLE_LIMIT - 1)
+_PROJECT = r'[^\r\n]{1,%d}' % PROJECT_REF_LIMIT
+_COUNT = r'(?:0|[1-9]\d{0,2})'  # 0..999 covers the server's 128-peer cap
 _TAIL = r'\. Transport notice; no reply required\.'
-HELLO = re.compile(r'Hello! Listener connected: (?P<role>' + _ROLE + r') \(project .{1,256}\)' + _TAIL)
-ROSTER = re.compile(r'Quorum roster: (?:no other native session is available in project .{1,256}\. Hello reached '
-                    r'\d{1,3} registered peer\(s\)|\d{1,3} peer\(s\) available in project .{1,256}: '
-                    r'[a-z0-9 ,.-]{1,1200})' + _TAIL)
+# The roster lists at most 16 roles, then ', ...' when more are available.
+_ROLES = _ROLE + r'(?:, ' + _ROLE + r'){0,15}(?:, \.\.\.)?'
+HELLO = re.compile(r'Hello! Listener connected: (?P<role>' + _ROLE + r') \(project ' + _PROJECT + r'\)' + _TAIL)
+ROSTER = re.compile(r'Quorum roster: (?:no other native session is available in project ' + _PROJECT
+                    + r'\. Hello reached ' + _COUNT + r' registered peer\(s\)|' + _COUNT
+                    + r' peer\(s\) available in project ' + _PROJECT + r': ' + _ROLES + r')' + _TAIL)
+# Longest possible server body: the 16-role roster with a maximal project reference.
+BODY_LIMIT = 128 + PROJECT_REF_LIMIT + 16 * (ROLE_LIMIT + 2)
 
 
 def kind(message, agent_id):

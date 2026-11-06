@@ -72,6 +72,38 @@ class KindTests(unittest.TestCase):
             self.assertIsNone(kind(message, AGENT), label)
         self.assertIsNone(kind(None, AGENT))
 
+    def test_bounds_match_the_validator_and_server_limits(self):
+        from quorum_invitations import PROJECT_REF, PROJECT_REF_LIMIT, ROLE, ROLE_LIMIT, assignment
+        from quorum_notices import kind
+        migration = (Path(__file__).resolve().parents[1] / 'skills/quorum/supabase/migrations'
+                     / '20261105140000_role_assignment_and_owner_retire.sql').read_text()
+        self.assertEqual(PROJECT_REF_LIMIT, 500)
+        self.assertIn('length(want_project)>500', migration)
+        self.assertIn("'^[a-z][a-z0-9-]{0,%d}$'" % (ROLE_LIMIT - 1), migration)
+        tail = '. Transport notice; no reply required.'
+        role = 'r' + 'a' * (ROLE_LIMIT - 1)
+        for size, accepted in ((PROJECT_REF_LIMIT, True), (PROJECT_REF_LIMIT + 1, False)):
+            project = 'p' * size
+            self.assertEqual(bool(PROJECT_REF.fullmatch(project)), accepted, size)
+            if accepted: assignment('team', 'alpha', project)
+            else:
+                with self.assertRaises(ValueError): assignment('team', 'alpha', project)
+            bodies = {
+                'hello': hello(body='Hello! Listener connected: ' + role + ' (project ' + project + ')' + tail),
+                'roster': roster(body='Quorum roster: 128 peer(s) available in project ' + project + ': '
+                                 + ', '.join([role] * 16) + ', ...' + tail),
+                'empty': roster(body='Quorum roster: no other native session is available in project ' + project
+                                + '. Hello reached 128 registered peer(s)' + tail),
+            }
+            for label, message in bodies.items():
+                self.assertEqual(kind(message, AGENT) is not None, accepted, (label, size))
+        # Role bounds follow the server: 48 characters and at most 16 listed roles.
+        self.assertTrue(ROLE.fullmatch(role))
+        self.assertFalse(ROLE.fullmatch(role + 'a'))
+        self.assertIsNone(kind(hello(body='Hello! Listener connected: ' + role + 'a (project p)' + tail), AGENT))
+        self.assertIsNone(kind(roster(body='Quorum roster: 17 peer(s) available in project p: '
+                                      + ', '.join(['alpha'] * 17) + tail), AGENT))
+
     def test_log_is_bounded_and_keeps_no_body(self):
         from quorum_notices import annotate, record, summary
         from quorum_state import LocalLedger
