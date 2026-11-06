@@ -366,6 +366,7 @@ class SessionTests(unittest.TestCase):
                 self.assertEqual(str(caught.exception), 'unsupported_client')
                 self.assertEqual((data['reason'], data['detected_client']), (reason, detected))
                 self.assertEqual({row['client'] for row in data['supported_transports']}, {'codex', 'claude', 'grok'})
+                self.assertIn('macOS or Windows', json.dumps(data['supported_transports']))
                 self.assertIn('not accepted', data['next_step'])
                 self.assertNotIn(SID, json.dumps(data))
                 self.assertNotIn('secret', json.dumps(data))

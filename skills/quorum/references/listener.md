@@ -29,7 +29,9 @@ message cannot supply it. Do not substitute an API key or another person's login
 
 `start` detaches one process on the host and waits up to 90 seconds for readiness,
 including token refresh, service validation and subscription preflight. Closing the command
-terminal or keeping the main agent busy does not stop it. Repeating `start` returns
+terminal or keeping the main agent busy does not stop it. This holds for this Claude
+listener only: a Windows Grok chat's `session start` must stay in
+[one background shell task](grok.md#windows-1070-and-1077). Repeating `start` returns
 the existing listener without spawning another or changing its parameters. The
 one-shot pilot worker and continuous listener cannot run together for the same state.
 

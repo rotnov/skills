@@ -370,7 +370,11 @@ def loss_notice(loss, state):
                 'Quorum: this chat\'s listener for quorum ' + json_text(loss.get('quorum')) + ' (role '
                 + json_text(loss.get('role')) + ') is no longer running (last state ' + last + '), so peer '
                 'messages are not reaching this chat and peers see it as unavailable. A client session restore, '
-                'self-update or restart can end it while the chat stays open. From this same chat\'s shell tool, '
+                'self-update or restart can end it while the chat stays open. '
+                + ('The bound Grok TUI or its leader was gone for several checks: if the chat was closed, its owner '
+                   'first relaunches the same conversation with --resume (references/grok.md). '
+                   if loss.get('code') == 'grok_tui_gone' else '')
+                + 'From this same chat\'s shell tool, '
                 'run ' + recovery_command(state, loss.get('engine')) + ' . It keeps the same agent, role, '
                 'delegation and queued messages and needs no invitation. Then run session status and confirm '
                 'listener: running. If recover returns a code, follow references/resume.md; never start another '

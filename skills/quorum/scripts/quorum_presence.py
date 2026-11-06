@@ -31,8 +31,10 @@ def peer_status_fields(awaiting, hold_until, run_id, started_at, *, now):
 
 class Presence:
     def __init__(self, api, record, ledger, *, clock=time.monotonic, persist_epoch=False, wall=None, run_id=None,
-                 status=None):
+                 status=None, liveness=None):
         self.api, self.record, self.ledger, self.clock = api, record, ledger, clock
+        # Optional: raises a fixed code once this listener's own client is gone, ending the run unreported.
+        self.liveness = liveness
         self.wall = wall or (lambda: time.time())
         # Peer-visible status: this run's generation and start, plus an optional callable returning
         # (awaiting-owner count, explicit hold deadline or None) from this binding's private ledger.
@@ -70,6 +72,7 @@ class Presence:
         if self.clock() < self.next_tick: return
         if stopping and stopping(): return
         self.next_tick = self.clock() + 20
+        if self.liveness: self.liveness()
         if self.persist:
             now = self.wall()
             # A gap since the last acknowledgement, or a clock that moved backwards (an unknown

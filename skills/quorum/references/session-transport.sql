@@ -1,5 +1,18 @@
 -- Owner-applied extension for the existing Quorum pilot backend.
 -- This is not executed by skill installation or by session connect/start.
+-- One transaction, so the refusal below also holds when a client continues after an error.
+begin;
+-- This file predates the Grok and priority migrations and would replace their functions with older ones.
+do $$
+begin
+ if to_regprocedure('public.session_reply(uuid,text,uuid,text,text)') is not null
+    or coalesce((select prosrc like '%grok%' from pg_catalog.pg_proc
+                 where oid=to_regprocedure('quorum_private.native_session(uuid,text)')),false) then
+  raise exception 'session_transport_superseded'
+   using hint='This server already has newer session functions. Nothing was changed; do not reapply this file.';
+ end if;
+end $$;
+
 create table if not exists quorum_private.session_receipts (
  agent_id uuid not null references quorum_private.agents(id),
  message_id uuid not null references quorum_private.messages(id),
@@ -78,3 +91,4 @@ begin
 end $$;
 revoke all on function public.session_reply(uuid,text,uuid,text) from public,anon;
 grant execute on function public.session_reply(uuid,text,uuid,text) to authenticated;
+commit;

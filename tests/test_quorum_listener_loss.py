@@ -13,6 +13,7 @@ import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
+import uuid
 
 from quorum_test_support import isolated_profiles
 from test_quorum_session import Generation, RequirementsApi, SID, MID, without_client_session
@@ -55,6 +56,7 @@ class ListenerLossTests(unittest.TestCase):
         with patch.dict(os.environ, {'GROK_SESSION_ID':SID}), patch('pathlib.Path.cwd', return_value=self.root), \
              patch('quorum_live.api_for', return_value=(self.api, None, None)), \
              patch('quorum_grok_leader.binding', return_value=self.transport), \
+             patch('quorum_grok_leader.GROK_LEADER_PLATFORMS', (sys.platform,)), \
              patch('quorum_session.spawn_background', side_effect=self.spawn):
             return dispatch(SimpleNamespace(action=action, session_id=SID, **extra), SimpleNamespace(root=self.root),
                             None)
@@ -77,6 +79,38 @@ class ListenerLossTests(unittest.TestCase):
         event = {'hook_event_name':'Stop', 'hookEventName':'stop', 'sessionId':SID, 'cwd':str(self.root),
                  'reason':'end_turn', 'stopHookActive':False, 'backgroundTasks':[], **change}
         return turn_end_check(self.root, event, {'GROK_SESSION_ID':SID})
+
+    @isolated_profiles
+    def test_a_grok_run_watches_its_own_transport_and_other_engines_do_not(self):
+        """#140: the real `session run` wiring into the heartbeat."""
+        for engine, watched in (('grok', True), ('claude', False)):
+            with self.subTest(engine=engine), patch('quorum_session.run_listener', return_value={}) as run, \
+                    patch('quorum_session.check_native_route'), patch('quorum_claude_pipe.binding', return_value='/s'), \
+                    patch('quorum_realtime.RealtimeWait') as waiter:
+                self.record(engine, **({} if watched else {'messaging_socket':'/s'}))
+                self.dispatch('run', run_id=str(uuid.uuid4()), recovering=False)
+                run.assert_called_once()
+                liveness = waiter.call_args.kwargs['keepalive'].liveness
+                self.assertEqual(liveness.__self__.transport if watched else liveness,
+                                 self.transport if watched else None)
+
+    @isolated_profiles
+    def test_a_listener_ended_by_a_gone_tui_recovers_through_the_start_guard(self):
+        """#140 with #151: this stop is the run's own, so it leaves no stop intent to refuse the recovery."""
+        from quorum_listener import STOP_INTENT
+        from quorum_resume import listener_loss
+        self.record()
+        self.dispatch('start')
+        lost = self.restore_kills_listener()
+        intent = self.ledger.setting(STOP_INTENT)
+        self.ledger.setting('listener', {**self.ledger.setting('listener'), 'state':'error', 'code':'grok_tui_gone'})
+        self.assertEqual(self.dispatch('status')['code'], 'grok_tui_gone')
+        self.assertIn('--resume', self.dispatch('status')['listener_lost']['next_step'])
+        self.assertEqual(self.ledger.setting(STOP_INTENT), intent)
+        recovered = self.dispatch('recover')
+        self.assertNotEqual(recovered['run_id'], lost)
+        self.assertEqual(recovered['listener'], 'running')
+        self.assertIsNone(listener_loss(self.ledger))
 
     @isolated_profiles
     def test_live_listener_is_not_reported_lost(self):
@@ -296,8 +330,15 @@ class GrokBuildChangedTests(unittest.TestCase):
 
     def test_each_leader_route_keeps_its_own_accepted_builds(self):
         from quorum_grok_leader import VERSIONS, WINDOWS_VERSIONS
-        self.assertEqual(VERSIONS, ('1.0.67', '1.0.70'))
+        self.assertEqual(VERSIONS, ('1.0.67', '1.0.70', '1.0.77'))
         self.assertEqual(WINDOWS_VERSIONS, ('1.0.70', '1.0.77'))
+
+    def test_macos_keeps_a_running_177_after_a_later_update(self):
+        """#139: 1.0.77 is now a supported sibling, so a future update does not strand a 1.0.77 TUI."""
+        path = self.downloads / 'grok-1.0.80-macos-aarch64'
+        path.write_bytes(b'')
+        path.chmod(0o755)
+        self.assertEqual(self.verify('1.0.77', installed='1.0.80'), '1.0.77')
 
     def test_sibling_build_must_be_confirmed_by_its_leader(self):
         from quorum_grok_leader import confirm_build

@@ -198,7 +198,10 @@ confirmation unless the owner has explicitly requested membership only:
 2. Run `session connect <quorum> --role <role> --project-ref <shared-project>
    --exclusive-role`,
    then `session start` and `session status`, using the same installed helper,
-   frozen uv project and private state as acceptance. Reuse a matching existing
+   frozen uv project and private state as acceptance. On Windows Grok, run
+   `session start` as one
+   [background shell task that stays alive](grok.md#windows-1070-and-1077) and
+   `session status` in a normal call. Reuse a matching existing
    binding; a conflicting binding is a blocker, not permission to replace it.
 3. Only after status confirms running, report one setup outcome in this chat:
    `Listening to <quorum> as <role> (project <shared-project>).`

@@ -98,11 +98,13 @@ Quorum listener. It reuses the existing membership, role and permissions.
 | --- | --- | --- |
 | Codex | Supported | Supported |
 | Claude Code on macOS, Linux or Windows | Supported | Experimental; verify delivery in that chat |
-| Grok Build 1.0.67 on macOS | Supported | Experimental; needs a shared-leader TUI, see [Grok setup](references/grok.md) |
-| Grok Build 1.0.70 and 1.0.77 on Windows | Supported | Experimental; needs `--leader-socket` and a background-task listener; 1.0.77 peer round trip verified, see [Grok setup](references/grok.md#windows-1070-and-1077) |
-| Grok Build on Linux | Membership only | Not supported |
+| Grok Build on macOS | Supported | Experimental; needs a shared-leader TUI; 1.0.70 peer round trip verified, 1.0.77 leader checks only, see [Grok setup](references/grok.md) |
+| Grok Build on Windows | Supported | Experimental; needs `--leader-socket` and a background-task listener; 1.0.77 peer round trip verified, see [Grok setup](references/grok.md#windows-1070-and-1077) |
+| Grok Build on Linux | Membership only | Not supported; reports `grok_leader_platform_unsupported` |
 | Grok Bot personal cloud chat | Supported with a private webhook | Experimental, see [cloud setup](references/grok-cloud.md) |
 | Cursor Cloud | Not verified | No supported transport yet |
+
+Accepted Grok TUI builds: macOS 1.0.67, 1.0.70 and 1.0.77; Windows 1.0.70 and 1.0.77.
 
 A Codex or Claude Code background worker can also receive in its own tool
 results on macOS, Linux and Windows (state and Codex home on a local NTFS or ReFS
