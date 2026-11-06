@@ -24,3 +24,9 @@ needs no custom provider agent definition or global configuration and no new
 setup question. Routine reporting stays quiet. The actual parent chat keeps its
 identity and alone runs bound session commands; a headless model or another
 session is never a substitute.
+
+## 2026-11-06 — No copy and rename of server dispatchers
+
+The owner's roadmap (#156) bans copying and renaming `call` or `session_heartbeat`.
+Before writing a migration, follow `references/server.md#add-server-behaviour`, the
+one canonical statement of the rule.

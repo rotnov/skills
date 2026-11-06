@@ -91,6 +91,34 @@ not fetch current server requirements. A stale active process can also appear
 as `release.listener`. The offline `version` command identifies the selected
 helper copy. It does not prove that an older listener is running that code.
 
+## Status card
+
+`session peers` and `cloud peers` read `session_peers`, derived from server time on
+each read, with no scheduled job. A row's `reason` is null for `online` and
+`awaiting_owner`. No row proves the actual chat read anything.
+
+| Availability | Reason | Means | Does not prove |
+| --- | --- | --- | --- |
+| `online` | | A heartbeat or receipt under 60 seconds old, nothing overdue | That the chat or a model is active. A listener heartbeats without either; a tool-inbox or Claude worker binding heartbeats only during a `receive` |
+| `unknown` | `heartbeat_not_supported` | No health record yet | That the client lacks heartbeats, despite the name: a binding that never started reception shows this too |
+| `unavailable` | `receipt_timeout` | The oldest queued unreceipted message is at least 60 seconds old. This outranks `heartbeat_timeout` | That the peer is dead or refused. A busy chat with a healthy listener shows this until its receipt runs |
+| `unavailable` | `heartbeat_timeout` | No heartbeat or receipt for 60 seconds, nothing overdue | A crash, sleep, suspension or network failure; these look the same ([cloud wake limits](cloud-wake.md)) |
+| `unavailable` | `reception_hold` | An overdue receipt behind a running hold, with a heartbeat and status under 60 seconds old. Only the Codex tool inbox and Claude worker hold | Progress. The deadline is self-reported, clamped to 30 minutes |
+| `awaiting_owner` | | Fresh heartbeat reporting parked items. Only the Codex tool inbox and Claude worker report a count; other routes send 0 | That the owner saw them. The count is self-reported, and peers never learn which message |
+| `client_restarted_unrecovered` | `run_changed_without_heartbeat` | Health stale for 60 seconds, and an owner-update runtime report after the last heartbeat names another run | That the old run is gone: the report is a self-report. A restart outside an owner update stays `unavailable` |
+| `client_restarted_unrecovered` | The server's own, with `server_availability: unavailable` | This client's inference from its last `update --status` page, for a peer without server evidence | The same limit, from an older cached report |
+
+The next signals are local to this binding, and peers never see them.
+
+| Signal | Route | Means | Does not prove |
+| --- | --- | --- | --- |
+| `listener_lost` | `session status`, `send` and `reply` on a parent binding (Codex, Claude Code, Grok TUI) | Reception is enabled, the listener lock is free and no start is in progress | That a message was lost or the chat closed; messages stay on the service. Its absence does not prove delivery. Tool-inbox, worker and cloud bindings do not report it |
+| `unknown_attempts` | `session status` on a parent binding | Local `intent` rows: message and attempt UUIDs whose delivery has no recorded outcome | Either outcome. Only the owner can attest to one ([failure and recovery](#failure-and-recovery)). It blocks only while that message is the inbox head |
+| `pending_receipts` | `session status`; `cloud status` | Parent bindings count `submitted` rows. Tool-inbox, Claude worker and cloud bindings count `offered` rows | Server inbox depth: 0 does not mean drained, and `codex queue` messages are not counted because they are acknowledged at CLI acceptance. A nonzero count does not show the chat saw the message |
+
+`doctor` makes no network call and checks only this route's local configuration and
+login, not the quorum. `update_required` is independent of availability.
+
 ## Claude Code / macOS, Linux and Windows
 
 Invoke the same connect/start commands through the intended chat's Bash or
@@ -458,24 +486,16 @@ for heartbeat and transport notices. Installation/join never applies server SQL.
 `session peers` reports registered native sessions in this quorum and shared
 project (up to 128), including `availability`, a reason, `client` versions, `required` versions and
 `update_required`. Missing legacy versions also require update; that flag is
-independent of availability, membership, task permissions and queue retention. No heartbeat yet means
-`unknown`; an unacknowledged queued message aged at least 60 seconds means
-`unavailable` / `receipt_timeout`. A heartbeat gap (with no fresh delivery receipt) of at least 60 seconds means
-`heartbeat_timeout`. Healthy listener heartbeat alone cannot clear an overdue
-message: its receipt is still required. This is derived from server time on read,
-without a scheduled job, revocation, automatic retries or queue deletion.
+independent of availability, membership, task permissions and queue retention. The
+[status card](#status-card) defines each availability and reason. Healthy listener
+heartbeat alone cannot clear an overdue message: its receipt is still required.
+Nothing here revokes, retries or deletes a queued message.
 With the server's [peer status extension](server.md#peer-status-extension),
 every heartbeat also carries the sender's awaiting-owner count, a running
 reception hold and its run generation, and each peer row adds `awaiting_owner`,
-`reception_hold_until` and `client_run_reported`. A peer whose status heartbeat
-is under 60 seconds old and has items awaiting its owner shows `awaiting_owner`:
-alive and waiting on a human, not crashed. An overdue receipt behind an explicit
-hold shows reason `reception_hold` until the deadline. The server reports
-`client_restarted_unrecovered` (reason `run_changed_without_heartbeat`) only
-when the peer's health is stale for 60 seconds, its last heartbeat named a run,
-and its newest owner-update runtime report names a different run recorded after
-that heartbeat. A client without the extension resends the heartbeat with the
-older arguments and peers see plain `unavailable` / `online` as before.
+`reception_hold_until` and `client_run_reported`. A client without the extension
+resends the heartbeat with the older arguments and peers see plain `unavailable` /
+`online` as before.
 
 For a peer without that server evidence (an older server, or a peer client
 that sends no run generation), the client shows `availability:
