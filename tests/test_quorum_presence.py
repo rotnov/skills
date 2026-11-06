@@ -3,11 +3,17 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'skills/quorum/scripts'))
 from quorum_test_support import isolated_profiles
 
 
 class PresenceTests(unittest.TestCase):
+    def setUp(self):
+        quiet = patch('quorum_presence.Presence._report_release')
+        quiet.start()
+        self.addCleanup(quiet.stop)
+
     @isolated_profiles
     def test_tick_throttles_and_resubscription_within_health_window_keeps_epoch(self):
         from quorum_presence import Presence
@@ -237,6 +243,11 @@ class PresenceTests(unittest.TestCase):
 
 
 class HelloReportTests(unittest.TestCase):
+    def setUp(self):
+        quiet = patch('quorum_presence.Presence._report_release')
+        quiet.start()
+        self.addCleanup(quiet.stop)
+
     """#88: the Hello result is persisted once per connection and reported by status."""
     RECORD = {'agent_id':'a', 'session_ref':'s', 'project_ref':'shared'}
 

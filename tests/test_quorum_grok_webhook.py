@@ -528,7 +528,7 @@ class RelayTests(Base):
     def test_release_mismatch_before_or_just_before_post_sends_nothing(self):
         from quorum_release import ReleaseMismatch
         self.configure()
-        stale = {'protocol_version':2, 'skill_version':'9.9.9'}
+        stale = {'protocol_version':99}
         for requirements in ([stale], [dict(RELEASE), stale]):
             with self.subTest(requirements=len(requirements)):
                 with self.assertRaises(ReleaseMismatch): self.relay(Api([message()], requirements)).run_once()

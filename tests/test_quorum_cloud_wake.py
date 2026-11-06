@@ -18,6 +18,8 @@ PEERS = [
 
 
 def assert_guidance(test, peers):
+    for peer in peers:
+        test.assertEqual(peer.pop('release'), {'state': 'unreported', 'running': None, 'target': None})
     test.assertEqual(peers[:2], PEERS[:2])
     for original, peer in zip(PEERS[2:], peers[2:]):
         test.assertEqual({key: value for key, value in peer.items() if key != 'wake'}, original)
@@ -31,6 +33,7 @@ def assert_guidance(test, peers):
 class NativeApi(native.Api):
     def answer(self, operation, payload):
         if operation == 'session_peers': return copy.deepcopy(PEERS)
+        if operation == 'session_release_status': return {'target': None, 'agents': []}
         return super().answer(operation, payload)
 
 
@@ -46,7 +49,7 @@ class NativePeersTests(native.Harness):
             code, result, text = self.cli(api, 'session', 'peers')
         self.assertEqual(code, 0, text)
         assert_guidance(self, result['data'])
-        self.assertTrue(all(op in ('session_requirements', 'session_inbox', 'session_peers')
+        self.assertTrue(all(op in ('session_requirements', 'session_inbox', 'session_peers', 'session_release_status')
                             for op, _, _ in api.calls[before:]))
         self.assertEqual(api.acked, [])
         self.assertEqual(self.spawns, [])
@@ -69,6 +72,7 @@ class NativePeersTests(native.Harness):
 class CloudApi(cloud.Api):
     def answer(self, operation, payload):
         if operation == 'session_peers': return copy.deepcopy(PEERS)
+        if operation == 'session_release_status': return {'target': None, 'agents': []}
         return super().answer(operation, payload)
 
 
@@ -82,7 +86,7 @@ class CloudPeersTests(cloud.Harness):
             code, result, text = self.cli(api, 'cloud', 'peers')
         self.assertEqual(code, 0, text)
         assert_guidance(self, result['data'])
-        self.assertTrue(all(op in ('session_requirements', 'session_inbox', 'session_peers')
+        self.assertTrue(all(op in ('session_requirements', 'session_inbox', 'session_peers', 'session_release_status')
                             for op, _, _ in api.calls[before:]))
         self.assertEqual(api.acked, [])
         self.assertEqual(self.spawns, [])

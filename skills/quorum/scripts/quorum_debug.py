@@ -15,7 +15,7 @@ from pathlib import Path
 from quorum_debug_ledger import UUID_RE, in_scope, read_local
 from quorum_debug_publish import GH_COMMANDS, GhCliPublisher, evidence_in, line_value, marker_in
 from quorum_os import FileLock, protect, reject_link
-from quorum_release import installed_release
+from quorum_release import installed_identity
 
 
 class DebugError(Exception):
@@ -42,7 +42,6 @@ REPO_RE = re.compile(r'^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$')
 RUN_RE = re.compile(r'^dbg-[0-9a-f]{32}$')
 UNTIL_RE = re.compile(r'^(\d{1,4})([mhd])$')
 ISO_RE = re.compile(r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$')
-VERSION_RE = re.compile(r'^[0-9]{1,6}\.[0-9]{1,6}\.[0-9]{1,6}$')
 FORBIDDEN_KEYS = frozenset({
     'body', 'text', 'reply', 'prompt', 'token', 'access_token', 'refresh_token',
     'nonce', 'invitation', 'secret', 'password', 'authorization', 'jwt',
@@ -465,12 +464,12 @@ class DebugService:
         return all(current[key] == scope[key] for key in ('quorum', 'project_ref', 'report_repository', 'sources', 'bindings'))
 
     def _new_run(self, scope):
-        versions = installed_release()
+        identity = installed_identity()
         return {
             'record_version': 1, 'run_id': 'dbg-' + uuid.uuid4().hex, 'state': 'active',
             'started_at': iso(self.clock()), 'stopped_at': None, 'expired_at': None,
             'expires_at': scope['expires_at'], 'versions': {
-                'protocol_version': versions['protocol_version'], 'skill_version': versions['skill_version'],
+                'protocol_version': identity['protocol_version'], 'release': identity['release'],
             },
             'scope': {key: scope[key] for key in ('quorum', 'project_ref', 'report_repository', 'sources', 'bindings', 'lifetime')},
             'collection': {
@@ -1373,7 +1372,7 @@ class DebugService:
 
     def _body(self, run, finding):
         lines = ['## Expected', finding['expected'], '', '## Observed', finding['observed'], '', '## Versions',
-                 f"protocol {run['versions']['protocol_version']} skill {run['versions']['skill_version']}",
+                 f"protocol {run['versions']['protocol_version']} release {run['versions'].get('release') or 'unknown'}",
                  '', '## Evidence']
         for item in finding['evidence'][:8]:
             lines.append('- ' + ' '.join(f'{key}={item[key]}' for key in sorted(item)))

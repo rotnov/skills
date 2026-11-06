@@ -87,9 +87,11 @@ while preserving the original health and reason. Hosting and suspension remain
 unknown; see [cloud wake limits](cloud-wake.md) when diagnosing sleeping chats.
 `release` contains the last compatibility check's `installed`, `required` and
 `update_required` fields (unknown fields are null); status is offline and does
-not fetch current server requirements. A stale active process can also appear
-as `release.listener`. The offline `version` command identifies the selected
-helper copy. It does not prove that an older listener is running that code.
+not fetch current server requirements. `installed` names the protocol, the
+`content_sha256` and the short `release` hash. A stale active process can also
+appear as `release.listener`. The offline `version` command identifies the selected
+helper copy. It does not prove that an older listener is running that code;
+`runtime_source` carries the running listener's own content hash.
 
 ## Status card
 
@@ -369,7 +371,7 @@ ambiguous, even if that turn later completes or is replaced: it stops with
 replayed and never queued as a duplicate.
 Evidence that steering works requires the owner's actual busy chat consuming the
 message inside the turn that was already running; a fixture does not show that.
-The durable 0.3.0 / protocol 2 route passed end to end in
+The durable protocol 2 route passed end to end in
 [rotnov/skills#35](https://github.com/rotnov/skills/issues/35): an owned
 daemon-hosted Codex TUI consumed an urgent message inside its running turn,
 while an earlier normal message waited for the next turn. The Codex desktop
@@ -575,9 +577,11 @@ The listener requires the administrator-reviewed
 [native coordination extension](../supabase/migrations/20261022152603_native_session_coordination.sql)
 for heartbeat and transport notices. Installation/join never applies server SQL.
 `session peers` reports registered native sessions in this quorum and shared
-project (up to 128), including `availability`, a reason, `client` versions, `required` versions and
-`update_required`. Missing legacy versions also require update; that flag is
-independent of availability, membership, task permissions and queue retention. The
+project (up to 128), including `availability`, a reason, the `client` and `required` protocol,
+`update_required`, and a [`release` object](update.md#who-is-behind) with the peer's
+running content hash against the fleet target. A missing protocol also requires
+update; that flag is independent of availability, membership, task permissions and
+queue retention. The
 [status card](#status-card) defines each availability and reason. Healthy listener
 heartbeat alone cannot clear an overdue message: its receipt is still required.
 Nothing here revokes, retries or deletes a queued message.
@@ -655,14 +659,17 @@ per [awaiting the owner](native-inbox.md#awaiting-the-owner).
 
 ## Release compatibility
 
-This release requires protocol integer `2` and skill `0.3.0` exactly, which the
-server reports only after the mandatory priority extension. Connect checks
+This release requires protocol integer `2`, which the server reports only after
+the mandatory priority extension. The release itself is identified by its content
+hash, and being behind the fleet target stops nothing. Connect checks
 requirements before any device/agent registration. Start/run, every send and
 reply, each heartbeat and reconnect, and the active inbox drain check
 compatibility too.
-The heartbeat sends the client versions; the server rejects a mismatch before
+The heartbeat sends the client's protocol; the server rejects a mismatch before
 writing health or sending Hello. New clients stop with `skill_update_required`
-and safe installed/required diagnostics. A fresh helper refuses to reuse a
+and safe installed/required diagnostics. After an acknowledged heartbeat a listener
+also [reports its running hash](update.md#who-is-behind). A failed report changes
+nothing for that listener. A fresh helper refuses to reuse a
 running listener whose release is stale or unknown. No low-level listener
 spawns an updater or re-execs itself.
 

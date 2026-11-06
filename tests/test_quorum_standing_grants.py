@@ -279,7 +279,7 @@ class StandingCommandTests(unittest.TestCase):
         from quorum_release import ReleaseMismatch, installed_release
         from quorum_session import dispatch
         from quorum_state import LocalLedger
-        self.assertEqual(installed_release(), {'protocol_version': 2, 'skill_version': '0.3.0'})
+        self.assertEqual(installed_release()['protocol_version'], 2)
         class Remote(Api):
             required = installed_release()
             def call(self, operation, payload, request_id=None):
@@ -300,7 +300,7 @@ class StandingCommandTests(unittest.TestCase):
             dispatch(SimpleNamespace(session_id=SESSION, action='connect', role='receiver', quorum='team',
                                      project_ref='project', accept_tasks_from=None, accept_tasks_from_members=True,
                                      dispatch_mode='inline', standing_grants_from='lead'), auth, register)
-            api.required = {'protocol_version': 2, 'skill_version': '0.3.1'}
+            api.required = {'protocol_version': 3}
             def check(message, action='skill-refresh'):
                 return dispatch(SimpleNamespace(session_id=SESSION, action='standing-check', message_id=message,
                                                 standing_action=action), auth, register)
@@ -316,7 +316,7 @@ class StandingCommandTests(unittest.TestCase):
             granted = check(MESSAGES[0])
             self.assertTrue(granted['authorized'])
             self.assertEqual(granted['sender_id'], SENDER)
-            self.assertEqual(granted['release']['required']['skill_version'], '0.3.1')
+            self.assertEqual(granted['release']['required'], {'protocol_version': 3})
             # The once-per-message marker still applies.
             self.assertEqual(check(MESSAGES[0])['reason'], 'request_already_used')
             api.calls.clear()

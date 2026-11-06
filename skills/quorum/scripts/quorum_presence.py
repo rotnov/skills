@@ -3,13 +3,16 @@ from datetime import datetime, timezone
 import time
 import uuid
 from quorum_api import QuorumError, error_class, is_transient_service, rpc_missing
-from quorum_release import ReleaseGuard
+from quorum_release import ReleaseGuard, installed_release, installed_source
 
 # Peers derive `heartbeat_timeout` after this gap; only then were we really offline.
 HEALTH_WINDOW = 60
 # The peer status extension (#113) takes these; a server without it is asked again after this delay.
 STATUS_KEY = 'peer-status-support'
 STATUS_RETRY = 600
+# The running hash is reported on a new run or a new hash, and refreshed this often. The last attempt is kept here.
+RELEASE_KEY = 'release-report'
+RELEASE_INTERVAL = 600
 AWAITING_LIMIT = 32
 HOLD_LIMIT = 1800
 
@@ -91,11 +94,11 @@ class Presence:
             # Genuine reconnect: retries of this new ID stay idempotent until acknowledged.
             self.connection_id, self.online_at = str(uuid.uuid4()), None
         try:
-            versions = self.release.check()
+            self.release.check()
             # An unsent heartbeat leaves any pending epoch intent to be retried with the same epoch.
             if stopping and stopping(): return
             payload = {'agent_id':self.record['agent_id'], 'session_ref':self.record['session_ref'],
-                       'connection_id':self.connection_id, **versions}
+                       'connection_id':self.connection_id, **installed_release()}
             result = self._send(payload, stopping)
             if result is None: return
             if isinstance(result, dict) and result.get('code') == 'skill_update_required':
@@ -114,6 +117,30 @@ class Presence:
             self._epoch(False)
         self.ledger.setting('presence', {'state':'online', 'last_heartbeat_at':self.online_at[1]})
         self._hello(result if isinstance(result, dict) else {})
+        self._report_release(stopping)
+
+    def _report_release(self, stopping):
+        """Self-report this process's content hash after an acknowledged heartbeat. Best effort.
+
+        A separate RPC, so `session_heartbeat` and its pinned chain stay as they are. It decides nothing for this
+        listener: a failure leaves it unreported and is tried again, and an older server is asked again later.
+        """
+        try: digest = installed_source()['content_sha256']
+        except QuorumError: return
+        try: run_id = str(uuid.UUID(self.run_id))
+        except (TypeError, ValueError, AttributeError): run_id = None
+        now, saved = self.wall(), self.ledger.setting(RELEASE_KEY)
+        current = {'content_sha256':digest, 'run_id':run_id}
+        if (isinstance(saved, dict) and {key:saved.get(key) for key in current} == current
+                and type(saved.get('at')) in (int, float) and 0 <= now - saved['at'] < RELEASE_INTERVAL): return
+        if stopping and stopping(): return
+        payload = {'agent_id':self.record['agent_id'], 'session_ref':self.record['session_ref'],
+                   'content_sha256':digest}
+        if run_id: payload['client_run_id'] = run_id
+        try: self.api.call('session_release_report', payload)
+        except QuorumError as error:
+            if not rpc_missing(error): return
+        self.ledger.setting(RELEASE_KEY, {**current, 'at':now})
 
     def _status_supported(self):
         saved = self.ledger.setting(STATUS_KEY)

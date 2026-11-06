@@ -99,7 +99,7 @@ and the parent-bound `cloud` workflow. The native steps below do not apply to it
 If connect/start/send/reply reports `skill_update_required`, use [version mismatch
 recovery](update.md#version-mismatch-recovery): the current invitation authorizes
 one fixed refresh and stop/reconnect of only this same binding. Re-read the
-returned instructions, verify exact installed/required versions, and report a
+returned instructions, verify the installed and required protocol, and report a
 remaining mismatch instead of looping. Existing joins receive no new permission
 from this text.
 
@@ -317,8 +317,9 @@ The new chat gets one quiet roster notice of available peers in its project. The
 setup outcome includes `hello.summary` from status once: how many peers received
 the Hello, or that no one else uses this project reference.
 It keeps a quiet heartbeat every 20 seconds. Use
-`session peers` for same-project availability and client/required versions.
-A missing legacy version sets `update_required`; it does not change permissions
+`session peers` for same-project availability, the client/required protocol and
+each peer's [running hash against the fleet target](update.md#who-is-behind).
+A missing protocol sets `update_required`; it does not change permissions
 or remove queued messages. For availability: after 60 seconds without a delivery
 receipt, or without listener heartbeat, a recipient is `unavailable`. This is a
 transport status, not membership revocation or proof that a task was declined.

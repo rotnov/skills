@@ -51,7 +51,8 @@ class RuntimeSourceTests(unittest.TestCase):
                     active = control.status()['runtime_source']
                     self.assertTrue(active['verified'])
                     self.assertEqual((active['state'], active['run_id'], active['source']),
-                                     ('running', 'winner', SOURCE))
+                                     ('running', 'winner', {'protocol_version':2, 'content_sha256':'a'*64,
+                                                            'release':'a'*7}))
                 self.assertEqual(control.status()['runtime_source']['state'], 'offline')
             finally: ledger.db.close()
 

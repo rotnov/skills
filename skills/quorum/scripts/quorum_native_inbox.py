@@ -73,7 +73,8 @@ class NativeInboxError(ValueError):
     # Service reads: having completed one changes nothing at the service.
     READS = {'session_requirements', 'session_inbox', 'quorum_lookup', 'resolve_role', 'agent_status',
              'session_peers', 'conversation_read', 'session_message', 'session_task_authority',
-             'session_delivery_status', 'session_delivery_changes', 'session_delivery_stuck'}
+             'session_delivery_status', 'session_delivery_changes', 'session_delivery_stuck',
+             'session_release_status'}
 
     # A request already dispatched: its effect is known (`accepted`, `completed`) or `uncertain`.
     EFFECTS = {'accepted', 'completed', 'uncertain'}

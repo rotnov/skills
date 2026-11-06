@@ -15,7 +15,7 @@ from quorum_delivery import CLOUD_STATES, Deliveries, server_ack
 from quorum_delivery_status import Reports, reportable
 from quorum_delegation import (carried_grant, delegation_state, grant, held_status, instruction, member_grant, member_trust, opening, task_check,
                                save_grant_binding, trusted)
-from quorum_release import ReleaseGuard, ReleaseMismatch, diagnostic
+from quorum_release import ReleaseGuard, ReleaseMismatch, diagnostic, peers_view
 import quorum_notices
 
 # Grok Bot exports these names in the personal chat; their services are never opened.
@@ -213,7 +213,7 @@ def _dispatch(args, auth_ledger, register_agent):
             return task_check(api, record, args.message_id, lambda: ledger.setting('cloud-agent'))
         if args.action == 'peers':
             from quorum_peer_wake import with_wake_diagnostics
-            return quorum_notices.annotate(with_wake_diagnostics(api.call('session_peers', scope)), ledger)
+            return quorum_notices.annotate(with_wake_diagnostics(peers_view(api, scope)), ledger)
         if args.action == 'thread':
             return api.call('conversation_read', {'quorum_id': record['quorum_id'], 'agent_id': record['agent_id'],
                             'conversation_id': args.conversation_id, 'after_sequence': args.after_sequence})

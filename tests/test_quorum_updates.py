@@ -126,8 +126,9 @@ class OwnerUpdateTests(unittest.TestCase):
         one = self.invoke()
         (self.source/'changed.txt').write_text('same release different source')
         two = self.invoke('owner-2')
-        self.assertEqual(one['target']['skill_version'], two['target']['skill_version'])
+        self.assertEqual(one['target']['protocol_version'], two['target']['protocol_version'])
         self.assertNotEqual(one['target']['content_sha256'], two['target']['content_sha256'])
+        self.assertNotEqual(one['target']['release'], two['target']['release'])
 
     def test_retry_cannot_reuse_a_changed_cached_copy(self):
         result = self.invoke()

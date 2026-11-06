@@ -109,6 +109,8 @@ class Api:
         if operation == 'agent_status': return {'agent_id': payload['agent_id']}
         if operation == 'resolve_role': return {'agent_id': PEER}
         if operation == 'session_heartbeat': return {'online': True}
+        if operation == 'session_release_report': return {'recorded': True}
+        if operation == 'session_release_status': return {'target': None, 'agents': []}
         if operation == 'session_inbox': return [m for m in self.inbox if m['id'] not in self.acked]
         if operation == 'session_ack':
             if payload['message_id'] not in self.acked: self.acked.append(payload['message_id'])
@@ -2515,8 +2517,8 @@ class ActorPathTests(Bound):
         code, result, text = self.receive(api)
         self.cap.chmod(0o600)
         self.assertEqual((code, result['code']), (3, 'native_worker_unavailable'), text)
-        # The latest state-changing operation (the Hello heartbeat) is reported ahead of the later inbox read.
-        self.assertEqual(result['data']['remote_effect'], {'state': 'completed', 'operation': 'session_heartbeat'})
+        # The latest state-changing operation (the report after the heartbeat) is shown ahead of the later inbox read.
+        self.assertEqual(result['data']['remote_effect'], {'state': 'completed', 'operation': 'session_release_report'})
         self.assertNotIn('not accepted', text)
         self.assertNotIn('private body', text)
 

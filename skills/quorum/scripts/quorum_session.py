@@ -22,7 +22,7 @@ from quorum_delegation import (carried_grant, delegation_state, grant, held_stat
                                trusted,
                                save_grant_binding, standing_check, standing_grants, standing_status,
                                STANDING_ACTIONS)
-from quorum_release import ReleaseGuard, ReleaseMismatch, diagnostic
+from quorum_release import ReleaseGuard, ReleaseMismatch, diagnostic, peers_view
 import quorum_notices
 
 
@@ -1450,7 +1450,7 @@ def _dispatch(args, auth_ledger, register_agent):
             from quorum_peer_wake import REPORTS_KEY, with_wake_diagnostics
             # This chat's last cached owner-update reports can explain an unavailable peer; never authority.
             return quorum_notices.annotate(
-                with_wake_diagnostics(api.call('session_peers', {'agent_id':record['agent_id'], 'session_ref':sid}),
+                with_wake_diagnostics(peers_view(api, {'agent_id':record['agent_id'], 'session_ref':sid}),
                                       ledger.setting(REPORTS_KEY)), ledger)
         if args.action == 'thread':
             # Only this native binding's agent; the backend checks conversation membership.

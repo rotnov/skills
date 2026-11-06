@@ -44,6 +44,8 @@ const helloSplit = '20261106150000_hello_sent_skipped.sql';
 const sessionMessage = '20261106160000_session_message.sql';
 // One recipient's delivery statuses for its sender (#162).
 const deliveryStatus = '20261106170000_delivery_statuses.sql';
+// Running content hashes and the fleet target, beside every unchanged older client (#168).
+const releaseReports = '20261106180000_release_reports.sql';
 // Installations that deployed native coordination before open access apply the
 // older-dated open access file late; the final session requirements must match.
 const late = name => name.endsWith('_open_access_quorums.sql');
@@ -243,7 +245,7 @@ try {
   }
   const portableTail = [priority, serialization, maintenance, memberAuthority];
   const reviewedTail = [...portableTail, knowledge, wiki, hello, ttl, roles, status, defaultRole, dedupe, authorityBound,
-    unreceipted, helloSplit, sessionMessage, deliveryStatus];
+    unreceipted, helloSplit, sessionMessage, deliveryStatus, releaseReports];
   if (JSON.stringify(all.filter(name => name >= priority)) !== JSON.stringify(reviewedTail)) {
     throw new Error('unreviewed migration after the close serialization');
   }
@@ -556,6 +558,40 @@ try {
       await statusesDb.close();
     }
   }
+  // Release reports pin the binding check, both update writers and the release; they refuse drift,
+  // reapplication or a missing predecessor, changing nothing.
+  const noReports = async (db, label) => {
+    const result = await db.query(`select to_regclass('quorum_private.session_release') t,
+      to_regprocedure('public.session_release_report(uuid,text,text,uuid)') r,
+      to_regprocedure('public.session_release_status(uuid,text,uuid,uuid)') s`);
+    if (result.rows[0].t !== null || result.rows[0].r !== null || result.rows[0].s !== null) {
+      throw new Error(label + ': partial release reports apply');
+    }
+  };
+  const beforeReports = [...beforeStatuses, deliveryStatus];
+  await gated([...beforeReports, releaseReports], read(migrations + releaseReports), 'release_reports_present',
+    'release reports reapplied');
+  await gated(beforeStatuses, read(migrations + releaseReports), 'delivery_statuses_required',
+    'release reports without delivery statuses', noReports);
+  for (const fn of ['quorum_private.native_session(uuid,text)',
+    'public.session_update_request(uuid,text,uuid,integer,text,text,text)',
+    'public.session_update_report(uuid,text,uuid,uuid,text,jsonb,text)', 'public.session_requirements()']) {
+    await drifted(fn, 'reviewed_dispatcher_changed: ' + fn, beforeReports, releaseReports, noReports);
+  }
+  {
+    const reportsDb = await database([...beforeReports, releaseReports]);
+    try {
+      await release(reportsDb, current);
+      await reportsDb.exec(suite('quorum_release_reports_backend.sql'));
+      // Older clients' calls keep working: the heartbeat, its version check and the peer view are untouched.
+      await reportsDb.exec(suite('quorum_peer_status_backend.sql'));
+      await reportsDb.exec(suite('quorum_delivery_status_backend.sql'));
+      for (const name of ROLE_COMPATIBLE) await reportsDb.exec(suite(name));
+    } finally {
+      await reportsDb.exec('rollback');
+      await reportsDb.close();
+    }
+  }
   // A server that skipped the Grok extension: the priority release refuses it until the convergence
   // file gives it the reviewed bodies, after which the whole reviewed tail applies. Elsewhere the file
   // changes nothing, and it refuses a server before open access or any other body.
@@ -586,7 +622,7 @@ try {
     }
     await convergenceChangesNothing(skippedDb, after);
     for (const name of [...portableTail, hello, ttl, roles, status, dedupe, authorityBound, unreceipted, helloSplit,
-      sessionMessage, deliveryStatus]) {
+      sessionMessage, deliveryStatus, releaseReports]) {
       await skippedDb.exec(read(migrations + name));
     }
     await convergenceChangesNothing(skippedDb, after);

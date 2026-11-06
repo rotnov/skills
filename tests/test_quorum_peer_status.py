@@ -7,6 +7,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 import unittest.mock
 import uuid
 
@@ -42,6 +43,9 @@ class Server:
 class PresenceStatusTests(unittest.TestCase):
     def setUp(self):
         from quorum_state import LocalLedger
+        quiet = patch('quorum_presence.Presence._report_release')
+        quiet.start()
+        self.addCleanup(quiet.stop)
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.ledger = LocalLedger(Path(temporary.name))

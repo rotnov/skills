@@ -123,7 +123,7 @@ class IdInvitationTests(unittest.TestCase):
                 return {'invite_id': INVITE, 'expires_at': '2026-10-22T15:15:00Z', 'token': 'unexpected'}
         from quorum_release import installed_release
         release = installed_release()
-        self.assertEqual(release, {'protocol_version': 2, 'skill_version': '0.3.0'})
+        self.assertEqual(release['protocol_version'], 2)
         result = create_open_invitation(Api(), ServiceConfig('https://example.com', 'sb_publishable_synthetic'), 'team', 'r')
         self.assertEqual(calls[-1], ('invite_create_open', {'quorum_id': 'q'}, 'r'))
         prompt = result['session_prompt']
@@ -232,7 +232,7 @@ class IdInvitationTests(unittest.TestCase):
         import quorum
         from quorum_api import QuorumApi
         from quorum_live import api_for
-        from quorum_release import ReleaseGuard, installed_release
+        from quorum_release import ReleaseGuard, installed_identity, installed_release
         from quorum_state import LocalLedger
         requests = []
         def request(url, headers, body):
@@ -257,7 +257,7 @@ class IdInvitationTests(unittest.TestCase):
             try:
                 api, _, store = api_for(auth)
                 self.assertEqual(type(store).__name__, 'AnonymousCredentials')
-                self.assertEqual(ReleaseGuard(api, session).check(), installed_release())
+                self.assertEqual(ReleaseGuard(api, session).check(), installed_identity())
             finally:
                 auth.db.close(); session.db.close()
         self.assertEqual(requests[-1], ('https://example.com/rest/v1/rpc/session_requirements', 'Bearer anon-access'))

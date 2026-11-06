@@ -18,7 +18,15 @@ sys.path.insert(0, str(SCRIPTS))
 SID = '11111111-1111-4111-8111-111111111111'
 AID = '22222222-2222-4222-8222-222222222222'
 MID = '33333333-3333-4333-8333-333333333333'
-RELEASE = {'protocol_version': 2, 'skill_version': '0.3.0'}
+MANIFEST = json.loads((SCRIPTS.parent/'assets/release.json').read_text(encoding='utf-8'))
+RELEASE = dict(MANIFEST)
+
+
+def identity_of(skill):
+    """The public identity of one skill directory: protocol and content hash, never the frozen wire field."""
+    from quorum_update import content_hash
+    digest = content_hash(skill)
+    return {'protocol_version':2, 'content_sha256':digest, 'release':digest[:7]}
 
 
 class Backend:
@@ -31,6 +39,7 @@ class Backend:
         if op == 'session_inbox': return [{'id':MID, 'recipient_id':AID}]
         if op == 'session_heartbeat': return {'online':True, 'required':self.required}
         if op == 'session_ack': return {'queued':True}
+        if op == 'session_release_report': return {'recorded':True}
         raise AssertionError('unexpected RPC: ' + op)
 
 
@@ -43,7 +52,7 @@ class ReleaseTests(unittest.TestCase):
                 contextlib.redirect_stdout(io.StringIO()) as output:
             state = Path(root) / 'must-not-create'
             self.assertEqual(main(['--state',str(state),'version']), 0)
-            self.assertEqual(json.loads(output.getvalue()), {'ok':True,'code':'ok','data':RELEASE})
+            self.assertEqual(json.loads(output.getvalue()), {'ok':True,'code':'ok','data':identity_of(SCRIPTS.parent)})
             self.assertFalse(state.exists())
 
     def test_clean_copied_cli_rejects_missing_or_invalid_manifest_without_private_text(self):
@@ -54,7 +63,7 @@ class ReleaseTests(unittest.TestCase):
             valid = subprocess.run([sys.executable,str(skill/'scripts/quorum.py'),'version'],
                                    capture_output=True,text=True,timeout=20)
             self.assertEqual(valid.returncode,0,valid.stderr)
-            self.assertEqual(json.loads(valid.stdout),{'ok':True,'code':'ok','data':RELEASE})
+            self.assertEqual(json.loads(valid.stdout),{'ok':True,'code':'ok','data':identity_of(skill)})
             for body in (None, '{private-secret', '{"protocol_version":true,"skill_version":"0.2.0"}'):
                 if body is None: manifest.unlink(missing_ok=True)
                 else: manifest.write_text(body)
@@ -70,7 +79,7 @@ class ReleaseTests(unittest.TestCase):
         from quorum_session import dispatch
         from quorum_state import LocalLedger
         from quorum_api import QuorumError
-        cases = ({}, {'protocol_version':2,'skill_version':'0.2.0'},
+        cases = ({}, {'protocol_version':3,'skill_version':'0.2.0'},
                  {'protocol_version':1,'skill_version':'0.2.1'},
                  {'protocol_version':1,'skill_version':'https://secret.invalid/code',
                   'command':'execute private-secret'})
@@ -93,7 +102,7 @@ class ReleaseTests(unittest.TestCase):
                         self.assertIsNone(local.setting('session-agent'))
                         diagnostic=dispatch(SimpleNamespace(session_id=SID,action='status'),ledger,None)
                         self.assertTrue(diagnostic['release']['update_required'])
-                        self.assertEqual(diagnostic['release']['installed'],RELEASE)
+                        self.assertEqual(diagnostic['release']['installed'],identity_of(SCRIPTS.parent))
                         self.assertNotIn('private-secret',json.dumps(diagnostic))
                         self.assertEqual([op for op,_ in api.calls],['session_requirements'])
                     finally: local.db.close()
@@ -155,8 +164,9 @@ class ReleaseTests(unittest.TestCase):
             try:
                 presence=Presence(transport,{'agent_id':AID,'session_ref':SID},ledger,clock=clock)
                 presence.tick()
-                self.assertEqual(backend.calls[-1][1]['protocol_version'],2)
-                self.assertEqual(backend.calls[-1][1]['skill_version'],'0.3.0')
+                beat=next(payload for op,payload in backend.calls if op=='session_heartbeat')
+                self.assertEqual(beat['protocol_version'],2)
+                self.assertEqual(beat['skill_version'],MANIFEST['skill_version'],'carried as packaged, never echoed')
                 backend.required={'protocol_version':3,'skill_version':'0.2.0'}
                 clock.sleep(20); backend.calls.clear()
                 waiter=RealtimeWait(transport,{'agent_id':AID},ledger,clock=clock,sleep=clock.sleep,keepalive=presence)
@@ -206,8 +216,7 @@ class RunningReleaseTests(unittest.TestCase):
                     with self.assertRaisesRegex(QuorumError,'^skill_update_required$'):
                         start(Path(root),ledger,SID,api=Backend())
                 self.assertTrue(Control(ledger).stopping('old-run'))
-                self.assertEqual(ledger.setting('release')['listener'],
-                                 {'protocol_version':1,'skill_version':'0.1.0'})
+                self.assertEqual(ledger.setting('release')['listener'],{'protocol_version':1})
             finally: ledger.db.close()
 
     @isolated_profiles
@@ -226,7 +235,7 @@ class RunningReleaseTests(unittest.TestCase):
                 with self.assertRaisesRegex(QuorumError,'^skill_update_required$'): presence.tick()
                 self.assertEqual(backend.calls[before:],[('session_requirements',{})])
                 self.assertEqual(ledger.setting('delivery:'+MID),{'state':'submitted'})
-                self.assertEqual(ledger.setting('release')['required'],backend.required)
+                self.assertEqual(ledger.setting('release')['required'],{'protocol_version':1})
             finally: ledger.db.close()
 
     @isolated_profiles
@@ -238,7 +247,7 @@ class RunningReleaseTests(unittest.TestCase):
             def call(self,op,payload,request_id=None):
                 if op=='session_heartbeat':
                     return {'code':'skill_update_required',
-                            'required':{'protocol_version':2,'skill_version':'0.2.0'}, 'secret':'private-secret'}
+                            'required':{'protocol_version':3,'skill_version':'0.2.0'}, 'secret':'private-secret'}
                 return super().call(op,payload,request_id)
         with tempfile.TemporaryDirectory() as root:
             ledger=LocalLedger(Path(root))
@@ -246,8 +255,7 @@ class RunningReleaseTests(unittest.TestCase):
                 with self.assertRaisesRegex(QuorumError,'^skill_update_required$'):
                     Presence(ChangedOnHeartbeat(),{'agent_id':AID,'session_ref':SID},ledger).tick()
                 self.assertIsNone(ledger.setting('presence'))
-                self.assertEqual(ledger.setting('release')['required'],
-                                 {'protocol_version':2,'skill_version':'0.2.0'})
+                self.assertEqual(ledger.setting('release')['required'],{'protocol_version':3})
                 self.assertNotIn('private-secret',json.dumps(ledger.setting('release')))
             finally: ledger.db.close()
 

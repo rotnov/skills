@@ -121,8 +121,8 @@ def main(argv=None):
             print(json.dumps({'ok': True, 'code': 'ok', 'data': value}))
             return 0
         if args.command == 'version':
-            from quorum_release import installed_release
-            print(json.dumps({'ok':True, 'code':'ok', 'data':installed_release()}))
+            from quorum_release import installed_identity
+            print(json.dumps({'ok':True, 'code':'ok', 'data':installed_identity()}))
             return 0
         if args.command == 'doctor':
             # The participant's actual route decides health; the default ACP worker gate stays reported.

@@ -173,7 +173,7 @@ class WikiDispatchTests(unittest.TestCase):
     def test_source_capture_denies_missing_material_grant_and_mismatching_release(self):
         for options,want,calls_want in [({},'knowledge_material_result_required',[]),
              ({'material':True},'knowledge_capture_denied',[]),
-             ({'material':True,'prepare':self.grant,'required':{'protocol_version':2,'skill_version':'999.0.0'}},
+             ({'material':True,'prepare':self.grant,'required':{'protocol_version':99}},
                'skill_update_required',['session_requirements'])]:
             with self.subTest(options=options), tempfile.TemporaryDirectory() as root:
                 code,result,calls = self.run_command(root,'capture-source',{'space_id':SPACE,'payload':SOURCE},**options)

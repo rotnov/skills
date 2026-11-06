@@ -459,13 +459,13 @@ class OtherStartersYieldToStop(unittest.TestCase):
 
 class OldRun:
     """The stopped generation's process: holds its locks until it acts on the stop, then frees them in order."""
-    def __init__(self, root, state='waiting', *, skill_version=None):
+    def __init__(self, root, state='waiting', *, protocol_version=None):
         from quorum_listener import Control
         from quorum_os import FileLock
         from quorum_release import installed_release
         from quorum_state import LocalLedger
         self.ledger, self.run_id = LocalLedger(root), str(uuid.uuid4())
-        release = {**installed_release(), **({'skill_version':skill_version} if skill_version else {})}
+        release = {**installed_release(), **({'protocol_version':protocol_version} if protocol_version else {})}
         self.control = Control(self.ledger)
         self.held = {'supervisor':FileLock(root / 'supervisor.lock').__enter__(),
                      'listener':FileLock(root / 'listener.lock').__enter__()}
@@ -505,7 +505,7 @@ INTERLEAVINGS = {
     'old_run_reported_stopped_but_holds_its_locks': ((FIRST_STOP, 'report'), {2:('exit',)}, STARTED, {}),
     'listener_lock_free_but_supervisor_lock_held': ((FIRST_STOP, 'listener'), {2:('supervisor',)}, STARTED, {}),
     'degraded_old_run_exits': ((FIRST_STOP,), {3:('exit',)}, STARTED, {'old_state':'degraded'}),
-    'old_run_of_an_older_skill_copy_exits': ((FIRST_STOP,), {3:('exit',)}, STARTED, {'old_copy':'0.0.1'}),
+    'old_run_of_an_older_skill_copy_exits': ((FIRST_STOP,), {3:('exit',)}, STARTED, {'old_copy':1}),
     'rebind_waits_for_the_old_run': ((FIRST_STOP,), {3:('exit',)}, STARTED, {'endpoint':'/synthetic/new'}),
     'rebind_waits_for_the_supervisor_lock': ((FIRST_STOP, 'listener'), {2:('supervisor',)}, STARTED,
                                              {'endpoint':'/synthetic/new'}),
@@ -551,7 +551,7 @@ class StartAfterStop(Harness):
     def play(self, before, ticks, expected, *, old_state='waiting', old_copy=None, stop_at=None, **options):
         from quorum_resume import enable
         enable(self.other, self.record)
-        self.old = OldRun(self.root, old_state, skill_version=old_copy)
+        self.old = OldRun(self.root, old_state, protocol_version=old_copy)
         self.apply(before)
         self.assertEqual(self.reception(), {'enabled':False})
         self.ticks = ticks
@@ -625,7 +625,7 @@ class StartAfterStop(Harness):
         self.assertEqual(self.other.setting('listener')['run_id'], self.old.run_id, 'no new run published')
 
     def test_a_running_unstopped_older_copy_is_still_refused(self):
-        self.old = OldRun(self.root, skill_version='0.0.1')
+        self.old = OldRun(self.root, protocol_version=1)
         with self.assertRaisesRegex(ValueError, '^skill_update_required$'):
             self.start()
         self.assertEqual(self.children, [])

@@ -72,8 +72,8 @@ def fake_webhook(*, configured=True):
 
 
 def installed():
-    from quorum_release import installed_release
-    return installed_release().copy()
+    from quorum_release import installed_identity
+    return installed_identity()
 
 
 # The service refuses these for a revoked membership or a foreign session binding.
@@ -126,6 +126,8 @@ class Api:
             reply = self.replies.setdefault(payload['message_id'], str(uuid.uuid4()))
             return {'reply_message_id': reply, 'conversation_id': 'c-1', 'extra': 'dropped'}
         if operation == 'session_peers': return [{'role': 'peer'}]
+        if operation == 'session_release_report': return {'recorded': True}
+        if operation == 'session_release_status': return {'target': None, 'agents': []}
         if operation == 'conversation_read': return [{'sequence': 1, 'body': 'synthetic'}]
         if operation == 'message_send': return {'message_id': M3}
         if operation == 'invite_accept_id': return {'quorum_id': 'q', 'membership_id': 'm'}

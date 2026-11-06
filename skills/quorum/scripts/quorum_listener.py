@@ -185,7 +185,9 @@ class Control:
         elif result['listener'] == 'running':
             result['hello'] = {'summary':'Hello pending: no heartbeat acknowledged yet', 'connection':'current'}
         release = self.ledger.setting('release')
-        if release: result['release'] = release
+        if release:
+            from quorum_release import public_diagnostic
+            result['release'] = public_diagnostic(release)
         result['stop_requested'] = bool(record.get('run_id') and self.stopping(record['run_id']))
         from quorum_release import runtime_evidence
         result['runtime_source'] = runtime_evidence(self.ledger)
