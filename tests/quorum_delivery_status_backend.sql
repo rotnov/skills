@@ -7,7 +7,7 @@ declare
  recipient uuid:=gen_random_uuid(); recipient_sid text:=gen_random_uuid()::text;
  third uuid:=gen_random_uuid(); third_sid text:=gen_random_uuid()::text;
  required jsonb:=current_setting('quorum_test.release')::jsonb;
- first_id uuid; second_id uuid; third_id uuid; notice_id uuid; stale_id uuid; old_client_id uuid;
+ first_id uuid; second_id uuid; third_id uuid; notice_id uuid; stale_id uuid; old_client_id uuid; late_id uuid;
  result jsonb; denied boolean; hints bigint; seen bigint;
 begin
  insert into auth.users(id) values(owner_id),(stranger);
@@ -153,6 +153,18 @@ begin
  exception when others then denied:=sqlerrm='delivery_status_not_applicable'; end;
  if not denied then raise exception 'notice_status_accepted'; end if;
  if public.session_delivery_status(sender,sender_sid,notice_id) is not null then raise exception 'notice_status_readable'; end if;
+
+ -- The feed and its hint carry status changes only: a late fact on the same status is no new row.
+ late_id:=(public.message_send(q,sender,gen_random_uuid(),recipient,null,'late body','status-late','normal')->>'message_id')::uuid;
+ perform public.session_delivery_mark(recipient,recipient_sid,late_id,'needs_owner');
+ select seq into seen from quorum_private.delivery_statuses where message_id=late_id;
+ select count(*) into hints from realtime.messages where event='status_changed';
+ perform public.session_delivery_mark(recipient,recipient_sid,late_id,'read',null,'received');
+ if (select seq from quorum_private.delivery_statuses where message_id=late_id)<>seen then raise exception 'late_fact_moved_the_feed'; end if;
+ if (select count(*) from realtime.messages where event='status_changed')<>hints then raise exception 'late_fact_hinted'; end if;
+ if public.session_delivery_status(sender,sender_sid,late_id)->>'read_at' is null then raise exception 'late_fact_lost'; end if;
+ perform public.session_delivery_mark(recipient,recipient_sid,late_id,'done');
+ if (select seq from quorum_private.delivery_statuses where message_id=late_id)<=seen then raise exception 'status_change_stayed_behind'; end if;
  select count(*) into seen from quorum_private.delivery_statuses;
  select count(*) into hints from realtime.messages where event='status_changed';
  result:=public.session_heartbeat(sender,sender_sid,gen_random_uuid(),(required->>'protocol_version')::integer,required->>'skill_version');

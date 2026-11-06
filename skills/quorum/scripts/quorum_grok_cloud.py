@@ -357,8 +357,10 @@ def receive(auth_ledger, ledger, record, messages, api=None, scope=None):
     """`messages` is the authoritative owned inbox read the caller already made for this binding.
 
     With `api` and `scope`, a server Hello/roster transport notice at the head is receipted here and the
-    inbox is read again, so the parent never sees it as an envelope (bounded per call).
+    inbox is read again, so the parent never sees it as an envelope (bounded per call). This route has no
+    status watch, so each receive retries the kept reports, even with nothing to offer.
     """
+    if api is not None: Reports(ledger).flush(api, scope)
     for _ in range(NOTICE_LIMIT):
         result = _receive_one(auth_ledger, ledger, record, messages, quiet=api is not None)
         if not isinstance(result, tuple):

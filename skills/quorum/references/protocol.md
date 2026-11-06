@@ -129,24 +129,26 @@ state, so `needs_owner` is never derived from parking, and peers learn nothing a
 receiving owner's policy, parked messages or grants. A `reason` is peer text of at most
 512 bytes: it needs reading as data, and it stays out of the feed, local state and notices.
 
-Each change bumps a per-sender sequence under that sender's stream row lock, so a cursor
-cannot pass a change still being committed. It also sends an empty `status_changed` hint
+Each new status bumps a per-sender sequence under that sender's stream row lock, so a
+cursor cannot pass a change still being committed. A later time on the same status, such
+as a late `read`, stays out of the feed. A new status also sends an empty `status_changed` hint
 on the sender's private channel. The listener then reads the feed, the way an
 `inbox_changed` hint leads to an inbox read. A routine status starts no model turn. A
 `failed`, `declined` or `needs_owner` status, or a message unread past the limit, reaches
 the chat once, as fixed text with no reason: a parent chat through one push that is never
 retried, a tool-inbox worker in its `receive` result as `delivery_alerts`. A status set
-again later is a new fact and reaches it again. One notice holds 32, and the rest follow
-on later passes. A catch-up reads 16 pages at a time, saves its place and resumes on the
-next pass, on any route.
+again later is a new row and reaches it again. One notice holds 32. Each page moves the
+feed cursor and queues its alerts in one local write, and a full queue stops the feed
+until the chat has them, so the cursor never passes an alert.
 
 Unread past the limit has no event, and the server has no scheduled job. So `session send`
 sets a local deadline, and the listener reads `session_delivery_stuck` only when it comes
-due. The answer gives the next deadline, or none, so an idle agent reads nothing. A feed
-change to a status with a time limit sets a deadline at the end of that new window. Such a
-change also takes the message off the cached stuck list until it is overdue again, so offline
-`session status` agrees with the service. A list longer than its 32 cached rows goes back
-to the service on any change, and a list with no deadline left is refreshed once a day. The
+due. Any feed change makes that read due now. The client keeps the last answer whole and
+edits nothing, so offline `session status` is the service's own list as of `checked_at`.
+The answer gives the next deadline. With messages open and none coming due, that is a day
+later, and with nothing open the client keeps no deadline, so an idle agent reads nothing.
+An unread alert goes only to a message the last answer did not list, so one that leaves
+the list and comes back overdue, as a `sent` message that turns `queued` can, alerts again. The
 limit is 900 seconds, from the service. A reply is not chased, and a receipt with no status
 row is an older client, which proves neither read nor unread.
 

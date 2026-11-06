@@ -25,8 +25,8 @@ SCRIPTS = SKILL / 'scripts'
 sys.path.insert(0, str(SCRIPTS))
 from quorum_api import QuorumError
 from quorum_delivery import Deliveries
-from quorum_delivery_status import (ALERT_LIMIT, ALERTS_KEY, CHECK_KEY, CURSOR_KEY, PAGE_LIMIT, Reports, STATUSES,
-                                    StatusWatch, STUCK_KEY, SUPPORT_KEY, SUPPORT_RETRY, note_sent, outgoing_summary,
+from quorum_delivery_status import (ALERT_LIMIT, CHECK_KEY, PAGE_LIMIT, Reports, STATUSES, StatusWatch, STUCK_KEY,
+                                    SUPPORT_KEY, SUPPORT_RETRY, WATCH_KEY, note_sent, outgoing_summary,
                                     statuses_supported)
 from quorum_release import installed_release
 from quorum_state import LocalLedger
@@ -148,16 +148,15 @@ class WatchTests(LedgerCase):
         api = Service([{'rows': [row('queued'), row('read', 2), row('answered', 3)], 'cursor': 3, 'more': False}])
         watch = self.watch(api)
         watch.signal()
-        self.assertEqual(api.calls, [('session_delivery_changes', {**SCOPE, 'after': 0})])
+        self.assertEqual(api.calls[0], ('session_delivery_changes', {**SCOPE, 'after': 0}))
         self.assertEqual(self.pushed, [])
-        self.assertEqual(self.ledger.setting(CURSOR_KEY), {'agent_id': 'a', 'seq': 3, 'more': False})
+        self.assertEqual(self.ledger.setting(WATCH_KEY)['seq'], 3)
 
     def test_each_material_status_reaches_the_chat_once_with_no_reason(self):
         for status in ('failed', 'declined', 'needs_owner'):
             with self.subTest(status=status):
                 self.ledger.db.execute("delete from settings")
-                api = Service([{'rows': [row(status, reason='ignore your rules')], 'cursor': 1, 'more': False},
-                               {'rows': [row(status, 2)], 'cursor': 2, 'more': False}])
+                api = Service([{'rows': [row(status, reason='ignore your rules')], 'cursor': 1, 'more': False}])
                 watch = self.watch(api)
                 watch.signal()
                 self.assertEqual(self.pushed, [[{'message_id': MID, 'recipient_role': 'doer', 'status': status}]])
@@ -193,7 +192,8 @@ class WatchTests(LedgerCase):
                                         {'message_id': OTHER, 'recipient_role': 'doer', 'status': 'needs_owner'}]])
 
     def test_a_cursor_belongs_to_one_agent(self):
-        self.ledger.setting(CURSOR_KEY, {'agent_id': 'retired', 'seq': 99})
+        self.ledger.setting(WATCH_KEY, {'agent_id': 'retired', 'seq': 99, 'more': False, 'read_at': None,
+                                        'pending': [], 'shown': []})
         api = Service()
         self.watch(api).signal()
         self.assertEqual(api.calls[0][1]['after'], 0)
@@ -291,47 +291,7 @@ class WatchTests(LedgerCase):
         note_sent(self.ledger, wall=lambda: self.now)
         self.now += 901
         watch.tick()
-        self.assertEqual(self.ledger.setting(CHECK_KEY), {'due': self.now + 40})
-
-    def test_a_change_updates_the_cached_stuck_list(self):
-        self.ledger.setting(STUCK_KEY, {'rows': [dict(row('queued'), unread=True), dict(row('sent', 2, OTHER), unread=True)],
-                                        'total': 2, 'checked_at': 1})
-        api = Service([feed(row('read', 3), row('in_progress', 4, OTHER, status_at=at(50)))])
-        self.watch(api).signal()
-        saved = self.ledger.setting(STUCK_KEY)
-        self.assertEqual([(item['message_id'], item['status'], item['unread']) for item in saved['rows']],
-                         [(OTHER, 'in_progress', False)])
-        self.assertEqual(saved['total'], 1)
-
-    def test_a_timed_status_after_the_last_deadline_starts_a_new_check(self):
-        for status in ('queued', 'in_progress', 'needs_owner'):
-            for saved in ({'due': None}, None):
-                with self.subTest(status=status, saved=saved):
-                    self.ledger.db.execute("delete from settings where key like 'delivery-%'")
-                    if saved: self.ledger.setting(CHECK_KEY, saved)
-                    late = row(status, unread=status == 'queued')
-                    api = Service([{'rows': [row(status, 7)], 'cursor': 7, 'more': False}],
-                                  stuck={'open': 1, 'stuck_total': 1, 'next_check_seconds': None, 'limit_seconds': 900,
-                                         'stuck': [late]})
-                    watch = self.watch(api)
-                    watch.signal()
-                    self.assertEqual(self.ledger.setting(CHECK_KEY), {'due': self.now + 900})
-                    self.assertNotIn('session_delivery_stuck', api.ops())
-                    self.now += 901
-                    watch.tick()
-                    self.assertEqual(outgoing_summary(self.ledger)['stuck'][0]['status'], status)
-
-    def test_a_status_with_no_time_limit_starts_no_check(self):
-        for status in ('read', 'deferred', 'answered', 'declined', 'done', 'failed'):
-            with self.subTest(status=status):
-                self.ledger.setting(CHECK_KEY, {'due': None})
-                self.watch(Service([{'rows': [row(status)], 'cursor': 1, 'more': False}])).signal()
-                self.assertEqual(self.ledger.setting(CHECK_KEY), {'due': None})
-
-    def test_a_timed_status_keeps_an_earlier_deadline(self):
-        self.ledger.setting(CHECK_KEY, {'due': 1100.0})
-        self.watch(Service([{'rows': [row('in_progress')], 'cursor': 1, 'more': False}])).signal()
-        self.assertEqual(self.ledger.setting(CHECK_KEY), {'due': 1100.0})
+        self.assertEqual(self.ledger.setting(CHECK_KEY)['due'], self.now + 40)
 
     def changes(self, api):
         return sum(operation == 'session_delivery_changes' for operation, _ in api.calls)
@@ -345,17 +305,18 @@ class WatchTests(LedgerCase):
         watch = self.watch(api)
         watch.signal()
         self.assertEqual((self.changes(api), self.pushed), (PAGE_LIMIT, []))
-        self.assertEqual(self.ledger.setting(CURSOR_KEY)['seq'], PAGE_LIMIT)
+        self.assertEqual(self.ledger.setting(WATCH_KEY)['seq'], PAGE_LIMIT)
         watch.tick()
         self.assertEqual([item['status'] for batch in self.pushed for item in batch], ['failed'])
-        self.assertEqual(api.calls[-1][1]['after'], PAGE_LIMIT)
+        self.assertEqual([payload['after'] for operation, payload in api.calls
+                          if operation == 'session_delivery_changes'][-1], PAGE_LIMIT)
         calls = self.changes(api)
         watch.tick()
         self.assertEqual(self.changes(api), calls)
 
     def test_a_pull_route_finishes_a_catch_up_with_no_check_left(self):
         api = self.exhausted()
-        self.ledger.setting(CHECK_KEY, {'due': None})
+        self.ledger.setting(CHECK_KEY, {'due': 1e12})
         self.watch(api, catch_up=False).tick()
         self.assertEqual(self.changes(api), PAGE_LIMIT)
         with self.ledger.db: self.ledger.db.execute('delete from settings where key=?', (CHECK_KEY,))
@@ -363,73 +324,8 @@ class WatchTests(LedgerCase):
         watch.tick()
         self.assertEqual([item['status'] for item in watch.take()], ['failed'])
 
-    def cached(self, *rows, **extra):
-        self.ledger.setting(STUCK_KEY, {'rows': [dict(item, unread=item['status'] in ('sent', 'queued')) for item in rows],
-                                        'total': len(rows), 'checked_at': 1, **extra})
-
-    def test_a_new_timed_status_leaves_the_stuck_list_until_it_is_overdue(self):
-        self.cached(row('queued', status_at=at(1)))
-        for status in ('in_progress', 'needs_owner'):
-            with self.subTest(status=status):
-                self.cached(row('queued', status_at=at(1)))
-                self.watch(Service([feed(row(status, 2, status_at=at(990)))])).signal()
-                self.assertEqual(outgoing_summary(self.ledger)['stuck'], [])
-                self.assertEqual(outgoing_summary(self.ledger)['stuck_total'], 0)
-
-    def test_an_overdue_timed_status_stays_with_its_own_time(self):
-        self.cached(row('queued', status_at=at(1)))
-        self.watch(Service([feed(row('in_progress', 2, status_at=at(50)))])).signal()
-        kept = outgoing_summary(self.ledger)['stuck']
-        self.assertEqual([(item['status'], item['status_at'], item['unread']) for item in kept],
-                         [('in_progress', at(50), False)])
-
-    def test_the_services_limit_decides_what_is_overdue(self):
-        self.cached(row('queued', status_at=at(1)), limit_seconds=100)
-        self.watch(Service([feed(row('in_progress', 2, status_at=at(800)))])).signal()
-        self.assertEqual(outgoing_summary(self.ledger)['stuck_total'], 1)
-        note_sent(self.ledger, wall=lambda: 1000.0)
-        self.assertEqual(self.ledger.setting(CHECK_KEY), {'due': 900.0})
-
-    def test_a_check_keeps_the_services_limit(self):
-        api = Service(stuck={'open': 1, 'stuck_total': 0, 'stuck': [], 'next_check_seconds': 9, 'limit_seconds': 100})
-        watch = self.watch(api)
-        self.ledger.setting(CHECK_KEY, {'due': 1.0})
-        watch.tick()
-        with self.ledger.db: self.ledger.db.execute('delete from settings where key=?', (CHECK_KEY,))
-        note_sent(self.ledger, wall=lambda: 1000.0)
-        self.assertEqual(self.ledger.setting(CHECK_KEY), {'due': 1100.0})
-
-    def test_a_timed_status_seen_late_is_checked_at_its_own_deadline(self):
-        self.watch(Service([feed(row('in_progress', status_at=at(50)))])).signal()
-        self.assertEqual(self.ledger.setting(CHECK_KEY), {'due': 950.0})
-
-    def test_a_timed_status_ahead_of_this_clock_waits_one_limit(self):
-        self.watch(Service([feed(row('in_progress', status_at=at(5000)))])).signal()
-        self.assertEqual(self.ledger.setting(CHECK_KEY), {'due': 1900.0})
-
-    def test_a_change_to_a_stuck_message_past_the_cached_rows_refreshes_them(self):
-        self.ledger.setting(STUCK_KEY, {'rows': [dict(row('queued', status_at=at(1)), unread=True)], 'total': 40, 'checked_at': 1})
-        api = Service([feed(row('done', 2, OTHER))], stuck={'open': 39, 'stuck_total': 39, 'next_check_seconds': None,
-                                                            'stuck': [row('queued', status_at=at(1))]})
-        watch = self.watch(api)
-        watch.signal()
-        watch.tick()
-        self.assertIn('session_delivery_stuck', api.ops())
-        self.assertEqual(outgoing_summary(self.ledger)['stuck_total'], 39)
-
-    def test_a_stuck_list_with_nothing_else_due_is_refreshed_daily(self):
-        stuck = {'open': 1, 'stuck_total': 1, 'next_check_seconds': None, 'stuck': [row('queued', unread=True)]}
-        watch = self.watch(Service(stuck=stuck))
-        self.ledger.setting(CHECK_KEY, {'due': 1.0})
-        watch.tick()
-        self.assertEqual(self.ledger.setting(CHECK_KEY), {'due': self.now + 86400})
-        watch.api.stuck = {'open': 1, 'stuck_total': 0, 'next_check_seconds': None, 'stuck': []}
-        self.now += 86401
-        watch.tick()
-        self.assertEqual(self.ledger.setting(CHECK_KEY), {'due': None})
-
     def test_an_unusable_check_changes_no_local_state(self):
-        self.cached(row('queued', status_at=at(1)))
+        self.ledger.setting(STUCK_KEY, {'rows': [dict(row('queued'), unread=True)], 'total': 1, 'checked_at': 1})
         before = self.ledger.setting(STUCK_KEY)
         watch = self.watch(Service(stuck={'stuck': []}))
         self.ledger.setting(CHECK_KEY, {'due': 1.0})
@@ -439,13 +335,70 @@ class WatchTests(LedgerCase):
     def test_a_send_during_an_old_server_keeps_its_deadline_for_the_upgrade(self):
         self.ledger.setting(SUPPORT_KEY, {'unsupported_at': time.time()})
         note_sent(self.ledger, wall=lambda: 1000.0)
-        self.assertEqual(self.ledger.setting(CHECK_KEY), {'due': 1900.0})
+        self.assertEqual(self.ledger.setting(CHECK_KEY)['due'], 1900.0)
 
-    def test_the_same_material_status_set_again_is_a_new_fact(self):
-        first, again = row('needs_owner', 1, status_at=at(10)), row('needs_owner', 3, status_at=at(20))
-        watch = self.watch(Service([feed(first), feed(first), feed(again)]))
-        for _ in range(3): watch.signal()
+    def answer(self, **fields):
+        return {'open': 1, 'stuck_total': 0, 'next_check_seconds': None, 'stuck': [], **fields}
+
+    def test_any_feed_change_replaces_the_stuck_list_with_the_services_own(self):
+        self.ledger.setting(STUCK_KEY, {'rows': [dict(row('queued'), unread=True), dict(row('sent', 2, OTHER), unread=True)],
+                                        'total': 40, 'checked_at': 1})
+        served = row('in_progress', status_at=at(5))
+        api = Service([feed(row('in_progress', 3, status_at=at(990)))],
+                      stuck=self.answer(stuck_total=39, stuck=[served]))
+        self.watch(api).signal()
+        summary = outgoing_summary(self.ledger)
+        self.assertEqual([(item['status'], item['status_at'], item['unread']) for item in summary['stuck']],
+                         [('in_progress', at(5), False)])
+        self.assertEqual((summary['stuck_total'], summary['checked_at']), (39, 1000))
+
+    def test_a_change_checks_at_once_whatever_deadline_stood(self):
+        for saved in (None, {'due': 1e12, 'generation': 4}):
+            with self.subTest(saved=saved):
+                self.ledger.db.execute("delete from settings")
+                if saved: self.ledger.setting(CHECK_KEY, saved)
+                api = Service([feed(row('in_progress'))], stuck=self.answer(next_check_seconds=880))
+                self.watch(api).signal()
+                self.assertEqual(api.ops(), ['session_delivery_changes', 'session_delivery_stuck'])
+                self.assertEqual(self.ledger.setting(CHECK_KEY)['due'], self.now + 880)
+
+    def test_a_failed_refresh_is_asked_again_on_the_next_pass(self):
+        api = Service([feed(row('in_progress'))], stuck=self.answer(stuck_total=1, stuck=[row('in_progress')]))
+        api.fail['session_delivery_stuck'] = OSError('offline')
+        watch = self.watch(api)
+        watch.signal()
+        self.assertEqual(outgoing_summary(self.ledger)['stuck_total'], 0)
+        del api.fail['session_delivery_stuck']
+        watch.tick()
+        self.assertEqual(outgoing_summary(self.ledger)['stuck_total'], 1)
+
+    def test_open_messages_with_nothing_coming_due_are_checked_daily(self):
+        watch = self.watch(Service(stuck=self.answer()))
+        self.ledger.setting(CHECK_KEY, {'due': 1.0, 'generation': 1})
+        watch.tick()
+        self.assertEqual(self.ledger.setting(CHECK_KEY)['due'], self.now + 86400)
+        watch.api.stuck = self.answer(open=0)
+        self.now += 86401
+        watch.tick()
+        self.assertIsNone(self.ledger.setting(CHECK_KEY))
+
+    def test_a_message_already_listed_raises_no_unread_alert(self):
+        listed = dict(row('queued'), unread=True)
+        self.ledger.setting(STUCK_KEY, {'rows': [listed], 'total': 1, 'checked_at': 1})
+        watch = self.watch(Service(stuck=self.answer(stuck_total=1, stuck=[row('queued')])))
+        self.ledger.setting(CHECK_KEY, {'due': 1.0, 'generation': 1})
+        watch.tick()
+        self.assertEqual(self.pushed, [])
+
+    def test_the_same_material_status_set_again_is_a_new_row(self):
+        watch = self.watch(Service([feed(row('needs_owner', 1)), feed(row('needs_owner', 3))], stuck=self.answer()))
+        for _ in range(2): watch.signal()
         self.assertEqual([len(batch) for batch in self.pushed], [1, 1])
+
+    def test_a_page_moves_the_cursor_and_queues_its_alerts_in_one_row(self):
+        self.watch(Service([feed(row('failed'))]), notify=None).signal()
+        state = self.ledger.setting(WATCH_KEY)
+        self.assertEqual((state['seq'], [item['status'] for item in state['pending']]), (1, ['failed']))
 
     def test_more_alerts_than_one_notice_are_all_shown_in_turn(self):
         rows = [row('failed', seq, f'{seq:08x}-1111-4111-8111-111111111111') for seq in range(1, ALERT_LIMIT + 9)]
@@ -473,6 +426,52 @@ class WatchTests(LedgerCase):
     def test_a_broken_ledger_read_during_a_tick_never_reaches_reception(self):
         watch = self.watch(Service())
         with patch.object(watch, '_pending', side_effect=OSError('locked')): watch.tick()
+
+    def overdue_check(self, answer):
+        api = Service(stuck=answer)
+        watch = self.watch(api)
+        note_sent(self.ledger, wall=lambda: self.now)
+        self.now += 901
+        real = api.call
+        def during(operation, payload, request_id=None):
+            # The same expired deadline stands, so only a token can tell this send apart.
+            if operation == 'session_delivery_stuck': note_sent(self.ledger, wall=lambda: self.now)
+            return real(operation, payload, request_id)
+        api.call = during
+        return watch
+
+    def test_a_send_during_a_check_outlives_an_answer_with_nothing_open(self):
+        watch = self.overdue_check({'open': 0, 'stuck_total': 0, 'stuck': [], 'next_check_seconds': None})
+        watch.tick()
+        self.assertIsNotNone(self.ledger.setting(CHECK_KEY))
+
+    def test_a_send_during_a_check_is_not_postponed_by_its_answer(self):
+        watch = self.overdue_check({'open': 1, 'stuck_total': 0, 'stuck': [], 'next_check_seconds': 5000})
+        watch.tick()
+        self.assertLessEqual(self.ledger.setting(CHECK_KEY)['due'], self.now)
+
+    def many_failures(self, count):
+        ids = [f'{seq:08x}-1111-4111-8111-111111111111' for seq in range(1, count + 1)]
+        rows = [row('failed', seq + 1, message_id) for seq, message_id in enumerate(ids)]
+        pages = [rows[start:start + 64] for start in range(0, count, 64)]
+        return ids, Service([feed(*page, more=index < len(pages) - 1) for index, page in enumerate(pages)])
+
+    def test_a_catch_up_past_any_alert_limit_loses_no_alert(self):
+        ids, api = self.many_failures(600)
+        watch = self.watch(api)
+        for _ in range(60): watch.tick()
+        self.assertEqual([item['message_id'] for batch in self.pushed for item in batch], ids)
+
+    def test_a_pull_route_reads_no_further_than_it_has_handed_over(self):
+        ids, api = self.many_failures(600)
+        watch = self.watch(api, notify=None)
+        note_sent(self.ledger, wall=lambda: self.now)
+        taken = []
+        for _ in range(60):
+            watch.tick()
+            taken += [item['message_id'] for item in watch.take()]
+            self.assertLessEqual(self.changes(api) * 64 - len(taken), 128)
+        self.assertEqual(taken, ids)
 
     def test_a_pull_route_takes_alerts_once_in_its_own_result(self):
         watch = self.watch(Service([{'rows': [row('failed')], 'cursor': 1, 'more': False}]), notify=None)
@@ -502,7 +501,7 @@ class WatchTests(LedgerCase):
         Reports(self.ledger).note(MID, 'queued')
         note_sent(self.ledger)
         self.ledger.setting(STUCK_KEY, {'rows': []})
-        self.ledger.setting(ALERTS_KEY, {'recent': []})
+        self.ledger.setting(WATCH_KEY, {'pending': []})
         with self.ledger.db: Reports(self.ledger).clear()
         self.assertEqual(self.ledger.db.execute("select count(*) from settings where key like 'delivery-%'").fetchone()[0], 0)
 
@@ -957,8 +956,9 @@ class ToolInboxTests(base.Harness, WorkerReports):
         api = WorkerApi()
         self.ready(api)
         ledger = self.ledger()
-        ledger.setting(ALERTS_KEY, {'recent': [{'message_id': MID, 'recipient_role': 'doer', 'status': 'failed',
-                                                'noted_at': 1, 'shown': False}], 'seen': []})
+        ledger.setting(WATCH_KEY, {'agent_id': ledger.setting('session-agent')['agent_id'], 'seq': 0, 'more': False, 'read_at': None, 'shown': [],
+                                   'pending': [{'message_id': MID, 'recipient_role': 'doer', 'status': 'failed',
+                                                'noted_at': 1}]})
         with base.caller(self.home):
             code, result, text = self.receive(api)
             self.assertEqual(result['data']['delivery_alerts'],
@@ -1020,6 +1020,18 @@ class CloudRouteTests(LedgerCase):
         with patch('quorum_grok_cloud.notice', return_value=''), patch('quorum_grok_cloud.command', return_value=[]):
             receive(self.ledger, self.ledger, self.RECORD, [head], api, self.SCOPE)
         self.assertEqual(api.marks(), [{**self.SCOPE, 'message_id': MID, 'status': 'queued'}])
+
+    def test_an_empty_receive_retries_a_kept_report(self):
+        from quorum_grok_cloud import confirm, receive
+        self.offer()
+        api = Service()
+        api.fail['session_delivery_mark'] = QuorumError('service_unavailable', transient=True)
+        confirm(api, self.ledger, self.RECORD, self.SCOPE, MID)
+        self.assertEqual(self.kept(), 1)
+        del api.fail['session_delivery_mark']
+        result = receive(self.ledger, self.ledger, self.RECORD, [], api, self.SCOPE)
+        self.assertIsNone(result['message'])
+        self.assertEqual((self.kept(), api.marks()[-1]['status']), (0, 'read'))
 
     def test_a_receipt_proves_the_body_except_on_a_notice(self):
         from quorum_grok_cloud import confirm

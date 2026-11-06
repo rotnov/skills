@@ -73,7 +73,7 @@ create function quorum_private.delivery_status_apply(p_message quorum_private.me
  p_proof text)
 returns void language plpgsql security definer set search_path=pg_catalog as $function$
 declare next_seq bigint; was quorum_private.delivery_statuses%rowtype; now_is quorum_private.delivery_statuses%rowtype;
- fresh boolean:=false;
+ fresh boolean:=false; moved boolean;
 begin
  -- Held to commit: it orders this sender's sequences and any first insert of a row.
  insert into quorum_private.delivery_status_streams as stream(sender_id,last_seq) values(p_message.sender_id,1)
@@ -102,16 +102,20 @@ begin
   now_is.status:=p_status; now_is.reason:=p_reason;
  end if;
  if not fresh and now_is is not distinct from was then return; end if;
+ moved:=fresh or now_is.status<>was.status;
  if now_is.status<>was.status then now_is.status_at:=now(); end if;
- now_is.seq:=next_seq;
+ -- Only a new status enters the feed: each row there is one fact for the sender, and later times are not.
+ if moved then now_is.seq:=next_seq; end if;
  insert into quorum_private.delivery_statuses values(now_is.*)
   on conflict(message_id) do update set status=excluded.status,status_at=excluded.status_at,reason=excluded.reason,
    proof=excluded.proof,queued_at=excluded.queued_at,read_at=excluded.read_at,answered_at=excluded.answered_at,
    seq=excluded.seq;
- begin
-  perform realtime.send('{}'::jsonb,'status_changed','quorum:agent:'||p_message.sender_id::text,true);
- exception when others then null; -- A hint is never worth a durable status.
- end;
+ if moved then
+  begin
+   perform realtime.send('{}'::jsonb,'status_changed','quorum:agent:'||p_message.sender_id::text,true);
+  exception when others then null; -- A hint is never worth a durable status.
+  end;
+ end if;
 end $function$;
 
 -- Follows session_reply. A status failure must never undo the reply it reports.
