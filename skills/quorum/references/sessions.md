@@ -119,6 +119,14 @@ unresolved `intent` delivery is refused without changes. `listener_stop_pending`
 means the old listener has not stopped within 60 seconds; retry once status
 shows it offline.
 
+`session stop` never waits for a start. `listener-start.lock` serializes one
+start across its service calls, rebind and readiness waits, while
+`listener-control.lock` is taken only for short ledger transitions, so a stop
+records its intent at once. An in-progress start then aborts and stops its own
+unconfirmed child, and reception stays revoked; such a start fails with
+`listener_start_stopped`. Do not retry it: only a new explicit owner-authorized
+`session start` arms reception again.
+
 The listener checks its own current route before selecting another inbox message.
 A vanished socket stops reception with `claude_pipe_unavailable` before creating
 a delivery intent. If it vanishes after that check, a helper outcome proving no
@@ -302,7 +310,7 @@ uv run --project <skill-dir> --frozen python <skill-dir>/scripts/quorum.py --sta
 ```
 
 The two confirmation flags are mutually exclusive. Absence requires the current
-release and native caller, free listener/control/supervisor locks, a genuine
+release and native caller, free start/control/supervisor/listener locks, a genuine
 matching unknown intent and the original message still offered by the scoped
 service inbox. That inbox returns its current priority-selected head: an empty
 or different head refuses reconciliation. A legacy intent without an attempt

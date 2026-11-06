@@ -4,7 +4,6 @@ The worker proves its distinct provider identity from the provider's own rollout
 metadata, then owns receive, receipt and reply for its separate binding. Nothing
 here starts a model, queue, steer, socket/pipe delivery or background process.
 """
-from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -15,6 +14,7 @@ import sys
 import time
 import uuid
 from quorum_api import QuorumError, guarded_call
+from quorum_listener import control_lock
 from quorum_os import FileLock
 from quorum_presence import Presence, hello_once
 from quorum_realtime import RealtimeWait
@@ -502,22 +502,6 @@ def require_worker(record):
     if prove_worker(binding['parent_thread_id']) != binding:
         raise NativeInboxError('native_worker_binding_denied', 'binding_changed')
     return binding
-
-
-@contextmanager
-def control_lock(ledger, *, seconds=10):
-    """Short lifecycle transitions only; never held through a wait."""
-    deadline = time.monotonic() + seconds
-    while True:
-        guard = FileLock(ledger.root / 'listener-control.lock')
-        try:
-            guard.__enter__()
-            break
-        except ValueError as error:
-            if str(error) != 'worker_already_running' or time.monotonic() >= deadline: raise
-            time.sleep(.1)
-    try: yield
-    finally: guard.__exit__()
 
 
 def enabled(ledger):

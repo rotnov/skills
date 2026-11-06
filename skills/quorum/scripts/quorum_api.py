@@ -88,7 +88,7 @@ LOCAL_VALUE_CODES = frozenset((
     'invalid_service_origin invalid_session invalid_session_ref invalid_session_selector invalid_skill_name '
     'invalid_slot invalid_standing_action invalid_state_directory invalid_status invalid_wait_seconds '
     'invitation_arguments_invalid invitation_file_conflict invitation_token_unavailable invitation_too_large '
-    'json_stdin_required listener_stop_pending live_agents_disabled mcp_request_too_large '
+    'json_stdin_required listener_start_stopped listener_stop_pending live_agents_disabled mcp_request_too_large '
     'member_intake_requires_inline member_trust_requires_members message_too_large method_not_found '
     'missing_lock_contract missing_required_file not_initialized pilot_agent_required pilot_binding_denied '
     'pilot_claude_one_turn_only private_acl_access_denied private_acl_unavailable '
@@ -100,7 +100,8 @@ LOCAL_VALUE_CODES = frozenset((
     'session_queue_failed session_reconcile_denied session_recovery_denied stale_generation '
     'standing_grants_require_members subscription_required tool_denied tools_disabled truncated_adapter_output '
     'unknown_operation unsafe_config_file unsafe_credential_directory unsafe_credential_file '
-    'unsafe_event_fields unsafe_link unsafe_profile_directory unsafe_state_file unsupported_protocol '
+    'unsafe_event_fields unsafe_link unsafe_profile_directory unsafe_state_file unsupported_open_flags '
+    'unsupported_protocol '
     'update_cache_conflict update_fetch_failed update_in_progress update_invalid_copy update_node_too_old '
     'update_notice_denied update_request_invalid update_target_changed update_tool_missing update_unsafe_cache '
     'update_validation_failed webhook_config_invalid webhook_not_configured worker_already_running').split())

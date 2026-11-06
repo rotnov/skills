@@ -495,6 +495,189 @@ def ctypes_invalid_handle():
     return ctypes.c_void_p(-1).value
 
 
+class WindowsOpenRequestTests(unittest.TestCase):
+    """Synthetic Windows host on every platform. This proves the computed access, disposition and
+    share mode only, not what NTFS does with them; `NativeFileSemanticsTests` proves that on Windows.
+    """
+    GENERIC_READ, GENERIC_WRITE, FILE_WRITE_DATA, FILE_APPEND_DATA = 0x80000000, 0x40000000, 0x2, 0x4
+    FILE_SHARE_DELETE = 0x4
+
+    def setUp(self):
+        sys.path.insert(0, str(SCRIPTS))
+
+    def test_append_requests_append_data_without_write_data(self):
+        import quorum_os
+        for flags in (os.O_CREAT | os.O_WRONLY | os.O_APPEND, os.O_WRONLY | os.O_APPEND):
+            with self.subTest(flags=flags):
+                access, _ = quorum_os.windows_open_request(flags)
+                self.assertTrue(access & self.FILE_APPEND_DATA)
+                self.assertFalse(access & (self.FILE_WRITE_DATA | self.GENERIC_WRITE))
+
+    def test_read_append_keeps_read_and_still_cannot_overwrite(self):
+        import quorum_os
+        access, _ = quorum_os.windows_open_request(os.O_RDWR | os.O_APPEND)
+        self.assertTrue(access & self.GENERIC_READ and access & self.FILE_APPEND_DATA)
+        self.assertFalse(access & (self.FILE_WRITE_DATA | self.GENERIC_WRITE))
+
+    def test_flags_without_append_keep_their_access_and_disposition(self):
+        import quorum_os
+        for flags, expected in ((os.O_RDONLY, (self.GENERIC_READ, 3)),
+                                (os.O_RDONLY | os.O_APPEND, (self.GENERIC_READ, 3)),
+                                (os.O_WRONLY, (self.GENERIC_WRITE, 3)),
+                                (os.O_WRONLY | os.O_CREAT, (self.GENERIC_WRITE, 4)),
+                                (os.O_WRONLY | os.O_CREAT | os.O_EXCL, (self.GENERIC_WRITE, 1)),
+                                (os.O_WRONLY | os.O_CREAT | os.O_TRUNC, (self.GENERIC_WRITE, 4)),
+                                (os.O_RDWR | os.O_CREAT, (self.GENERIC_READ | self.GENERIC_WRITE, 4))):
+            with self.subTest(flags=flags):
+                self.assertEqual(quorum_os.windows_open_request(flags), expected)
+
+    def test_append_with_truncate_is_refused_rather_than_widened(self):
+        import quorum_os
+        with self.assertRaisesRegex(ValueError, '^unsupported_open_flags$'):
+            quorum_os.windows_open_request(os.O_WRONLY | os.O_APPEND | os.O_TRUNC)
+
+    def opened(self, operation):
+        """Run `operation` against fake kernel32 and msvcrt; return each CreateFileW request."""
+        import ctypes
+        import quorum_os
+        calls = []
+
+        def create(name, access, share, attributes, disposition, flags, template):
+            calls.append((access, share, disposition))
+            return 55
+
+        def file_info(handle, kind, output, size):
+            ctypes.cast(output, ctypes.POINTER(ctypes.c_uint32))[0] = 0x80
+            return 1
+
+        kernel = SimpleNamespace(CreateFileW=create, GetFileInformationByHandleEx=file_info,
+                                 CloseHandle=lambda handle: None)
+        crt = SimpleNamespace(open_osfhandle=lambda handle, flags: 9, locking=lambda fd, mode, size: None,
+                              LK_NBLCK=2)
+        host = SimpleNamespace(**{name: getattr(os, name) for name in dir(os) if name.startswith('O_')})
+        host.name, host.O_BINARY, host.SEEK_SET = 'nt', 0x8000, 0
+        host.fstat, host.write = (lambda fd: SimpleNamespace(st_size=1)), (lambda fd, data: len(data))
+        host.lseek, host.close = (lambda fd, offset, whence: 0), (lambda fd: None)
+        with tempfile.TemporaryDirectory() as temporary, patch.object(quorum_os, 'os', host), \
+             patch.dict(sys.modules, {'msvcrt': crt}), \
+             patch.object(ctypes, 'WinDLL', return_value=kernel, create=True):
+            operation(quorum_os, host, Path(temporary) / 'file')
+        return calls
+
+    def test_file_lock_cannot_share_delete(self):
+        def lock(quorum_os, _, path):
+            with quorum_os.FileLock(path): pass
+        [(access, share, disposition)] = self.opened(lock)
+        self.assertEqual(share, 3)  # FILE_SHARE_READ | FILE_SHARE_WRITE
+        self.assertFalse(share & self.FILE_SHARE_DELETE)
+        self.assertEqual((access, disposition), (self.GENERIC_READ | self.GENERIC_WRITE, 4))
+
+    def test_private_open_defaults_to_replaceable_and_passes_append_access(self):
+        def append(quorum_os, host, path):
+            quorum_os.open_private(path, host.O_CREAT | host.O_WRONLY | host.O_APPEND)
+        [(access, share, disposition)] = self.opened(append)
+        self.assertEqual(share, 7)
+        self.assertEqual(disposition, 4)
+        self.assertTrue(access & self.FILE_APPEND_DATA)
+        self.assertFalse(access & (self.FILE_WRITE_DATA | self.GENERIC_WRITE))
+
+
+@unittest.skipUnless(sys.platform == 'win32', 'Real NTFS file semantics run in the Windows CI job')
+class NativeFileSemanticsTests(unittest.TestCase):
+    """Real CreateFileW and NTFS, unlike the synthetic host above."""
+    APPEND = os.O_CREAT | os.O_WRONLY | os.O_APPEND
+
+    def setUp(self):
+        sys.path.insert(0, str(SCRIPTS))
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+
+    def append(self, path, data):
+        from quorum_os import open_private
+        fd = open_private(path, self.APPEND)
+        try: os.write(fd, data)
+        finally: os.close(fd)
+
+    def test_two_appends_preserve_both_lines(self):
+        path = self.root / 'listener.log'
+        self.append(path, b'first\n')
+        self.append(path, b'second\n')
+        self.assertEqual(path.read_bytes(), b'first\nsecond\n')
+
+    def test_two_open_appenders_interleave_without_overwriting(self):
+        from quorum_os import open_private
+        path = self.root / 'listener.log'
+        one, two = open_private(path, self.APPEND), open_private(path, self.APPEND)
+        try:
+            os.write(one, b'a\n')
+            os.write(two, b'b\n')
+            os.write(one, b'c\n')
+        finally:
+            os.close(one)
+            os.close(two)
+        self.assertEqual(path.read_bytes(), b'a\nb\nc\n')
+
+    def test_append_handle_inherited_by_a_child_keeps_existing_lines(self):
+        from quorum_os import open_private
+        path = self.root / 'listener.log'
+        self.append(path, b'parent\n')
+        fd = open_private(path, self.APPEND)
+        try:
+            subprocess.run([sys.executable, '-c', 'print("child", flush=True)'], stdout=fd, check=True,
+                           timeout=CHECK_TIMEOUT)
+        finally: os.close(fd)
+        self.append(path, b'after\n')
+        self.assertEqual(path.read_bytes().replace(b'\r\n', b'\n'), b'parent\nchild\nafter\n')
+
+    def test_deleting_a_held_lock_fails(self):
+        from quorum_os import FileLock
+        path = self.root / 'listener.lock'
+        with FileLock(path):
+            with self.assertRaises(PermissionError): os.unlink(path)
+            self.assertTrue(path.exists())
+        os.unlink(path)  # Released, the name is free again.
+        self.assertFalse(path.exists())
+
+    def test_a_held_lock_cannot_be_renamed_or_replaced(self):
+        from quorum_os import FileLock
+        path, other = self.root / 'listener.lock', self.root / 'other'
+        other.write_bytes(b'replacement')
+        with FileLock(path):
+            with self.assertRaises(PermissionError): os.replace(other, path)
+            with self.assertRaises(PermissionError): os.rename(path, self.root / 'moved')
+        self.assertTrue(other.exists())
+        self.assertEqual(path.stat().st_size, 1)
+
+    def test_a_second_holder_is_still_refused_under_the_narrower_share_mode(self):
+        from quorum_listener import locked
+        from quorum_os import FileLock
+        path = self.root / 'listener.lock'
+        with FileLock(path):
+            self.assertTrue(locked(path))
+            with self.assertRaisesRegex(ValueError, '^worker_already_running$'):
+                FileLock(path).__enter__()
+        self.assertFalse(locked(path))
+
+    def test_acl_protection_of_a_held_lock_still_works(self):
+        # credential_lock protects its own lock file while holding it.
+        from quorum_os import FileLock, protect
+        path = self.root / 'auth.lock'
+        with FileLock(path): protect(path)
+
+    def test_default_open_leaves_its_name_free_unlike_a_lock(self):
+        # What FILE_SHARE_DELETE grants. `os.replace` onto an open target is not part of it: MoveFileEx
+        # answers ERROR_ACCESS_DENIED whatever the holder shares, so that stays unasserted here.
+        from quorum_os import open_private
+        path, moved = self.root / 'config.json', self.root / 'moved.json'
+        path.write_bytes(b'data')
+        fd = open_private(path, os.O_RDONLY)
+        try:
+            os.rename(path, moved)
+            self.assertFalse(path.exists())
+            os.unlink(moved)
+        finally: os.close(fd)
+        self.assertFalse(moved.exists())
+
+
 class LocalSetupErrorCodeTests(unittest.TestCase):
     def test_fixed_local_setup_codes_are_reported_and_other_text_is_hidden(self):
         sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'skills/quorum/scripts'))
