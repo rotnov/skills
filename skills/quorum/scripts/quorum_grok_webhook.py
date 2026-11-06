@@ -11,6 +11,7 @@ import stat
 import threading
 import time
 import uuid
+from quorum_delivery import Deliveries
 from quorum_os import FileLock, open_private, protect, reject_link
 from quorum_release import ReleaseGuard
 
@@ -318,7 +319,7 @@ class CloudWakeRelay:
         return cursor.rowcount == 1
 
     def acked(self, message_id):
-        delivery = self.ledger.setting('delivery:' + message_id)
+        delivery = Deliveries(self.ledger).get(message_id)
         return isinstance(delivery, dict) and delivery.get('state') == 'acked'
 
     def reconcile(self):

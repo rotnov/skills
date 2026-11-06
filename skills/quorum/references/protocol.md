@@ -50,18 +50,29 @@ replies do not loop.
 
 ### When each route acknowledges
 
-There is no shared local ledger, and the routes differ on purpose. Each keeps its
-own delivery rows.
+`scripts/quorum_delivery.py` is the one local ledger: it owns each `delivery:<message UUID>`
+row, its compare-and-set transitions, the `session_ack` call and the unknown and unsent
+outcomes. A client adds only its identity proof and a push or pull function. The
+routes differ on purpose, and this table is their contract.
 
-| Route | Local states | `session_ack` runs | After a crash |
+| Route | Local states | Who acknowledges, and when | After a crash |
 | --- | --- | --- | --- |
-| Parent pipe, Grok leader frame, Codex `turn/steer` | `intent`, `submitted`, `acked` | When that same chat runs `received` or `reply` | An unproved `intent` is never replayed; it needs [owner reconciliation](sessions.md#failure-and-recovery) |
-| Parent `codex queue` | `intent`, `submitted`, `queued`, `acked` | When the chat reads the body with `session message`, or runs `received` or `reply`. CLI acceptance writes no receipt | As above. An accepted pointer is never queued again unless the owner [attests its absence](sessions.md#a-queued-message-stays-unread) |
-| Codex tool inbox, Claude worker | `offered`, `parked`, `acked` | On `received`, `reply` or park | An `offered` row is offered again |
-| Grok Bot cloud | `offered`, `acked` | On `received` or `reply` | An `offered` row is offered again |
+| Parent Claude pipe, parent Grok leader frame, Codex `turn/steer` | `intent`, `submitted`, `queued`, `acked` | The same chat, with `received` or `reply`. The CLI records `queued` first, then runs `session_ack`, then writes `acked`. A pipe write, a whole frame or an accepted steer is not a receipt | An `intent` is never replayed and needs [owner reconciliation](sessions.md#failure-and-recovery). A `submitted` row stays and nothing is sent again. A `queued` row is finished by the next listener pass |
+| Parent `codex queue` | As above, and `submitted` keeps its attempt UUID | The same chat, when `session message` returns the body, or with `received` or `reply`. CLI acceptance writes no receipt | As above. An accepted pointer is never queued again unless the owner [attests its absence](sessions.md#a-queued-message-stays-unread) |
+| Codex tool inbox, Claude worker | `offered`, `parked`, `acked` | The worker. `received` and `reply` run `session_ack`, then write `acked`. `park` and dismiss write the row first, then run `session_ack`. `receive` parks an offer whose window ended | An `offered` row is offered again. A `parked` row whose receipt was lost is acknowledged again by the next `receive`. An `intent` or `submitted` row left by parent reception refuses `receive` with `session_delivery_unknown` |
+| Grok Bot cloud | `offered`, `acked` | The parent chat, with `received` or `reply`: `session_ack`, then one attempt to write `acked`. The wake relay never acknowledges a peer message | An `offered` row is offered again, and its receipt can be repeated |
+
+Every route receipts a quiet Hello or roster notice itself, with no chat turn: the
+notice log is written first, then `session_ack`, then `acked`. On the cloud route the
+relay or `cloud receive` does this. A repeat of an already `acked` notice or row only
+repeats the idempotent `session_ack`.
+
+The frozen `pilot-worker` route has no delivery row. Its attempts are server state.
+Cloud `wake:` rows track webhook posts only; a wake is never a receipt.
 
 A proved-unsent attempt removes its `intent` and stops reception; the next
-owner-authorized `session start` or `recover` rereads the message once.
+owner-authorized `session start` or `recover` rereads the message once. Failure after
+the `intent` with no such proof raises `session_delivery_unknown` and keeps the row.
 
 `queued` means the chat's proof is recorded and only the `session_ack` upload is left;
 whichever pass runs next finishes it, and nothing is delivered again. On every

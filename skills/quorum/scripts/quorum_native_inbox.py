@@ -14,6 +14,7 @@ import sys
 import time
 import uuid
 from quorum_api import QuorumError, guarded_call
+from quorum_delivery import Deliveries, PULL_STATES, server_ack
 from quorum_listener import control_lock
 from quorum_os import FileLock
 from quorum_presence import Presence, hello_once
@@ -41,7 +42,6 @@ AWAITING_LIMIT = 32
 # An unreceipted offer repeats at most this long before receive parks it itself; `hold` may extend it
 # explicitly for one offer, up to HOLD_LIMIT. Reception is therefore never paused open-endedly.
 OFFER_WINDOW, HOLD_LIMIT = 600, 1800
-LOCAL_STATES = ('offered', 'parked', 'acked')
 # The worker's receive-loop contract (#127). A model-driven worker repeats `receive` through empty waits;
 # only its owner brief's limit, an owner stop or a fatal error ends the loop, and it reports which one.
 STOP_REASONS = ('brief_deadline', 'brief_count', 'owner_stop', 'fatal:<code>')
@@ -58,24 +58,13 @@ wall = time.time
 class NativeInboxError(ValueError):
     """Fixed codes and reasons only; never a path, transcript text, exception text or peer data."""
     CODES = {'native_worker_unavailable', 'native_worker_required', 'native_worker_binding_denied', 'native_inbox_transport_conflict',
-             'native_inbox_receipt_not_offered', 'native_inbox_reply_loop_denied', 'native_worker_slot_terminal',
-             'native_worker_create_ambiguous', 'native_inbox_not_parked', 'native_inbox_park_denied',
-             'native_inbox_awaiting_full', 'native_inbox_answer_pending'}
+             'native_inbox_receipt_not_offered', 'native_inbox_reply_loop_denied', 'native_inbox_not_parked',
+             'native_inbox_park_denied', 'native_inbox_awaiting_full', 'native_inbox_answer_pending'}
     REASONS = {'provider_unsupported', 'competing_exports', 'session_missing', 'session_invalid',
                'parent_invalid', 'parent_is_caller', 'parent_mismatch', 'session_mismatch', 'not_spawned',
                'rollout_missing', 'rollout_ambiguous', 'rollout_unsafe', 'metadata_oversized',
                'metadata_invalid', 'binding_invalid', 'binding_changed', 'ownership_unverified',
-               # Claude logical-actor slots and scoped capabilities.
-               'scope_invalid', 'slot_invalid', 'slot_pending', 'stopped', 'await_timeout', 'pending_expired',
-               'permission_expired', 'handle_invalid', 'actor_claimed', 'capability_invalid', 'path_unsafe',
-               'cwd_mismatch', 'operation_denied', 'scope_mismatch', 'request_override', 'target_pending',
-               'supersede_not_in_scope',
-               'target_mismatch', 'service_mismatch', 'service_unconfigured', 'wait_invalid', 'selector_conflict',
-               'management_only', 'create_unresolved', 'evidence_unpersisted', 'recovery_needed', 'parent_route_visible',
-               'parent_binding_missing', 'parent_binding_running', 'previous_worker_agent_active',
-               'previous_worker_registration_unresolved',
-               # Claude worker rebind after a parent chat restart.
-               'rebound', 'rebind_pending', 'reception_stopped', 'agent_revoked'}
+               'parent_route_visible'}
     # Existing fixed local codes a failure after dispatch keeps, now with its remote effect.
     DISPATCHED_CODES = {'operation_failed', 'session_delivery_unknown', 'session_binding_denied',
                         'session_not_connected', 'binding_conflict', 'coordinator_changed', 'invalid_response',
@@ -87,22 +76,11 @@ class NativeInboxError(ValueError):
     # A request already dispatched: its effect is known (`accepted`, `completed`) or `uncertain`.
     EFFECTS = {'accepted', 'completed', 'uncertain'}
 
-    # Which worker ledger a read-only view could not recover: each has its own supported writable route.
-    RECOVERY = {'slot', 'actor', 'state', 'parent'}
-
-    def __init__(self, code, reason=None, *, remote_effect=None, recovery=None, previous=None):
+    def __init__(self, code, reason=None, *, remote_effect=None):
         allowed = self.CODES | (self.DISPATCHED_CODES if remote_effect else set())
-        # Service and slot identifiers of the owner's own earlier worker only, for its retirement step.
-        self.previous = ({key: previous[key] for key in ('slot_id', 'agent_id')}
-                         if isinstance(previous, dict) and set(previous) == {'slot_id', 'agent_id'}
-                         and isinstance(previous['slot_id'], str) and CANONICAL.fullmatch(previous['slot_id'])
-                         and (previous['agent_id'] is None
-                              or isinstance(previous['agent_id'], str) and CANONICAL.fullmatch(previous['agent_id']))
-                         else None)
         code = code if code in allowed else 'native_worker_unavailable'
         super().__init__(code)
         self.code, self.reason = code, reason if reason in self.REASONS else None
-        self.recovery = recovery if recovery in self.RECOVERY else None
         self.remote_effect = None
         if isinstance(remote_effect, dict) and remote_effect.get('state') in self.EFFECTS:
             # Fixed keys only; IDs are service identifiers, an operation is a fixed RPC name.
@@ -112,7 +90,11 @@ class NativeInboxError(ValueError):
 
     def dispatched(self, remote_effect):
         """The same local refusal, observed after a request was sent; it never promises no remote effect."""
-        return NativeInboxError(self.code, self.reason, remote_effect=remote_effect, recovery=self.recovery)
+        return type(self)(self.code, self.reason, remote_effect=remote_effect)
+
+    def guidance(self, result):
+        """A client's own next steps for its own reasons; True when it set them."""
+        return False
 
     def diagnostic(self):
         result = {'transport': TRANSPORT}
@@ -138,46 +120,7 @@ class NativeInboxError(ValueError):
                  if state == 'uncertain' else 'The service already completed this request; ')
                 + 'this is a local authority failure after dispatch. Do not retry the request or reuse it through '
                 'the parent fallback; report it once to the owner, who decides any further action.')
-        elif self.reason == 'recovery_needed':
-            # Only routes that actually open that ledger writable are named.
-            if self.recovery: result['recovery'] = self.recovery
-            route = {
-                'actor': ("the worker's own ledger: the worker runs its next session --worker-capability "
-                          '<capability-file> receive (or connect, received or reply); owner slot commands do not '
-                          'open this ledger'),
-                'parent': ("the parent chat's own session ledger: the parent chat runs its own session status"),
-                'state': ('the state ledger: the worker runs its next capability receive (or connect, received, '
-                          'reply, create or accept); meanwhile the owner uses session worker status or stop with '
-                          'the slot UUID, which do not read it'),
-            }.get(self.recovery, ("the slot's authority ledger: the owner runs session worker await-binding "
-                                  '<slot-uuid> (or attest/stop), or the worker runs a capability command other than '
-                                  'status'))
-            result['next_step'] = ('An interrupted command left a private SQLite rollback journal that read-only '
-                                   'status cannot apply. It is in ' + route + '. SQLite then discards only the '
-                                   'uncommitted local changes; completed remote operations and earlier committed '
-                                   'local steps remain.')
-        elif self.reason == 'previous_worker_registration_unresolved' and self.previous:
-            result['previous_worker'] = dict(self.previous)
-            result['next_step'] = ("The earlier adopting worker's registration was sent but its answer was not "
-                                   'recorded, so its agent may be live under this role. Nothing was prepared. In this '
-                                   'parent chat run session worker stop ' + self.previous['slot_id'] + ' --leave: it '
-                                   'replays the same registration request to learn that agent, then retires it. If '
-                                   'the replay fails (for example the membership or service changed), the claim '
-                                   'stays; report it to the owner.')
-        elif self.reason == 'previous_worker_agent_active' and self.previous and self.previous['agent_id']:
-            result['previous_worker'] = dict(self.previous)
-            result['next_step'] = ('The earlier adopting worker connected, and its agent may still be registered under '
-                                   'this role; a second worker would make role sends ambiguous. Nothing was prepared. '
-                                   'In this parent chat retire it with session worker stop ' + self.previous['slot_id']
-                                   + ' --leave, or leave --request-id <stable-ID> --json-stdin with {"agent_id":"'
-                                   + self.previous['agent_id'] + '"}, then prepare again. If a leave already ran '
-                                   'but its answer was lost, session worker verify-retired '
-                                   + self.previous['slot_id'] + ' confirms it with an authenticated read.')
-        elif self.reason == 'parent_binding_running':
-            result['next_step'] = ("This chat's own reception for that quorum is still running, so the worker would "
-                                   'be a second live agent on the same role. Nothing was prepared or registered. In '
-                                   'this parent chat run session stop, confirm session status shows the listener '
-                                   'offline, then prepare the adopt scope again.')
+        elif self.guidance(result): pass
         elif self.code == 'native_inbox_awaiting_full':
             result['next_step'] = ('Nothing was parked or receipted. The awaiting-owner list is full; ask the owner '
                                    'about the listed items, then resolve or dismiss them with session awaiting. Until '
@@ -190,21 +133,6 @@ class NativeInboxError(ValueError):
         elif self.code == 'native_inbox_park_denied':
             result['next_step'] = ('Nothing was parked. This message is no longer an open offer of this binding: it '
                                    'was already receipted, answered or dismissed. Check session awaiting and status.')
-        elif self.reason == 'rebound':
-            result['next_step'] = ('This slot was handed to a new native worker by session worker rebind; its handle '
-                                   'no longer acts for the agent. Use the successor slot from the rebind (session '
-                                   'worker status <slot-uuid> shows rebound_to). Nothing was sent.')
-        elif self.reason == 'rebind_pending':
-            result['next_step'] = ('Another rebind successor for this binding is still pending. Nothing was changed. '
-                                   'Attest that slot, or wait until it expires, then run session worker rebind again.')
-        elif self.reason in ('reception_stopped', 'agent_revoked'):
-            result['next_step'] = ('This binding was stopped or its agent was revoked, so it cannot be rebound. '
-                                   'Nothing was prepared or registered. Joining again needs a new owner decision '
-                                   '(references/claude-worker.md#rebind-after-a-parent-restart).')
-        elif self.reason == 'supersede_not_in_scope':
-            result['next_step'] = ('Nothing was sent or registered. Retiring another agent is outside every worker '
-                                   'scope. The owner retires the stale agent with leave from the parent chat, '
-                                   'then the worker connects again with --exclusive-role.')
         elif self.code == 'native_worker_unavailable':
             # Emitted only when this command dispatched nothing; any later refusal carries remote_effect instead.
             result['next_step'] = ('This command sent nothing to the service: an invitation it would accept was not '
@@ -523,29 +451,27 @@ def initialize_control(ledger, *, new_binding):
 
 def status(ledger, record):
     from quorum_listener import Control
-    states = [json.loads(raw).get('state') for (raw,) in
-              ledger.db.execute("select data from settings where key like 'delivery:%'")]
+    deliveries = Deliveries(ledger)
     result = {**Control(ledger).status(), 'transport': TRANSPORT,
-              'reception': 'enabled' if enabled(ledger) else 'disabled', 'pending_receipts': states.count('offered'),
+              'reception': 'enabled' if enabled(ledger) else 'disabled',
+              'pending_receipts': deliveries.states().count('offered'),
               'worker_binding': (record or {}).get('worker_binding')}
-    rows = [(key, json.loads(raw)) for key, raw in
-            ledger.db.execute("select key,data from settings where key like 'delivery:%' order by rowid")]
     if (record or {}).get('worker_rebind') is not None: result['worker_rebind'] = record['worker_rebind']
-    return {**result, **awaiting_summary(rows)}
+    return {**result, **awaiting_summary(deliveries.rows())}
 
 
 def awaiting_summary(deliveries, now=None):
-    """The awaiting-owner count and any running explicit hold, from (key, delivery) pairs in insertion order.
+    """The awaiting-owner count and any running explicit hold, from (message ID, delivery) pairs in insertion order.
 
     Shared by the Codex status and the Claude read-only status view so both report the same fields;
     metadata only, never a message body.
     """
     now = wall() if now is None else now
     summary = {'awaiting_owner': sum(value.get('state') == 'parked' for _, value in deliveries)}
-    for key, value in deliveries:
+    for message_id, value in deliveries:
         if value.get('state') == 'offered' and isinstance(value.get('hold_until'), (int, float)) \
                 and value['hold_until'] > now:
-            summary['reception_hold'] = {'message_id': key[len('delivery:'):], 'until': int(value['hold_until']),
+            summary['reception_hold'] = {'message_id': message_id, 'until': int(value['hold_until']),
                                          'reason': 'explicit_hold'}
             break
     return summary
@@ -716,9 +642,8 @@ def _owned(record, delivery):
 
 def pending_offer(ledger, record):
     """The oldest offer this binding has not explicitly received."""
-    for key, raw in ledger.db.execute("select key,data from settings where key like 'delivery:%' order by rowid"):
-        value = json.loads(raw)
-        if value.get('state') == 'offered' and _owned(record, value): return key[len('delivery:'):], value
+    for message_id, value in Deliveries(ledger).rows():
+        if value.get('state') == 'offered' and _owned(record, value): return message_id, value
     return None
 
 
@@ -728,14 +653,14 @@ def offer(api, auth_ledger, ledger, record, stopping=lambda: False):
     `stopping` is re-checked after each blocking RPC; a stop seen there commits nothing new.
     """
     from quorum_session import message_priority
+    deliveries = Deliveries(ledger)
     ReleaseGuard(api, ledger).check()
     if stopping(): return None
     messages = api.call('session_inbox', _scope(record))
     if not isinstance(messages, list): raise QuorumError('invalid_response')
     if stopping(): return None
     # A legacy queue intent or submission stays uncertain; it is never converted into an offer.
-    for (raw,) in ledger.db.execute("select data from settings where key like 'delivery:%'"):
-        if json.loads(raw).get('state') not in LOCAL_STATES: raise ValueError('session_delivery_unknown')
+    deliveries.require_states(PULL_STATES)
     found = pending_offer(ledger, record)
     while found is not None and _window_end(found[1]) is not None and wall() >= _window_end(found[1]):
         # The offer repeated for its whole window without a receipt: park it so later envelopes and the
@@ -756,19 +681,13 @@ def offer(api, auth_ledger, ledger, record, stopping=lambda: False):
             raise ValueError('session_binding_denied')
         message_priority(head)
         message_id = str(uuid.UUID(head['id']))
-        with ledger.db:
-            ledger.db.execute('insert or ignore into settings values (?,?)', ('delivery:' + message_id, json.dumps({
-                'state': 'offered', 'offered_at': wall(), 'agent_id': record['agent_id'],
-                'session_ref': record['session_ref'],
-                'quorum_id': record['quorum_id'], 'reply_to': bool(head.get('reply_to')),
-                'notification': bool(head.get('notification')),
-                'message': {key: head[key] for key in MESSAGE_FIELDS if key in head}})))
-        delivery = ledger.setting('delivery:' + message_id)
+        deliveries.offer(message_id, record, head, MESSAGE_FIELDS, offered_at=wall())
+        delivery = deliveries.get(message_id)
         if delivery.get('state') != 'offered' or not _owned(record, delivery):
             # The service still lists a message this binding already acknowledged or parked; repeat the
             # idempotent ACK (a parked message keeps its local state and stays answerable).
             if delivery.get('state') in ('acked', 'parked') and _owned(record, delivery):
-                api.call('session_ack', {**_scope(record), 'message_id': message_id})
+                server_ack(api, _scope(record), message_id)
                 return None
             raise ValueError('session_delivery_unknown')
         found = message_id, delivery
@@ -876,29 +795,14 @@ def receive(api, auth_ledger, ledger, record, wait_seconds, *, waiter=None, pres
 
 def offered(ledger, record, message_id):
     """Only this binding's own offered (or already received) message; nothing else permits a receipt."""
-    delivery = ledger.setting('delivery:' + message_id)
-    if not _owned(record, delivery) or delivery.get('state') not in LOCAL_STATES:
+    delivery = Deliveries(ledger).get(message_id)
+    if not _owned(record, delivery) or delivery.get('state') not in PULL_STATES:
         raise NativeInboxError('native_inbox_receipt_not_offered')
     return delivery
 
 
 def acknowledge(api, ledger, record, message_id):
-    key = 'delivery:' + message_id
-    if ledger.setting(key)['state'] == 'acked': return
-    # Idempotent and scoped by the service to the owned agent and exact session.
-    api.call('session_ack', {**_scope(record), 'message_id': message_id})
-    # Compare-and-set offered -> acked, preserving every cached field; a concurrent reply-intent write
-    # changes the row, so re-read and retry rather than claim a receipt that was not persisted.
-    for _ in range(16):
-        raw = ledger.db.execute('select data from settings where key=?', (key,)).fetchone()[0]
-        current = json.loads(raw)
-        if current.get('state') == 'acked': return
-        if current.get('state') not in ('offered', 'parked') or not _owned(record, current): break
-        with ledger.db:
-            changed = ledger.db.execute('update settings set data=? where key=? and data=?',
-                                        (json.dumps({**current, 'state': 'acked'}), key, raw)).rowcount
-        if changed: return
-    raise ValueError('session_delivery_unknown')
+    Deliveries(ledger).receipt_offer(api, _scope(record), message_id, lambda delivery: _owned(record, delivery))
 
 
 def confirm(api, ledger, record, message_id, *, authorize=None):
@@ -919,11 +823,11 @@ def reply(api, ledger, record, message_id, body, priority, *, authorize=None):
     if priority not in PRIORITIES: raise ValueError('invalid_priority')
     if not isinstance(body, str) or not body or len(body.encode()) > 16384: raise ValueError('invalid_message')
     _authoritative(api, ledger, record)
-    key = 'delivery:' + message_id
+    deliveries = Deliveries(ledger)
     digest = hashlib.sha256(json.dumps([priority, body]).encode()).hexdigest()
     for _ in range(3):
         offered(ledger, record, message_id)
-        raw = ledger.db.execute('select data from settings where key=?', (key,)).fetchone()[0]
+        raw = deliveries.raw(message_id)
         delivery = json.loads(raw)
         if delivery['reply_to'] or delivery['notification']: raise NativeInboxError('native_inbox_reply_loop_denied')
         if delivery.get('reply_digest') == digest: break
@@ -933,9 +837,7 @@ def reply(api, ledger, record, message_id, body, priority, *, authorize=None):
         if delivery.get('reply_digest') is not None or delivery['state'] == 'acked':
             raise NativeInboxError('native_inbox_reply_loop_denied')
         # Record the one intended answer before sending it (compare-and-set; a concurrent receipt keeps its state).
-        with ledger.db:
-            ledger.db.execute('update settings set data=? where key=? and data=?',
-                              (json.dumps({**delivery, 'reply_digest': digest}), key, raw))
+        deliveries.swap(message_id, raw, {**delivery, 'reply_digest': digest})
     else: raise NativeInboxError('native_inbox_reply_loop_denied')
     result = api.call('session_reply', {**_scope(record), 'message_id': message_id, 'body': body, 'priority': priority})
     acknowledge(api, ledger, record, message_id)
@@ -965,11 +867,8 @@ def _recheck(api):
 
 
 def _rows(ledger, record, state):
-    rows = []
-    for key, raw in ledger.db.execute("select key,data from settings where key like 'delivery:%' order by rowid"):
-        value = json.loads(raw)
-        if value.get('state') == state and _owned(record, value): rows.append((key[len('delivery:'):], value))
-    return rows
+    return [(message_id, value) for message_id, value in Deliveries(ledger).rows()
+            if value.get('state') == state and _owned(record, value)]
 
 
 def _count(ledger, record, state): return len(_rows(ledger, record, state))
@@ -982,19 +881,12 @@ def _park(api, ledger, record, message_id, reason, *, automatic=False):
     parked and the next receive repeats the ACK; it is never dropped and never offered again.
     Returns the parked row, or None when an automatic park cannot proceed (the offer then repeats).
     """
-    key = 'delivery:' + message_id
-    for _ in range(16):
-        row = ledger.db.execute('select data from settings where key=?', (key,)).fetchone()
-        if row is None: break
-        raw = row[0]
-        current = json.loads(raw)
-        if not _owned(record, current): break
-        if current.get('state') == 'parked':
-            api.call('session_ack', {**_scope(record), 'message_id': message_id})
-            return current
+    def change(current):
+        if not _owned(record, current): return None
+        if current.get('state') == 'parked': return current
         # A completed receipt is never moved back to awaiting the owner. A persisted answer intent moves with
         # the entry (listed as answer_pending) and stays replayable only identically, never dismissible.
-        if current.get('state') != 'offered': break
+        if current.get('state') != 'offered': return None
         # The limit bounds explicit parking only: an elapsed offer window always parks, so a full list can
         # never stall reception again.
         if not automatic and _count(ledger, record, 'parked') >= AWAITING_LIMIT:
@@ -1002,13 +894,9 @@ def _park(api, ledger, record, message_id, reason, *, automatic=False):
         parked = {**current, 'state': 'parked', 'parked_at': wall(), 'park_reason': reason}
         parked.pop('hold_until', None)
         _recheck(api)
-        with ledger.db:
-            changed = ledger.db.execute('update settings set data=? where key=? and data=?',
-                                        (json.dumps(parked), key, raw)).rowcount
-        if changed:
-            api.call('session_ack', {**_scope(record), 'message_id': message_id})
-            return parked
-    if automatic: return None
+        return parked
+    parked = Deliveries(ledger).write_then_ack(api, _scope(record), message_id, change, optional=True)
+    if parked is not None or automatic: return parked
     raise NativeInboxError('native_inbox_park_denied')
 
 
@@ -1028,24 +916,19 @@ def hold(api, ledger, record, message_id, seconds, *, authorize=None):
     if type(seconds) is not int or not 1 <= seconds <= HOLD_LIMIT: raise ValueError('invalid_wait_seconds')
     _authoritative(api, ledger, record)
     offered(ledger, record, message_id)
-    key = 'delivery:' + message_id
-    for _ in range(16):
-        raw = ledger.db.execute('select data from settings where key=?', (key,)).fetchone()[0]
-        current = json.loads(raw)
+    def change(current):
         if current.get('state') != 'offered' or not _owned(record, current):
             raise NativeInboxError('native_inbox_receipt_not_offered')
         until = wall() + seconds
         _recheck(api)
-        with ledger.db:
-            changed = ledger.db.execute('update settings set data=? where key=? and data=?',
-                                        (json.dumps({**current, 'hold_until': until}), key, raw)).rowcount
-        if changed:
-            return {'held': True, 'message_id': message_id,
-                    'reception_hold': {'message_id': message_id, 'until': int(until), 'reason': 'explicit_hold'},
-                    'next_step': ('Reception is paused behind this one offer until the time shown: later envelopes '
-                                  'wait and peers may see receipt_timeout. Report this hold to the parent. When it '
-                                  'ends, receive parks the offer and continues.')}
-    raise ValueError('session_delivery_unknown')
+        return {**current, 'hold_until': until}
+    held = Deliveries(ledger).update(message_id, change)
+    if held is None: raise ValueError('session_delivery_unknown')
+    return {'held': True, 'message_id': message_id,
+            'reception_hold': {'message_id': message_id, 'until': int(held['hold_until']), 'reason': 'explicit_hold'},
+            'next_step': ('Reception is paused behind this one offer until the time shown: later envelopes '
+                          'wait and peers may see receipt_timeout. Report this hold to the parent. When it '
+                          'ends, receive parks the offer and continues.')}
 
 
 def awaiting(api, ledger, record, *, authorize=None):
@@ -1062,7 +945,7 @@ def awaiting(api, ledger, record, *, authorize=None):
 
 
 def _require_parked(ledger, record, message_id):
-    delivery = ledger.setting('delivery:' + message_id)
+    delivery = Deliveries(ledger).get(message_id)
     if not _owned(record, delivery) or delivery.get('state') != 'parked':
         raise NativeInboxError('native_inbox_not_parked')
     return delivery
@@ -1075,7 +958,7 @@ def resolve(api, ledger, record, message_id, body, priority, *, authorize=None):
     to reply()'s retry rules, so an identical retry after a lost result is idempotent and a changed one
     is refused there. A dismissed entry (acked without an answer intent) stays refused here.
     """
-    delivery = ledger.setting('delivery:' + message_id)
+    delivery = Deliveries(ledger).get(message_id)
     resolved = (_owned(record, delivery) and delivery.get('state') == 'acked' and 'parked_at' in delivery
                 and delivery.get('reply_digest') is not None and not delivery.get('dismissed'))
     if not resolved: _require_parked(ledger, record, message_id)
@@ -1101,22 +984,14 @@ def _close_parked(api, ledger, record, message_id):
     the same compare-and-set, so a concurrent answer intent either precedes it (refused here) or finds
     the entry acked without an intent and is refused by reply().
     """
-    key = 'delivery:' + message_id
-    for _ in range(16):
-        raw = ledger.db.execute('select data from settings where key=?', (key,)).fetchone()[0]
-        current = json.loads(raw)
+    def change(current):
         if not _owned(record, current) or current.get('state') != 'parked':
             raise NativeInboxError('native_inbox_not_parked')
         if current.get('reply_digest') is not None: raise NativeInboxError('native_inbox_answer_pending')
         _recheck(api)
-        with ledger.db:
-            changed = ledger.db.execute('update settings set data=? where key=? and data=?',
-                                        (json.dumps({**current, 'state': 'acked', 'dismissed': True}), key,
-                                         raw)).rowcount
-        if changed:
-            api.call('session_ack', {**_scope(record), 'message_id': message_id})
-            return
-    raise ValueError('session_delivery_unknown')
+        return {**current, 'state': 'acked', 'dismissed': True}
+    if Deliveries(ledger).write_then_ack(api, _scope(record), message_id, change) is None:
+        raise ValueError('session_delivery_unknown')
 
 
 def add_commands(actions):

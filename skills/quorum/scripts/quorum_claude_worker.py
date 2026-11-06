@@ -22,6 +22,7 @@ from types import SimpleNamespace
 import unicodedata
 from urllib.parse import quote
 import uuid
+from quorum_delivery import PREFIX as DELIVERY_PREFIX
 from quorum_native_inbox import CANONICAL, TRANSPORT, NativeInboxError, Guarded
 from quorum_api import QuorumError, guarded_call
 
@@ -64,9 +65,99 @@ now = time.time
 sleep = time.sleep
 
 
-def _denied(reason=None): return NativeInboxError('native_worker_binding_denied', reason)
-def _unavailable(reason=None): return NativeInboxError('native_worker_unavailable', reason)
-def _terminal(reason=None): return NativeInboxError('native_worker_slot_terminal', reason)
+class ClaudeWorkerError(NativeInboxError):
+    """The Claude worker's own refusals: logical-actor slots, scoped capabilities and rebind."""
+    CODES = NativeInboxError.CODES | {'native_worker_slot_terminal', 'native_worker_create_ambiguous'}
+    REASONS = NativeInboxError.REASONS | {
+        'scope_invalid', 'slot_invalid', 'slot_pending', 'stopped', 'await_timeout', 'pending_expired',
+        'permission_expired', 'handle_invalid', 'actor_claimed', 'capability_invalid', 'path_unsafe',
+        'cwd_mismatch', 'operation_denied', 'scope_mismatch', 'request_override', 'target_pending',
+        'supersede_not_in_scope', 'target_mismatch', 'service_mismatch', 'service_unconfigured', 'wait_invalid',
+        'selector_conflict', 'management_only', 'create_unresolved', 'evidence_unpersisted', 'recovery_needed',
+        'parent_binding_missing', 'parent_binding_running', 'previous_worker_agent_active',
+        'previous_worker_registration_unresolved',
+        # Worker rebind after a parent chat restart.
+        'rebound', 'rebind_pending', 'reception_stopped', 'agent_revoked'}
+    # Which worker ledger a read-only view could not recover: each has its own supported writable route.
+    RECOVERY = {'slot', 'actor', 'state', 'parent'}
+
+    def __init__(self, code, reason=None, *, remote_effect=None, recovery=None, previous=None):
+        super().__init__(code, reason, remote_effect=remote_effect)
+        # Service and slot identifiers of the owner's own earlier worker only, for its retirement step.
+        self.previous = ({key: previous[key] for key in ('slot_id', 'agent_id')}
+                         if isinstance(previous, dict) and set(previous) == {'slot_id', 'agent_id'}
+                         and isinstance(previous['slot_id'], str) and CANONICAL.fullmatch(previous['slot_id'])
+                         and (previous['agent_id'] is None
+                              or isinstance(previous['agent_id'], str) and CANONICAL.fullmatch(previous['agent_id']))
+                         else None)
+        self.recovery = recovery if recovery in self.RECOVERY else None
+
+    def dispatched(self, remote_effect):
+        return ClaudeWorkerError(self.code, self.reason, remote_effect=remote_effect, recovery=self.recovery)
+
+    def guidance(self, result):
+        if self.reason == 'recovery_needed':
+            # Only routes that actually open that ledger writable are named.
+            if self.recovery: result['recovery'] = self.recovery
+            route = {
+                'actor': ("the worker's own ledger: the worker runs its next session --worker-capability "
+                          '<capability-file> receive (or connect, received or reply); owner slot commands do not '
+                          'open this ledger'),
+                'parent': ("the parent chat's own session ledger: the parent chat runs its own session status"),
+                'state': ('the state ledger: the worker runs its next capability receive (or connect, received, '
+                          'reply, create or accept); meanwhile the owner uses session worker status or stop with '
+                          'the slot UUID, which do not read it'),
+            }.get(self.recovery, ("the slot's authority ledger: the owner runs session worker await-binding "
+                                  '<slot-uuid> (or attest/stop), or the worker runs a capability command other than '
+                                  'status'))
+            result['next_step'] = ('An interrupted command left a private SQLite rollback journal that read-only '
+                                   'status cannot apply. It is in ' + route + '. SQLite then discards only the '
+                                   'uncommitted local changes; completed remote operations and earlier committed '
+                                   'local steps remain.')
+        elif self.reason == 'previous_worker_registration_unresolved' and self.previous:
+            result['previous_worker'] = dict(self.previous)
+            result['next_step'] = ("The earlier adopting worker's registration was sent but its answer was not "
+                                   'recorded, so its agent may be live under this role. Nothing was prepared. In this '
+                                   'parent chat run session worker stop ' + self.previous['slot_id'] + ' --leave: it '
+                                   'replays the same registration request to learn that agent, then retires it. If '
+                                   'the replay fails (for example the membership or service changed), the claim '
+                                   'stays; report it to the owner.')
+        elif self.reason == 'previous_worker_agent_active' and self.previous and self.previous['agent_id']:
+            result['previous_worker'] = dict(self.previous)
+            result['next_step'] = ('The earlier adopting worker connected, and its agent may still be registered under '
+                                   'this role; a second worker would make role sends ambiguous. Nothing was prepared. '
+                                   'In this parent chat retire it with session worker stop ' + self.previous['slot_id']
+                                   + ' --leave, or leave --request-id <stable-ID> --json-stdin with {"agent_id":"'
+                                   + self.previous['agent_id'] + '"}, then prepare again. If a leave already ran '
+                                   'but its answer was lost, session worker verify-retired '
+                                   + self.previous['slot_id'] + ' confirms it with an authenticated read.')
+        elif self.reason == 'parent_binding_running':
+            result['next_step'] = ("This chat's own reception for that quorum is still running, so the worker would "
+                                   'be a second live agent on the same role. Nothing was prepared or registered. In '
+                                   'this parent chat run session stop, confirm session status shows the listener '
+                                   'offline, then prepare the adopt scope again.')
+        elif self.reason == 'rebound':
+            result['next_step'] = ('This slot was handed to a new native worker by session worker rebind; its handle '
+                                   'no longer acts for the agent. Use the successor slot from the rebind (session '
+                                   'worker status <slot-uuid> shows rebound_to). Nothing was sent.')
+        elif self.reason == 'rebind_pending':
+            result['next_step'] = ('Another rebind successor for this binding is still pending. Nothing was changed. '
+                                   'Attest that slot, or wait until it expires, then run session worker rebind again.')
+        elif self.reason in ('reception_stopped', 'agent_revoked'):
+            result['next_step'] = ('This binding was stopped or its agent was revoked, so it cannot be rebound. '
+                                   'Nothing was prepared or registered. Joining again needs a new owner decision '
+                                   '(references/claude-worker.md#rebind-after-a-parent-restart).')
+        elif self.reason == 'supersede_not_in_scope':
+            result['next_step'] = ('Nothing was sent or registered. Retiring another agent is outside every worker '
+                                   'scope. The owner retires the stale agent with leave from the parent chat, '
+                                   'then the worker connects again with --exclusive-role.')
+        else: return False
+        return True
+
+
+def _denied(reason=None): return ClaudeWorkerError('native_worker_binding_denied', reason)
+def _unavailable(reason=None): return ClaudeWorkerError('native_worker_unavailable', reason)
+def _terminal(reason=None): return ClaudeWorkerError('native_worker_slot_terminal', reason)
 
 
 def _digest(value):
@@ -281,7 +372,7 @@ def _read_db(directory, path, read, *, ledger='slot'):
         except (sqlite3.Error, NativeInboxError):
             # A read-only view cannot roll back a hot journal: name the supported writable recovery route.
             if journal or _sidecars(directory):
-                raise NativeInboxError('native_worker_unavailable', 'recovery_needed', recovery=ledger) from None
+                raise ClaudeWorkerError('native_worker_unavailable', 'recovery_needed', recovery=ledger) from None
             raise _unavailable('path_unsafe') from None
     finally: os.close(fd)
 
@@ -720,8 +811,8 @@ def _session_status(root, record):
         if fds is None: return None
         rows = _read_db(fds[-1], root.joinpath(*names, 'ledger.sqlite'), lambda db: db.execute(
             "select key,data from settings where key in ('listener', 'hello', 'transport-notices', "
-            "'show-transport-notices', 'session-agent', ?) or key like 'delivery:%' order by rowid",
-            (CONTROL,)).fetchall(),
+            "'show-transport-notices', 'session-agent', ?) or key like ? order by rowid",
+            (CONTROL, DELIVERY_PREFIX + '%')).fetchall(),
                         ledger='actor')
         if rows is None: return None
         running = _held(fds[-1], 'listener.lock')
@@ -731,14 +822,15 @@ def _session_status(root, record):
     from quorum_native_inbox import awaiting_summary
     import quorum_notices
     # The same awaiting-owner fields as the Codex status; rows keep their ledger order.
-    awaiting = awaiting_summary([(key, value) for key, value in settings.items() if key.startswith('delivery:')])
+    awaiting = awaiting_summary([(key[len(DELIVERY_PREFIX):], value) for key, value in settings.items()
+                                 if key.startswith(DELIVERY_PREFIX)])
     state = listener.get('state', 'stopped')
     # A recorded live run whose lock is free ended without reporting; reported, not rewritten here.
     if not running and state in LIVE_STATES: state = 'exited'
     return {'listener': 'running' if running else 'offline', 'state': state, 'run_id': listener.get('run_id'),
             'reception': 'enabled' if (settings.get(CONTROL) or {}).get('enabled') is True else 'disabled',
             'pending_receipts': sum(value.get('state') == 'offered' for key, value in settings.items()
-                                    if key.startswith('delivery:')),
+                                    if key.startswith(DELIVERY_PREFIX)),
             'delegation_state': delegation_state(settings.get('session-agent')),
             # The last connection's Hello outcome; a summary string only, never a message body.
             'hello': (settings.get('hello') or {}).get('summary') if isinstance(settings.get('hello'), dict) else None,
@@ -905,10 +997,10 @@ def _adoption_free(root, agent_id):
     worker_agent = (earlier.get('target') or {}).get('agent_id')
     if _unresolved(earlier):
         # A registration was sent without a recorded answer: its agent may be live under this role.
-        raise NativeInboxError('native_worker_binding_denied', 'previous_worker_registration_unresolved',
+        raise ClaudeWorkerError('native_worker_binding_denied', 'previous_worker_registration_unresolved',
                                previous={'slot_id': earlier['slot_id'], 'agent_id': None})
     if worker_agent and _index_setting(root, RETIRED + worker_agent) is None:
-        raise NativeInboxError('native_worker_binding_denied', 'previous_worker_agent_active',
+        raise ClaudeWorkerError('native_worker_binding_denied', 'previous_worker_agent_active',
                                previous={'slot_id': earlier['slot_id'], 'agent_id': worker_agent})
 
 
@@ -1031,7 +1123,7 @@ def verify_retired(state_root, slot_id, register_agent=None):
             agent_id = _reconcile(root, record, ledger, api, register_agent)
             if _index_setting(root, RETIRED + agent_id) is None:
                 if not verified_retired(api, record, agent_id):
-                    raise NativeInboxError('native_worker_binding_denied', 'previous_worker_agent_active',
+                    raise ClaudeWorkerError('native_worker_binding_denied', 'previous_worker_agent_active',
                                            previous={'slot_id': record['slot_id'], 'agent_id': agent_id})
                 record_retired(ledger, agent_id)
     return {'slot_id': record['slot_id'], 'worker_agent': 'retired'}
@@ -1835,7 +1927,7 @@ def preflight(args):
     if args.command == 'session':
         if args.session_id is not None: raise _denied('selector_conflict')
         if args.action not in SESSION_ACTIONS:
-            raise NativeInboxError('native_inbox_transport_conflict')
+            raise ClaudeWorkerError('native_inbox_transport_conflict')
         operation = args.action
         if operation in ('park', 'hold', 'awaiting'):
             # Awaiting-owner actions reuse the scope's existing receipt or reply permission.
@@ -1866,7 +1958,7 @@ def preflight(args):
         arguments = ({'quorum': args.quorum} if operation == 'update' else
                      {'action': args.action, 'owner_action': bool(args.owner_action),
                       'material_result': bool(args.material_result)})
-    else: raise NativeInboxError('native_inbox_transport_conflict')
+    else: raise ClaudeWorkerError('native_inbox_transport_conflict')
     return _authorize_route(args, operation, arguments)
 
 
@@ -2095,7 +2187,7 @@ def _session_action(args, auth_ledger, register_agent, context, ledger, record, 
         priority = getattr(args, 'priority', 'normal') or 'normal'
         if priority not in PRIORITIES: raise ValueError('invalid_priority')
         return inbox.reply(guarded, ledger, record, args.message_id, text, priority, authorize=check)
-    raise NativeInboxError('native_inbox_transport_conflict')
+    raise ClaudeWorkerError('native_inbox_transport_conflict')
 
 
 LOCAL_CODES = {'session_delivery_unknown', 'session_binding_denied', 'session_not_connected', 'binding_conflict',
@@ -2121,7 +2213,7 @@ def _effect(source):
             raise error.dispatched(effect) from None
         code = str(error) if isinstance(error, ValueError) and str(error) in LOCAL_CODES else 'operation_failed'
         reason = 'evidence_unpersisted' if isinstance(error, (OSError, sqlite3.Error)) else None
-        raise NativeInboxError(code, reason, remote_effect=effect) from None
+        raise ClaudeWorkerError(code, reason, remote_effect=effect) from None
 
 
 def accept_worker(args, ledger, context):
@@ -2248,7 +2340,7 @@ def _send(context, api, operation, payload, request_id, step):
                 raise
             try: guard(context)
             except NativeInboxError:
-                raise NativeInboxError('native_worker_create_ambiguous', 'create_unresolved',
+                raise ClaudeWorkerError('native_worker_create_ambiguous', 'create_unresolved',
                                        remote_effect={'state': 'uncertain', 'operation': operation}) from None
             raise
 

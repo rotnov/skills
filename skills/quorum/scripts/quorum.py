@@ -40,7 +40,8 @@ def register_agent(api, ledger, slug, role, data, *, device_key="device", expect
     quorum = api.call('quorum_lookup', {'slug': slug})['quorum_id']
     # A pinned worker target is compared before any device or agent side effect.
     if expected_quorum_id is not None and quorum != expected_quorum_id:
-        raise NativeInboxError('native_worker_binding_denied', 'target_mismatch')
+        from quorum_claude_worker import ClaudeWorkerError
+        raise ClaudeWorkerError('native_worker_binding_denied', 'target_mismatch')
     binding_key = [quorum, role, data] + ([] if device_key == 'device' else [device_key])
     identity = hashlib.sha256(json.dumps(binding_key, sort_keys=True).encode()).hexdigest()
     saved = ledger.setting('agent:' + identity)
