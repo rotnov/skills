@@ -11,6 +11,7 @@ import subprocess
 import sys
 import uuid
 from quorum_api import QuorumError
+from quorum_delivery import CLOUD_STATES, Deliveries, server_ack
 from quorum_delegation import (carried_grant, delegation_state, grant, held_status, instruction, member_grant, member_trust, opening, task_check,
                                save_grant_binding, trusted)
 from quorum_release import ReleaseGuard, ReleaseMismatch, diagnostic
@@ -344,12 +345,10 @@ def notice(record, message, priority):
 
 def pending_offer(ledger, record):
     """The oldest offer this binding has not explicitly received, with its cached peer data."""
-    rows = ledger.db.execute("select key,data from settings where key like 'delivery:%' order by rowid").fetchall()
-    for key, raw in rows:
-        value = json.loads(raw)
+    for message_id, value in Deliveries(ledger).rows():
         if (isinstance(value, dict) and value.get('state') == 'offered' and isinstance(value.get('message'), dict)
                 and value.get('agent_id') == record['agent_id'] and value.get('session_ref') == record['session_ref']):
-            return key[len('delivery:'):], value
+            return message_id, value
     return None
 
 
@@ -373,7 +372,7 @@ def _receipt_notice(api, ledger, scope, message_id, delivery, kind, route):
     """Receipt one transport notice; True when it was new here, False for an idempotent repeat."""
     if delivery.get('state') == 'acked':
         # Already receipted locally but still listed: repeat the idempotent, session-scoped ACK only.
-        api.call('session_ack', {**scope, 'message_id': message_id})
+        server_ack(api, scope, message_id)
         return False
     # Logged before the ACK: a crash after it can no longer drop the notice from status.
     quorum_notices.record(ledger, delivery.get('message') or {}, kind, route)
@@ -390,23 +389,16 @@ def auto_receipt(api, ledger, record, scope, head):
     if not kind: return None
     message_id = str(uuid.UUID(head['id']))
     _offer(ledger, record, message_id, head)
-    delivery = ledger.setting('delivery:' + message_id)
+    delivery = Deliveries(ledger).get(message_id)
     if (not isinstance(delivery, dict) or delivery.get('agent_id') != record['agent_id']
-            or delivery.get('session_ref') != record['session_ref'] or delivery.get('state') not in ('offered', 'acked')):
+            or delivery.get('session_ref') != record['session_ref'] or delivery.get('state') not in CLOUD_STATES):
         raise ValueError('session_delivery_unknown')
     return 'notice' if _receipt_notice(api, ledger, scope, message_id, delivery, kind, 'grok-cloud-relay') \
         else 'repeat'
 
 
 def _offer(ledger, record, message_id, head):
-    # Offered locally before the tool result; this is not a receipt and never an ACK. Only peer
-    # envelope data is cached. Insert-only: an acked delivery is never downgraded to offered.
-    with ledger.db:
-        ledger.db.execute('insert or ignore into settings values (?,?)', ('delivery:' + message_id, json.dumps({
-            'state': 'offered', 'agent_id': record['agent_id'], 'session_ref': record['session_ref'],
-            'quorum_id': record['quorum_id'], 'reply_to': bool(head.get('reply_to')),
-            'notification': bool(head.get('notification')),
-            'message': {key: head[key] for key in MESSAGE_FIELDS if key in head}})))
+    Deliveries(ledger).offer(message_id, record, head, MESSAGE_FIELDS)
 
 
 def _receive_one(auth_ledger, ledger, record, messages, *, quiet):
@@ -423,7 +415,7 @@ def _receive_one(auth_ledger, ledger, record, messages, *, quiet):
         message_priority(head)
         message_id = str(uuid.UUID(head['id']))
         _offer(ledger, record, message_id, head)
-        found = message_id, ledger.setting('delivery:' + message_id)
+        found = message_id, Deliveries(ledger).get(message_id)
     message_id, delivery = found
     message = delivery.get('message') or {}
     priority = message_priority(message)
@@ -441,8 +433,8 @@ def _receive_one(auth_ledger, ledger, record, messages, *, quiet):
 
 def offered(ledger, record, message_id):
     """Only this binding's own offered message; a wake record alone is never enough."""
-    delivery = ledger.setting('delivery:' + message_id)
-    if (not isinstance(delivery, dict) or delivery.get('state') not in ('offered', 'acked')
+    delivery = Deliveries(ledger).get(message_id)
+    if (not isinstance(delivery, dict) or delivery.get('state') not in CLOUD_STATES
             or delivery.get('agent_id') != record['agent_id'] or delivery.get('session_ref') != record['session_ref']):
         raise CloudError('receipt_not_offered')
     return delivery
@@ -450,16 +442,7 @@ def offered(ledger, record, message_id):
 
 def acknowledge(api, ledger, scope, message_id, delivery):
     if delivery['state'] == 'acked': return
-    # The service scopes this to the owned agent and exact session; a lost response retries safely.
-    api.call('session_ack', {**scope, 'message_id': message_id})
-    # Compare-and-set offered -> acked: a concurrent receipt or stale read never rewrites the record.
-    key = 'delivery:' + message_id
-    row = ledger.db.execute('select data from settings where key=?', (key,)).fetchone()
-    current = json.loads(row[0]) if row else None
-    if isinstance(current, dict) and current.get('state') == 'offered':
-        with ledger.db:
-            ledger.db.execute('update settings set data=? where key=? and data=?',
-                              (json.dumps({**current, 'state': 'acked'}), key, row[0]))
+    Deliveries(ledger).receipt_cloud_offer(api, scope, message_id)
 
 
 def confirm(api, ledger, record, scope, message_id):
@@ -501,8 +484,6 @@ def status(ledger, record, conversation):
         state = value.get('state') if isinstance(value, dict) else None
         state = state if state in states else 'other'
         counts[state] = counts.get(state, 0) + 1
-    deliveries = [json.loads(raw).get('state') for (raw,) in
-                  ledger.db.execute("select data from settings where key like 'delivery:%'")]
     try:
         require_target(ledger)
         configured = True
@@ -511,7 +492,7 @@ def status(ledger, record, conversation):
     return {**Control(ledger).status(), 'client': 'grok-bot', 'conversation_id': conversation,
             'connected': record is not None, 'session_ref': SESSION_PREFIX + conversation, 'transport': TRANSPORT,
             'webhook_configured': configured, 'wakes': {state: counts.get(state, 0) for state in (*states, 'other')},
-            'pending_receipts': deliveries.count('offered'),
+            'pending_receipts': Deliveries(ledger).states().count('offered'),
             'transport_notices': quorum_notices.summary(ledger),
             'delegation': record.get('delegation') if record else None,
             'delegation_state': delegation_state(record),

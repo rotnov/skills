@@ -13,13 +13,7 @@ import stat
 import subprocess
 import sys
 import uuid
-
-
-class DeliveryUnsent(ValueError):
-    """No payload byte was written. The message is only this fixed code."""
-
-    def __init__(self):
-        super().__init__('session_delivery_unsent')
+from quorum_delivery import DeliveryUnsent
 
 
 # Child exit 2 is definite no-write only when both captured streams are empty.

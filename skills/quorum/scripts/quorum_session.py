@@ -11,6 +11,7 @@ import uuid
 from quorum_api import QuorumError, rpc_missing
 from quorum_capabilities import GROK_LEADER_PLATFORMS
 from quorum_claude_pipe import DeliveryUnsent, run_child
+from quorum_delivery import Deliveries, RECEIPTABLE, UNRECEIPTED, server_ack
 from quorum_listener import (Control, ListenerPending, READY_SECONDS, START_LOCK, StartGuard, UPSERT, await_exit,
                              await_started, control_lock, locked, ready, run_listener, spawn_background, stop_listener)
 from quorum_os import FileLock
@@ -240,14 +241,14 @@ def retire_binding(ledger, record, reason):
     """
     with control_lock(ledger):
         if ledger.setting('session-agent') != record: return False
-        deliveries = {key: json.loads(raw) for key, raw in
-                      ledger.db.execute("select key,data from settings where key like 'delivery:%'")}
+        deliveries = Deliveries(ledger)
         summary = {**{key: record.get(key) for key in ('agent_id', 'role', 'quorum', 'quorum_id', 'project_ref')},
-                   'reason': reason, 'retired_at': ledger.clock(), 'deliveries': deliveries}
+                   'reason': reason, 'retired_at': ledger.clock(), 'deliveries': deliveries.archive()}
         generation = (ledger.setting(BINDING_GENERATION) or 0) + 1
         stop = Control(ledger, holding_control=True).stop_rows()
         with ledger.db:
-            ledger.db.execute("delete from settings where key='session-agent' or key like 'delivery:%'")
+            ledger.db.execute("delete from settings where key='session-agent'")
+            deliveries.clear()
             ledger.db.executemany(UPSERT, [(RETIRED_BINDING, json.dumps(summary)),
                                            (BINDING_GENERATION, json.dumps(generation)),
                                            ('session-reception', json.dumps({'enabled': False})), *stop])
@@ -588,20 +589,11 @@ def enqueue(record, message, auth_state):
     return 'pointer'
 
 
-def head_intent(ledger, messages):
-    """True when the service's current head is itself this ledger's unresolved attempt.
-
-    Only that head blocks: a stuck attempt further back must not hold up a newer
-    urgent message, and it blocks again once it is the head.
-    """
-    if not isinstance(messages, list) or not messages: return False
-    delivery = ledger.setting('delivery:' + str(uuid.UUID(messages[0]['id'])))
-    return bool(delivery) and delivery['state'] == 'intent'
-
-
 class Relay:
+    """A push route: the client's `queue` function, under the shared delivery ledger."""
     def __init__(self, api, ledger, record, queue, *, authorize=None, route_check=None):
         self.api, self.ledger, self.record, self.queue = api, ledger, record, queue
+        self.deliveries = Deliveries(ledger)
         self.authorize = authorize or (lambda:None)
         self.route_check = route_check or (lambda:None)
         self.awaiting = []
@@ -616,7 +608,7 @@ class Relay:
         self.route_check()
         messages = self.api.call('session_inbox', self.scope())
         self.authorize()
-        if head_intent(self.ledger, messages): raise ValueError('session_delivery_unknown')
+        if self.deliveries.head_unknown(messages): raise ValueError('session_delivery_unknown')
 
     def run_once(self):
         self.release.check()
@@ -624,7 +616,7 @@ class Relay:
         # The chat's `received`/`reply` acknowledges submitted messages itself,
         # so count each confirmation here once; a bare pipe write is never counted.
         for pending in self.awaiting:
-            if self.ledger.setting(pending)['state'] == 'acked':
+            if self.deliveries.get(pending)['state'] == 'acked':
                 self.awaiting.remove(pending)
                 return 'delivered'
         self.route_check()
@@ -636,8 +628,8 @@ class Relay:
         message = messages[0]
         if message['recipient_id'] != self.record['agent_id']: raise ValueError('session_binding_denied')
         message_priority(message)
-        key = 'delivery:' + str(uuid.UUID(message['id']))
-        previous = self.ledger.setting(key)
+        message_id = str(uuid.UUID(message['id']))
+        previous = self.deliveries.get(message_id)
         if previous and previous['state'] == 'intent': raise ValueError('session_delivery_unknown')
         transport = quorum_notices.quiet(self.ledger, message, self.record['agent_id'])
         if transport:
@@ -647,54 +639,26 @@ class Relay:
             already = previous and previous['state'] == 'acked'
             # Logged before the ACK: a crash after it can no longer drop the notice from status.
             if not already: quorum_notices.record(self.ledger, message, transport, 'parent')
-            self.api.call('session_ack', {**self.scope(), 'message_id':message['id']})
-            if key in self.awaiting: self.awaiting.remove(key)
+            server_ack(self.api, self.scope(), message['id'])
+            if message_id in self.awaiting: self.awaiting.remove(message_id)
             # One already receipted here but still listed only repeats the idempotent ACK, then waits.
             if already: return 'idle'
-            self.ledger.setting(key, {'state':'acked'})
+            self.deliveries.mark_acked(message_id)
             return 'notice'
         if not previous:
             self.release.check()
             self.authorize()
-            intent = {'state':'intent', 'attempt_id':str(uuid.uuid4())}
-            self.ledger.setting(key, intent)
-            try: self.authorize()  # Persisting the intent may itself have blocked.
-            except ValueError:
-                # No queue/IPC call began in this attempt. Remove only its own
-                # still-unsubmitted intent; preserve any concurrent receipt.
-                with self.ledger.db:
-                    self.ledger.db.execute('delete from settings where key=? and data=?',
-                                           (key, json.dumps(intent)))
-                raise
-            try: result = self.queue(message)
-            except DeliveryUnsent:
-                # The helper (or our pre-helper guards) proved no payload
-                # write began. Never ACK; preserve any racing receipt/attempt.
-                with self.ledger.db:
-                    self.ledger.db.execute('delete from settings where key=? and data=?',
-                                           (key, json.dumps(intent)))
-                raise
-            except Exception: raise ValueError('session_delivery_unknown') from None
-            # No route has a synchronous delivery acknowledgement: `codex queue` accepting a
-            # pointer says nothing about the chat either. Only the receiving chat can confirm.
-            # A pointer keeps its attempt UUID, so that the owner can attest to its absence.
-            state={'state':'submitted'}
-            if result == 'pointer': state['attempt_id'] = intent['attempt_id']
-            # A receipt waits for this transition, but stay a compare-and-set
-            # so a later attempt or an owner's reconciliation is never replaced.
-            with self.ledger.db:
-                self.ledger.db.execute('update settings set data=? where key=? and data=?',
-                                       (json.dumps(state),key,json.dumps(intent)))
+            self.deliveries.attempt(message_id, lambda: self.queue(message), recheck=self.authorize)
         self.release.check()
         self.authorize()
-        delivery = self.ledger.setting(key)
+        delivery = self.deliveries.get(message_id)
         if not delivery or delivery['state'] == 'intent': raise ValueError('session_delivery_unknown')
         if delivery['state'] == 'submitted':
-            if key not in self.awaiting: self.awaiting.append(key)
+            if message_id not in self.awaiting: self.awaiting.append(message_id)
             return 'idle'
-        self.api.call('session_ack', {**self.scope(), 'message_id':message['id']})
-        self.ledger.setting(key, {'state':'acked'})
-        if key in self.awaiting: self.awaiting.remove(key)
+        server_ack(self.api, self.scope(), message['id'])
+        self.deliveries.mark_acked(message_id)
+        if message_id in self.awaiting: self.awaiting.remove(message_id)
         return 'delivered'
 
 
@@ -898,7 +862,7 @@ def rebind(ledger, control, sid, endpoint, guard, *, inbox, engine='claude', aut
         raise ValueError('session_binding_denied')
     if engine not in ('claude', 'grok'): raise ValueError('session_binding_denied')
     # An uncertain head stays for the owner to reconcile; never rebind past it.
-    if head_intent(ledger, inbox()): raise ValueError('session_delivery_unknown')
+    if Deliveries(ledger).head_unknown(inbox()): raise ValueError('session_delivery_unknown')
     if authorize: authorize()  # A stop during that read must win before the listener is disturbed.
     if locked(ledger.root/'listener.lock'):
         run_id = (ledger.setting('listener') or {}).get('run_id')
@@ -908,7 +872,7 @@ def rebind(ledger, control, sid, endpoint, guard, *, inbox, engine='claude', aut
         await_exit(ledger, authorize or guard.check)
     # A delivery may have begun after the first snapshot while the old run
     # was exiting. It now holds no lock and cannot add another write intent.
-    if head_intent(ledger, inbox()): raise ValueError('session_delivery_unknown')
+    if Deliveries(ledger).head_unknown(inbox()): raise ValueError('session_delivery_unknown')
     if authorize: authorize()
     key = 'messaging_socket' if engine == 'claude' else 'grok_transport'
     with guard.section():
@@ -957,7 +921,7 @@ def start(auth_state, ledger, sid, *, api, endpoint=None, grok_transport=None, r
             authorize()
             # Validate current server membership/device/session without consuming
             # or acknowledging any queued message, before disturbing a live run.
-            if head_intent(ledger, inbox()): raise ValueError('session_delivery_unknown')
+            if Deliveries(ledger).head_unknown(inbox()): raise ValueError('session_delivery_unknown')
         release = ReleaseGuard(api, ledger)
         release.check()
         release.running()
@@ -1038,35 +1002,16 @@ def reconcile_absent(api, ledger, record, message_id, attempt_id):
                 or ledger.setting('session-agent') != record):
             raise ValueError('session_binding_denied')
     authorize()
-    key, audit_key = 'delivery:'+message_id, 'delivery-absent:'+message_id+':'+attempt_id
     binding = {name:record.get(name) for name in ('agent_id', 'session_ref', 'cwd', 'project_ref', 'quorum_id')}
     binding['engine'] = engine
-    marker = {'state':'confirmed_absent', 'message_id':message_id, 'attempt_id':attempt_id, 'binding':binding}
     # Excludes any start and listener across the service check, yet leaves an owner stop free.
     with FileLock(ledger.root/START_LOCK), LocalSupervisorLock(ledger.root), FileLock(ledger.root/'listener.lock'):
         authorize()
         ReleaseGuard(api, ledger).check()
-        # This marker is historical, not a retry instruction. A repeated old
-        # command must return without touching any newer delivery attempt.
-        if ledger.setting(audit_key) == marker:
-            return {'confirmed_absent':True, 'attempt_id':attempt_id}
-        row = ledger.db.execute('select data from settings where key=?', (key,)).fetchone()
-        if row is None: raise ValueError('session_reconcile_denied')
-        attempt = json.loads(row[0])
-        # Only an unread `codex queue` pointer keeps an attempt UUID once it is submitted.
-        if attempt.get('state') not in ('intent', 'submitted') or attempt.get('attempt_id') != attempt_id:
-            raise ValueError('session_reconcile_denied')
         # An exact lookup: a newer urgent head says nothing about this message.
-        if not still_unreceipted(api, record, message_id): raise ValueError('session_reconcile_denied')
-        authorize()
-        # Keep RPCs outside this short transaction. A local receipt committed
-        # during the service check wins the exact CAS; no marker is then added.
-        with control_lock(ledger), ledger.db:
-            ledger.db.execute('begin immediate')
-            authorize()
-            deleted = ledger.db.execute('delete from settings where key=? and data=?', (key, row[0]))
-            if deleted.rowcount != 1: raise ValueError('session_reconcile_denied')
-            ledger.db.execute('insert into settings values (?,?)', (audit_key, json.dumps(marker)))
+        Deliveries(ledger).attest_absent(message_id, attempt_id, binding,
+                                         unreceipted=lambda: still_unreceipted(api, record, message_id),
+                                         recheck=authorize, exclusive=lambda: control_lock(ledger))
         return {'confirmed_absent':True, 'attempt_id':attempt_id}
 
 
@@ -1075,37 +1020,13 @@ RECEIPT_WAIT_SECONDS = 30
 
 
 def settled_delivery(ledger, message_id, *, wait=RECEIPT_WAIT_SECONDS):
-    """This message's row once any in-flight enqueue has finished.
-
-    A fast chat can run its receipt while the listener's helper is still
-    returning. Only a live listener can move an intent on, so a stuck intent
-    returns at once, and an unresolved one is never treated as a receipt.
-    """
-    key, deadline = 'delivery:'+message_id, time.monotonic()+wait
-    while True:
-        delivery = ledger.setting(key)
-        if (not delivery or delivery['state'] != 'intent' or time.monotonic() >= deadline
-                or not locked(ledger.root/'listener.lock')):
-            return delivery
-        time.sleep(.1)
-
-
-def record_proof(ledger, message_id):
-    """Move a submitted row to `queued`, the chat's proof of receipt whose ACK any later pass may finish."""
-    key = 'delivery:'+message_id
-    row = ledger.db.execute('select data from settings where key=?', (key,)).fetchone()
-    if not row or json.loads(row[0])['state'] != 'submitted': return
-    # A compare-and-set: an attempt that replaced this row is not what the chat confirmed.
-    with ledger.db:
-        ledger.db.execute('update settings set data=? where key=? and data=?',
-                          (json.dumps({'state':'queued'}), key, row[0]))
+    """This message's row once any in-flight enqueue has finished."""
+    return Deliveries(ledger).settled(message_id, wait=wait, live=lambda: locked(ledger.root/'listener.lock'))
 
 
 def acknowledge(api, ledger, scope, message_id):
     """Record the chat's own proof of receipt for a submitted or queued row, then acknowledge it."""
-    record_proof(ledger, message_id)
-    api.call('session_ack', {**scope, 'message_id':message_id})
-    ledger.setting('delivery:'+message_id, {'state':'acked'})
+    Deliveries(ledger).confirm(api, scope, message_id)
 
 
 def confirm_read(api, ledger, scope, message_id):
@@ -1114,9 +1035,10 @@ def confirm_read(api, ledger, scope, message_id):
     Reading is what the chat came for, so no failure here costs it the body. The proof is
     already recorded by then, and the listener finishes the ACK on its next pass.
     """
+    deliveries = Deliveries(ledger)
     delivery = settled_delivery(ledger, message_id)
     if not delivery or delivery['state'] != 'submitted' or 'attempt_id' not in delivery: return
-    record_proof(ledger, message_id)
+    deliveries.prove(message_id)
     try:
         ReleaseGuard(api, ledger).check()
         acknowledge(api, ledger, scope, message_id)
@@ -1159,13 +1081,12 @@ def _dispatch(args, auth_ledger, register_agent):
                              'delegation':record.get('delegation'),'delegation_state':delegation_state(record),
                              'owner_held_actions':held_status(record),
                              'standing_grants':standing_status(record,ledger),'release':diagnostic(ledger)}
-            deliveries = [(key,json.loads(raw)) for key,raw in
-                          ledger.db.execute("select key,data from settings where key like 'delivery:%'")]
+            deliveries = Deliveries(ledger).rows()
             pending = sum(value['state']=='submitted' for _,value in deliveries)
-            unknown = [{'message_id':key[len('delivery:'):], 'attempt_id':value.get('attempt_id')}
-                       for key,value in deliveries if value['state']=='intent']
-            unread = [{'message_id':key[len('delivery:'):], 'attempt_id':value['attempt_id']}
-                      for key,value in deliveries if value['state']=='submitted' and 'attempt_id' in value]
+            unknown = [{'message_id':message_id, 'attempt_id':value.get('attempt_id')}
+                       for message_id,value in deliveries if value['state']=='intent']
+            unread = [{'message_id':message_id, 'attempt_id':value['attempt_id']}
+                      for message_id,value in deliveries if value['state']=='submitted' and 'attempt_id' in value]
             return {**Control(ledger).status(),'session_id':sid,'pending_receipts':pending,
                     **reception_notice(ledger, auth_ledger.root),
                     'transport_notices':quorum_notices.summary(ledger),
@@ -1442,15 +1363,12 @@ def _dispatch(args, auth_ledger, register_agent):
             return reconcile_absent(api, ledger, record, args.message_id, getattr(args, 'attempt_id', None))
         if args.action == 'received':
             delivery = settled_delivery(ledger, args.message_id)
-            if not delivery or delivery['state'] not in ('submitted','queued','acked'):
+            if not delivery or delivery['state'] not in RECEIPTABLE:
                 raise ValueError('receipt_not_submitted')
             acknowledge(api, ledger, scope, args.message_id)
             return {'confirmed_queued':True}
         if args.action == 'reconcile':
-            # The owner's attestation is the only path that may acknowledge an unresolved attempt.
-            ledger.setting('delivery:'+args.message_id,{'state':'queued'})
-            api.call('session_ack',{**scope,'message_id':args.message_id})
-            ledger.setting('delivery:'+args.message_id,{'state':'acked'})
+            Deliveries(ledger).attest_queued(api, scope, args.message_id)
             return {'confirmed_queued':True}
         if args.action in ('send','reply'):
             text=sys.stdin.buffer.read(16385).decode('utf-8')
@@ -1468,7 +1386,7 @@ def _dispatch(args, auth_ledger, register_agent):
                 # message this ledger never submitted, one already acknowledged
                 # or an unresolved attempt gets no receipt claim here.
                 delivery=settled_delivery(ledger,args.message_id)
-                if delivery and delivery['state'] in ('submitted','queued'):
+                if delivery and delivery['state'] in UNRECEIPTED:
                     ReleaseGuard(api, ledger).check()
                     acknowledge(api, ledger, scope, args.message_id)
                 return {**result, **reception_notice(ledger, auth_ledger.root)} if isinstance(result, dict) else result

@@ -50,8 +50,10 @@ replies do not loop.
 
 ### When each route acknowledges
 
-There is no shared local ledger, and the routes differ on purpose. Each keeps its
-own delivery rows.
+`scripts/quorum_delivery.py` is the one local ledger: it owns each `delivery:<message UUID>`
+row, its compare-and-set transitions, the `session_ack` call and the unknown and unsent
+outcomes. A client adds only its identity proof and a push or pull function. The
+routes differ on purpose, and this table is their contract.
 
 | Route | Local states | Who acknowledges, and when | After a crash |
 | --- | --- | --- | --- |
