@@ -663,15 +663,19 @@ class NativeFileSemanticsTests(unittest.TestCase):
         path = self.root / 'auth.lock'
         with FileLock(path): protect(path)
 
-    def test_default_open_leaves_a_file_replaceable_for_atomic_writers(self):
+    def test_default_open_leaves_its_name_free_unlike_a_lock(self):
+        # What FILE_SHARE_DELETE grants. `os.replace` onto an open target is not part of it: MoveFileEx
+        # answers ERROR_ACCESS_DENIED whatever the holder shares, so that stays unasserted here.
         from quorum_os import open_private
-        path, other = self.root / 'config.json', self.root / 'config.tmp'
-        path.write_bytes(b'old')
-        other.write_bytes(b'new')
+        path, moved = self.root / 'config.json', self.root / 'moved.json'
+        path.write_bytes(b'data')
         fd = open_private(path, os.O_RDONLY)
-        try: os.replace(other, path)
+        try:
+            os.rename(path, moved)
+            self.assertFalse(path.exists())
+            os.unlink(moved)
         finally: os.close(fd)
-        self.assertEqual(path.read_bytes(), b'new')
+        self.assertFalse(moved.exists())
 
 
 class LocalSetupErrorCodeTests(unittest.TestCase):

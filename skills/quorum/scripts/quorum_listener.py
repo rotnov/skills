@@ -17,7 +17,8 @@ LIVE_STATES = ('starting', 'waiting', 'checking', 'degraded')
 # Outage backoff in seconds after consecutive failures, capped; the run itself has no deadline.
 RETRY_DELAYS = (10, 20, 40, 60)
 # listener-control.lock guards short ledger transitions only. listener-start.lock serializes one whole
-# start, RPCs and waits included, and is never taken by a stop. Fixed order: start, control, supervisor, listener.
+# start, RPCs and waits included, and is never taken by a stop. Waiting order: start, control, supervisor,
+# listener. StartGuard alone takes start under control, but never waits for it, so no cycle exists.
 START_LOCK = 'listener-start.lock'
 # Replaced by every owner stop, including one with no run to target yet; a start compares it to its snapshot.
 STOP_INTENT = 'listener-stop-intent'
@@ -61,8 +62,13 @@ class StartGuard:
         self.ledger, self.lock = ledger, FileLock(ledger.root / START_LOCK)
 
     def __enter__(self):
-        self.lock.__enter__()
-        self.intent = self.ledger.setting(STOP_INTENT)
+        # Atomic with a stop: once this start holds its lock, every later stop differs from `intent`.
+        with control_lock(self.ledger):
+            self.lock.__enter__()
+            try: self.intent = self.ledger.setting(STOP_INTENT)
+            except BaseException:
+                self.lock.__exit__()
+                raise
         return self
 
     def __exit__(self, *_):

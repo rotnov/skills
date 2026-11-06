@@ -171,6 +171,34 @@ class StopDuringStart(unittest.TestCase):
         self.assertTrue(result['messaging_rebound'])
         self.assertEqual(self.other.setting('session-agent')['messaging_socket'], '/synthetic/new')
 
+    def test_stop_cannot_land_between_the_start_lock_and_its_intent_baseline(self):
+        # Review of #151: a stop right after the lock, ahead of the read, became the start's baseline.
+        import quorum_listener
+        from quorum_listener import START_LOCK
+        from quorum_os import FileLock
+        from quorum_state import LocalLedger
+        stopped, racers = threading.Event(), []
+        def stop():
+            own = LocalLedger(self.root)
+            try:
+                quorum_listener.stop_listener(own, revoke_reception=True)
+                stopped.set()
+            finally: own.db.close()
+        class Racing(FileLock):
+            def __enter__(lock):
+                result = super().__enter__()
+                if lock.path.name == START_LOCK and not racers:
+                    racers.append(threading.Thread(target=stop))
+                    racers[0].start()
+                    self.assertFalse(stopped.wait(.4), 'stop must wait out the baseline read')
+                return result
+        self.at_step('rpc:session_requirements', lambda: self.assertTrue(stopped.wait(5)))
+        with patch.object(quorum_listener, 'FileLock', Racing):
+            self.assert_aborted()
+        racers[0].join(5)
+        self.assertEqual(self.children, [])
+        self.assertIsNone(self.other.setting('listener'), 'no run published')
+
     def test_stop_during_the_release_check_prevents_any_child(self):
         self.at_step('rpc:session_requirements', self.owner_stop)
         self.assert_aborted()

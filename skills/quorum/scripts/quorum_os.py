@@ -9,7 +9,8 @@ GENERIC_READ, GENERIC_WRITE = 0x80000000, 0x40000000
 FILE_APPEND_DATA, FILE_READ_ATTRIBUTES, SYNCHRONIZE = 0x4, 0x80, 0x00100000
 APPEND_ACCESS = FILE_APPEND_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE
 # FILE_SHARE_READ | FILE_SHARE_WRITE, then with FILE_SHARE_DELETE. Share delete is what lets another
-# opener rename, replace or delete a name while this handle is open.
+# opener rename or delete a name while this handle is open. It does not help `os.replace` onto that
+# name: MoveFileEx refuses an open target with ERROR_ACCESS_DENIED under any share mode.
 SHARE_READ_WRITE, SHARE_ALL = 3, 7
 
 
@@ -202,7 +203,7 @@ def open_private(path, flags, mode=0o600, *, share=SHARE_ALL):
     """Open the link itself on Windows, then reject reparse points before use.
 
     `share` is the Windows share mode. The default keeps a short-lived read or append from blocking
-    the atomic `os.replace` of that file; a handle that must pin its name passes SHARE_READ_WRITE.
+    a rename or delete of that file; a handle that must pin its name passes SHARE_READ_WRITE.
     """
     reject_link(path)
     if os.name != 'nt':
