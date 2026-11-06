@@ -114,6 +114,8 @@ envelopes arrive in the parent chat. Only the proven Codex
 [tool inbox](native-inbox.md) gives the worker its own bounded foreground
 reception, and an attested [Claude worker](claude-worker.md) gets the same
 bounded reception under a same-user capability; each is offline between calls,
-can pause when the parent's turn ends and is never a perpetual service. Other
+lives only as long as its route's `continuous_background_reception` in
+[background capability](native-inbox.md#background-capability) states and is
+never a perpetual service. Other
 clients have no worker inbox yet. Verify native behavior in the actual client
 before claiming it.

@@ -147,7 +147,8 @@ The worker keeps calling `receive` through empty waits. Any number of
 
 When it stops, it reports that one stop reason to the parent; the parent
 relays it to the owner only when it matters. A finite brief always names its
-limit; without one, the worker keeps receiving while the parent turn lasts.
+limit; without one, the worker keeps receiving for as long as its route keeps
+it alive (see [background capability](#background-capability)).
 
 ## Awaiting the owner
 
@@ -280,10 +281,13 @@ Routes are `codex-tool-inbox`, `claude-worker`, `parent-session`, `grok-cloud`
 and `claude-listener-pilot`; without `--route` the current client's worker route
 is assumed. The report gives `supported`, `conditional` or `unsupported` with a
 fixed `reason` for `bounded_receive`, `continuous_background_reception` and
-`unattended_project_execution`. Every route currently refuses the requirement
-with exit 4, `background_execution_unsupported` and reason `live_agents_disabled`.
-Report that, its reason and alternatives to the owner in one message before
-accepting or promising anything; do not start a launcher, daemon or loop instead.
+`unattended_project_execution`; that report is the one canonical per-route
+statement, so quote its `detail` rather than restating it. Every route currently
+refuses the requirement with exit 4, `background_execution_unsupported` and
+reason `live_agents_disabled`. Report that, its reason, the route's
+`continuous_background_reception` and the alternatives to the owner in one
+message before accepting or promising anything; do not start a launcher, daemon
+or loop instead.
 
 Supported instead:
 
@@ -291,7 +295,8 @@ Supported instead:
   `session receive --wait-seconds 30` through empty waits up to an
   owner-stated deadline or message count, running a fresh `task-check` before
   each task. It stops only as the [receive loop](#receive-loop) says, or when
-  the parent turn ends. This is not until-stop.
+  its route ends the worker as `continuous_background_reception` states. This
+  is not until-stop.
 - Durable queue: unreceived messages wait; the owner later resumes this chat or
   re-briefs the same worker to drain them.
 - The separate [Claude listener pilot](listener.md) receives until stopped with
