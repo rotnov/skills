@@ -28,9 +28,13 @@ class HookError(ValueError):
     """Fixed codes only; never file contents, environment or exception text."""
 
 
-def hook_command(state, client):
+# Grok's turn-end (Stop) check for a listener lost while the chat stayed open (#135). Short: it only reads.
+STOP_TIMEOUT_SECONDS = 30
+
+
+def hook_command(state, client, *extra):
     argv = ['uv', 'run', '--project', str(SKILL_DIR), '--frozen', 'python', str(SKILL_DIR / 'scripts' / MARKER),
-            '--state', str(Path(state).resolve()), '--client', client]
+            '--state', str(Path(state).resolve()), '--client', client, *extra]
     return subprocess.list2cmdline(argv) if os.name == 'nt' else shlex.join(argv)
 
 
@@ -137,10 +141,17 @@ def describe(state, client, project_dir):
                                 'handler in Codex (/hooks). Remove it with --uninstall --owner-authorized.'))
         if project_dir is not None: value['hooks_file'] = str(hooks_file(project_dir))
     else:
-        value.update(install_supported=False, documentation=GROK_DOCS,
-                     next_step=('Print-only: the owner adds this SessionStart handler (matcher resume) in an '
-                                'explicitly selected Grok hooks layer, such as the project .grok/hooks/, and '
-                                'trusts it. GROK_LEADER_SOCKET must be exported to the hook runner.'))
+        stop = {'type': 'command', 'command': hook_command(state, client, '--event', 'stop'),
+                'timeout': STOP_TIMEOUT_SECONDS}
+        value.update(install_supported=False, documentation=GROK_DOCS, turn_end_handler=stop,
+                     configuration={'hooks': {'SessionStart': [{'matcher': MATCHER, 'hooks': [entry]}],
+                                              'Stop': [{'hooks': [stop]}]}},
+                     next_step=('Print-only: the owner adds this SessionStart handler (matcher resume) and the '
+                                'Stop handler in an explicitly selected Grok hooks layer, such as the project '
+                                '.grok/hooks/, and trusts them. GROK_LEADER_SOCKET must be exported to the hook '
+                                'runner for SessionStart. The Stop handler only reads: at a turn end after the '
+                                'listener was lost (for example a session restore), it asks this same chat once '
+                                'to run session recover.'))
     return value
 
 

@@ -12,7 +12,7 @@ sys.dont_write_bytecode = True
 from quorum_api import QuorumApi, ServiceConfig, QuorumError, rpc_missing
 from quorum_auth import token_provider
 from quorum_state import LocalLedger
-from quorum_grok_leader import GrokBindingError
+from quorum_grok_leader import GrokBindingError, GrokBuildChanged
 from quorum_session import AmbiguousSession, BindingError, RecipientUnresolved, RoleHeld, UnsupportedClient
 from quorum_grok_cloud import CloudError
 from quorum_native_inbox import NativeInboxError
@@ -248,6 +248,10 @@ def main(argv=None):
         return codes.get(code, 3)
     except GrokBindingError as error:
         print(json.dumps({'ok': False, 'code': 'grok_transport_unavailable', 'data': error.diagnostic()}))
+        return 3
+    except GrokBuildChanged as error:
+        # Two fixed-format build versions and a relaunch step; never a path or process argument.
+        print(json.dumps({'ok': False, 'code': error.code, 'data': error.diagnostic()}))
         return 3
     except UnsupportedClient as error:
         print(json.dumps({'ok': False, 'code': 'unsupported_client', 'data': error.diagnostic()}))

@@ -60,6 +60,58 @@ history; `--session-id` would create a new conversation instead
    in that exact chat. Recovery preserves the registered agent and accepts a
    newly validated process/socket only after the old listener has stopped.
 
+### Session restore or self-update in a running TUI
+
+Grok can restore a chat in place. Its screen shows "Session restored. In-progress
+tools and terminals were lost", the same PID and leader socket stay up, and the
+background listener is gone. On the observed macOS TUI the banner coincided with
+the self-updater installing a new build. Nothing reaches the chat, so it keeps
+looking healthy locally while messages stay queued; peers see `unavailable`
+(`heartbeat_timeout`, then `receipt_timeout`) and the same-chat recovery step.
+
+The recovery step is unchanged: from that same chat's shell tool, with the same
+private state, run
+
+```text
+uv run --project <skill-dir> --frozen python <skill-dir>/scripts/quorum.py --state <private-state> session recover
+```
+
+then `session status`, and confirm `listener: running` and a peer message and
+receipt in that chat. It keeps the agent, role, delegation and queue, needs no
+invitation and no relaunch. On Windows, run it as one background shell task that
+stays alive (`block_until_ms: 0`, `<command> ; while ($true) { Start-Sleep 60 }`),
+because Grok kills a tool call's children when the call returns; the helper's own
+`next_step` prints this form. Windows transport support and its recovery are not
+qualified in this release.
+
+Detection, by what the chat does next:
+
+- `session status`, `send` and `reply` add `listener_lost` with that exact command
+  while reception is enabled and no listener holds its lock. An owner `session stop`
+  revokes reception and is never reported as lost.
+- The owner may add the [turn-end handler](resume.md#optional-provider-startup-hook).
+  At the next turn end it asks the same chat, once per lost run, to run the command.
+
+Limit: an idle chat has no turn end, so nothing local fires until someone types
+in it. A queued peer message cannot wake it, because the listener is what submits
+messages. Whether a restore fires `SessionStart` is unverified; do not rely on it.
+
+### Self-updated `grok` on PATH
+
+The updater repoints `grok` at the new download while a running TUI keeps its own
+image, so the two no longer match. A running **supported** build (see the versions
+above) stays verified when its image is the updater's own
+`grok-<version>-macos-<arch>` file beside the installed build, owned by this user
+and writable by nobody else, and the leader handshake reports that same version.
+Recovery and delivery then work without a relaunch.
+
+A running build this adapter does not support returns `grok_tui_update_pending`,
+with `data.running_build`, `data.installed_build` and a `next_step`: the owner
+quits the TUI and relaunches the same conversation with `--resume` to finish the
+update, then runs `session recover`. A newly installed build that is not listed
+above is refused after that relaunch, so report it as a blocker instead of
+relaunching a working chat. Any other executable stays `session_binding_denied`.
+
 ### Clean launch environment
 
 A TUI started from another client's shell, such as a Claude Code or Codex

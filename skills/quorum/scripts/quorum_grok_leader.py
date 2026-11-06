@@ -8,6 +8,7 @@ import ctypes
 import shutil
 import os
 from pathlib import Path
+import re
 import socket
 import stat
 import struct
@@ -30,6 +31,52 @@ class GrokBindingError(ValueError):
                     'Grok TUI cannot attach in place. Keep the chat open; its owner may later exit '
                     'it and relaunch the same session with --resume as described in references/grok.md.'}
         return {}
+
+
+# Leader builds this adapter accepts; the handshake must report one of them.
+VERSIONS = ('1.0.67', '1.0.70')
+# Grok's self-updater keeps each build as `<dir>/grok-<version>-macos-<arch>` and repoints `grok` at the newest.
+BUILD = re.compile(r'grok-(\d{1,4}\.\d{1,4}\.\d{1,4})-macos-(aarch64|x86_64)')
+
+
+class GrokBuildChanged(ValueError):
+    """The bound TUI still runs a Grok build that `grok` on PATH no longer names (an auto-update landed).
+
+    Only the two fixed-format version strings cross the CLI boundary, never a path.
+    """
+    code = 'grok_tui_update_pending'
+
+    def __init__(self, running, installed):
+        super().__init__(self.code)
+        self.running, self.installed = running, installed
+
+    def diagnostic(self):
+        return {'running_build': self.running, 'installed_build': self.installed, 'next_step': (
+            'Grok on PATH was updated to ' + self.installed + ' while this TUI still runs ' + self.running
+            + ', which this Quorum adapter does not support, so it cannot verify this chat. Nothing was '
+            'registered, started or sent. Ask the owner to quit this TUI completely and relaunch the same '
+            'conversation with grok --leader --leader-socket <private-dir>/leader.sock --cwd <project-dir> '
+            '--resume <this-session-UUID> to finish the update, then run session recover from the relaunched '
+            'chat (references/grok.md). If the relaunched build is unsupported too, report that blocker.')}
+
+
+def installed_sibling(executable, installed):
+    """(running, installed) versions when the TUI runs another Grok download beside the PATH build, else None.
+
+    Accepts only the updater's own naming in the same directory and architecture, and a running image the
+    current user owns that nobody else can replace. Anything else stays an unverified executable.
+    """
+    running, current = Path(executable), Path(installed)
+    found, named = BUILD.fullmatch(running.name), BUILD.fullmatch(current.name)
+    if (not found or not named or found.group(2) != named.group(2) or running.parent != current.parent
+            or found.group(1) == named.group(1)):
+        return None
+    try: image, folder = running.lstat(), running.parent.lstat()
+    except OSError: return None
+    if (not stat.S_ISREG(image.st_mode) or image.st_uid != os.geteuid() or image.st_mode & 0o022
+            or folder.st_uid != os.geteuid() or folder.st_mode & 0o022):
+        return None
+    return found.group(1), named.group(1)
 
 
 def process_identity(pid):
@@ -60,12 +107,21 @@ def process_identity(pid):
 
 
 def verify_process(pid, start, endpoint, sid, cwd):
+    """Verify the bound TUI; return its build when it runs an older installed download, else None.
+
+    An auto-update repoints `grok` on PATH while a running TUI keeps its own image. That image is accepted
+    only as a supported sibling build, whose version the leader handshake must then report itself.
+    """
+    pending = None
     try:
         current = process_identity(pid)
         installed = shutil.which('grok')
+        resolved = str(Path(installed).resolve()) if installed else None
+        sibling = (installed_sibling(current['executable'], resolved)
+                   if resolved and current['executable'] != resolved else None)
         if (not installed or not isinstance(start, int) or isinstance(start, bool)
                 or current['pid_start'] != start or current['uid'] != os.geteuid()
-                or not current['tty'] or current['executable'] != str(Path(installed).resolve())):
+                or not current['tty'] or (current['executable'] != resolved and sibling is None)):
             raise ValueError
         args = iter(current['argv'][1:])
         flags = {}
@@ -81,11 +137,20 @@ def verify_process(pid, start, endpoint, sid, cwd):
                 or flags.get('--leader-socket') != endpoint
                 or ('--cwd' in flags and str(Path(flags['--cwd']).resolve()) != cwd)):
             raise ValueError
+        if sibling is not None and sibling[0] not in VERSIONS: pending = sibling
     except (OSError, ValueError, KeyError, StopIteration, subprocess.SubprocessError):
         raise ValueError('session_binding_denied') from None
+    # This exact bound TUI, but its build is no longer the installed one and is not supported.
+    if pending is not None: raise GrokBuildChanged(*pending)
+    return sibling[0] if sibling is not None else None
 
 
 def local_binding(session_id, cwd):
+    return checked_binding(session_id, cwd)[0]
+
+
+def checked_binding(session_id, cwd):
+    """The stored transport fields and, separately, an accepted sibling build the leader must confirm."""
     if os.environ.get('GROK_SESSION_ID') != session_id:
         raise ValueError('session_binding_denied')
     if sys.platform != 'darwin' or not hasattr(socket, 'AF_UNIX'):
@@ -124,9 +189,10 @@ def local_binding(session_id, cwd):
     if (not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0
             or str(Path(entry.get('cwd', '')).resolve()) != str(Path(cwd).resolve())):
         raise ValueError('session_binding_denied')
-    verify_process(pid, entry.get('pid_start'), endpoint, session_id, str(Path(cwd).resolve()))
+    build = verify_process(pid, entry.get('pid_start'), endpoint, session_id, str(Path(cwd).resolve()))
+    # The build is not stored: a transport recorded before an update must still compare equal.
     return {'leader_socket': endpoint, 'tui_pid': pid, 'tui_start': entry.get('pid_start'),
-            'cwd': str(Path(cwd).resolve())}
+            'cwd': str(Path(cwd).resolve())}, build
 
 
 class Leader:
@@ -140,9 +206,10 @@ class Leader:
             registered = self.receive(time.monotonic()+5)
             if (registered.get('type') != 'registered'
                     or registered.get('leader_protocol_version') != 1
-                    or registered.get('leader_binary_version') not in ('1.0.67', '1.0.70')
+                    or registered.get('leader_binary_version') not in VERSIONS
                     or not isinstance(registered.get('ready'), bool)):
                 raise ValueError('grok_transport_unavailable')
+            self.version = registered['leader_binary_version']
             if not registered.get('ready', True):
                 if self.receive(time.monotonic()+5).get('type') != 'leader_ready':
                     raise ValueError('grok_transport_unavailable')
@@ -223,11 +290,18 @@ class Leader:
         self.socket.close()
 
 
+def confirm_build(leader, build):
+    """A sibling-build TUI must serve its leader from that same build."""
+    if build is not None and leader.version != build: raise ValueError('session_binding_denied')
+
+
 def binding(session_id, cwd):
-    result = local_binding(session_id, cwd)
+    result, build = checked_binding(session_id, cwd)
     try:
         leader = Leader(result['leader_socket'])
-        try: leader.verify(session_id, result['cwd'])
+        try:
+            confirm_build(leader, build)
+            leader.verify(session_id, result['cwd'])
         finally: leader.close()
     except ValueError: raise
     except Exception: raise ValueError('grok_transport_unavailable') from None
@@ -253,10 +327,11 @@ def main():
         data = json.loads(raw)
         record = data['record']
         sid = str(uuid.UUID(record['session_ref']))
-        transport = local_binding(sid, record['cwd'])
+        transport, build = checked_binding(sid, record['cwd'])
         if transport != record['grok_transport']: raise ValueError('session_binding_denied')
         leader = Leader(transport['leader_socket'])
         try:
+            confirm_build(leader, build)
             leader.verify(sid, transport['cwd'])
             if local_binding(sid, record['cwd']) != transport: raise ValueError('session_binding_denied')
             leader.prompt(sid, str(uuid.UUID(data['message_id'])), data['content'])

@@ -322,6 +322,108 @@ def refuse_if_bound(state, quorum, *, sid=None, parent=None, cloud=None):
     if found is not None: raise BindingExists(found)
 
 
+# --- Lost listener of a live chat (#135) ----------------------------------------------------------
+
+def listener_loss(ledger):
+    """This parent binding's enabled reception with no live listener; None when running, stopped or unbound.
+
+    A client can end the listener while the chat itself stays open (a Grok TUI session restore or
+    self-update ends its background tasks; a Windows Grok tool-call job kills its children). Liveness is the
+    listener lock, as in `session status`, never a possibly reused PID; reading status also records an
+    unreported exit as `listener_exited`. An owner stop revokes reception, so it is never reported as lost.
+    """
+    from quorum_listener import Control
+    from quorum_session import RECOVERABLE
+    record = ledger.setting('session-agent')
+    if (not isinstance(record, dict) or record.get('engine') not in RECOVERABLE
+            or record.get('transport', 'native') != 'native'):
+        return None
+    try: require_enabled(ledger, record)
+    except ValueError: return None
+    status = Control(ledger).status()
+    # `starting` without a lost mark is a start or recovery still in progress, not a loss.
+    if status['listener'] == 'running' or status.get('state') == 'starting': return None
+    return {'engine': record['engine'], 'quorum': record.get('quorum'), 'role': record.get('role'),
+            'run_id': status.get('run_id'), 'state': status.get('state'), 'code': status.get('code')}
+
+
+def recovery_command(state, engine, *, windows=os.name == 'nt'):
+    """The exact same-chat recovery command for this installed copy; local paths only, never a secret."""
+    import shlex
+    import subprocess
+    skill = Path(__file__).resolve().parents[1]
+    argv = ['uv', 'run', '--project', str(skill), '--frozen', 'python', str(skill / 'scripts' / 'quorum.py'),
+            '--state', str(Path(state).resolve()), 'session', 'recover']
+    if not windows: return shlex.join(argv)
+    command = subprocess.list2cmdline(argv)
+    if engine != 'grok': return command
+    # Grok kills a Windows tool call's children when the call returns: keep one background task alive.
+    return ('this as one background shell task that stays alive (block_until_ms: 0): ' + command
+            + ' ; while ($true) { Start-Sleep 60 }  and then session status in a normal call')
+
+
+def loss_notice(loss, state):
+    """Fixed fields and guidance for a lost listener; no peer text, token or environment."""
+    last = str(loss.get('state')) + (', code ' + str(loss['code']) if loss.get('code') else '')
+    return {'quorum': loss.get('quorum'), 'role': loss.get('role'), 'run_id': loss.get('run_id'),
+            'state': loss.get('state'), 'code': loss.get('code'), 'next_step': (
+                'Quorum: this chat\'s listener for quorum ' + json_text(loss.get('quorum')) + ' (role '
+                + json_text(loss.get('role')) + ') is no longer running (last state ' + last + '), so peer '
+                'messages are not reaching this chat and peers see it as unavailable. A client session restore, '
+                'self-update or restart can end it while the chat stays open. From this same chat\'s shell tool, '
+                'run ' + recovery_command(state, loss.get('engine')) + ' . It keeps the same agent, role, '
+                'delegation and queued messages and needs no invitation. Then run session status and confirm '
+                'listener: running. If recover returns a code, follow references/resume.md; never start another '
+                'session or accept a new invitation for this quorum.')}
+
+
+NOTICE_KEY = 'listener-loss-notice'
+STOP_PAYLOAD_LIMIT = 262144
+
+
+def stop_session(event, environment):
+    """A Grok turn-end (Stop) hook's own chat; None for the session-end fire.
+
+    The runner's own GROK_SESSION_ID must name the payload's session. Unlike resume, other clients' inherited
+    exports are not refused: this check only reads and prompts, and a TUI launched from another client's shell
+    is the one that most needs the prompt. Its `session recover` still reports `ambiguous_current_session`.
+    """
+    if not isinstance(event, dict): raise ValueError('session_recovery_denied')
+    sid = event.get('sessionId')
+    try: canonical = str(uuid.UUID(sid))
+    except (ValueError, TypeError, AttributeError): raise ValueError('session_recovery_denied') from None
+    if (canonical != sid or event.get('hook_event_name') != 'Stop'
+            or not isinstance(event.get('cwd'), str) or not Path(event['cwd']).is_absolute()):
+        raise ValueError('session_recovery_denied')
+    if environment.get('GROK_SESSION_ID') != sid: raise ValueError('session_recovery_denied')
+    # The session-end fire (`channel_closed`, `shutdown`) is no turn to continue.
+    if event.get('reason', 'end_turn') != 'end_turn': return None
+    return sid
+
+
+def turn_end_check(state, event, environment):
+    """Grok Stop hook: once per lost run, block the turn end with the exact recovery step; else silent.
+
+    Grok feeds a block reason back to the same chat as a user message, so the chat learns at its next turn
+    end that its listener is gone. `stopHookActive` (already continuing after a block) and an already
+    reported run stay silent, so the hook never loops. Nothing is recovered, sent or registered here.
+    """
+    sid = stop_session(event, environment)
+    if sid is None or event.get('stopHookActive') is True: return None
+    path = Path(state) / 'sessions' / sid / 'ledger.sqlite'
+    if path.is_symlink() or not path.is_file(): return None  # No binding: never create a ledger.
+    from quorum_state import LocalLedger
+    ledger = LocalLedger(Path(os.path.abspath(state)) / 'sessions' / sid)
+    try:
+        loss = listener_loss(ledger)
+        if loss is None: return None
+        mark = {'run_id': loss['run_id'], 'state': loss['state']}
+        if ledger.setting(NOTICE_KEY) == mark: return None
+        ledger.setting(NOTICE_KEY, mark)
+        return {'decision': 'block', 'reason': loss_notice(loss, state)['next_step']}
+    finally: ledger.db.close()
+
+
 def main(argv=None):
     """Optional owner-installed startup hook; bounded input and fixed failure diagnostics only."""
     import argparse
@@ -332,7 +434,22 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--state', type=Path, required=True)
     parser.add_argument('--client', choices=('codex', 'grok'), required=True)
+    parser.add_argument('--event', choices=('session-start', 'stop'), default='session-start',
+                        help='stop: Grok turn-end check for a lost listener (prints a block decision, never recovers)')
     args = parser.parse_args(argv)
+    if args.event == 'stop':
+        try:
+            if args.client != 'grok': raise ValueError('session_recovery_denied')
+            # A Stop payload carries the last assistant message (up to 32 KiB) and task lists; still bounded.
+            raw = sys.stdin.buffer.read(STOP_PAYLOAD_LIMIT + 1)
+            if len(raw) > STOP_PAYLOAD_LIMIT: raise ValueError('session_recovery_denied')
+            decision = turn_end_check(args.state, json.loads(raw), os.environ)
+            if decision is not None: print(json.dumps(decision))
+            return 0
+        except (ValueError, OSError, TypeError):
+            # A nonzero exit other than 2 fails open in Grok: the turn ends normally.
+            print('quorum: session_recovery_denied', file=sys.stderr)
+            return 3
     try:
         raw = sys.stdin.buffer.read(8193)
         if len(raw) > 8192: raise ValueError('session_recovery_denied')

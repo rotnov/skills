@@ -309,8 +309,9 @@ def client_preflight():
         # Verify this chat's private leader socket, registry and TUI process
         # identity, then the bounded read-only protocol/version/resident-session
         # handshake connect uses. Never start a TUI/model or send a prompt.
-        from quorum_grok_leader import binding
+        from quorum_grok_leader import GrokBuildChanged, binding
         try: binding(sid, str(Path.cwd().resolve()))
+        except GrokBuildChanged: raise  # Actionable as is: the owner relaunches to finish the update.
         except (ValueError, OSError, KeyError, TypeError, subprocess.SubprocessError):
             raise UnsupportedClient('grok_leader_unavailable', engine) from None
     if engine == 'codex' and not shutil.which('codex'):
@@ -337,6 +338,13 @@ def check_native_route(record):
     if os.environ.get('CLAUDE_CODE_MESSAGING_SOCKET') != record.get('messaging_socket'):
         raise ValueError('session_binding_denied')
     binding(record['session_ref'])
+
+
+def reception_notice(ledger, state):
+    """`listener_lost` with the exact recovery step when this chat's enabled listener is gone (#135)."""
+    from quorum_resume import listener_loss, loss_notice
+    loss = listener_loss(ledger)
+    return {'listener_lost': loss_notice(loss, state)} if loss else {}
 
 
 PRIORITIES = ('normal', 'urgent')
@@ -924,6 +932,7 @@ def _dispatch(args, auth_ledger, register_agent):
             unknown = [{'message_id':key[len('delivery:'):], 'attempt_id':value.get('attempt_id')}
                        for key,value in deliveries if value['state']=='intent']
             return {**Control(ledger).status(),'session_id':sid,'pending_receipts':pending,
+                    **reception_notice(ledger, auth_ledger.root),
                     'transport_notices':quorum_notices.summary(ledger),
                     'unknown_attempts':unknown,
                     **({'retired_binding':retired_summary(ledger)} if not record and retired_summary(ledger) else {}),
@@ -1211,7 +1220,7 @@ def _dispatch(args, auth_ledger, register_agent):
                     ledger.setting('delivery:'+args.message_id,{'state':'queued'})
                     api.call('session_ack',{**scope,'message_id':args.message_id})
                     ledger.setting('delivery:'+args.message_id,{'state':'acked'})
-                return result
+                return {**result, **reception_notice(ledger, auth_ledger.root)} if isinstance(result, dict) else result
             # A tool worker's api is already guarded: a rebind after its proof ends the send before dispatch.
             if worker_guard is not None: worker_guard()
             try:
@@ -1223,7 +1232,7 @@ def _dispatch(args, auth_ledger, register_agent):
             result=api.call('message_send',{'quorum_id':record['quorum_id'],'sender_agent_id':record['agent_id'],
                  'recipient_agent_id':peer['agent_id'],'conversation_id':conv,'body':text,'reply_to':None,
                  'priority':priority},args.request_id)
-            return {**result,'conversation_id':conv}
+            return {**result,'conversation_id':conv,**reception_notice(ledger, auth_ledger.root)}
         if args.action=='run':
             import signal,threading
             from quorum_realtime import RealtimeWait

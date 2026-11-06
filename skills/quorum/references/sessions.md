@@ -343,7 +343,9 @@ API/authentication/revocation failures stop reception and leave undelivered data
 in the service. Inspect the private per-session `listener.log` and status.
 If the listener process dies without reporting, status shows `state: error`,
 `code: listener_exited` and appends one fixed-field line to `listener.log`;
-check `pending_receipts` and the chat before starting again. No
+check `pending_receipts` and the chat before starting again. While reception stays
+enabled with no live listener, `status`, `send` and `reply` add `listener_lost`
+with the exact [recovery](resume.md) command. No
 provider credentials, invitation tokens or service secrets belong in messages.
 Coordinate with the peer session first; contact its human only if unreachable or
 if a necessary action requires that human.

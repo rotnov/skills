@@ -253,6 +253,32 @@ class GrokTests(unittest.TestCase):
                 '_meta':{'promptId':'quorum:'+MID}})
 
     @isolated_profiles
+    def test_running_170_stays_bound_after_path_grok_self_updates(self):
+        """#135: the updater repoints `grok` at 1.0.77 while this TUI keeps running 1.0.70."""
+        from quorum_grok_leader import binding, submit
+        with own_session() as (root, _, peer):
+            peer.version = '1.0.70'
+            downloads = root / 'downloads'
+            downloads.mkdir(mode=0o755)
+            for name in ('grok-1.0.70-macos-aarch64', 'grok-1.0.77-macos-aarch64'):
+                (downloads / name).write_bytes(b'')
+                (downloads / name).chmod(0o755)
+            running = str((downloads / 'grok-1.0.70-macos-aarch64').resolve())
+            resumed = {'pid_start':12345, 'uid':os.geteuid(), 'tty':True, 'executable':running,
+                       'argv':[running, '--leader', '--leader-socket', str(peer.path), '--resume', SID]}
+            before = {'leader_socket':str(peer.path), 'tui_pid':os.getpid(), 'tui_start':12345,
+                      'cwd':str(root.resolve())}
+            with patch('quorum_grok_leader.process_identity', return_value=resumed), \
+                 patch('quorum_grok_leader.shutil.which', return_value=str(downloads / 'grok-1.0.77-macos-aarch64')):
+                # A transport stored before the update still compares equal, so a live listener keeps delivering.
+                self.assertEqual(binding(SID, str(root)), before)
+                submit({'engine':'grok', 'session_ref':SID, 'cwd':str(root), 'grok_transport':before}, MID, 'after update')
+                self.assertEqual(len(peer.prompts), 1)
+                # The leader must itself be the build the TUI image claims.
+                peer.version = '1.0.67'
+                with self.assertRaisesRegex(ValueError, 'session_binding_denied'): binding(SID, str(root))
+
+    @isolated_profiles
     def test_qualified_170_still_refuses_wrong_session_or_nonresident_metadata(self):
         from quorum_grok_leader import binding
         with own_session() as (root, _, peer):
