@@ -122,9 +122,10 @@ class ReleaseGuard:
         from quorum_listener import locked
         if locked(self.ledger.root/'listener.lock'):
             # A fresh helper cannot bless an older running Python process.
+            from quorum_listener import Control
             run_id, active, compatible = self._listener(self.installed)
-            if not compatible:
-                from quorum_listener import Control
+            # A stopped run is blessed by nothing: it is leaving, and a start waits it out before spawning.
+            if not compatible and not Control(self.ledger).stopping(run_id):
                 if run_id: Control(self.ledger).request_stop(run_id)
                 diagnostic = self.ledger.setting('release') or {}
                 diagnostic = {**diagnostic, 'listener':versions(active), 'listener_run_verified':False,

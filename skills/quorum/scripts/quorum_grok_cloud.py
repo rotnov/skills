@@ -519,13 +519,14 @@ def status(ledger, record, conversation):
 
 
 def start(auth_ledger, ledger, api):
-    from quorum_listener import Control, StartGuard, await_started, locked, spawn_background
+    from quorum_listener import Control, StartGuard, await_started, reusable_run, spawn_background
     with StartGuard(ledger) as guard:
         control = Control(ledger)
         release = ReleaseGuard(api, ledger)
         release.check()
         release.running()
-        if locked(ledger.root / 'listener.lock'): return control.status()
+        current = reusable_run(ledger, control, guard.check)
+        if current is not None: return current
         run_id = str(uuid.uuid4())
         with guard.section(): control.begin(run_id, 0)
         try:
