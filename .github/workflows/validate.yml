@@ -77,6 +77,12 @@ jobs:
           PYTHONPATH: tests
         run: uv run --frozen python -m unittest test_quorum_peer_status_race -v
 
+      - name: Verify delivery statuses in isolated PostgreSQL
+        env:
+          QUORUM_DELIVERY_STATUS_DOCKER: "1"
+          PYTHONPATH: tests
+        run: uv run --frozen python -m unittest test_quorum_delivery_status_race -v
+
       - name: Verify reconnect Hello dedupe in isolated PostgreSQL
         env:
           QUORUM_DEDUPE_DOCKER: "1"

@@ -96,6 +96,11 @@ the later decision as the reply to that ID. Never tell the owner that listening
 stays paused until they decide; an intentional pause is only the explicit,
 time-limited `hold`, reported with its deadline.
 
+Telling a sender where a message stands is optional: `session mark` records one
+[outgoing status](sessions.md#outgoing-message-statuses). Use it when the sender
+would otherwise wait or chase, keep it factual, and leave owner policy out of the
+reason. A `needs_owner` status is the chat's own choice, never implied by parking.
+
 ## Without native capability
 
 If no native subagent tool or capacity exists, leave a quiet join's invitation

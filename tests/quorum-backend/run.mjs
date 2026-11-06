@@ -42,6 +42,8 @@ const unreceipted = '20261106140000_session_message_unreceipted.sql';
 const helloSplit = '20261106150000_hello_sent_skipped.sql';
 // One bounded message read behind pointer delivery (#150).
 const sessionMessage = '20261106160000_session_message.sql';
+// One recipient's delivery statuses for its sender (#162).
+const deliveryStatus = '20261106170000_delivery_statuses.sql';
 // Installations that deployed native coordination before open access apply the
 // older-dated open access file late; the final session requirements must match.
 const late = name => name.endsWith('_open_access_quorums.sql');
@@ -241,7 +243,7 @@ try {
   }
   const portableTail = [priority, serialization, maintenance, memberAuthority];
   const reviewedTail = [...portableTail, knowledge, wiki, hello, ttl, roles, status, defaultRole, dedupe, authorityBound,
-    unreceipted, helloSplit, sessionMessage];
+    unreceipted, helloSplit, sessionMessage, deliveryStatus];
   if (JSON.stringify(all.filter(name => name >= priority)) !== JSON.stringify(reviewedTail)) {
     throw new Error('unreviewed migration after the close serialization');
   }
@@ -525,6 +527,35 @@ try {
       await messageDb.close();
     }
   }
+  // Delivery statuses pin the binding check, the reply they follow and the release; they refuse
+  // drift, reapplication or a missing predecessor, changing nothing.
+  const noStatuses = async (db, label) => {
+    const result = await db.query(`select to_regclass('quorum_private.delivery_statuses') t,
+      to_regprocedure('public.session_delivery_mark(uuid,text,uuid,text,text,text)') f`);
+    if (result.rows[0].t !== null || result.rows[0].f !== null) throw new Error(label + ': partial statuses apply');
+  };
+  const beforeStatuses = [...beforeMessage, sessionMessage];
+  await gated([...beforeStatuses, deliveryStatus], read(migrations + deliveryStatus), 'delivery_status_present',
+    'statuses reapplied');
+  await gated(beforeMessage, read(migrations + deliveryStatus), 'session_message_required',
+    'statuses without the single-message read', noStatuses);
+  for (const fn of ['quorum_private.native_session(uuid,text)', 'public.session_reply(uuid,text,uuid,text,text)',
+    'public.session_requirements()']) {
+    await drifted(fn, 'reviewed_dispatcher_changed: ' + fn, beforeStatuses, deliveryStatus, noStatuses);
+  }
+  {
+    const statusesDb = await database([...beforeStatuses, deliveryStatus]);
+    try {
+      await release(statusesDb, current);
+      await statusesDb.exec(suite('quorum_delivery_status_backend.sql'));
+      // Current clients' calls keep working on the upgraded schema.
+      await statusesDb.exec(suite('quorum_session_message_backend.sql'));
+      for (const name of ROLE_COMPATIBLE) await statusesDb.exec(suite(name));
+    } finally {
+      await statusesDb.exec('rollback');
+      await statusesDb.close();
+    }
+  }
   // A server that skipped the Grok extension: the priority release refuses it until the convergence
   // file gives it the reviewed bodies, after which the whole reviewed tail applies. Elsewhere the file
   // changes nothing, and it refuses a server before open access or any other body.
@@ -555,7 +586,7 @@ try {
     }
     await convergenceChangesNothing(skippedDb, after);
     for (const name of [...portableTail, hello, ttl, roles, status, dedupe, authorityBound, unreceipted, helloSplit,
-      sessionMessage]) {
+      sessionMessage, deliveryStatus]) {
       await skippedDb.exec(read(migrations + name));
     }
     await convergenceChangesNothing(skippedDb, after);
@@ -601,7 +632,7 @@ try {
     });
   if (!coordination(upgraded[3]) || !late(upgraded[4])) throw new Error('upgraded order is not coordination first');
   console.log('Invitation, session, Realtime, open-access, coordination, open-session, coordination-only refusal, '
-    + 'mandatory priority release, close serialization, member authority ACLs, open-member priority, Hello reporting/roster, 60-minute open invitations, invitation role assignment/owner retire, heartbeat peer status, knowledge default-role prerequisite, reconnect Hello dedupe, task authority project bound, Hello sent/skipped split, native session convergence and pinned-chain drift regression '
+    + 'mandatory priority release, close serialization, member authority ACLs, open-member priority, Hello reporting/roster, 60-minute open invitations, invitation role assignment/owner retire, heartbeat peer status, knowledge default-role prerequisite, reconnect Hello dedupe, task authority project bound, Hello sent/skipped split, delivery statuses, native session convergence and pinned-chain drift regression '
     + '(fresh and coordination-first upgraded order): PASS (disposable PostgreSQL)');
 } catch (error) {
   console.error(error.message, error.where || '');

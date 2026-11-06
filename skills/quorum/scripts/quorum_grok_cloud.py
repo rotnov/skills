@@ -12,6 +12,7 @@ import sys
 import uuid
 from quorum_api import QuorumError
 from quorum_delivery import CLOUD_STATES, Deliveries, server_ack
+from quorum_delivery_status import Reports, reportable
 from quorum_delegation import (carried_grant, delegation_state, grant, held_status, instruction, member_grant, member_trust, opening, task_check,
                                save_grant_binding, trusted)
 from quorum_release import ReleaseGuard, ReleaseMismatch, diagnostic
@@ -360,7 +361,11 @@ def receive(auth_ledger, ledger, record, messages, api=None, scope=None):
     """
     for _ in range(NOTICE_LIMIT):
         result = _receive_one(auth_ledger, ledger, record, messages, quiet=api is not None)
-        if not isinstance(result, tuple): return result
+        if not isinstance(result, tuple):
+            # Handed to this parent's tool result; only its own `received` or `reply` proves it read.
+            if api is not None and result.get('state') == 'offered' and not result['message'].get('notification'):
+                Reports(ledger).report(api, scope, result['message_id'], 'queued')
+            return result
         message_id, delivery, kind = result
         _receipt_notice(api, ledger, scope, message_id, delivery, kind, 'grok-cloud')
         messages = api.call('session_inbox', scope)
@@ -446,7 +451,11 @@ def acknowledge(api, ledger, scope, message_id, delivery):
 
 
 def confirm(api, ledger, record, scope, message_id):
-    acknowledge(api, ledger, scope, message_id, offered(ledger, record, message_id))
+    delivery = offered(ledger, record, message_id)
+    # The offer carried the body, and this parent's own command proves it reached the chat.
+    if reportable(delivery): Reports(ledger).note(message_id, 'read', proof='received')
+    acknowledge(api, ledger, scope, message_id, delivery)
+    Reports(ledger).flush(api, scope)
     return {'received': True, 'message_id': message_id, 'state': 'acked'}
 
 
@@ -461,7 +470,9 @@ def answer(args, api, ledger, record, scope):
     if args.action == 'reply':
         # The service keys one answer per message, so an uncertain reply repeats the same request.
         result = api.call('session_reply', {**scope, 'message_id': args.message_id, 'body': text, 'priority': priority})
+        if reportable(delivery): Reports(ledger).note(args.message_id, 'read', proof='reply')
         acknowledge(api, ledger, scope, args.message_id, delivery)
+        Reports(ledger).flush(api, scope)
         return {key: result[key] for key in ('reply_message_id', 'conversation_id') if key in result} | {
             'received': True, 'message_id': args.message_id}
     if not 1 <= len(args.request_id) <= 128: raise ValueError('invalid_request_id')

@@ -801,7 +801,7 @@ class PointerDeliveryTests(Harness):
 
     def test_a_default_state_path_leaves_argv_and_a_custom_one_stays(self):
         _, custom = self.delivered(message())
-        self.assertEqual(custom[0][-1].count('"--state"'), 2)
+        self.assertEqual(custom[0][-1].count('"--state"'), 3)
         self.forget()
         _, default = self.delivered(message(), patches=[
             patch('quorum_session.default_state_root', return_value=self.root)])

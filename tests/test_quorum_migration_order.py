@@ -34,6 +34,7 @@ AUTHORITY = '20261106130000_task_authority_project_bound.sql'
 UNRECEIPTED = '20261106140000_session_message_unreceipted.sql'
 SPLIT = '20261106150000_hello_sent_skipped.sql'
 MESSAGE = '20261106160000_session_message.sql'
+STATUSES = '20261106170000_delivery_statuses.sql'
 CONVERGENCE = '20261022165000_native_session_engine_convergence.sql'
 GROK = '20261022094041_native_grok_session.sql'
 # prosrc hashes after the reviewed tail through 190000; tests/quorum-backend recomputes them by drift injection.
@@ -204,7 +205,7 @@ class HelloSplitTests(unittest.TestCase):
 
     def test_split_follows_the_tail_pins_the_chain_and_adds_only_the_count(self):
         names = [path.name for path in MIGRATIONS]
-        self.assertEqual(names[names.index(SPLIT) + 1:], [MESSAGE])
+        self.assertEqual(names[names.index(SPLIT) + 1:], [MESSAGE, STATUSES])
         body = self.PATH.read_text(encoding='utf-8')
         self.assertTrue(body.startswith('-- SOURCE ONLY.'))
         wrapper = 'quorum_private.session_heartbeat_before_status(uuid,text,uuid,integer,text)'
@@ -362,7 +363,7 @@ class MigrationOrderTests(unittest.TestCase):
         ttl = next(name for name in names if name.endswith('_open_invite_ttl.sql'))
         self.assertGreater(ttl, '20261103180000_hello_roster_visibility.sql')
         # Only the reviewed role-assignment release (#105) follows it.
-        self.assertEqual(names[names.index(ttl) + 1:], [ROLES, STATUS, DEFAULT_ROLE, DEDUPE, AUTHORITY, UNRECEIPTED, SPLIT, MESSAGE])
+        self.assertEqual(names[names.index(ttl) + 1:], [ROLES, STATUS, DEFAULT_ROLE, DEDUPE, AUTHORITY, UNRECEIPTED, SPLIT, MESSAGE, STATUSES])
         body = (SKILL / 'supabase/migrations' / ttl).read_text(encoding='utf-8')
         pins = dict(re.findall(r"'([a-z_.]+\([a-z,]*\))','([0-9a-f]{64})'", body))
         self.assertEqual(pins, {'quorum_private.call_priority_core(text,jsonb,text)':
@@ -386,7 +387,7 @@ class MigrationOrderTests(unittest.TestCase):
 
     def test_role_assignment_follows_the_tail_pins_reviewed_bodies_and_grants_only_authenticated(self):
         names = [path.name for path in MIGRATIONS]
-        self.assertEqual(names[names.index(ROLES) + 1:], [STATUS, DEFAULT_ROLE, DEDUPE, AUTHORITY, UNRECEIPTED, SPLIT, MESSAGE])
+        self.assertEqual(names[names.index(ROLES) + 1:], [STATUS, DEFAULT_ROLE, DEDUPE, AUTHORITY, UNRECEIPTED, SPLIT, MESSAGE, STATUSES])
         self.assertGreater(ROLES, '20261103190000_open_invite_ttl.sql')
         body = (SKILL / 'supabase/migrations' / ROLES).read_text(encoding='utf-8')
         pins = dict(re.findall(r"'([a-z_.]+\([a-z,]*\))','([0-9a-f]{64})'", body))
@@ -440,7 +441,7 @@ class MigrationOrderTests(unittest.TestCase):
 
     def test_peer_status_follows_roles_pins_reviewed_bodies_and_grants_only_authenticated(self):
         names = [path.name for path in MIGRATIONS]
-        self.assertEqual(names[names.index(STATUS) + 1:], [DEFAULT_ROLE, DEDUPE, AUTHORITY, UNRECEIPTED, SPLIT, MESSAGE])
+        self.assertEqual(names[names.index(STATUS) + 1:], [DEFAULT_ROLE, DEDUPE, AUTHORITY, UNRECEIPTED, SPLIT, MESSAGE, STATUSES])
         body = (SKILL / 'supabase/migrations' / STATUS).read_text(encoding='utf-8')
         self.assertTrue(body.startswith('-- SOURCE ONLY.'))
         pins = dict(re.findall(r"'([a-z_.]+\([a-z,]*\))','([0-9a-f]{64})'", body))
@@ -495,7 +496,7 @@ class MigrationOrderTests(unittest.TestCase):
 
     def test_knowledge_default_role_follows_the_wiki_pins_every_scope_caller_and_grants_only_authenticated(self):
         names = [path.name for path in MIGRATIONS]
-        self.assertEqual(names[names.index(DEFAULT_ROLE) + 1:], [DEDUPE, AUTHORITY, UNRECEIPTED, SPLIT, MESSAGE])
+        self.assertEqual(names[names.index(DEFAULT_ROLE) + 1:], [DEDUPE, AUTHORITY, UNRECEIPTED, SPLIT, MESSAGE, STATUSES])
         self.assertGreater(DEFAULT_ROLE, '20261103075741_llm_wiki.sql')
         body = (SKILL / 'supabase/migrations' / DEFAULT_ROLE).read_text(encoding='utf-8')
         self.assertTrue(body.startswith('-- SOURCE ONLY.'))
@@ -560,7 +561,7 @@ class MigrationOrderTests(unittest.TestCase):
 
     def test_task_authority_bound_follows_dedupe_pins_the_chain_and_changes_only_the_bound(self):
         names = [path.name for path in MIGRATIONS]
-        self.assertEqual(names[names.index(AUTHORITY) + 1:], [UNRECEIPTED, SPLIT, MESSAGE])
+        self.assertEqual(names[names.index(AUTHORITY) + 1:], [UNRECEIPTED, SPLIT, MESSAGE, STATUSES])
         body = (SKILL / 'supabase/migrations' / AUTHORITY).read_text(encoding='utf-8')
         self.assertTrue(body.startswith('-- SOURCE ONLY.'))
         pins = dict(re.findall(r"'([a-z_.]+\([a-z,]*\))','([0-9a-f]{64})'", body))
@@ -605,7 +606,7 @@ class MigrationOrderTests(unittest.TestCase):
 
     def test_hello_dedupe_follows_status_pins_reviewed_bodies_and_grants_nothing(self):
         names = [path.name for path in MIGRATIONS]
-        self.assertEqual(names[names.index(DEDUPE) + 1:], [AUTHORITY, UNRECEIPTED, SPLIT, MESSAGE])
+        self.assertEqual(names[names.index(DEDUPE) + 1:], [AUTHORITY, UNRECEIPTED, SPLIT, MESSAGE, STATUSES])
         body = (SKILL / 'supabase/migrations' / DEDUPE).read_text(encoding='utf-8')
         self.assertTrue(body.startswith('-- SOURCE ONLY.'))
         pins = dict(re.findall(r"'([a-z_.]+\([a-z,]*\))','([0-9a-f]{64})'", body))
@@ -656,7 +657,7 @@ class MigrationOrderTests(unittest.TestCase):
 
     def test_message_unreceipted_is_read_only_pinned_and_grants_only_authenticated(self):
         names = [path.name for path in MIGRATIONS]
-        self.assertEqual(names[names.index(UNRECEIPTED) + 1:], [SPLIT, MESSAGE])
+        self.assertEqual(names[names.index(UNRECEIPTED) + 1:], [SPLIT, MESSAGE, STATUSES])
         body = (SKILL / 'supabase/migrations' / UNRECEIPTED).read_text(encoding='utf-8')
         self.assertIn('SOURCE ONLY', body)
         self.assertIn('No required-release change', body)
@@ -688,7 +689,7 @@ class MigrationOrderTests(unittest.TestCase):
 
     def test_session_message_is_read_only_own_recipient_and_grants_only_authenticated(self):
         names = [path.name for path in MIGRATIONS]
-        self.assertEqual(names[-1], MESSAGE)
+        self.assertEqual(names[names.index(MESSAGE) + 1:], [STATUSES])
         body = (SKILL / 'supabase/migrations' / MESSAGE).read_text(encoding='utf-8')
         self.assertIn('SOURCE ONLY', body)
         self.assertIn('No required-release change', body)
@@ -707,6 +708,45 @@ class MigrationOrderTests(unittest.TestCase):
         section = guide.split('## Single-message read', 1)[1].split('\n## ', 1)[0]
         self.assertIn(MESSAGE, section)
         self.assertIn('after `20261106150000_hello_sent_skipped.sql`', section)
+
+    def test_delivery_statuses_follow_the_message_read_pin_their_bodies_and_replace_nothing(self):
+        names = [path.name for path in MIGRATIONS]
+        self.assertEqual(names[-1], STATUSES)
+        body = (SKILL / 'supabase/migrations' / STATUSES).read_text(encoding='utf-8')
+        self.assertIn('SOURCE ONLY', body)
+        self.assertIn('No required-release change', body)
+        guard = body.split('create table', 1)[0]
+        for pin in ('quorum_private.native_session(uuid,text)', 'public.session_reply(uuid,text,uuid,text,text)',
+                    'public.session_requirements()'):
+            self.assertIn(pin, guard)
+        self.assertIn("raise exception 'delivery_status_present'", guard)
+        self.assertIn("raise exception 'session_message_required'", guard)
+        self.assertIn("raise exception 'reviewed_dispatcher_changed: %',f", guard)
+        # The pin is the reply body the priority release installed.
+        priority = PRIORITY_PATH.read_text(encoding='utf-8')
+        reply = priority.split('create function public.session_reply(', 1)[1].split(' as $$', 1)[1].split('$$;', 1)[0]
+        self.assertIn(hashlib.sha256(reply.encode()).hexdigest(), guard)
+        # New RPCs only: no dispatcher, heartbeat, inbox or receipt body moves or is replaced.
+        code = '\n'.join(line.split('--', 1)[0] for line in body.splitlines())
+        for moved in ('rename to', 'set schema', 'create or replace', 'drop function', 'session_heartbeat',
+                      'quorum_private.call', 'session_inbox', 'session_ack'):
+            self.assertNotIn(moved, code)
+        self.assertEqual(set(re.findall(r'create function (public\.\w+)', code)),
+                         {'public.session_delivery_mark', 'public.session_delivery_status',
+                          'public.session_delivery_changes', 'public.session_delivery_stuck'})
+        self.assertEqual(defining('public.session_delivery_mark('), [SKILL / 'supabase/migrations' / STATUSES])
+        for function in re.findall(r'create function public\..*?\$function\$(.*?)\$function\$', code, re.S):
+            self.assertIn('quorum_private.native_session(p_agent_id,p_session_ref)', function)
+        self.assertEqual(len(re.findall(r'security definer set search_path=pg_catalog', code)), 8)
+        self.assertRegex(code, r'grant execute on function public\.session_delivery_mark')
+        self.assertRegex(code, r'public,anon,authenticated,service_role')
+        # Empty hint, like the inbox, and no table grant at all.
+        self.assertIn("realtime.send('{}'::jsonb,'status_changed',", code)
+        self.assertNotRegex(code, r'(?i)grant [^;]* on quorum_private\.delivery')
+        guide = (SKILL / 'references/server.md').read_text(encoding='utf-8')
+        section = guide.split('## Delivery statuses', 1)[1].split('\n## ', 1)[0]
+        self.assertIn(STATUSES, section)
+        self.assertIn('after `20261106160000_session_message.sql`', section)
 
 
 if __name__ == '__main__':

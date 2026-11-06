@@ -170,7 +170,11 @@ envelope, the heartbeat continues and peers see the binding as available, not
 `receipt_timeout`. A lost receipt response leaves the entry parked; the next
 receive repeats the receipt and never offers it again. Explicit parking stops
 at 32 entries (`native_inbox_awaiting_full` receipts nothing); receive results and
-`session status` report `awaiting_owner`, the count.
+`session status` report `awaiting_owner`, the count. Parking stays private: the sender
+sees `read`, and `needs_owner` only if the worker sets it with the offer's `mark_command`.
+An automatic park proves nothing, so that message stays unread for its sender. A
+`receive` result also carries `delivery_alerts` when a message this worker sent has
+[a material status](sessions.md#outgoing-message-statuses).
 
 The worker returns each parked item to the parent once, as an owner decision
 naming its message ID. The parent keeps that short list, asks the owner once

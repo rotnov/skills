@@ -25,8 +25,8 @@ NAME = '[a-z][a-z0-9_]*'
 # Raised only while an administrator applies a migration, before any function exists: no client call can see these.
 # Review each addition: a name raised by a function belongs in `quorum_api.SERVER_ERRORS` instead.
 MIGRATION_GUARDS = frozenset("""
-    hello_dedupe_present hello_dedupe_required hello_extension_present hello_extension_required hello_split_present
-    hello_split_required session_message_present
+    delivery_status_present hello_dedupe_present hello_dedupe_required hello_extension_present
+    hello_extension_required hello_split_present hello_split_required session_message_present session_message_required
     knowledge_default_role_present knowledge_native_binding_required knowledge_vector_schema_required
     knowledge_wiki_required message_unreceipted_present open_access_required open_invite_ttl_present
     owner_update_maintenance_required peer_status_present peer_status_required priority_core_present

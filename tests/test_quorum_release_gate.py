@@ -170,7 +170,7 @@ class CodexReplyReceiptTests(Gate):
         # The steered chat answers directly; it never runs a separate `received`.
         self.run_action(backend, 'reply', 'normal')
         self.assertEqual(backend.calls[before:], ['session_requirements', 'session_reply',
-                                                  'session_requirements', 'session_ack'])
+                                                  'session_requirements', 'session_ack', 'session_delivery_mark'])
         self.assertEqual(acks, [MID])
         self.assertEqual(ledger.setting('delivery:' + MID), {'state': 'acked'})
         self.assertEqual(relay.run_once(), 'delivered')
