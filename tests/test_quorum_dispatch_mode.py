@@ -121,7 +121,8 @@ class DispatchModeTests(unittest.TestCase):
         record = dict(agent_id='receiver', quorum_id='q', project_ref='project', cwd='/project',
                       session_ref=sid, quorum='team')
         record['delegation'] = grant(record, 'coordinator', 'lead', dispatch_mode='native-subagent')
-        message = dict(id=message_id, sender_id='coordinator', recipient_id='receiver', body='Task')
+        message = dict(id=message_id, sender_id='coordinator', recipient_id='receiver', body='Task',
+                       conversation_id=message_id, sequence=1)
         delivered = []
         def run(command, **kwargs):
             delivered.append(command)
@@ -155,7 +156,8 @@ class DispatchModeTests(unittest.TestCase):
         record = dict(agent_id='receiver', quorum_id='q', project_ref='project', cwd='/project',
                       session_ref=sid, quorum='team', engine='claude', messaging_socket='/synthetic.sock')
         record['delegation'] = grant(record, 'coordinator', 'lead', dispatch_mode='native-subagent')
-        message = dict(id=message_id, sender_id='coordinator', recipient_id='receiver', body='Task')
+        message = dict(id=message_id, sender_id='coordinator', recipient_id='receiver', body='Task',
+                       conversation_id=message_id, sequence=1)
         piped = []
         env = {'CLAUDE_CODE_SESSION_ID': sid, 'CLAUDE_CODE_MESSAGING_SOCKET': '/synthetic.sock',
                'CLAUDE_CODE_MESSAGING_TOKEN': 'synthetic-only'}

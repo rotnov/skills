@@ -322,6 +322,23 @@ The previous Hello wrapper stays private as
 transaction drop the new `session_heartbeat_before_status`, rename that function
 back to it and drop the `skipped` column of `session_hellos`.
 
+## Single-message read
+
+After reviewing the source and obtaining administrator deployment authorization,
+apply
+[`20261106160000_session_message.sql`](../supabase/migrations/20261106160000_session_message.sql)
+in one transaction after `20261106150000_hello_sent_skipped.sql`. It pins the binding
+check and the release, and refuses drift, reapplication or a server without that
+predecessor before any change. It does not change the required release, table access
+or task authority.
+
+`session_message` returns one message addressed to the caller's own native session,
+so a Codex chat can read a queued body in a conversation whose 16-row page would pass
+the 262,144-byte response limit. Another agent's message and an unknown one both
+return null. It reads no receipt and writes nothing. A client on a server without it
+falls back to `conversation_read`. To roll back, in one transaction drop
+`public.session_message(uuid,text,uuid)`.
+
 ## Hello reporting extension
 
 After reviewing the source and obtaining administrator deployment authorization,

@@ -53,7 +53,8 @@ class WindowlessHelpersTests(unittest.TestCase):
              patch.object(subprocess, 'CREATE_NO_WINDOW', NO_WINDOW, create=True), \
              patch.object(quorum_session.shutil, 'which', return_value='synthetic-codex.exe'), \
              patch.object(subprocess, 'Popen', return_value=finished_child()) as popen:
-            quorum_session.enqueue({'session_ref': SID}, {'id': MID}, Path('/synthetic/state'))
+            quorum_session.enqueue({'session_ref': SID}, {'id': MID, 'conversation_id': MID, 'sequence': 1},
+                                   Path('/synthetic/state'))
         self.assertEqual(popen.call_args.kwargs.get('creationflags', 0), NO_WINDOW)
         self.assertEqual(popen.call_args.args[0][1:4], ['queue', '--thread', SID])
         self.assertEqual(popen.return_value.communicate.call_args.kwargs['timeout'], ENQUEUE_TIMEOUT)
@@ -340,7 +341,7 @@ def detached_probe(root):
         quorum_os.protect(target)
         result['acl_children'] = len(launches)
         with patch.object(quorum_session.shutil, 'which', return_value=sys.executable):
-            quorum_session.enqueue({'session_ref': SID}, {'id': MID}, root)
+            quorum_session.enqueue({'session_ref': SID}, {'id': MID, 'conversation_id': MID, 'sequence': 1}, root)
     (root / 'result.json').write_text(json.dumps(result))
 
 

@@ -40,6 +40,8 @@ const authorityBound = '20261106130000_task_authority_project_bound.sql';
 const unreceipted = '20261106140000_session_message_unreceipted.sql';
 // The Hello result reports sent and skipped apart (#146).
 const helloSplit = '20261106150000_hello_sent_skipped.sql';
+// One bounded message read behind pointer delivery (#150).
+const sessionMessage = '20261106160000_session_message.sql';
 // Installations that deployed native coordination before open access apply the
 // older-dated open access file late; the final session requirements must match.
 const late = name => name.endsWith('_open_access_quorums.sql');
@@ -239,7 +241,7 @@ try {
   }
   const portableTail = [priority, serialization, maintenance, memberAuthority];
   const reviewedTail = [...portableTail, knowledge, wiki, hello, ttl, roles, status, defaultRole, dedupe, authorityBound,
-    unreceipted, helloSplit];
+    unreceipted, helloSplit, sessionMessage];
   if (JSON.stringify(all.filter(name => name >= priority)) !== JSON.stringify(reviewedTail)) {
     throw new Error('unreviewed migration after the close serialization');
   }
@@ -499,6 +501,30 @@ try {
       await splitDb.close();
     }
   }
+  // The single-message read pins the binding check and the release; it refuses drift, reapplication
+  // or a missing predecessor, changing nothing.
+  const noMessage = async (db, label) => {
+    const result = await db.query(`select to_regprocedure('public.session_message(uuid,text,uuid)') f`);
+    if (result.rows[0].f !== null) throw new Error(label + ': partial message apply');
+  };
+  const beforeMessage = [...beforeSplit, helloSplit];
+  await gated([...beforeMessage, sessionMessage], read(migrations + sessionMessage), 'session_message_present',
+    'message read reapplied');
+  await gated(beforeSplit, read(migrations + sessionMessage), 'hello_split_required',
+    'message read without the split', noMessage);
+  for (const fn of ['quorum_private.native_session(uuid,text)', 'public.session_requirements()']) {
+    await drifted(fn, 'reviewed_dispatcher_changed: ' + fn, beforeMessage, sessionMessage, noMessage);
+  }
+  {
+    const messageDb = await database([...beforeMessage, sessionMessage]);
+    try {
+      await release(messageDb, current);
+      await messageDb.exec(suite('quorum_session_message_backend.sql'));
+    } finally {
+      await messageDb.exec('rollback');
+      await messageDb.close();
+    }
+  }
   // A server that skipped the Grok extension: the priority release refuses it until the convergence
   // file gives it the reviewed bodies, after which the whole reviewed tail applies. Elsewhere the file
   // changes nothing, and it refuses a server before open access or any other body.
@@ -528,7 +554,8 @@ try {
       if (after[key] !== reviewedState[key]) throw new Error(`convergence ${key}: ${after[key]} <> ${reviewedState[key]}`);
     }
     await convergenceChangesNothing(skippedDb, after);
-    for (const name of [...portableTail, hello, ttl, roles, status, dedupe, authorityBound, unreceipted, helloSplit]) {
+    for (const name of [...portableTail, hello, ttl, roles, status, dedupe, authorityBound, unreceipted, helloSplit,
+      sessionMessage]) {
       await skippedDb.exec(read(migrations + name));
     }
     await convergenceChangesNothing(skippedDb, after);

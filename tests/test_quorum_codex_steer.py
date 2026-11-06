@@ -675,7 +675,7 @@ class UnixTransportAvailabilityTests(unittest.TestCase):
         from quorum_codex_steer import SteerUnavailable
         from quorum_session import enqueue
         message = {'id': MID, 'body': 'peer text', 'sender_role': 'peer', 'reply_to': None,
-                   'priority': 'urgent'}
+                   'priority': 'urgent', 'conversation_id': MID, 'sequence': 1}
         record = {'engine': 'codex', 'session_ref': SID, 'cwd': os.getcwd(), 'quorum': 'team'}
         calls = []
         def queued(command, **options):
