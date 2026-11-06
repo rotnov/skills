@@ -7,6 +7,7 @@ declare
  sid text:=gen_random_uuid()::text; owner_sid text:=gen_random_uuid()::text; req text:=gen_random_uuid()::text;
  required jsonb:=jsonb_build_object('protocol_version',2,'skill_version','0.3.0');
  result jsonb; head jsonb; normal_id uuid; urgent_id uuid; conv uuid:=gen_random_uuid(); urgent_conv uuid:=gen_random_uuid(); f text;
+ big_id uuid; big_body text;
 begin
  insert into auth.users(id,raw_user_meta_data) values(owner_id,'{}'),(anon_id,'{}'),(outsider_id,'{}');
  insert into auth.identities(user_id,provider,provider_id,identity_data) values(owner_id,'github','9000000000031','{}');
@@ -113,6 +114,26 @@ begin
  result:=public.message_send(q,agent,gen_random_uuid(),owner_agent,null,'status',req||'-status');
  if (select priority from quorum_private.messages where id=(result->>'message_id')::uuid)<>'normal' then
   raise exception 'open_member_default_send'; end if;
+
+ -- Pointer delivery (#150): a maximum body stays readable from its inbox position,
+ -- for a non-GitHub member, while unreceipted and after the receipt.
+ perform set_config('request.jwt.claim.sub',owner_id::text,true);
+ perform public.message_send(q,owner_agent,conv,agent,null,'earlier',req||'-earlier');
+ big_body:=left(repeat('"\',8192),16384);
+ big_id:=(public.message_send(q,owner_agent,conv,agent,null,big_body,req||'-big')->>'message_id')::uuid;
+ perform public.message_send(q,owner_agent,conv,agent,null,'later',req||'-later');
+ perform set_config('request.jwt.claim.sub',anon_id::text,true);
+ perform public.session_ack(agent,sid,normal_id);
+ perform public.session_ack(agent,sid,(public.session_inbox(agent,sid)->0->>'id')::uuid);
+ head:=public.session_inbox(agent,sid)->0;
+ if (head->>'id')::uuid<>big_id or head->>'body'<>big_body then raise exception 'pointer_head: %',head->>'id'; end if;
+ result:=public.conversation_read(q,agent,(head->>'conversation_id')::uuid,(head->>'sequence')::bigint-1);
+ if result->0->>'id'<>head->>'id' or result->0->>'body'<>big_body then raise exception 'pointer_unreceipted_read'; end if;
+ if public.session_inbox(agent,sid)->0->>'id'<>head->>'id' then raise exception 'pointer_read_moved_the_inbox'; end if;
+ perform public.session_ack(agent,sid,big_id);
+ result:=public.conversation_read(q,agent,(head->>'conversation_id')::uuid,(head->>'sequence')::bigint-1);
+ if result->0->>'body'<>big_body then raise exception 'pointer_receipted_read'; end if;
+ perform public.session_ack(agent,sid,(public.session_inbox(agent,sid)->0->>'id')::uuid);
 
  -- Priority lends no owner or creator authority.
  begin perform public.quorum_create('anon-'||left(md5(req),8),req||'-create'); raise exception 'open_member_created_quorum';

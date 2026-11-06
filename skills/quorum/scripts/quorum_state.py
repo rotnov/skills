@@ -12,6 +12,10 @@ import time
 from quorum_os import FileLock, protect, reject_link
 
 
+def default_state_root():
+    return Path.home() / '.local/share/quorum'
+
+
 @dataclass(frozen=True)
 class SessionBinding:
     quorum_id: str

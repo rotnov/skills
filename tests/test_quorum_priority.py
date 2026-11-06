@@ -45,7 +45,7 @@ class PriorityTests(unittest.TestCase):
     def codex(self, priority):
         record = {'engine': 'codex', 'session_ref': SID, 'quorum': 'test-local', 'cwd': str(Path.cwd())}
         message = {'id': MID, 'body': 'peer text', 'sender_id': 'peer', 'sender_role': 'codex-test',
-                   'reply_to': None, 'priority': priority}
+                   'reply_to': None, 'priority': priority, 'conversation_id': MID, 'sequence': 1}
         return record, message
 
     @isolated_profiles
@@ -124,7 +124,7 @@ class PriorityTests(unittest.TestCase):
                 prompt = seen[0][-1]
                 self.assertIn('queued in order and is', prompt)
                 self.assertNotIn('steered into the turn', prompt)
-                self.assertNotIn('receipt command', prompt)
+                self.assertIn('receipt command', prompt)
 
     @isolated_profiles
     def test_an_ambiguous_steer_never_queues_a_duplicate_fallback(self):

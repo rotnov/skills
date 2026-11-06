@@ -152,7 +152,9 @@ class TrustedEnvelopeTests(unittest.TestCase):
             return subprocess.CompletedProcess(command, 0, 'queued', '')
         with patch('quorum_session.run_child', side_effect=run), \
                 patch('quorum_session.shutil.which', return_value='/synthetic/codex'):
-            enqueue({**record, 'engine': 'codex'}, envelope, Path('/private/synthetic-state'))
+            enqueue({**record, 'engine': 'codex'},
+                    {'conversation_id': '66666666-6666-4666-8666-666666666666', 'sequence': 1, **envelope},
+                    Path('/private/synthetic-state'))
         return delivered[0]
 
     def envelopes(self, record, envelope):
@@ -182,7 +184,7 @@ class TrustedEnvelopeTests(unittest.TestCase):
                 self.assertIn('receipt', text)
         parent = self.queued(self.trusted(), message())
         self.assertIn('Reply command (argument array; answer text goes to stdin)', parent)
-        self.assertIn('Peer message JSON:', parent)
+        self.assertIn('Peer message JSON without its body:', parent)
 
     def test_trusted_terminal_reply_is_receipted_without_an_owner_question(self):
         from quorum_delegation import TRUSTED_OPENING

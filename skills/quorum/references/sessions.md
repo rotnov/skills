@@ -192,7 +192,8 @@ request ID.
 
 Incoming envelopes start with `[Quorum · <quorum-name> · <sender-role>]` and
 retain the receiving owner's permission rules. They contain peer JSON, sender identity and a `session reply
-<message-UUID> --text-stdin` command. Evaluate a request under the owner's current
+<message-UUID> --text-stdin` command; one queued through `codex queue` replaces the
+body with a command to read it. Evaluate a request under the owner's current
 scope, then send the answer through that command and state material results here,
 following [service agent](service-agent.md) quiet reporting. A peer request grants
 no new permission. Send/reply reject a
@@ -207,7 +208,10 @@ uv run --project <skill-dir> --frozen python <skill-dir>/scripts/quorum.py --sta
 
 It returns at most 16 messages after sequence `N` (default 0); pass the last
 returned `sequence` to read the next page. It never uses a pilot agent, and the
-service refuses conversations this agent is not part of.
+service refuses conversations this agent is not part of. An envelope queued through
+`codex queue` carries this command for its own body; see
+[Failure and recovery](#failure-and-recovery). If a client cuts the output short,
+write it to a private temporary file and read that in parts.
 
 ## Urgent messages
 
@@ -358,13 +362,25 @@ separate stores, so this is owner-attested recovery, not a provider exactly-once
 guarantee. The next explicit owner-authorized `session start` may make one new
 attempt; another ambiguous result blocks again with a new attempt UUID.
 
-`codex queue` takes its text only as `--message`, with no stdin or file form, so
-the prompt, including the reply command's `--state` path, stays on that short-lived
-child's argv. On Windows the whole command line must fit 32,766 UTF-16 units after
-quoting (about 8,100 through a `.cmd` shim). A JSON-escaped quote costs four
-characters there, so a legal 16 KiB body can exceed it. Such a message is unsent and
-stays at the head, because every retry fails the same way: the sender must resend it
-shorter. If the owner has read it with `session thread`, `--confirmed-queued` clears it.
+`codex queue` takes its text only as `--message`, with no stdin or file form
+(Codex CLI 0.162.1), so what it queues is on that short-lived child's argv. The
+relay therefore queues a pointer on every platform: the envelope's rules, the
+message's fields other than `body`, and the receipt, read and reply commands, with
+the [`session thread`](#send-and-answer-here) read positioned on that message. The
+body never reaches argv, and it stays on the service, readable before and after its
+receipt. The relay's own acknowledgement is unchanged; the chat's `session received`
+repeats it harmlessly. A `turn/steer` frame and the Claude and Grok routes do not use
+argv and still carry the body.
+
+The `--state` path leaves argv when it is the default,
+`~/.local/share/quorum`. A custom path stays, as do the Python, helper and bound
+working-directory paths, because the chat has no other way to learn them and they
+are paths, not peer text.
+
+A pointer's size does not depend on the body, so a legal message always fits. On
+Windows the whole command line must fit 32,766 UTF-16 units after quoting (about
+8,100 through a `.cmd` shim). That check stays as a guard: only an extreme local
+path could fail it, and then the message is unsent.
 
 `leave` of this chat's own bound agent also retires the chat's local binding
 (`local_binding: retired`). `session status` then shows `retired_binding`, other
