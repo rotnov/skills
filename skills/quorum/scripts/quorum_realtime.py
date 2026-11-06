@@ -9,7 +9,8 @@ import uuid
 DRAIN_LIMIT = 32
 # Fixed denials end reception; reconnecting or polling must never mask them.
 TERMINAL = frozenset(('auth_required', 'coordination_unavailable', 'skill_update_required',
-                      'release_manifest_invalid', 'session_recovery_denied', 'session_binding_denied'))
+                      'release_manifest_invalid', 'session_recovery_denied', 'session_binding_denied',
+                      'grok_tui_gone'))
 
 
 def connect_socket(uri, **options):

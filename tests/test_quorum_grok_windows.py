@@ -85,6 +85,38 @@ def windows_session(argv=None, rows=None):
             yield root, table, servers
 
 
+class WindowsJobNoticeTests(unittest.TestCase):
+    """An ordinary Windows tool call kills the listener when it returns; the start result says so."""
+    def notice(self, engine, platform, job):
+        from quorum_session import grok_job_notice
+        with patch('quorum_session.sys.platform', platform), \
+             patch('quorum_grok_win.kill_on_close_job', return_value=job) as read:
+            return grok_job_notice(engine), read
+
+    def test_a_kill_on_close_job_warns_with_the_background_task_step(self):
+        value, _ = self.notice('grok', 'win32', True)
+        warning = value['windows_job_warning']
+        self.assertEqual(warning['code'], 'grok_listener_in_kill_on_close_job')
+        self.assertIn('background shell task', warning['next_step'])
+
+    def test_no_warning_outside_such_a_job_or_when_unreadable(self):
+        for job in (False, None):
+            with self.subTest(job=job):
+                self.assertEqual(self.notice('grok', 'win32', job)[0], {})
+
+    def test_other_clients_and_platforms_read_no_job(self):
+        for engine, platform in (('codex', 'win32'), ('claude', 'win32'), ('grok', 'darwin')):
+            with self.subTest(engine=engine, platform=platform):
+                value, read = self.notice(engine, platform, True)
+                self.assertEqual(value, {})
+                read.assert_not_called()
+
+    @unittest.skipUnless(os.name == 'nt', 'real Windows job query')
+    def test_the_real_query_answers_on_windows(self):
+        from quorum_grok_win import kill_on_close_job
+        self.assertIn(kill_on_close_job(), (True, False))
+
+
 class WindowsBindingTests(unittest.TestCase):
     def setUp(self):
         import quorum_grok_win

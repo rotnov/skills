@@ -1,7 +1,7 @@
 """Experimental existing Grok TUI IPC. Never spawn/resume a provider agent.
 
 Protocol1: four-byte big-endian JSON, Register then session-scoped ACP. Verified
-with installed Grok1.0.67/1.0.70 and xai-org/grok-build. Queue admission is not UI receipt.
+with installed Grok1.0.67/1.0.70/1.0.77 and xai-org/grok-build. Queue admission is not UI receipt.
 Windows (1.0.70 and 1.0.77, experimental) uses the named-pipe leader in quorum_grok_win.
 """
 from datetime import datetime, timedelta, timezone
@@ -18,6 +18,8 @@ import subprocess
 import sys
 import time
 import uuid
+
+from quorum_capabilities import GROK_LEADER_PLATFORMS
 
 
 class GrokBindingError(ValueError):
@@ -41,8 +43,61 @@ class GrokBindingError(ValueError):
         return {}
 
 
+class GrokBindingDenied(ValueError):
+    """This chat failed a named identity check. The code stays `session_binding_denied`; `reason` is typed.
+
+    Only a fixed reason, one boolean and fixed guidance cross the CLI boundary, never a path or argument.
+    """
+    code = 'session_binding_denied'
+    NEXT_STEPS = {
+        'session_export_mismatch': 'GROK_SESSION_ID is not this binding\'s session. Run this from the bound chat.',
+        'registry_mismatch': 'Grok\'s active-session list has no single row for this session and working directory. '
+                             'Run this from the bound chat in its own directory.',
+        'process_unavailable': 'The bound TUI could not be read; it may have closed. Check that this chat is open.',
+        'process_identity_mismatch': 'The registered process is not this user\'s bound TUI; its PID may be reused.',
+        'grok_not_on_path': 'grok is not on PATH for this shell, so its image cannot be compared.',
+        'executable_mismatch': 'The TUI image differs from grok on PATH and is not a verified sibling download. '
+                               'The owner relaunches this conversation with the installed grok (references/grok.md).',
+        'no_controlling_terminal': 'The process has no controlling terminal, so it is not an interactive TUI.',
+        'flag_mismatch': 'The TUI was not started with the exact leader flags this route requires '
+                         '(references/grok.md). Paths containing whitespace cannot pass this check.',
+        'leader_build_mismatch': 'The leader reports another build than the TUI image. The owner quits the TUI and '
+                                 'relaunches the same conversation with --resume, then runs session recover.',
+        'session_metadata_mismatch': 'The leader does not list this session as resident in this working directory.',
+        'multiple_leader_pipes': 'More than one leader pipe matches this TUI, so neither can be trusted.',
+        'transport_changed': 'This chat\'s leader differs from the stored one. Run session recover from this chat.',
+    }
+
+    def __init__(self, reason, *, path_has_whitespace=False):
+        super().__init__(self.code)
+        self.reason, self.path_has_whitespace = reason, path_has_whitespace
+
+    def diagnostic(self):
+        return {'reason': self.reason, 'path_has_whitespace': self.path_has_whitespace,
+                'next_step': 'Nothing was registered or sent. ' + self.NEXT_STEPS[self.reason]}
+
+
+class GrokPlatformUnsupported(ValueError):
+    """This OS has no qualified Grok TUI leader route; distinct from a missing or unusable socket."""
+    code = 'grok_leader_platform_unsupported'
+
+    def __init__(self):
+        super().__init__(self.code)
+
+    def diagnostic(self):
+        return {'platform': sys.platform, 'supported_platforms': list(GROK_LEADER_PLATFORMS), 'next_step': (
+            'Nothing was registered, started or sent. The existing-chat Grok TUI route is qualified only on '
+            'macOS and Windows, so no leader socket can make this chat work here. Keep the chat open and report '
+            'this blocker; do not start a headless session or substitute another chat. A Grok Bot personal '
+            'chat on a Linux cloud computer uses references/grok-cloud.md instead.')}
+
+
+def require_platform():
+    if sys.platform not in GROK_LEADER_PLATFORMS: raise GrokPlatformUnsupported()
+
+
 # macOS leader builds this adapter accepts; the handshake must report one of them.
-VERSIONS = ('1.0.67', '1.0.70')
+VERSIONS = ('1.0.67', '1.0.70', '1.0.77')
 # Only 1.0.70 and 1.0.77 have been qualified on the Windows named-pipe leader.
 WINDOWS_VERSIONS = ('1.0.70', '1.0.77')
 # Grok's self-updater keeps each build as `<dir>/grok-<version>-macos-<arch>` and repoints `grok` at the newest.
@@ -89,12 +144,8 @@ def installed_sibling(executable, installed):
     return found.group(1), named.group(1)
 
 
-def process_identity(pid):
-    """macOS proc_info.h ABI; do not inspect process environment or credentials."""
-    if sys.platform == 'win32':
-        from quorum_grok_win import process_identity as windows
-        return windows(pid)
-    if sys.platform != 'darwin': raise OSError('unsupported_platform')
+def bsd_info(pid):
+    """(libproc, proc_bsdinfo) for a live macOS process, from proc_info.h."""
     class BsdInfo(ctypes.Structure):
         _fields_ = [(name, ctypes.c_uint32) for name in (
             'flags','status','xstatus','pid','ppid','uid','gid','ruid','rgid',
@@ -106,10 +157,31 @@ def process_identity(pid):
     data = BsdInfo()
     if lib.proc_pidinfo(pid, 3, 0, ctypes.byref(data), ctypes.sizeof(data)) != ctypes.sizeof(data):
         raise OSError('process_unavailable')
+    return lib, data
+
+
+def process_birth(pid):
+    """A live process's birth in Unix microseconds; no subprocess, argv or environment read."""
+    if sys.platform == 'win32':
+        from quorum_grok_win import process_identity as windows
+        return windows(pid)['pid_start']
+    if sys.platform != 'darwin': raise OSError('unsupported_platform')
+    data = bsd_info(pid)[1]
+    return data.seconds*1000000+data.micros
+
+
+def process_identity(pid):
+    """macOS proc_info.h ABI; do not inspect process environment or credentials."""
+    if sys.platform == 'win32':
+        from quorum_grok_win import process_identity as windows
+        return windows(pid)
+    if sys.platform != 'darwin': raise OSError('unsupported_platform')
+    lib, data = bsd_info(pid)
     path = ctypes.create_string_buffer(4096)
     if lib.proc_pidpath(pid, path, len(path)) <= 0: raise OSError('process_unavailable')
-    # ps exposes argv only. sysctl KERN_PROCARGS2 also contains environment;
-    # deliberately do not read it. Supported explicit flags precede the prompt.
+    # ps exposes argv only, joined by spaces, so a path with whitespace cannot be told from two arguments
+    # (GrokBindingDenied reports it). sysctl KERN_PROCARGS2 would separate them but also returns the
+    # environment; deliberately do not read it. Supported explicit flags precede the prompt.
     result = subprocess.run(['/bin/ps', '-ww', '-p', str(pid), '-o', 'command='],
                             capture_output=True, text=True, timeout=3, check=True)
     if len(result.stdout) > 65536: raise OSError('process_unavailable')
@@ -131,6 +203,24 @@ def image(path):
     return os.path.normcase(resolved) if sys.platform == 'win32' else resolved
 
 
+def leader_flags(argv, endpoint, sid, cwd):
+    """Exactly the flags this route allows; a raised reason never includes an argument."""
+    args = iter(argv[1:])
+    flags = {}
+    for arg in args:
+        if not arg.startswith('-') or arg in flags: raise ValueError  # No prompt, subcommand or repeat.
+        if arg == '--leader': flags[arg] = True
+        elif arg in ('--leader-socket','--session-id','--resume','--cwd'): flags[arg] = next(args)
+        else: raise ValueError  # Headless/agent/permission/fork flags are outside this route.
+    # A new conversation (--session-id) or the owner's relaunch of this exact
+    # one (--resume): never both, and never a title or another session.
+    session = [flags[name] for name in ('--session-id','--resume') if name in flags]
+    if (flags.get('--leader') is not True or session != [sid]
+            or flags.get('--leader-socket') != endpoint
+            or ('--cwd' in flags and str(Path(flags['--cwd']).resolve()) != cwd)):
+        raise ValueError
+
+
 def verify_process(pid, start, endpoint, sid, cwd):
     """Verify the bound TUI; return its build when it runs an older installed download, else None.
 
@@ -145,44 +235,36 @@ def verify_process(pid, start, endpoint, sid, cwd):
         # The updater's sibling naming is the macOS layout; Windows keeps the exact image match.
         sibling = (installed_sibling(current['executable'], resolved)
                    if resolved and sys.platform != 'win32' and current['executable'] != resolved else None)
+        if not installed: raise GrokBindingDenied('grok_not_on_path')
+        if (not isinstance(start, int) or isinstance(start, bool)
+                or current['pid_start'] != start or current['uid'] != own_uid()):
+            raise GrokBindingDenied('process_identity_mismatch')
         # Windows has no controlling-terminal flag; its leader pipe is bound to this TUI instead.
-        if (not installed or not isinstance(start, int) or isinstance(start, bool)
-                or current['pid_start'] != start or current['uid'] != own_uid()
-                or (sys.platform != 'win32' and not current['tty'])
-                or (current['executable'] != resolved and sibling is None)):
-            raise ValueError
-        args = iter(current['argv'][1:])
-        flags = {}
-        for arg in args:
-            if not arg.startswith('-') or arg in flags: raise ValueError  # No prompt, subcommand or repeat.
-            if arg == '--leader': flags[arg] = True
-            elif arg in ('--leader-socket','--session-id','--resume','--cwd'): flags[arg] = next(args)
-            else: raise ValueError  # Headless/agent/permission/fork flags are outside this route.
-        # A new conversation (--session-id) or the owner's relaunch of this exact
-        # one (--resume): never both, and never a title or another session.
-        session = [flags[name] for name in ('--session-id','--resume') if name in flags]
-        if (flags.get('--leader') is not True or session != [sid]
-                or flags.get('--leader-socket') != endpoint
-                or ('--cwd' in flags and str(Path(flags['--cwd']).resolve()) != cwd)):
-            raise ValueError
+        if sys.platform != 'win32' and not current['tty']: raise GrokBindingDenied('no_controlling_terminal')
+        if current['executable'] != resolved and sibling is None: raise GrokBindingDenied('executable_mismatch')
+        try: leader_flags(current['argv'], endpoint, sid, cwd)
+        except (ValueError, StopIteration):
+            spaced = any(character.isspace() for character in str(endpoint) + str(cwd))
+            raise GrokBindingDenied('flag_mismatch', path_has_whitespace=spaced) from None
         if sibling is not None and sibling[0] not in VERSIONS: pending = sibling
-    except (OSError, ValueError, KeyError, StopIteration, subprocess.SubprocessError):
-        raise ValueError('session_binding_denied') from None
+    except GrokBindingDenied: raise
+    except (OSError, ValueError, KeyError, subprocess.SubprocessError):
+        raise GrokBindingDenied('process_unavailable') from None
     # This exact bound TUI, but its build is no longer the installed one and is not supported.
     if pending is not None: raise GrokBuildChanged(*pending)
     return sibling[0] if sibling is not None else None
 
 
 def own_entry(entries, session_id, cwd):
-    if not isinstance(entries, list): raise ValueError('session_binding_denied')
+    if not isinstance(entries, list): raise GrokBindingDenied('registry_mismatch')
     own = [entry for entry in entries if isinstance(entry, dict)
            and entry.get('session_id') == session_id]
-    if len(own) != 1: raise ValueError('session_binding_denied')
+    if len(own) != 1: raise GrokBindingDenied('registry_mismatch')
     entry = own[0]
     pid = entry.get('pid')
     if (not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0
             or str(Path(entry.get('cwd', '')).resolve()) != str(Path(cwd).resolve())):
-        raise ValueError('session_binding_denied')
+        raise GrokBindingDenied('registry_mismatch')
     return entry
 
 
@@ -192,7 +274,7 @@ def opened_at(entry):
         value = datetime.fromisoformat(entry['opened_at'].replace('Z', '+00:00'))
         if value.tzinfo is None: raise ValueError
     except (KeyError, AttributeError, TypeError, ValueError):
-        raise ValueError('session_binding_denied') from None
+        raise GrokBindingDenied('registry_mismatch') from None
     return (value - datetime(1970, 1, 1, tzinfo=timezone.utc)) // timedelta(microseconds=1)
 
 
@@ -214,7 +296,8 @@ def windows_binding(session_id, cwd):
     except (OSError, ValueError, TypeError, Unsafe):
         raise ValueError('grok_transport_unavailable') from None
     installed = shutil.which('grok')
-    if not isinstance(entries, list) or not installed: raise ValueError('session_binding_denied')
+    if not installed: raise GrokBindingDenied('grok_not_on_path')
+    if not isinstance(entries, list): raise GrokBindingDenied('registry_mismatch')
     # A killed TUI leaves its row behind, so a --resume relaunch shares its session ID with
     # stale rows. Count only rows of a live TUI born no later than the row (a reused PID is newer).
     live = []
@@ -225,11 +308,14 @@ def windows_binding(session_id, cwd):
             tui = {**windows.process_identity(entry['pid']), 'pid': entry['pid']}
             if tui['pid_start'] <= opened_at(entry): live.append(tui)
         except (OSError, ValueError): continue
-    if len(live) != 1: raise ValueError('session_binding_denied')
+    if len(live) != 1: raise GrokBindingDenied('registry_mismatch')
     tui, cwd = live[0], str(Path(cwd).resolve())
     pid = tui['pid']
     verify_process(pid, tui['pid_start'], endpoint, session_id, cwd)
-    leader = windows.discover(tui, image(installed))
+    try: leader = windows.discover(tui, image(installed))
+    except ValueError as error:
+        if str(error) == GrokBindingDenied.code: raise GrokBindingDenied('multiple_leader_pipes') from None
+        raise
     if leader is None: raise GrokBindingError('leader_socket_missing')
     return {'leader_socket': endpoint, 'leader_pipe': leader[0], 'leader_pid': leader[1],
             'leader_start': leader[2], 'tui_pid': pid, 'tui_start': tui['pid_start'], 'cwd': cwd}
@@ -241,14 +327,14 @@ def local_binding(session_id, cwd):
 
 def checked_binding(session_id, cwd):
     """The stored transport fields and, separately, an accepted sibling build the leader must confirm."""
+    require_platform()
     if os.environ.get('GROK_SESSION_ID') != session_id:
-        raise ValueError('session_binding_denied')
+        raise GrokBindingDenied('session_export_mismatch')
     if sys.platform == 'win32':
         try: return windows_binding(session_id, cwd), None
         except ValueError: raise  # Fixed codes, including GrokBindingError.
-        except Exception: raise ValueError('session_binding_denied') from None
-    if sys.platform != 'darwin' or not hasattr(socket, 'AF_UNIX'):
-        raise ValueError('grok_transport_unavailable')
+        except Exception: raise GrokBindingDenied('process_unavailable') from None
+    if not hasattr(socket, 'AF_UNIX'): raise ValueError('grok_transport_unavailable')
     home = Path(os.environ.get('GROK_HOME') or Path.home()/'.grok')
     # --leader-socket exports GROK_LEADER_SOCKET and the process guard requires
     # that flag, so without the export this chat has no usable leader socket.
@@ -355,7 +441,7 @@ class Leader:
         if (info.get('sessionId') != session_id or not own_cwd(info.get('cwd'))
                 or not any(row.get('sessionId') == session_id and own_cwd(row.get('cwd'))
                            and row.get('resident') is True for row in roster.get('sessions', []))):
-            raise ValueError('session_binding_denied')
+            raise GrokBindingDenied('session_metadata_mismatch')
 
     def prompt(self, session_id, message_id, content):
         prompt_id = 'quorum:'+message_id
@@ -383,7 +469,7 @@ class Leader:
 
 def confirm_build(leader, build):
     """A sibling-build TUI must serve its leader from that same build."""
-    if build is not None and leader.version != build: raise ValueError('session_binding_denied')
+    if build is not None and leader.version != build: raise GrokBindingDenied('leader_build_mismatch')
 
 
 def connect(transport):
@@ -403,6 +489,49 @@ def binding(session_id, cwd):
     except ValueError: raise
     except Exception: raise ValueError('grok_transport_unavailable') from None
     return result
+
+
+def transport_alive(transport):
+    """One read of the bound TUI and leader: read-only, no Register, prompt or process environment.
+
+    False means this read did not find them; only `TransportWatch` decides they are gone. A leader that
+    accepts slowly is alive: only a refused or missing socket counts against it. Windows checks the leader's
+    process, because opening a pipe instance could make a real client see it busy.
+    """
+    try:
+        if process_birth(transport['tui_pid']) != transport['tui_start']: return False
+        if 'leader_pipe' in transport:
+            return process_birth(transport['leader_pid']) == transport['leader_start']
+        probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            probe.settimeout(1)
+            probe.connect(transport['leader_socket'])
+        finally: probe.close()
+        return True
+    except (TimeoutError, BlockingIOError): return True
+    except (OSError, ValueError, KeyError, TypeError): return False
+
+
+# A leader restarts during a self-update, so one or two failed reads prove nothing. Presence reads every 20 s.
+GONE_READS, GONE_SECONDS = 3, 30
+
+
+class TransportWatch:
+    """Ends a listener whose bound TUI or leader stayed gone; a healthy listener survives failed reads."""
+    def __init__(self, transport, *, alive=transport_alive, clock=time.monotonic):
+        self.transport, self.alive, self.clock = transport, alive, clock
+        self.failures, self.first = 0, None
+
+    def check(self):
+        if self.alive(self.transport):
+            self.failures, self.first = 0, None
+            return
+        now = self.clock()
+        if self.first is None: self.first = now
+        self.failures += 1
+        # Both bounds: a Realtime reconnect can tick early, and reads must span a real restart window.
+        if self.failures >= GONE_READS and now - self.first >= GONE_SECONDS:
+            raise ValueError('grok_tui_gone')
 
 
 def submit(record, message_id, content):
@@ -426,12 +555,12 @@ def main():
         record = data['record']
         sid = str(uuid.UUID(record['session_ref']))
         transport, build = checked_binding(sid, record['cwd'])
-        if transport != record['grok_transport']: raise ValueError('session_binding_denied')
+        if transport != record['grok_transport']: raise GrokBindingDenied('transport_changed')
         leader = connect(transport)
         try:
             confirm_build(leader, build)
             leader.verify(sid, transport['cwd'])
-            if local_binding(sid, record['cwd']) != transport: raise ValueError('session_binding_denied')
+            if local_binding(sid, record['cwd']) != transport: raise GrokBindingDenied('transport_changed')
             leader.prompt(sid, str(uuid.UUID(data['message_id'])), data['content'])
         finally: leader.close()
         return 0

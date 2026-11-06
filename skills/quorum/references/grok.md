@@ -1,9 +1,10 @@
 # Existing Grok TUI on macOS and Windows
 
 Read this only for an owner-authorized connection of the current interactive
-Grok chat. This experimental route supports **Grok Build 1.0.67 and 1.0.70 on macOS**
-and experimental on [Windows 1.0.70 and 1.0.77](#windows-1070-and-1077);
-Linux Grok transports are not supported. Codex and Claude support
+Grok chat. This route is experimental on macOS and
+[Windows](#windows-1070-and-1077). Accepted Grok TUI builds: macOS 1.0.67, 1.0.70 and 1.0.77; Windows 1.0.70 and 1.0.77.
+Linux Grok transports are not supported: `session connect`, `start` and `recover`
+report `grok_leader_platform_unsupported` before any service call. Codex and Claude support
 is unchanged. Grok discovers the shared `.agents/skills` directory, including
 the portable copy returned by the [automatic refresh](update.md).
 
@@ -24,7 +25,10 @@ acceptance can succeed while the native session remains unregistered.
 `GROK_LEADER_SOCKET` or that socket is absent. It never probes the default
 `~/.grok/leader.sock`, which may be stale or belong to another TUI. An existing
 endpoint that fails validation reports `grok_transport_unavailable`; an identity
-mismatch reports `session_binding_denied`. These refusals do not register an
+mismatch reports `session_binding_denied`, with `data.reason` naming the failed
+check, for example `executable_mismatch` (TUI image differs from `grok` on PATH),
+`flag_mismatch` or `leader_build_mismatch`, and a `next_step`. During invitation
+acceptance the same reason is `data.binding_reason`. These refusals do not register an
 agent. Do not select another TUI's socket, manufacture exports, change
 permissions or confinement, or start a headless/new session to work around them.
 
@@ -97,6 +101,17 @@ Limit: an idle chat has no turn end, so nothing local fires until someone types
 in it. A queued peer message cannot wake it, because the listener is what submits
 messages. Whether a restore fires `SessionStart` is unverified; do not rely on it.
 
+### Closed TUI or leader
+
+Before each 20-second heartbeat a Grok listener reads its bound TUI's process birth
+and, on macOS, connects to the leader socket and closes it, sending nothing. On
+Windows it reads the leader's process birth and opens no pipe. A leader restarts
+during a self-update, so a single failed read changes nothing and heartbeats continue. After three
+consecutive failed reads spanning at least 30 seconds the listener stops with
+`code: grok_tui_gone`, so peers see `heartbeat_timeout`. Messages stay queued, and
+`session status` then reports `listener_lost`. The owner relaunches the same
+conversation with `--resume` if it was closed, then runs `session recover`.
+
 ### Self-updated `grok` on PATH
 
 The updater repoints `grok` at the new download while a running TUI keeps its own
@@ -111,8 +126,10 @@ with `data.running_build`, `data.installed_build` and a `next_step`: the owner
 quits the TUI and relaunches the same conversation with `--resume` to finish the
 update, then runs `session recover`. A newly installed build that is not listed
 above is refused after that relaunch, so report it as a blocker instead of
-relaunching a working chat. Any other executable stays `session_binding_denied`,
-including on Windows, where the running image must still match `grok` on PATH.
+relaunching a working chat. Any other executable stays `session_binding_denied`.
+That includes Windows, where the running image must still match `grok` on PATH: no
+Windows download name has been observed, so a self-updated Windows TUI gets no
+`grok_tui_update_pending` code yet.
 
 ### Clean launch environment
 
@@ -138,7 +155,9 @@ value must be the exported session UUID. Titles, `-r`, `--resume=…`,
 `--continue`, `--fork-session`, `--restore-code`, `--worktree`, repeated flags
 and any other session are refused.
 
-Use absolute paths without spaces for these experimental commands. Supply no
+Use absolute paths without spaces for these experimental commands: the check reads
+process arguments as joined text, so a path with whitespace reports `flag_mismatch`
+with `data.path_has_whitespace: true`. Supply no
 initial prompt or positional subcommand; enter prompts after the TUI opens. The socket's
 parent must be owned by the current OS user and private (0700); the native socket
 may be 0755 but cannot be group/other writable. Grok's default `~/.grok` parent
@@ -176,7 +195,7 @@ Verification: real framed local IPC fixtures cover binding, exact-session
 `--resume` relaunch, queue admission, stale/foreign/headless refusal and
 uncertain delivery; they do not prove a user's UI received a message. Confirm
 actual idle and busy chat delivery separately.
-The protocol was checked against installed 1.0.67 and 1.0.70 and the
+The protocol was checked against installed 1.0.67, 1.0.70 and 1.0.77 and the
 [official source](https://github.com/xai-org/grok-build). Ordinary-launch research
 checked installed 1.0.67 help against upstream snapshot
 `2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8` (`SOURCE_REV`
@@ -198,6 +217,13 @@ receipts, without extra probes or reply loops. This qualifies that transport
 and the explicit recovery command; it does not install a startup hook or prove
 automatic recovery on every provider lifecycle. Other versions remain refused.
 Unsupported versions require renewed validation.
+
+The macOS 1.0.77 qualification (`50ca579fa996`) used one isolated native TUI under
+a private pseudo-terminal with its own `GROK_HOME`, a new `--session-id` and no
+prompt. Protocol-1 registration (`ready: true`), a 0755 socket in a 0700 parent, the
+registry row, process birth, UID, controlling terminal, image and flags, and exact
+UUID/cwd resident metadata all passed through the real `binding` check. No peer
+message, `--resume` relaunch or `session recover` has been qualified on it yet.
 
 ## Windows 1.0.70 and 1.0.77
 
@@ -228,7 +254,9 @@ row, ACP handshake and resident-roster check, with these differences:
   (`listener_exited`). Run it in one background shell task that stays alive,
   `block_until_ms: 0` with `<helper> session start ; while ($true) { Start-Sleep 60 }`,
   then run `session status` in a normal call. Stopping that task stops the
-  listener; a new start re-greets peers.
+  listener; a new start re-greets peers. `session start` and `recover` add
+  `windows_job_warning` when they run inside a kill-on-close job. It is a warning,
+  not a refusal, because an ordinary call and a background task may look alike there.
 - There is no controlling-terminal check. Grok asks to trust each new working
   directory, so keep one project folder per connected chat rather than creating
   fresh directories.

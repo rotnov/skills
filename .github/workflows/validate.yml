@@ -54,6 +54,11 @@ jobs:
           QUORUM_MEMBER_DOCKER: "1"
         run: uv run --frozen python -m unittest discover -s tests -p test_quorum_member_authority_sql.py -v
 
+      - name: Verify session-transport.sql refuses a migrated server in isolated PostgreSQL
+        env:
+          QUORUM_TRANSPORT_DOCKER: "1"
+        run: uv run --frozen python -m unittest discover -s tests -p test_quorum_session_transport_sql.py -v
+
       - name: Verify owner maintenance and revocation races in isolated PostgreSQL
         env:
           QUORUM_UPDATE_DOCKER: "1"

@@ -1,13 +1,16 @@
 """Offline route capability report: what a Quorum route can and cannot do between owner turns.
 
-Static facts only. It reads at most the client session variable *names* to pick a default route,
-never their values, the private state, credentials or the network, and it starts nothing.
+Static facts only. It reads at most the client session variable *names* to pick a default route, and
+the OS name, never their values, the private state, credentials or the network, and it starts nothing.
 """
 import os
+import sys
 
 STATES = ('supported', 'conditional', 'unsupported')
 CAPABILITIES = ('bounded_receive', 'continuous_background_reception', 'unattended_project_execution')
 REQUIREMENTS = {'until-stop-execution': 'unattended_project_execution'}
+# OSes with a qualified existing-chat Grok TUI leader; the Grok transport itself refuses all others.
+GROK_LEADER_PLATFORMS = ('darwin', 'win32')
 
 # The ACP launcher and default worker stay behind `live_agents_disabled`; no route executes
 # project work while nobody drives a turn, so this entry is shared and never route-specific.
@@ -40,10 +43,12 @@ _ROUTES = {
                             'Parent routes deliver queued cards into the chat; there is no receive call.'),
         'continuous_background_reception': (
             'conditional', 'client_must_stay_available',
-            'Grok TUI route and the legacy Codex/Claude parent opt-in: session start delivers into this visible '
-            'chat until stopped while the client and host stay available; on Windows Grok only while the '
-            'background shell task running session start or recover stays alive. A Grok session restore or '
+            'Grok TUI route on macOS and Windows, and the legacy Codex/Claude parent opt-in: session start delivers '
+            'into this visible chat until stopped while the client and host stay available. On Windows Grok, run '
+            'session start or recover as one background shell task, because Grok kills an ordinary tool call\'s '
+            'children when it returns; reception lasts only while that background shell task stays alive. A Grok session restore or '
             'self-update can end the listener while the chat stays open; that chat then runs session recover. '
+            'A Grok listener stops by itself once its TUI or leader stays gone. '
             'Nothing restarts after the client exits, logout or reboot.'),
     },
     'grok-cloud': {
@@ -91,13 +96,27 @@ def default_route(environ=None):
     return None, 'ambiguous_client_env' if clients else 'no_client_env'
 
 
+def _grok_parent_limit(environ, platform):
+    """Why this Grok chat cannot hold parent-session reception here; None when it may."""
+    if platform not in GROK_LEADER_PLATFORMS:
+        return ('unsupported', 'grok_leader_platform_unsupported',
+                'The existing-chat Grok TUI route is qualified only on macOS and Windows; session connect, start '
+                'and recover refuse here. A Grok Bot personal chat uses the grok-cloud route.')
+    if not environ.get('GROK_LEADER_SOCKET'):
+        return ('unsupported', 'leader_socket_missing',
+                'This Grok chat exports no leader socket, so it cannot receive. Keep it open; its owner may later '
+                'relaunch the same session with --leader --leader-socket <path> --resume (references/grok.md).')
+    return None
+
+
 def _entry(value):
     state, reason, detail = value
     return {'status': state, 'reason': reason, 'detail': detail}
 
 
-def report(route=None, environ=None):
+def report(route=None, environ=None, platform=None):
     """Capability report for an explicit route, or the current client's default route."""
+    environ = os.environ if environ is None else environ
     if route is not None and route not in _ROUTES:
         raise ValueError('invalid_route')
     source = 'explicit'
@@ -108,6 +127,10 @@ def report(route=None, environ=None):
         capabilities = {name: _entry(unknown) for name in CAPABILITIES}
     else:
         capabilities = {name: _entry(value) for name, value in _ROUTES[route].items()}
+        # Only a Grok chat's own parent route depends on these; the legacy Codex/Claude opt-in does not.
+        if route == 'parent-session' and default_route(environ)[0] == route:
+            limit = _grok_parent_limit(environ, sys.platform if platform is None else platform)
+            if limit: capabilities['continuous_background_reception'] = _entry(limit)
     capabilities['unattended_project_execution'] = _entry(_NO_UNATTENDED)
     return {'route': route, 'route_source': source, 'capabilities': capabilities,
             'live_agents': 'disabled', 'alternatives': [dict(item) for item in ALTERNATIVES]}

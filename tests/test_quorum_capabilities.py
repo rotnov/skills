@@ -32,6 +32,13 @@ def run(argv, environ=None):
 
 
 class ReportTests(unittest.TestCase):
+    def setUp(self):
+        # These describe a route's own facts; a Grok chat running the suite must not change them.
+        clean = {key: value for key, value in os.environ.items() if key not in CLIENT_VARIABLES}
+        environment = patch.dict(os.environ, clean, clear=True)
+        environment.start()
+        self.addCleanup(environment.stop)
+
     def test_every_route_reports_all_three_capabilities_with_fixed_states(self):
         for route in caps.ROUTES:
             value = caps.report(route)
@@ -116,6 +123,50 @@ class ReportTests(unittest.TestCase):
             caps.report('daemon')
         with self.assertRaisesRegex(ValueError, 'invalid_requirement'):
             caps.check('codex-tool-inbox', 'forever')
+
+
+class GrokParentRouteTests(unittest.TestCase):
+    """#145: a Grok chat is told what its own platform and leader allow, offline and by variable name only."""
+    LEADER = {'GROK_SESSION_ID': SECRET_LIKE, 'GROK_LEADER_SOCKET': '/private/' + SECRET_LIKE}
+
+    def continuous(self, environ, platform, route=None):
+        return caps.report(route, environ, platform)['capabilities']['continuous_background_reception']
+
+    def test_a_leader_chat_on_a_qualified_platform_stays_conditional(self):
+        for platform in ('darwin', 'win32'):
+            with self.subTest(platform=platform):
+                entry = self.continuous(self.LEADER, platform)
+                self.assertEqual((entry['status'], entry['reason']), ('conditional', 'client_must_stay_available'))
+
+    def test_linux_does_not_advertise_parent_session_reception(self):
+        for route in (None, 'parent-session'):
+            with self.subTest(route=route):
+                entry = self.continuous(self.LEADER, 'linux', route)
+                self.assertEqual((entry['status'], entry['reason']),
+                                 ('unsupported', 'grok_leader_platform_unsupported'))
+
+    def test_a_chat_without_a_leader_export_is_not_advertised_either(self):
+        entry = self.continuous({'GROK_SESSION_ID': SECRET_LIKE}, 'darwin')
+        self.assertEqual((entry['status'], entry['reason']), ('unsupported', 'leader_socket_missing'))
+        self.assertIn('--resume', entry['detail'])
+
+    def test_the_report_carries_no_variable_value(self):
+        self.assertNotIn(SECRET_LIKE, json.dumps(caps.report(None, self.LEADER, 'linux')))
+
+    def test_the_legacy_parent_opt_in_of_other_clients_is_unchanged(self):
+        for environ in ({}, {'CODEX_THREAD_ID': 'x'}, {'CLAUDE_CODE_SESSION_ID': 'x'},
+                        {'CODEX_THREAD_ID': 'x', 'GROK_SESSION_ID': 'y'}):
+            with self.subTest(environ=sorted(environ)):
+                entry = self.continuous(environ, 'linux', 'parent-session')
+                self.assertEqual(entry['status'], 'conditional')
+
+    def test_the_cli_reports_the_current_platform(self):
+        with patch.object(sys, 'platform', 'linux'):
+            code, data, text = run(['capabilities'], self.LEADER)
+        entry = data['data']['capabilities']['continuous_background_reception'] if 'data' in data else \
+            data['capabilities']['continuous_background_reception']
+        self.assertEqual((code, entry['reason']), (0, 'grok_leader_platform_unsupported'))
+        self.assertNotIn(SECRET_LIKE, text)
 
 
 class DefaultRouteTests(unittest.TestCase):
