@@ -14,7 +14,7 @@ from quorum_listener import (Control, READY_SECONDS, START_LOCK, StartGuard, UPS
                              locked, ready, run_listener, spawn_background, stop_listener)
 from quorum_os import FileLock
 from quorum_state import LocalLedger
-from quorum_delegation import (grant, held_status, instruction, member_grant, member_trust, opening, task_check,
+from quorum_delegation import (carried_grant, delegation_state, grant, held_status, instruction, member_grant, member_trust, opening, task_check,
                                trusted,
                                save_grant_binding, standing_check, standing_grants, standing_status,
                                STANDING_ACTIONS)
@@ -932,7 +932,8 @@ def _dispatch(args, auth_ledger, register_agent):
         if args.action=='status':
             if tool: return {**inbox.status(ledger,record),'session_id':sid,
                              'transport_notices':quorum_notices.summary(ledger),
-                             'delegation':record.get('delegation'),'owner_held_actions':held_status(record),
+                             'delegation':record.get('delegation'),'delegation_state':delegation_state(record),
+                             'owner_held_actions':held_status(record),
                              'standing_grants':standing_status(record,ledger),'release':diagnostic(ledger)}
             deliveries = [(key,json.loads(raw)) for key,raw in
                           ledger.db.execute("select key,data from settings where key like 'delivery:%'")]
@@ -945,6 +946,7 @@ def _dispatch(args, auth_ledger, register_agent):
                     'unknown_attempts':unknown,
                     **({'retired_binding':retired_summary(ledger)} if not record and retired_summary(ledger) else {}),
                     'delegation':record.get('delegation') if record else None,
+                    'delegation_state':delegation_state(record),
                     'owner_held_actions':held_status(record),
                     'standing_grants':standing_status(record,ledger) if record else None, 'release':diagnostic(ledger)}
         if args.action=='stop':
@@ -1096,7 +1098,7 @@ def _dispatch(args, auth_ledger, register_agent):
             if endpoint is not None: record['messaging_socket']=old.get('messaging_socket', endpoint) if old else endpoint
             if transport is not None: record['grok_transport']=transport
             if tool: record.update(transport=inbox.TRANSPORT, worker_binding=proved)
-            if old and old.get('delegation'): record['delegation'] = old['delegation']
+            if old and old.get('delegation'): record['delegation'] = carried_grant(old, record)
             coordinator = getattr(args, 'accept_tasks_from', None)
             snapshot = old
             def save_binding():

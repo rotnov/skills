@@ -34,9 +34,12 @@ class CodexMemberRouteTests(codex_cases.Harness):
             code, result, text = self.cli(api, 'session', 'task-check', codex_cases.M1)
             self.assertEqual(code, 0, text)
             self.assertTrue(result['data']['authorized'])
+            self.assertEqual(self.cli(api, 'session', 'status')[1]['data']['delegation_state'],
+                             {'state': 'current', 'scope': 'members'})
             self.cli(api, 'session', 'delegate', '--revoke')
             code, result, text = self.cli(api, 'session', 'task-check', codex_cases.M1)
             self.assertFalse(result['data']['authorized'], text)
+            self.assertEqual(result['data']['reason'], 'delegation_absent')
 
 
 class CloudMemberRouteTests(cloud_cases.Harness):
@@ -59,9 +62,13 @@ class CloudMemberRouteTests(cloud_cases.Harness):
             code, result, text = self.cli(api, 'cloud', 'task-check', cloud_cases.M1)
             self.assertEqual(code, 0, text)
             self.assertTrue(result['data']['authorized'])
+            self.assertEqual(self.cli(api, 'cloud', 'status')[1]['data']['delegation_state'],
+                             {'state': 'current', 'scope': 'members'})
             self.cli(api, 'cloud', 'delegate', '--revoke')
             code, result, text = self.cli(api, 'cloud', 'task-check', cloud_cases.M1)
             self.assertFalse(result['data']['authorized'], text)
+            self.assertEqual(result['data']['reason'], 'delegation_absent')
+            self.assertEqual(self.cli(api, 'cloud', 'status')[1]['data']['delegation_state']['state'], 'absent')
             code, result, text = self.cli(api, 'cloud', 'connect', 'team', '--role', 'grok-bot',
                                           '--project-ref', 'team/project', '--accept-tasks-from-members')
             self.assertNotEqual(code, 0, text)
@@ -90,6 +97,8 @@ class ClaudeMemberRouteTests(claude_cases.Bound):
             code, result, text = self.worker(api, 'task-check', claude_cases.M1)
             self.assertEqual(code, 0, text)
             self.assertTrue(result['data']['authorized'])
+            self.assertEqual(self.worker(api, 'status')[1]['data']['session']['delegation_state'],
+                             {'state': 'current', 'scope': 'members'})
             # A caller cannot replace this capability's intake scope on reconnect.
             code, result, text = self.connect(api, self.cap, '--accept-tasks-from', 'coordinator')
             self.assertEqual(code, 3, text)

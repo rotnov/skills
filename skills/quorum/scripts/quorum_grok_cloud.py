@@ -11,7 +11,7 @@ import subprocess
 import sys
 import uuid
 from quorum_api import QuorumError
-from quorum_delegation import (grant, held_status, instruction, member_grant, member_trust, opening, task_check,
+from quorum_delegation import (carried_grant, delegation_state, grant, held_status, instruction, member_grant, member_trust, opening, task_check,
                                save_grant_binding, trusted)
 from quorum_release import ReleaseGuard, ReleaseMismatch, diagnostic
 import quorum_notices
@@ -297,7 +297,7 @@ def connect(args, api, auth_ledger, ledger, old, conversation, register_agent, d
         raise
     record = {**result, **data, 'registration': data, 'role': args.role, 'quorum': args.quorum,
               'client': 'grok-bot', 'provider_conversation_id': conversation, 'transport': TRANSPORT}
-    if old and old.get('delegation'): record['delegation'] = old['delegation']
+    if old and old.get('delegation'): record['delegation'] = carried_grant(old, record)
     snapshot = save_grant_binding(ledger, 'cloud-agent', record, old)
     if members:
         record['delegation'] = member_grant(record, trust=trust)
@@ -513,6 +513,7 @@ def status(ledger, record, conversation):
             'pending_receipts': deliveries.count('offered'),
             'transport_notices': quorum_notices.summary(ledger),
             'delegation': record.get('delegation') if record else None,
+            'delegation_state': delegation_state(record),
             'owner_held_actions': held_status(record), 'release': diagnostic(ledger)}
 
 

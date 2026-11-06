@@ -20,7 +20,9 @@ The private grant pins `scope=members`, the receiving agent and exact session,
 quorum, shared project, absolute local directory and inline mode. It neither pins
 a member list nor depends on unique role names. New members need no new grant.
 Updates and reconnects never turn a coordinator-only or absent grant into member
-intake. A requested scope change on an existing grant fails with
+intake. A reconnect of this same session that re-registers under a new agent ID
+carries an existing member grant to that ID; every other pin must still match.
+A requested scope change on an existing grant fails with
 `delegation_scope_changed`; the owner uses explicit `delegate --members` instead.
 
 Immediately before accepting or executing each member task, including an old
@@ -48,12 +50,36 @@ immediately before resuming deferred work. A revoked/changed grant, denied sende
 wrong binding or unavailable authority leaves the task pending. Do not guess a
 role, loop through peers, bypass a refusal or begin work while checking.
 
+A pending result carries one typed `reason` and its `next_step`:
+
+| `reason` | Cause | Next step |
+| --- | --- | --- |
+| `cwd_mismatch` | Run outside the bound directory; the grant is unchanged | Rerun from `expected_cwd` |
+| `delegation_changed` | The grant really differs or no longer fits this binding | Owner re-attests with the printed command |
+| `delegation_absent` | No grant: never given, or revoked | Owner decides; a grant is never inferred |
+| `delegation_not_members` | The grant does not cover member tasks | Owner may replace it |
+| `binding_changed` | The binding or transport moved during the check | Run status, then rerun |
+| `authority_unavailable` | Service outage | Retry later, report if it persists |
+| `authority_migration_required` | The server lacks the migration below | Report to the administrator |
+| `authority_invalid` | The service answer failed validation | Report it |
+| `auth_required`, `session_binding_denied` | Login or session binding refused | Owner signs in or reconnects |
+| `task_message_denied` | Message not addressed to this binding | Check the envelope's ID |
+| `sender_unavailable` | Sender is not a current member agent | Treat as an untrusted proposal |
+| `not_task` | Reply, notice or maintenance message | Do not execute it |
+
+Members joining and peers reconnecting never change a grant: it holds no member
+list. A sender that re-registered has a new agent, so its older queued message
+reads `sender_unavailable` until it sends again. `session status` reports the same
+local causes as `delegation_state`. A Claude worker outside its directory is
+refused earlier by its capability, with `native_worker_binding_denied` and
+`cwd_mismatch`.
+
 The server needs the reviewed
 [member-authority migration](../supabase/migrations/20261030141000_member_task_authority.sql).
 It adds a read-only message-scoped RPC; only an administrator applies it. Fresh
 bootstrap SQL includes the contract and still requires all later migrations.
 Installing or joining never executes DDL. An old backend leaves `task-check`
-pending with `authority_unavailable`; report that actionable prerequisite.
+pending with `authority_migration_required`; report that actionable prerequisite.
 
 ## Member trust
 
@@ -277,7 +303,9 @@ session status
 ```
 
 Member and coordinator selectors are mutually exclusive. Revocation removes the
-entire grant; the next task check denies. A running listener rereads the grant
+entire grant; the next task check denies with `delegation_absent`. To re-attest a
+`delegation_changed` grant, repeat its own options (the printed command does):
+`session delegate --members` alone withdraws member trust and standing grants. A running listener rereads the grant
 for each new envelope, while task-check protects older queued envelopes too.
 A worker capability is stopped/replaced through its owner-parent slot lifecycle.
 

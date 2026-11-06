@@ -211,7 +211,7 @@ class MemberIntakeTests(unittest.TestCase):
                     return authority()
                 result = task_check(SimpleNamespace(call=call), record, MESSAGE, lambda: current)
                 self.assertFalse(result['authorized'])
-                self.assertEqual(result['reason'], 'delegation_changed')
+                self.assertEqual(result['reason'], 'binding_changed')
 
     def test_current_working_directory_is_checked_before_network(self):
         from quorum_delegation import task_check
