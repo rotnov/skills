@@ -8,6 +8,7 @@ import sys
 import threading
 import time
 import uuid
+from quorum_api import QuorumError
 from quorum_os import FileLock, background_flags, open_private, protect
 from quorum_release import ReleaseGuard, ReleaseMismatch, installed_release
 
@@ -23,7 +24,29 @@ START_LOCK = 'listener-start.lock'
 # Replaced by every owner stop, including one with no run to target yet; a start compares it to its snapshot.
 STOP_INTENT = 'listener-stop-intent'
 CONTROL_SECONDS, STOP_SECONDS, READY_SECONDS = 10, 120, 90
+# How long a start waits for a stopped run's process to leave. A stop only records its flag and returns.
+EXIT_SECONDS = 60
 UPSERT = 'insert into settings values (?,?) on conflict(key) do update set data=excluded.data'
+
+
+class ListenerPending(QuorumError):
+    """A start refused because another run has not left or settled: a fixed reason and next step, safe to retry."""
+    STEPS = {
+        'old_listener_exiting': 'The stopped listener has not exited yet. No new listener started and reception is '
+                                'still off. Run session status, then run session start again once it shows '
+                                'listener: offline.',
+        'listener_run_unknown': 'A listener is running with no published run to stop. Nothing changed. Run session '
+                                'status, then run session start again once it shows listener: offline.',
+        'listener_degraded': 'The running listener is waiting out a service outage and was left running; this start '
+                             'did not enable reception. Run session status, then run session start again once it '
+                             'shows state: waiting, or run session stop first to replace it.',
+        'listener_unsettled': 'The running listener did not become ready and was left running; this start did not '
+                              'enable reception. Run session status, then run session start again once it shows '
+                              'state: waiting, or run session stop first to replace it.'}
+
+    def __init__(self, code, reason):
+        super().__init__(code)
+        self.diagnostic = {'reason':reason, 'retryable':True, 'next_step':self.STEPS[reason]}
 
 
 def locked(path):
@@ -311,6 +334,29 @@ def ready(status):
     return status['listener'] == 'running' and status['state'] in ('waiting', 'checking') and not status['stop_requested']
 
 
+def await_exit(ledger, check):
+    """Wait out a run on its way down, under no control lock so a stop stays free; `check` lets that stop win.
+
+    Both locks: run_listener frees listener.lock first, and a child spawned before supervisor.lock also
+    goes free dies on it. With no run left this returns at once.
+    """
+    deadline = time.monotonic() + EXIT_SECONDS
+    while True:
+        check()
+        if not locked(ledger.root / 'listener.lock') and not locked(ledger.root / 'supervisor.lock'): return
+        if time.monotonic() >= deadline: raise ListenerPending('listener_stop_pending', 'old_listener_exiting')
+        time.sleep(.2)
+
+
+def reusable_run(ledger, control, check):
+    """The running listener's status for a start to return, or None once no stopped run is in the way."""
+    if locked(ledger.root / 'listener.lock'):
+        status = control.status()
+        if status['listener'] == 'running' and not status['stop_requested']: return status
+        await_exit(ledger, check)
+    return None
+
+
 def await_started(control, guard, run_id, child, *, check=None, commit=None, seconds=READY_SECONDS):
     """The owned child's ready status, or None once it failed and was abandoned.
 
@@ -377,7 +423,6 @@ def spawn_background(command, ledger):
 def start_listener(ledger, toolchain, timeout, approved):
     from quorum_acp import ExecutionPolicy
     from quorum_live import supervisor_running
-    from quorum_api import QuorumError
     ExecutionPolicy(1, timeout, 'subscription', True, approved).validate()
     control = Control(ledger)
     with StartGuard(ledger) as guard:
@@ -386,7 +431,8 @@ def start_listener(ledger, toolchain, timeout, approved):
         release = ReleaseGuard(api, ledger)
         release.check()
         release.running()
-        if locked(ledger.root / 'listener.lock'): return control.status()
+        current = reusable_run(ledger, control, guard.check)
+        if current is not None: return current
         if supervisor_running(ledger.root): raise ValueError('worker_already_running')
         run_id = str(uuid.uuid4())
         command = [sys.executable, str(Path(__file__).with_name('quorum.py')), '--state', str(ledger.root),
@@ -409,7 +455,6 @@ def start_listener(ledger, toolchain, timeout, approved):
 
 
 def stop_listener(ledger, *, revoke_reception=False):
-    from quorum_api import QuorumError
     try:
         with control_lock(ledger, seconds=STOP_SECONDS):
             return Control(ledger, holding_control=True).owner_stop(revoke_reception=revoke_reception)

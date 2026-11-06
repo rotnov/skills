@@ -32,7 +32,9 @@ including token refresh, service validation and subscription preflight. Closing 
 terminal or keeping the main agent busy does not stop it. This holds for this Claude
 listener only: a Windows Grok chat's `session start` must stay in
 [one background shell task](grok.md#windows-1070-and-1077). Repeating `start` returns
-the existing listener without spawning another or changing its parameters. The
+the existing listener without spawning another or changing its parameters; a
+listener already told to stop is waited for instead, up to 60 seconds, then
+`listener_stop_pending` with `data.next_step`. The
 one-shot pilot worker and continuous listener cannot run together for the same state.
 
 The process checks the queue every ten seconds when idle. Empty polls do not
