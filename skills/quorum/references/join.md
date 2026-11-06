@@ -35,26 +35,31 @@ every join even though the short prompt no longer repeats them:
 ## Resume or accept
 
 One decision rule, before using any invitation: if this chat already has a
-live binding in the invitation's quorum, resume that binding and do not accept.
-Otherwise accept. A binding is live while its reception is enabled; a stopped
-one cannot be resumed and does not block acceptance.
+binding in the invitation's quorum that its route's resume accepts, resume it
+and do not accept. Otherwise accept. A stopped, expired, revoked or
+other-directory binding cannot be resumed and does not block acceptance.
 
 - Parent route: `session recover` ([resume](resume.md)).
 - Codex worker: the [worker rebind](native-inbox.md#worker-rebind)
   (`session --session-id <binding-session-ref> recover --parent-thread-id <parent-UUID>`).
 - Claude worker: `session worker rebind <slot-uuid>`
-  ([rebind](claude-worker.md#rebind-after-a-parent-restart)).
+  ([rebind](claude-worker.md#rebind-after-a-parent-restart)), including the
+  old slot of an interrupted hand-over whose successor lapsed; a hand-over
+  still pending (`state: hand_over_pending`) finishes by repeating its attest.
+- Grok cloud parent: `cloud start` ([cloud](grok-cloud.md)).
 
 `accept-id <invite-id> --quorum <slug>` applies the rule itself. Before any
 login or service call it checks this chat's parent binding, the given
 `--parent-thread-id`'s own parent binding and its Codex worker bindings (or
-this Codex chat's) and this Claude chat's worker slots in this state. A live
-one is refused with `binding_exists_resume`: `data` names the quorum, route,
-role and IDs, its `next_step` command and `invitation: unused`; with
-`run_in: parent_chat` the worker reports it and the parent chat runs that step. A Claude `session worker prepare`
-with an accept scope applies the same check. Without `--quorum` (older
-invitations), check `session status` (or `session worker status <slot-uuid>`)
-yourself first.
+this Codex chat's), this Claude chat's worker slots and a Grok cloud parent's
+binding in this state, with the same local checks each resume makes. Only a
+service-side revocation is left to the resume itself. A resumable one is
+refused with `binding_exists_resume`: `data` names the quorum, route, role and
+IDs, its `next_step` command and `invitation: unused`; with
+`run_in: parent_chat` the worker reports it and the parent chat runs that
+step. A Claude `session worker prepare` with an accept scope applies the same
+check. Without `--quorum` (older invitations), check `session status` (or
+`session worker status <slot-uuid>`) yourself first.
 
 Report the path taken in the setup outcome. On a resume, say that the
 invitation was not used: it is single-use and stays valid until it expires, so

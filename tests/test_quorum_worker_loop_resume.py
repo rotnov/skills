@@ -21,12 +21,12 @@ def forbidden(name):
     return AssertionError('must not run: ' + name)
 
 
-def bind_parent(root, enabled=True):
-    """A Codex parent-route binding with (enabled or stopped) reception in quorum `team`."""
+def bind_parent(root, enabled=True, cwd=None):
+    """A Codex parent-route binding with (enabled or stopped) reception in quorum `team`, bound in `cwd`."""
     from quorum_resume import binding
     from quorum_state import LocalLedger
     record = {'engine': 'codex', 'session_ref': codex.PARENT, 'agent_id': codex.AGENT, 'device_id': 'device-1',
-              'quorum_id': codex.QUORUM, 'project_ref': 'team/project', 'cwd': '/synthetic', 'role': 'lead',
+              'quorum_id': codex.QUORUM, 'project_ref': 'team/project', 'cwd': cwd or str(Path.cwd().resolve()), 'role': 'lead',
               'quorum': 'team', 'transport': 'native'}
     ledger = LocalLedger(Path(root) / 'sessions' / codex.PARENT)
     try:
@@ -204,8 +204,8 @@ class CodexResumeTests(codex.Harness):
 class ParentResumeTests(codex.Harness):
     """A parent-route chat with enabled reception in the quorum is told to run `session recover`."""
 
-    def bind_parent(self, enabled=True):
-        bind_parent(self.root, enabled)
+    def bind_parent(self, enabled=True, cwd=None):
+        bind_parent(self.root, enabled, cwd)
 
     def accept(self, quorum):
         with codex.caller(self.home, sid=codex.PARENT), \
@@ -227,6 +227,12 @@ class ParentResumeTests(codex.Harness):
     @isolated_profiles
     def test_disabled_parent_reception_is_not_live(self):
         self.bind_parent(enabled=False)
+        self.assertEqual(self.accept('team')[1]['code'], 'machine_profile_unavailable')
+
+    @isolated_profiles
+    def test_own_binding_from_another_directory_is_not_live(self):
+        # `session recover` refuses another working directory (session_binding_denied), so it never blocks.
+        self.bind_parent(cwd='/elsewhere-synthetic')
         self.assertEqual(self.accept('team')[1]['code'], 'machine_profile_unavailable')
 
 
@@ -267,6 +273,35 @@ class ClaudeResumeTests(claude_tests.Bound):
         code, result, text = self.cli(claude_tests.OwnerApi(), 'accept-id', claude_tests.INVITE, '--quorum', 'team',
                                       '--transport', 'tool-inbox', '--worker-capability', str(cap))
         self.assertEqual(code, 0, text)
+
+
+class CloudResumeTests(unittest.TestCase):
+    """A Grok cloud parent's verified binding in the quorum resumes with `cloud start` (no invitation)."""
+
+    def test_verified_cloud_binding_counts_and_a_foreign_or_other_quorum_record_does_not(self):
+        import tempfile
+        from quorum_grok_cloud import SESSION_PREFIX, TRANSPORT
+        from quorum_resume import live_binding
+        from quorum_state import LocalLedger
+        conversation = '0f0e0d0c-0b0a-4908-8706-050403020100'
+        with tempfile.TemporaryDirectory() as root:
+            def store(record):
+                ledger = LocalLedger(Path(root) / 'cloud' / conversation)
+                try: ledger.setting('cloud-agent', record)
+                finally: ledger.db.close()
+            registration = {'engine': 'grok', 'session_ref': SESSION_PREFIX + conversation}
+            record = {'registration': registration, 'session_ref': SESSION_PREFIX + conversation,
+                      'provider_conversation_id': conversation, 'transport': TRANSPORT, 'client': 'grok-bot',
+                      'quorum': 'team', 'role': 'lead', 'agent_id': codex.AGENT}
+            self.assertIsNone(live_binding(root, 'team', cloud=conversation))
+            store(record)
+            found = live_binding(root, 'team', cloud=conversation)
+            self.assertEqual((found['route'], found['role'], found['next_step'][-2:]),
+                             ('grok-cloud', 'lead', ['cloud', 'start']))
+            self.assertIsNone(live_binding(root, 'other-team', cloud=conversation))
+            self.assertIsNone(live_binding(root, 'team', cloud='../' + conversation))
+            store({**record, 'provider_conversation_id': codex.PARENT})  # Copied from another parent.
+            self.assertIsNone(live_binding(root, 'team', cloud=conversation))
 
 
 class InvitationRuleTests(unittest.TestCase):

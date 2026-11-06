@@ -330,20 +330,21 @@ def accept_id_invitation(args, ledger):
                         membership_only=args.membership_only, client=getattr(args, 'client', None))
         # The actual distinct worker, before any profile, login or invitation use.
         worker = prove_worker(args.parent_thread_id)
+    conversation = None
     if cloud:
         from quorum_grok_cloud import CloudError, preflight
         # A typed client never silently degrades to membership-only acceptance.
         if args.membership_only: raise CloudError('cloud_client_conflict')
         # The actual parent chat and its private webhook target, before any profile, login or invitation use.
-        preflight(ledger)
+        conversation = preflight(ledger)
     quorum = getattr(args, 'quorum', None)
     if quorum is not None:
         # Re-accept versus resume (#130): a chat already bound in this quorum resumes that binding, before any
         # profile, login or invitation use, so the single-use invitation stays unused.
         if not isinstance(quorum, str) or not SLUG.fullmatch(quorum): raise ValueError('invalid_quorum')
         from quorum_resume import refuse_if_bound
-        refuse_if_bound(ledger.root, quorum, sid=None if tool else _own_session(),
-                        parent=args.parent_thread_id if tool else None)
+        refuse_if_bound(ledger.root, quorum, sid=None if tool or cloud else _own_session(),
+                        parent=args.parent_thread_id if tool else None, cloud=conversation)
     config, _ = resolve_profile(ledger.root, explicit, anonymous=args.anonymous)
     public_service(config)
     # Joining needs this chat's native listener; never consume the invitation without one.

@@ -135,7 +135,7 @@ def worker_bindings(state, parent):
         if (isinstance(binding, dict) and record.get('transport') == 'tool-inbox' and record.get('session_ref') == name
                 and binding.get('parent_thread_id') == parent and isinstance(control, dict)
                 and control.get('enabled') is True):
-            found.append({key: record.get(key) for key in ('session_ref', 'role', 'quorum')})
+            found.append({key: record.get(key) for key in ('session_ref', 'role', 'quorum', 'cwd')})
     return found
 
 
@@ -199,32 +199,46 @@ def _quorum_command(state, *action):
     return [sys.executable, str(Path(__file__).with_name('quorum.py')), '--state', str(state), 'session', *action]
 
 
-def live_binding(state, quorum, *, sid=None, parent=None):
-    """This chat's live binding in `quorum`, read-only, before any login or invitation use; None when absent.
+def live_binding(state, quorum, *, sid=None, parent=None, cloud=None):
+    """This chat's resumable binding in `quorum`, read-only, before any login or invitation use; None when absent.
 
-    `sid` is this chat's own session ID (parent route and Claude worker slots); `parent` is the Codex parent
-    thread a tool-inbox worker belongs to, whose own parent-route binding counts too: a worker runs with no
-    session ID of its own. Only enabled reception counts as live: a stopped binding cannot be resumed
-    (`session_recovery_denied`), so it never blocks an acceptance.
+    A binding counts exactly when its route's own recovery accepts it locally (only the service's agent check
+    is not local), so an acceptance never consumes an invitation that a resume could have avoided:
+
+    - parent route (Codex, Grok, Claude native listener): `session recover` — enabled reception, a recoverable
+      engine and, for this chat's own binding, this working directory;
+    - Codex tool-inbox worker: `session --session-id <ref> recover --parent-thread-id <parent>` — enabled worker
+      reception, that parent and this working directory;
+    - Claude worker slot: `session worker rebind` — `quorum_claude_worker.rebindable`, the predicate rebind
+      itself uses, plus a hand-over an interrupted attest can still finish;
+    - Grok cloud parent: `cloud start` — this conversation's verified cloud binding.
+
+    `sid` is this chat's own session ID; `parent` is the Codex parent thread of a tool-inbox worker (which has
+    no session ID of its own), whose own parent binding counts too; `cloud` is a verified cloud conversation.
     """
+    from quorum_session import RECOVERABLE
     state = Path(os.path.abspath(state))
-    # Only canonical session UUIDs name a ledger directory; anything else is never a path component.
-    sid, parent = (item if _canonical(item) else None for item in (sid, parent))
+    cwd = str(Path.cwd().resolve())
+    # Only canonical UUIDs name a ledger directory; anything else is never a path component.
+    sid, parent, cloud = (item if _canonical(item) else None for item in (sid, parent, cloud))
     for owner in dict.fromkeys(item for item in (sid, parent) if item):
         rows = _read_rows(state / 'sessions' / owner / 'ledger.sqlite', ('session-agent', 'session-reception'))
         record = (rows or {}).get('session-agent')
-        if (isinstance(record, dict) and record.get('session_ref') == owner and record.get('quorum') == quorum
-                and record.get('transport', 'native') != 'tool-inbox'):
-            try: require_enabled_rows(rows, record)
-            except ValueError: continue
-            found = {'quorum': quorum, 'route': 'parent', 'role': record.get('role'),
-                     'agent_id': record.get('agent_id'), 'next_step': _quorum_command(state, 'recover')}
-            # A worker cannot recover its parent's listener; the parent chat runs `session recover` itself.
-            if owner != sid: found.update(session_ref=owner, run_in='parent_chat')
-            return found
+        if (not isinstance(record, dict) or record.get('session_ref') != owner or record.get('quorum') != quorum
+                or record.get('transport', 'native') == 'tool-inbox' or record.get('engine') not in RECOVERABLE
+                # `session recover` runs in the bound directory; a worker cannot see its parent chat's.
+                or (owner == sid and record.get('cwd') != cwd)):
+            continue
+        try: require_enabled_rows(rows, record)
+        except ValueError: continue
+        found = {'quorum': quorum, 'route': 'parent', 'role': record.get('role'),
+                 'agent_id': record.get('agent_id'), 'next_step': _quorum_command(state, 'recover')}
+        # A worker cannot recover its parent's listener; the parent chat runs `session recover` itself.
+        if owner != sid: found.update(session_ref=owner, run_in='parent_chat')
+        return found
     for owner in dict.fromkeys(item for item in (parent, sid) if item):
         for item in worker_bindings(state, owner):
-            if item.get('quorum') == quorum:
+            if item.get('quorum') == quorum and item.get('cwd') == cwd:
                 return {'quorum': quorum, 'route': 'codex-worker', 'role': item.get('role'),
                         'session_ref': item['session_ref'],
                         'next_step': _quorum_command(state, '--session-id', item['session_ref'], 'recover',
@@ -232,9 +246,27 @@ def live_binding(state, quorum, *, sid=None, parent=None):
     if sid is not None and os.environ.get('CLAUDE_CODE_SESSION_ID') == sid:
         from quorum_claude_worker import live_slots
         for item in live_slots(state, sid, quorum):
-            return {'quorum': quorum, 'route': 'claude-worker', 'role': item['role'], 'slot_id': item['slot_id'],
-                    'agent_id': item['agent_id'],
-                    'next_step': _quorum_command(state, 'worker', 'rebind', item['slot_id'])}
+            found = {'quorum': quorum, 'route': 'claude-worker', 'role': item['role'], 'slot_id': item['slot_id'],
+                     'agent_id': item['agent_id'], 'state': item['state']}
+            if item['state'] == 'hand_over_pending':
+                # Repeat the interrupted attest with the same handle; once it expires, rebind the old slot.
+                found['next_step'] = _quorum_command(state, 'worker', 'attest', item['slot_id'],
+                                                     '--native-handle', '<same-native-handle>')
+            else: found['next_step'] = _quorum_command(state, 'worker', 'rebind', item['slot_id'])
+            return found
+    if cloud is not None:
+        import sys
+        from quorum_grok_cloud import CloudError, verify_record
+        rows = _read_rows(state / 'cloud' / cloud / 'ledger.sqlite', ('cloud-agent',))
+        record = (rows or {}).get('cloud-agent')
+        try:
+            if isinstance(record, dict) and record.get('quorum') == quorum:
+                verify_record(record, cloud)
+                return {'quorum': quorum, 'route': 'grok-cloud', 'role': record.get('role'),
+                        'agent_id': record.get('agent_id'), 'next_step': [
+                            sys.executable, str(Path(__file__).with_name('quorum.py')), '--state', str(state),
+                            'cloud', 'start']}
+        except CloudError: pass
     return None
 
 
@@ -254,8 +286,8 @@ def require_enabled_rows(rows, record):
         raise ValueError('session_recovery_denied')
 
 
-def refuse_if_bound(state, quorum, *, sid=None, parent=None):
-    found = live_binding(state, quorum, sid=sid, parent=parent)
+def refuse_if_bound(state, quorum, *, sid=None, parent=None, cloud=None):
+    found = live_binding(state, quorum, sid=sid, parent=parent, cloud=cloud)
     if found is not None: raise BindingExists(found)
 
 

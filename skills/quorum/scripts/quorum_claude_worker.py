@@ -1192,6 +1192,30 @@ def _rebind_scope(scope, knowledge, update):
     return result
 
 
+def rebindable(root, record, sid):
+    """Every local check `rebind` makes before it asks the service, read-only.
+
+    Returns the source slot a rebind of `record` continues from and its connected agent record, or raises the
+    refusal that rebind would. `rebind` and the join's resume check (`live_slots`, #130) share it, so a join
+    counts exactly the slots a rebind can recover. Only the service's own agent check is not local.
+    """
+    if record.get('provider_session_id') != sid: raise _denied('session_mismatch')
+    source = _rebind_source(root, record)
+    if source.get('provider_session_id') != sid: raise _denied('session_mismatch')
+    if source['scope']['cwd'] != str(Path.cwd().resolve()): raise _denied('cwd_mismatch')
+    agent = _connected(root, source)
+    permission = source['permission_expires_at']
+    if permission is not None and now() >= permission: raise _terminal('permission_expired')
+    return source, agent
+
+
+def hand_over_pending(root, record, sid):
+    """An attest that superseded its predecessor but has not activated this pending successor yet: an identical
+    attest retry still completes the hand-over (rebind meanwhile says `rebind_pending`). Read-only."""
+    return (record.get('provider_session_id') == sid and _effective(record)[0] == 'pending'
+            and _limbo(root, record))
+
+
 def rebind(state_root, slot_id, *, knowledge=(), update=False):
     """Owner-parent: a pending successor slot that hands this connected worker binding to a new native handle.
 
@@ -1208,13 +1232,8 @@ def rebind(state_root, slot_id, *, knowledge=(), update=False):
     knowledge = list(knowledge or ())
     check_root(root)
     _recover(root, slot_id)
-    named = _view(root, slot_id)
-    if named.get('provider_session_id') != sid: raise _denied('session_mismatch')
-    source = _rebind_source(root, named)
-    if source.get('provider_session_id') != sid: raise _denied('session_mismatch')
-    if source['scope']['cwd'] != str(Path.cwd().resolve()): raise _denied('cwd_mismatch')
+    source, agent = rebindable(root, _view(root, slot_id), sid)
     scope = _rebind_scope(source['scope'], knowledge, update)
-    agent = _connected(root, source)
     # The agent must still be live at the service: rebind never revives a revoked agent or membership.
     with _owner_api(root, source) as (_, api):
         try: api.call('agent_status', {'agent_id': agent['agent_id']})
@@ -1251,25 +1270,37 @@ SLOT_SCAN_LIMIT = 256
 
 
 def live_slots(state_root, sid, quorum_slug):
-    """Read-only (#130): this chat's connected worker slots for `quorum_slug` whose reception is still enabled.
+    """Read-only (#130): this chat's worker bindings for `quorum_slug` that a resume can still recover.
 
-    An active slot whose native worker ended with a parent restart still counts: it resumes with `rebind`.
-    Unreadable, unsafe, pending, terminal or stopped slots never count. Bounded; nothing is created or recovered.
+    Exactly the slots `rebindable` accepts (the same predicate `rebind` uses), named by the source slot a
+    rebind continues from: an active slot whose native worker ended with a parent restart, or a predecessor
+    superseded by an interrupted hand-over whose successor lapsed. A hand-over an attest retry can still
+    finish counts too, as `hand_over_pending`. Bounded; nothing is created, recovered or asked of the service.
     """
     root = _state_root(state_root)
     try: names = sorted(os.listdir(root / 'claude-workers'))[:SLOT_SCAN_LIMIT]
     except OSError: return []
-    found = []
+    found, seen = [], set()
     for name in names:
         if not CANONICAL.fullmatch(name): continue
         try:
             record = _view(root, name)
-            if (record.get('provider_session_id') != sid or record['scope'].get('quorum_slug') != quorum_slug
-                    or not record.get('binding') or _effective(record)[0] != 'active'):
+            if record.get('provider_session_id') != sid or record['scope'].get('quorum_slug') != quorum_slug:
                 continue
-            agent = _connected(root, record)
+            if hand_over_pending(root, record, sid):
+                item = {'slot_id': name, 'role': record['scope'].get('role'), 'agent_id': record['rebind'].get(
+                    'agent_id'), 'state': 'hand_over_pending'}
+                key = record['rebind'].get('session_ref')
+            else:
+                source, agent = rebindable(root, record, sid)
+                item = {'slot_id': source['slot_id'], 'role': source['scope'].get('role'),
+                        'agent_id': agent.get('agent_id'), 'state': 'rebindable'}
+                key = source['binding']['session_ref']
         except (NativeInboxError, KeyError, TypeError, ValueError, OSError): continue
-        found.append({'slot_id': name, 'role': record['scope'].get('role'), 'agent_id': agent.get('agent_id')})
+        # One entry per actor: a predecessor and the active successor it leads to name the same source.
+        if key in seen: continue
+        seen.add(key)
+        found.append(item)
     return found
 
 
