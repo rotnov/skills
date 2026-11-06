@@ -359,6 +359,11 @@ class HostileInvitationValueTests(unittest.TestCase):
             self.assertEqual(str(raised.exception), code)
         return owner
 
+    def test_slug_pattern_is_the_service_slug_check(self):
+        from quorum_invitations import SLUG
+        sql = (SKILL / 'references' / 'server-bootstrap.sql').read_text()
+        self.assertIn("quorums_slug_check\" CHECK ((slug ~ '^" + SLUG.pattern + "$'", sql)
+
     def test_hostile_slugs_are_refused_before_any_service_call(self):
         for slug in ('team; touch pwned #', 'team && id', 'team`id`', 'team$(id)', "team'", 'team"', 'team|id',
                      'team\nid', 'team id', '-rf', 'Team', '', 'a' * 49, '$env:PATH', 'team;calc.exe'):

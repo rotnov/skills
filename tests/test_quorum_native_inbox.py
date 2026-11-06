@@ -1427,7 +1427,8 @@ class HelloVisibilityTests(Harness):
         api = self.HelloApi(inbox=[roster])
         with caller(self.home):
             self.connect(api)
-            _, first, _ = self.receive(api)
+            # The owner's debugging opt-out shows the roster envelope (#126); by default it is receipted quietly.
+            _, first, _ = self.cli(api, 'session', 'receive', '--wait-seconds', '0', '--show-transport-notices')
             self.assertEqual(first['data']['message_id'], ROSTER)
             self.assertEqual(first['data']['hello'],
                              'Hello sent to 2 peers in team/project (alpha, zeta); roster: 1 available')

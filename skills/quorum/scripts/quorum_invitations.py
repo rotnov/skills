@@ -134,14 +134,16 @@ def authorizations(coordinator_role, standing=True):
     return '\n'.join(lines)
 
 
-ROLE = re.compile('[a-z][a-z0-9-]{0,47}')
-# The service's quorums_slug_check; a slug is rendered into the recipient's `accept-id --quorum` command.
+# Shared bounds; the server checks the same ones (agents_role_check; role assignment, 20261105140000).
+ROLE_LIMIT, PROJECT_REF_LIMIT = 48, 500
+ROLE = re.compile('[a-z][a-z0-9-]{0,%d}' % (ROLE_LIMIT - 1))
+# The service's quorums_slug_check is the role pattern; a slug is rendered into `accept-id --quorum`.
 SLUG = ROLE
 ORIGIN = re.compile(r'https://[A-Za-z0-9](?:[A-Za-z0-9.-]{0,252}[A-Za-z0-9])?(?::[0-9]{1,5})?/?')
 UUID_TEXT = re.compile('[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}')
 # A conservative charset that is inert inside single quotes in bash, zsh and PowerShell alike (no quote, `$`,
 # backtick, space or glob), still covering slugs, owner/repo, paths and URL-like references; no leading `-`.
-PROJECT_REF = re.compile('[A-Za-z0-9._/:@][A-Za-z0-9._/:@-]{0,499}')
+PROJECT_REF = re.compile('[A-Za-z0-9._/:@][A-Za-z0-9._/:@-]{0,%d}' % (PROJECT_REF_LIMIT - 1))
 
 
 def shell_word(value, pattern, code):

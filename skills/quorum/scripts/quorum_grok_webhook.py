@@ -348,6 +348,10 @@ class CloudWakeRelay:
             raise ValueError('invalid_response')
         if message.get('recipient_id') != self.record['agent_id']: raise ValueError('session_binding_denied')
         if message.get('priority', 'normal') not in (None, 'normal', 'urgent'): raise ValueError('invalid_priority')
+        # A server Hello/roster transport notice is receipted here and never wakes the parent (#126).
+        from quorum_grok_cloud import auto_receipt
+        quiet = auto_receipt(self.api, self.ledger, self.record, self.scope(), message)
+        if quiet: return 'notice' if quiet == 'notice' else 'idle'
         key = 'wake:' + message['id']
         existing = self.ledger.setting(key)
         if existing is not None:

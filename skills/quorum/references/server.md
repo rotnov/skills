@@ -230,6 +230,34 @@ the new `session_heartbeat` and `session_peers`, move
 names, grant both to `authenticated` again and drop `session_status`. Clients
 then fall back to five-argument heartbeats on their own.
 
+## Reconnect Hello dedupe
+
+After reviewing the source and obtaining administrator deployment authorization,
+apply
+[`20261106120000_hello_reconnect_dedupe.sql`](../supabase/migrations/20261106120000_hello_reconnect_dedupe.sql)
+in one transaction after `20261105160000_peer_status_visibility.sql`. It refuses
+to run without the peer status and Hello reporting extensions. It pins the
+peer-status heartbeat, the Hello wrapper and core it replaces, the dispatcher,
+the binding check, the receipt writer and the release, and refuses drift or
+reapplication before any change. It does not change the required release, the
+heartbeat response, table access or task authority.
+
+A new listener connection still sends a Hello to each same-project peer, except
+to a peer that already got a Hello from the same sender within the last 30
+minutes of the sender's unbroken presence. The first connection, and a
+reconnect after the sender's health was at least 60 seconds stale, announce to
+every peer. A skipped peer still counts in the `hello` result and the roster.
+An agent seen only before this release announces once more, then is deduplicated.
+Clients need no change; current clients also receipt transport notices quietly.
+
+The previous Hello wrapper and core stay as private functions. To roll back, in
+one transaction drop the new `session_heartbeat_before_status` and
+`session_heartbeat_before_hello`, rename
+`session_heartbeat_hello_before_dedupe` and
+`session_heartbeat_core_before_dedupe` back to those names, drop the
+`session_health_streak` trigger and function, and drop `session_streaks` and
+`session_hello_sent`.
+
 ## Hello reporting extension
 
 After reviewing the source and obtaining administrator deployment authorization,

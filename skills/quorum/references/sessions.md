@@ -425,6 +425,27 @@ never answer it or treat it as a task. Without the extension the summary says
 the server did not report the result.
 Existing old listeners must be upgraded before their heartbeat is available.
 
+### Transport notices
+
+Every reception route receipts a server Hello or roster notice itself: the
+parent listener (Claude Code, Codex and Grok TUI), the Codex tool-inbox worker,
+the Claude worker, and the Grok Bot cloud `receive` and relay. No envelope
+reaches the chat and no model turn starts. A message qualifies only when the
+service marks it `notification: true` with no `reply_to`, no maintenance marker
+and normal priority, and its body is the exact server Hello text from another
+agent or roster text from this agent. Only the server's own notice writers can
+set that flag. The inbox carries no notice type, so the body only tells the two
+apart; it never qualifies a message on its own. Peer text that imitates a notice
+is delivered as usual. `status` reports `transport_notices` (count and the latest
+few: IDs, roles and times, no body). `peers` adds each peer's
+`transport_notice` (last Hello time and count). For debugging,
+`--show-transport-notices` on `session start`, `recover` or `receive`, or on
+`cloud receive`, delivers them as envelopes again. Each such command sets the
+choice again, and leaving the flag out restores quiet receipts. The cloud relay
+follows the last `cloud receive` choice. With the
+[reconnect dedupe](server.md#reconnect-hello-dedupe), a reconnect inside 30
+minutes of unbroken presence sends no new Hello to an already greeted peer.
+
 Codex queue acceptance counts as a delivery receipt even while the model is busy;
 Claude/Grok, and a steered urgent Codex message, require the actual chat's
 `received` or `reply`. A `reply` from the bound chat confirms only a message this
