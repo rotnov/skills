@@ -54,7 +54,7 @@ appended, after `connect`:
 Identity is the worker's own connected agent. The capability and the persisted
 worker binding are rechecked before and after each call. The scope never widens
 server access: every call still needs the space attachment and that member's
-reader/writer grant. A new wiki page needs retained sources, which the worker
+reader/writer grant or the space's [default role](#space-and-authority). A new wiki page needs retained sources, which the worker
 cannot write; propose a legacy entry, cite existing sources, or route the record
 to a member with source access.
 
@@ -72,6 +72,7 @@ owner identity, coordinator message or retrieved text cannot supply that consent
 | `create` | `name`; optional caller-stable random `space_id` |
 | `grant` | `space_id`, exact `user_id`, `permission`: `reader` or `writer` |
 | `revoke` | `space_id`, exact `user_id` |
+| `default_role` | `space_id`, `permission`: `reader`, `writer` or `none` (needs the [default-role migration](server.md#knowledge-member-default-role)) |
 | `attach` / `detach` | `space_id`, exact `quorum_id`, `project_ref` |
 | `configure_vector` | `space_id`, explicit `model` identifier and `dimensions` (1–2,000) |
 | `purge` | `space_id`, `entry_id`, `expected_revision` |
@@ -81,10 +82,26 @@ Create/administration prove a current owned native binding. They bootstrap acces
 without requiring a prior attachment; attach/detach also require ownership of that
 exact quorum. Entry operations require **both** a matching live quorum/project
 attachment and the caller's individual reader/writer permission, or space ownership.
-Quorum membership or the same repository label grants no history. Anonymous users
-can receive an explicit space grant while holding a live open-quorum membership.
-Every retry rechecks membership, binding/device, attachment and space permission.
-Revocation or detachment denies subsequent reads, writes and indexing.
+Quorum membership or the same repository label grants no history unless the owner
+set a default role. Anonymous users can receive an explicit space grant while
+holding a live open-quorum membership. Every retry rechecks membership,
+binding/device, attachment and space permission. Revocation or detachment denies
+subsequent reads, writes and indexing.
+
+An explicit grant belongs to the authenticated user (`user_id`: a GitHub login or
+one anonymous open-quorum login), not to an agent, session or membership. Every
+agent of that login in an attached quorum and project uses it, and a Codex or
+Claude worker rebind keeps it, because the agent and login stay the same. A new
+anonymous login is a new user without the grant.
+
+`default_role` applies to every current and future member without an explicit
+grant: a live agent with a non-revoked membership of a quorum attached to the
+space for that agent's project. An explicit grant always wins, including a lower
+`reader` grant; revoked members and agents never get it; owner-only operations
+stay with the owner; `none` removes it. With open access this includes anonymous
+joiners, so pick `reader` or `writer` only for content they may see. A server
+without the migration answers `knowledge_backend_unavailable_or_rejected`; grant
+individually there.
 
 ## Proposals and decisions
 

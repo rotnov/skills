@@ -42,7 +42,10 @@ ADMIN_FIELDS={
     'withdraw_source':{'space_id','source_id','expected_content_sha256'},
     'purge_source':{'space_id','source_id','expected_content_sha256'},
     'configure_vector':{'space_id','model','dimensions'},
+    # Space default for members of attached quorums without an explicit grant (#128).
+    'default_role':{'space_id','permission'},
 }
+DEFAULT_ROLES=('reader','writer','none')
 FIELDS={
     'admin':{'operation','payload'},'write':{'space_id','operation','payload'},
     'search':{'space_id','query','limit','context_budget','model','query_vector'},
@@ -152,6 +155,10 @@ def validate(action,data,*,request_id=None,owner_action=False):
         if allowed is None: raise KnowledgeError('knowledge_invalid_operation')
         fields(data['payload'],allowed)
         if action=='write' and op in ('propose','revise'): wiki_fields(data['payload'])
+        if action=='admin' and op=='default_role':
+            fields(data['payload'],allowed,allowed)
+            identifier(data['payload']['space_id'])
+            if data['payload']['permission'] not in DEFAULT_ROLES: raise KnowledgeError()
         if (action=='admin' or op=='verify') and owner_action is not True:
             raise KnowledgeError('knowledge_owner_action_required')
         if action=='write' and op=='verify' and data['payload'].get('owner_assertion') is not True:
