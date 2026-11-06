@@ -92,7 +92,14 @@ absolute, shell-quoted paths and the actual installed skill copy:
 uv run --project '<skill-dir>' --frozen python '<skill-dir>/scripts/quorum_resume.py' --state '<private-state>' --client codex
 ```
 
-Use `--client grok` for Grok. Claude Code has no startup hook here; run the
+Use `--client grok` for Grok. Grok also accepts a **Stop** handler for a listener
+lost while the chat stays open, with no matcher, timeout 30 seconds and the same
+command plus `--event stop`. It only reads local state: at a genuine turn end
+with enabled reception and no live listener, it blocks the turn once per lost run,
+which feeds the chat the exact [recovery step](grok.md#session-restore-or-self-update-in-a-running-tui).
+A continuation, a session-end fire, a healthy listener and an unbound chat are
+silent, and any failure ends the turn normally.
+Claude Code has no startup hook here; run the
 recovery command from the same Claude chat. Merge the handler into existing configuration;
 never replace unrelated hooks. Setup/configuration is a separate owner action,
 not part of connect, start, recover or skill installation. Join may offer it

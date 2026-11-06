@@ -42,8 +42,9 @@ _ROUTES = {
             'conditional', 'client_must_stay_available',
             'Grok TUI route and the legacy Codex/Claude parent opt-in: session start delivers into this visible '
             'chat until stopped while the client and host stay available; on Windows Grok only while the '
-            'background shell task running session start stays alive. Nothing restarts after the client exits, '
-            'logout or reboot.'),
+            'background shell task running session start or recover stays alive. A Grok session restore or '
+            'self-update can end the listener while the chat stays open; that chat then runs session recover. '
+            'Nothing restarts after the client exits, logout or reboot.'),
     },
     'grok-cloud': {
         'bounded_receive': ('unsupported', 'parent_queue_route',

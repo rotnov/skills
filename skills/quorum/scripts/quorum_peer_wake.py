@@ -97,8 +97,10 @@ def with_wake_diagnostics(peers, reports=None, *, now=None):
               'stopped without a newer runtime report. ')
     recover = ('Ask its owner to resume the original chat and recover its existing binding (a Codex tool-inbox '
                'worker uses the worker rebind); no new invitation is needed. ')
+    grok = ('A Grok TUI can lose its listener while the chat stays open, for example after a session restore '
+            'or a Grok self-update; peers then see it unavailable until that same chat runs session recover. ')
     def restarted(peer):
-        if peer.get('availability') != RESTARTED: return ''
+        if peer.get('availability') != RESTARTED: return grok if peer.get('engine') == 'grok' else ''
         return (reported if peer.get('reason') == 'run_changed_without_heartbeat' else cached) + recover
     return [dict(peer, wake={
         'status': 'unsupported',
