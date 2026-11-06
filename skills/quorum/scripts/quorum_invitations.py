@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 from quorum_os import open_private, protect
 
 
@@ -68,11 +69,15 @@ def create_invitation(api, config, ledger, slug, target, request_id):
 def public_service(config):
     """Allow only public API bootstrap keys in copyable invitation output."""
     key = config.publishable_key
+    # The recipient copies both values into `--origin` and `--publishable-key`: inert charsets only.
+    if not isinstance(config.origin, str) or not ORIGIN.fullmatch(config.origin):
+        raise ValueError('invalid_service_origin')
     if isinstance(key, str) and re.fullmatch(r'sb_publishable_[A-Za-z0-9_-]+', key):
         return {'origin': config.origin, 'publishable_key': key}
     # Legacy Supabase anon JWTs are public; no authenticated/service-role JWTs.
     import base64
     try:
+        if not re.fullmatch(r'[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+', key): raise ValueError
         parts = key.split('.')
         claims = json.loads(base64.urlsafe_b64decode(parts[1] + '=' * (-len(parts[1]) % 4)))
         if len(parts) == 3 and claims.get('role') == 'anon':
@@ -130,9 +135,32 @@ def authorizations(coordinator_role, standing=True):
 
 
 ROLE = re.compile('[a-z][a-z0-9-]{0,47}')
+# The service's quorums_slug_check; a slug is rendered into the recipient's `accept-id --quorum` command.
+SLUG = ROLE
+ORIGIN = re.compile(r'https://[A-Za-z0-9](?:[A-Za-z0-9.-]{0,252}[A-Za-z0-9])?(?::[0-9]{1,5})?/?')
+UUID_TEXT = re.compile('[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}')
 # A conservative charset that is inert inside single quotes in bash, zsh and PowerShell alike (no quote, `$`,
 # backtick, space or glob), still covering slugs, owner/repo, paths and URL-like references; no leading `-`.
 PROJECT_REF = re.compile('[A-Za-z0-9._/:@][A-Za-z0-9._/:@-]{0,499}')
+
+
+def shell_word(value, pattern, code):
+    """A command argument for a copyable prompt, validated before anything is issued.
+
+    The allowed charsets ([a-z0-9-] words, canonical UUIDs) are inert unquoted in bash, zsh, PowerShell and cmd, so
+    `shlex.quote` leaves them bare and the same text is safe on every platform; anything else is refused.
+    """
+    if not isinstance(value, str) or not pattern.fullmatch(value): raise ValueError(code)
+    word = shlex.quote(value)
+    if word != value: raise ValueError(code)
+    return word
+
+
+def quoted_ref(project_ref):
+    """`--project-ref`: PROJECT_REF has no quote, so single quotes keep it literal in POSIX shells and PowerShell."""
+    if not isinstance(project_ref, str) or not PROJECT_REF.fullmatch(project_ref):
+        raise ValueError('invalid_project_ref')
+    return "'" + project_ref + "'"
 
 
 def assignment(slug, role=None, project_ref=None):
@@ -159,11 +187,11 @@ def assignment(slug, role=None, project_ref=None):
 def connect_line(assigned, coordinator_role, standing):
     """The connect flags; join.md picks the route (worker inbox, Claude worker or cloud) that carries them."""
     role = (assigned or {}).get('role')
-    flags = (f'--role {role}' if role else '--role <role>') + ' --project-ref ' + (
-        f"'{assigned['project_ref']}'" if assigned else '<project>')
+    flags = (('--role ' + shell_word(role, ROLE, 'invalid_role')) if role else '--role <role>') + ' --project-ref ' + (
+        quoted_ref(assigned['project_ref']) if assigned else '<project>')
     if role: flags += ' --exclusive-role'
     flags += ' --accept-tasks-from-members --dispatch-mode inline --trust-members'
-    if standing: flags += f' --standing-grants-from {coordinator_role}'
+    if standing: flags += ' --standing-grants-from ' + shell_word(coordinator_role, ROLE, 'invalid_coordinator_role')
     return ('3. Connect this actual session on the route references/join.md selects, with ' + flags
             + ('' if role else ' (join.md gives the default role and project)') + '.')
 
@@ -212,12 +240,14 @@ def create_id_invitation(api, config, slug, target, request_id, *, github_user=N
     if not re.fullmatch(r'[0-9]{1,20}', target): raise ValueError('invitation_arguments_invalid')
     if github_user is not None and not re.fullmatch(r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?', github_user):
         raise ValueError('github_user_invalid')
+    quorum = shell_word(slug, SLUG, 'invalid_quorum')
     assigned, binding = assignment(slug, role, project_ref)
     # Every local check runs before the service issues anything.
     consent = authorizations(coordinator_role, standing_grants)
     connect = connect_line(assigned, coordinator_role, standing_grants)
     invite_id, quorum_id, expires_at, service, storage = issue_id_invitation(
         api, config, slug, 'invite_create_id', {'target_github_id': target}, request_id, assigned)
+    invite = shell_word(invite_id, UUID_TEXT, 'invalid_response')
     binding = assigned_line(binding, storage)
     target_label = (f'@{github_user}, ' if github_user else '') + f'GitHub ID {target}'
     header = (f'Quorum invitation for {target_label}: quorum slug {json.dumps(slug)}, invite ID {invite_id}, '
@@ -225,10 +255,10 @@ def create_id_invitation(api, config, slug, target, request_id, *, github_user=N
     github = ('GitHub is required and the account must match; sign in through GitHub via Supabase Auth, with no '
               'Supabase dashboard registration.')
     prompt = render(header, github, binding, bootstrap(),
-                    f'2. Accept: accept-id {invite_id} --quorum {slug} --origin and --publishable-key from this '
+                    f'2. Accept: accept-id {invite} --quorum {quorum} --origin and --publishable-key from this '
                     f'public service locator: {json.dumps(service)}. ' + RESUME_RULE, connect, consent)
     configured = render(header, github, binding, bootstrap(),
-                        f'2. Accept: accept-id {invite_id} --quorum {slug} without service flags, on my configured '
+                        f'2. Accept: accept-id {invite} --quorum {quorum} without service flags, on my configured '
                         'machine profile and login; a missing or ambiguous profile is a blocker. ' + RESUME_RULE,
                         connect, consent)
     return {'invite_id': invite_id, 'quorum': slug, 'quorum_id': quorum_id, 'target_github_id': target,
@@ -240,19 +270,21 @@ def create_id_invitation(api, config, slug, target, request_id, *, github_user=N
 
 def create_open_invitation(api, config, slug, request_id, *, coordinator_role='coordinator', standing_grants=True,
                            role=None, project_ref=None):
+    quorum = shell_word(slug, SLUG, 'invalid_quorum')
     assigned, binding = assignment(slug, role, project_ref)
     # Every local check runs before the service issues anything.
     consent = authorizations(coordinator_role, standing_grants)
     connect = connect_line(assigned, coordinator_role, standing_grants)
     invite_id, quorum_id, expires_at, service, storage = issue_id_invitation(
         api, config, slug, 'invite_create_open', {}, request_id, assigned)
+    invite = shell_word(invite_id, UUID_TEXT, 'invalid_response')
     binding = assigned_line(binding, storage)
     header = (f'Single-use open Quorum invitation: quorum slug {json.dumps(slug)}, invite ID {invite_id}, expires at '
               f'{json.dumps(expires_at)}. ' + EXPIRY)
     anonymous = ('No GitHub or browser: accept with a new anonymous identity in a fresh private state. Anyone '
                  'holding this text can use it until accepted; do not forward it.')
     prompt = render(header, anonymous, binding, bootstrap(),
-                    f'2. Accept: accept-id {invite_id} --anonymous --quorum {slug} --origin and --publishable-key '
+                    f'2. Accept: accept-id {invite} --anonymous --quorum {quorum} --origin and --publishable-key '
                     f'from this public service locator: {json.dumps(service)}. ' + RESUME_RULE,
                     connect, consent)
     return {'invite_id': invite_id, 'quorum': slug, 'quorum_id': quorum_id, 'access': 'open',
@@ -308,7 +340,7 @@ def accept_id_invitation(args, ledger):
     if quorum is not None:
         # Re-accept versus resume (#130): a chat already bound in this quorum resumes that binding, before any
         # profile, login or invitation use, so the single-use invitation stays unused.
-        if not ROLE.fullmatch(quorum): raise ValueError('invalid_quorum')
+        if not isinstance(quorum, str) or not SLUG.fullmatch(quorum): raise ValueError('invalid_quorum')
         from quorum_resume import refuse_if_bound
         refuse_if_bound(ledger.root, quorum, sid=None if tool else _own_session(),
                         parent=args.parent_thread_id if tool else None)

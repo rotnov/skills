@@ -46,11 +46,12 @@ one cannot be resumed and does not block acceptance.
   ([rebind](claude-worker.md#rebind-after-a-parent-restart)).
 
 `accept-id <invite-id> --quorum <slug>` applies the rule itself. Before any
-login or service call it checks this chat's parent binding, the Codex worker
-bindings of the given `--parent-thread-id` (or this Codex chat) and this Claude
-chat's worker slots in this state. A live one is refused with
-`binding_exists_resume`: `data` names the quorum, route, role and IDs, its
-`next_step` command and `invitation: unused`. A Claude `session worker prepare`
+login or service call it checks this chat's parent binding, the given
+`--parent-thread-id`'s own parent binding and its Codex worker bindings (or
+this Codex chat's) and this Claude chat's worker slots in this state. A live
+one is refused with `binding_exists_resume`: `data` names the quorum, route,
+role and IDs, its `next_step` command and `invitation: unused`; with
+`run_in: parent_chat` the worker reports it and the parent chat runs that step. A Claude `session worker prepare`
 with an accept scope applies the same check. Without `--quorum` (older
 invitations), check `session status` (or `session worker status <slot-uuid>`)
 yourself first.

@@ -21,6 +21,20 @@ def forbidden(name):
     return AssertionError('must not run: ' + name)
 
 
+def bind_parent(root, enabled=True):
+    """A Codex parent-route binding with (enabled or stopped) reception in quorum `team`."""
+    from quorum_resume import binding
+    from quorum_state import LocalLedger
+    record = {'engine': 'codex', 'session_ref': codex.PARENT, 'agent_id': codex.AGENT, 'device_id': 'device-1',
+              'quorum_id': codex.QUORUM, 'project_ref': 'team/project', 'cwd': '/synthetic', 'role': 'lead',
+              'quorum': 'team', 'transport': 'native'}
+    ledger = LocalLedger(Path(root) / 'sessions' / codex.PARENT)
+    try:
+        ledger.setting('session-agent', record)
+        ledger.setting('session-reception', {'enabled': enabled, 'binding': binding(record), 'expires_at': None})
+    finally: ledger.db.close()
+
+
 class LoopContractTextTests(unittest.TestCase):
     """The brief, the envelope notice and the references state one receive-loop contract."""
 
@@ -149,8 +163,41 @@ class CodexResumeTests(codex.Harness):
 
     @isolated_profiles
     def test_an_invalid_quorum_slug_is_refused_before_anything(self):
-        code, result, text = self.accept(codex.Api(), "team';rm")
-        self.assertEqual((code, result['code']), (3, 'invalid_quorum'), text)
+        for slug in ("team';rm", 'team; touch pwned #', 'team$(id)', 'Team', ''):
+            with self.subTest(slug=slug):
+                code, result, text = self.accept(codex.Api(), slug)
+                self.assertEqual((code, result['code']), (3, 'invalid_quorum'), text)
+
+    @isolated_profiles
+    def test_worker_of_a_bound_parent_is_told_the_parent_resumes(self):
+        """A tool-inbox worker has no session ID; its parent's own live binding still blocks acceptance."""
+        api = codex.Api()
+        bind_parent(self.root)
+        code, result, text = self.accept(api, 'team')
+        self.assertEqual((code, result['code']), (3, 'binding_exists_resume'), text)
+        data = result['data']
+        self.assertEqual((data['route'], data['role'], data['agent_id'], data['session_ref'], data['run_in'],
+                          data['invitation']), ('parent', 'lead', codex.AGENT, codex.PARENT, 'parent_chat', 'unused'))
+        self.assertEqual(data['next_step'][-2:], ['session', 'recover'])
+        self.assertEqual(api.calls, [], 'no service call, so the invitation is not consumed')
+        self.assertEqual(self.accept(api, 'other-team')[1]['code'], 'machine_profile_unavailable')
+
+    @isolated_profiles
+    def test_worker_of_a_stopped_parent_binding_accepts(self):
+        bind_parent(self.root, enabled=False)
+        self.assertEqual(self.accept(codex.Api(), 'team')[1]['code'], 'machine_profile_unavailable')
+
+    @isolated_profiles
+    def test_worker_with_neither_binding_accepts(self):
+        self.assertEqual(self.accept(codex.Api(), 'team')[1]['code'], 'machine_profile_unavailable')
+
+    def test_live_binding_never_uses_a_non_uuid_as_a_path(self):
+        from quorum_resume import live_binding
+        bind_parent(self.root)
+        for hostile in ('../' + codex.PARENT, codex.PARENT.upper(), codex.PARENT + '/..'):
+            with self.subTest(value=hostile):
+                self.assertIsNone(live_binding(self.root, 'team', sid=hostile))
+                self.assertIsNone(live_binding(self.root, 'team', parent=hostile))
 
 
 @codex.OWNER_PROOF
@@ -158,16 +205,7 @@ class ParentResumeTests(codex.Harness):
     """A parent-route chat with enabled reception in the quorum is told to run `session recover`."""
 
     def bind_parent(self, enabled=True):
-        from quorum_resume import binding
-        from quorum_state import LocalLedger
-        record = {'engine': 'codex', 'session_ref': codex.PARENT, 'agent_id': codex.AGENT, 'device_id': 'device-1',
-                  'quorum_id': codex.QUORUM, 'project_ref': 'team/project', 'cwd': '/synthetic', 'role': 'lead',
-                  'quorum': 'team', 'transport': 'native'}
-        ledger = LocalLedger(Path(self.root) / 'sessions' / codex.PARENT)
-        try:
-            ledger.setting('session-agent', record)
-            ledger.setting('session-reception', {'enabled': enabled, 'binding': binding(record), 'expires_at': None})
-        finally: ledger.db.close()
+        bind_parent(self.root, enabled)
 
     def accept(self, quorum):
         with codex.caller(self.home, sid=codex.PARENT), \
@@ -238,7 +276,8 @@ class InvitationRuleTests(unittest.TestCase):
         for text in ('live binding in this quorum', 'resume it', 'unused', 'otherwise accept'):
             self.assertIn(text, RESUME_RULE)
         source = (SCRIPTS / 'quorum_invitations.py').read_text()
-        self.assertEqual(source.count('--quorum {slug}'), 3)
+        self.assertEqual(source.count('--quorum {quorum}'), 3)
+        self.assertEqual(source.count("quorum = shell_word(slug, SLUG, 'invalid_quorum')"), 2)
         self.assertEqual(source.count('+ RESUME_RULE'), 3)
 
     def test_join_guide_states_one_decision_rule(self):
@@ -247,6 +286,91 @@ class InvitationRuleTests(unittest.TestCase):
         self.assertIn('binding_exists_resume', text)
         self.assertIn('session worker rebind', text)
         self.assertIn('session recover', text)
+
+
+class HostileInvitationValueTests(unittest.TestCase):
+    """#133 review: every value rendered into a copyable command is validated before the service issues anything."""
+
+    class Owner:
+        def __init__(self, invite_id='11111111-1111-4111-8111-111111111111'):
+            self.calls, self.invite_id = [], invite_id
+
+        def call(self, operation, payload, request_id=None):
+            self.calls.append(operation)
+            if operation == 'quorum_lookup': return {'quorum_id': 'q'}
+            if operation == 'quorum_check_owner': return True
+            return {'invite_id': self.invite_id, 'expires_at': '2026-11-06T12:00:00Z',
+                    **({'assigned': {k: payload[k] for k in ('role', 'project_ref')}} if 'role' in payload else {})}
+
+    @staticmethod
+    def config(origin='https://example.com', key='sb_publishable_synthetic'):
+        from quorum_api import ServiceConfig
+        return ServiceConfig(origin, key)
+
+    def issue(self, owner=None, config=None, slug='team', **options):
+        from quorum_invitations import create_id_invitation, create_open_invitation
+        owner = owner or self.Owner()
+        return owner, [create_id_invitation(owner, config or self.config(), slug, '123', 'r', **options),
+                       create_open_invitation(owner, config or self.config(), slug, 'r', **options)]
+
+    def refused(self, code, **arguments):
+        from quorum_invitations import create_id_invitation, create_open_invitation
+        owner = self.Owner()
+        config = arguments.pop('config', self.config())
+        slug = arguments.pop('slug', 'team')
+        for create in (lambda: create_id_invitation(owner, config, slug, '123', 'r', **arguments),
+                       lambda: create_open_invitation(owner, config, slug, 'r', **arguments)):
+            with self.assertRaises(ValueError) as raised: create()
+            self.assertEqual(str(raised.exception), code)
+        return owner
+
+    def test_hostile_slugs_are_refused_before_any_service_call(self):
+        for slug in ('team; touch pwned #', 'team && id', 'team`id`', 'team$(id)', "team'", 'team"', 'team|id',
+                     'team\nid', 'team id', '-rf', 'Team', '', 'a' * 49, '$env:PATH', 'team;calc.exe'):
+            with self.subTest(slug=slug):
+                self.assertEqual(self.refused('invalid_quorum', slug=slug).calls, [])
+
+    def test_hostile_roles_project_refs_and_coordinator_roles_are_refused_before_any_service_call(self):
+        cases = [('invalid_role', {'role': 'lead; id'}), ('invalid_role', {'role': '$(id)'}),
+                 ('invalid_project_ref', {'project_ref': "x'; id; '"}), ('invalid_project_ref', {'project_ref': 'a b'}),
+                 ('invalid_project_ref', {'project_ref': '$(id)'}), ('invalid_project_ref', {'project_ref': '-x'}),
+                 ('invalid_coordinator_role', {'coordinator_role': 'lead;id'})]
+        for code, arguments in cases:
+            with self.subTest(arguments=arguments):
+                self.assertEqual(self.refused(code, **arguments).calls, [])
+
+    def test_hostile_service_locators_are_refused_before_any_service_call(self):
+        import base64
+        anon = base64.urlsafe_b64encode(json.dumps({'role': 'anon'}).encode()).decode().rstrip('=')
+        for origin in ('https://example.com$(id)', 'https://exa`id`mple.com', 'https://example.com;id'):
+            with self.subTest(origin=origin):
+                try: config = self.config(origin=origin)
+                except ValueError: continue  # Refused even earlier by ServiceConfig.
+                self.assertEqual(self.refused('invalid_service_origin', config=config).calls, [])
+        for key in ('h.' + anon + '.s;id', 'h.' + anon + '.s$(id)', "h.' + anon + '.s'"):
+            with self.subTest(key=key):
+                self.assertEqual(self.refused('public_service_key_required', config=self.config(key=key)).calls, [])
+
+    def test_a_non_uuid_invite_id_is_never_rendered(self):
+        from quorum_invitations import create_open_invitation
+        with self.assertRaises(ValueError):
+            create_open_invitation(self.Owner(invite_id='x; id'), self.config(), 'team', 'r')
+
+    def test_commands_carry_only_bare_validated_words_and_a_single_quoted_project_ref(self):
+        import shlex
+        _, results = self.issue(role='jekman', project_ref='rotnov/skills', coordinator_role='lead')
+        for result in results:
+            for prompt in (result['session_prompt'], result.get('configured_machine_prompt', '')):
+                for line in prompt.splitlines():
+                    if line.startswith('2. Accept: '):
+                        words = line[len('2. Accept: '):].split()
+                        command = words[:words.index('--quorum') + 2]
+                        self.assertEqual(command[-1], 'team')
+                        self.assertEqual(command[1], result['invite_id'])
+                        self.assertEqual(shlex.split(' '.join(command)), command)
+                    if line.startswith('3. Connect'):
+                        self.assertIn("--role jekman --project-ref 'rotnov/skills' --exclusive-role", line)
+                        self.assertIn('--standing-grants-from lead', line)
 
 
 if __name__ == '__main__':

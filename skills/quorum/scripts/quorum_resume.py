@@ -203,20 +203,25 @@ def live_binding(state, quorum, *, sid=None, parent=None):
     """This chat's live binding in `quorum`, read-only, before any login or invitation use; None when absent.
 
     `sid` is this chat's own session ID (parent route and Claude worker slots); `parent` is the Codex parent
-    thread a tool-inbox worker belongs to. Only enabled reception counts as live: a stopped binding cannot be
-    resumed (`session_recovery_denied`), so it never blocks an acceptance.
+    thread a tool-inbox worker belongs to, whose own parent-route binding counts too: a worker runs with no
+    session ID of its own. Only enabled reception counts as live: a stopped binding cannot be resumed
+    (`session_recovery_denied`), so it never blocks an acceptance.
     """
     state = Path(os.path.abspath(state))
-    if sid is not None:
-        rows = _read_rows(state / 'sessions' / sid / 'ledger.sqlite', ('session-agent', 'session-reception'))
+    # Only canonical session UUIDs name a ledger directory; anything else is never a path component.
+    sid, parent = (item if _canonical(item) else None for item in (sid, parent))
+    for owner in dict.fromkeys(item for item in (sid, parent) if item):
+        rows = _read_rows(state / 'sessions' / owner / 'ledger.sqlite', ('session-agent', 'session-reception'))
         record = (rows or {}).get('session-agent')
-        if (isinstance(record, dict) and record.get('session_ref') == sid and record.get('quorum') == quorum
+        if (isinstance(record, dict) and record.get('session_ref') == owner and record.get('quorum') == quorum
                 and record.get('transport', 'native') != 'tool-inbox'):
-            try:
-                require_enabled_rows(rows, record)
-                return {'quorum': quorum, 'route': 'parent', 'role': record.get('role'),
-                        'agent_id': record.get('agent_id'), 'next_step': _quorum_command(state, 'recover')}
-            except ValueError: pass
+            try: require_enabled_rows(rows, record)
+            except ValueError: continue
+            found = {'quorum': quorum, 'route': 'parent', 'role': record.get('role'),
+                     'agent_id': record.get('agent_id'), 'next_step': _quorum_command(state, 'recover')}
+            # A worker cannot recover its parent's listener; the parent chat runs `session recover` itself.
+            if owner != sid: found.update(session_ref=owner, run_in='parent_chat')
+            return found
     for owner in dict.fromkeys(item for item in (parent, sid) if item):
         for item in worker_bindings(state, owner):
             if item.get('quorum') == quorum:
@@ -231,6 +236,11 @@ def live_binding(state, quorum, *, sid=None, parent=None):
                     'agent_id': item['agent_id'],
                     'next_step': _quorum_command(state, 'worker', 'rebind', item['slot_id'])}
     return None
+
+
+def _canonical(value):
+    try: return isinstance(value, str) and str(uuid.UUID(value)) == value
+    except ValueError: return False
 
 
 def require_enabled_rows(rows, record):
