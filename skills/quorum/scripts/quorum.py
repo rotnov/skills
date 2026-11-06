@@ -73,7 +73,7 @@ def main(argv=None):
     config = commands.add_parser('configure')
     config.add_argument('--origin', required=True)
     config.add_argument('--publishable-key', required=True)
-    for name in ('status', 'login', 'logout', 'worker', 'doctor', 'version'):
+    for name in ('status', 'login', 'logout', 'worker', 'version'):
         commands.add_parser(name)
     for name in ('create', 'invite', 'accept', 'join', 'leave', 'send', 'context', 'work'):
         sub = commands.add_parser(name)
@@ -91,6 +91,10 @@ def main(argv=None):
     capabilities.add_argument('--route', choices=ROUTES, help='Default: the current client\'s quiet worker route')
     capabilities.add_argument('--require', choices=tuple(REQUIREMENTS),
                               help='Fail with background_execution_unsupported unless the route supports it')
+    doctor = commands.add_parser('doctor', help='Check this participant\'s actual route; the ACP gate is informational')
+    from quorum_doctor import DOCTOR_ROUTES
+    doctor.add_argument('--route', choices=DOCTOR_ROUTES,
+                        help='Default: the current client\'s quiet worker route; acp-worker checks the gated default worker')
     from quorum_live import add_commands
     add_commands(commands)
     from quorum_updates import add_commands as add_update_commands
@@ -170,13 +174,11 @@ def main(argv=None):
             value = create_worker(args, args.worker_context, resolve_profile,
                                   lambda config, store: QuorumApi(config, token_provider(config, store)))
         elif args.command == 'doctor':
-            from quorum_acp import validate_manifest
-            manifest = json.loads((Path(__file__).resolve().parents[1] / 'assets/engines.lock.json').read_text())
-            try:
-                validate_manifest(manifest)
-            except ValueError:
-                raise QuorumError('engine_acceptance_pending') from None
-            raise QuorumError('live_agents_disabled')
+            # The participant's actual route decides health; the default ACP worker gate stays reported.
+            from quorum_doctor import diagnose
+            ok, code, exit_code, value = diagnose(ledger.root, args.route)
+            print(json.dumps({'ok': ok, 'code': code, 'data': value}))
+            return exit_code
         else:
             from quorum_profiles import resolve_profile, ensure_login, auth_lock
             # Only explicit login may refresh an older state's own token family.

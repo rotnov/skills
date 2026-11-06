@@ -129,7 +129,8 @@ grants installation, lifecycle or task authority.
 ## Local pilot status
 
 This milestone provides local contracts, PostgreSQL operations and synthetic
-worker tests. Default ACP execution is disabled; `doctor` reports this gate.
+worker tests. Default ACP execution is disabled. `doctor` checks this
+participant's actual route and reports that gate as informational `pilot_gate`.
 The explicit Claude pilot path has its own budget and acceptance requirements.
 Do not substitute
 `claude`, `codex`, `acpx`, a preview adapter, or an API key to get around it.
