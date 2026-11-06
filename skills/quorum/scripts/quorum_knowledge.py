@@ -26,6 +26,7 @@ ENTRY_FIELDS={'entry_id','type','title','body','source_refs','versions','review_
 PROPOSE_FIELDS=ENTRY_FIELDS|{'entry_kind'}
 SOURCE_FIELDS={'source_id','reference','author','source_date','body','is_excerpt','excerpt_scope'}
 MUTATIONS={'admin','write','index','source-write'}
+SPACE_NAMESPACE=uuid.UUID('5f0d3c52-7e0f-5a6e-9d3b-1c1f6a2b7e46')
 WRITE_FIELDS={
     'propose':PROPOSE_FIELDS,
     'revise':ENTRY_FIELDS|{'expected_revision'},
@@ -184,6 +185,11 @@ def invoke(api,record,action,data,*,request_id=None,owner_action=False,before_re
     validate(action,data,request_id=request_id,owner_action=owner_action)
     if not record or any(key not in record for key in BINDING):
         raise KnowledgeError('knowledge_binding_required')
+    if action=='admin' and data['operation']=='create' and 'space_id' not in data['payload']:
+        # The server locks the payload's space before allocating one, so without an ID that lock is a no-op.
+        # Derived from the request, an identical retry names the same space and serializes on it.
+        identity=uuid.uuid5(SPACE_NAMESPACE,record['agent_id']+':'+request_id)
+        data={**data,'payload':{**data['payload'],'space_id':str(identity)}}
     payload={'agent_id':record['agent_id'],'session_ref':record['session_ref'],**data}
     operation={'source-write':'knowledge_source_write','source-read':'knowledge_source_read',
                'catalog':'knowledge_catalog'}.get(action,'knowledge_'+action)

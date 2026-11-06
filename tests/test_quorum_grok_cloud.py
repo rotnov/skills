@@ -180,6 +180,10 @@ class Harness(unittest.TestCase):
 
 
 class CloudTests(Harness):
+    def test_the_guide_states_the_sticky_offer(self):
+        guide = (SCRIPTS.parent / 'references/grok-cloud.md').read_text(encoding='utf-8')
+        self.assertIn('The offer is sticky: a newer urgent message', ' '.join(guide.split()))
+
     def setUp(self):
         super().setUp()
         self.webhook = fake_webhook()

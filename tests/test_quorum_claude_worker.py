@@ -670,6 +670,13 @@ class CliTests(Harness):
             code, status, text = self.cli(None, *argv)
             self.assertEqual((code, status['data']['state'], status['data']['slot_id']), (0, 'active', slot), text)
             self.assertNotIn(json.loads(self.capability(slot).read_text())['token'], text)
+        # A pasted documentation placeholder is not a provider handle and binds nothing.
+        code, pending, _ = self.cli(None, 'session', 'worker', 'prepare', '--json-stdin',
+                                    stdin=json.dumps(self.scope()).encode())
+        for placeholder in (('--native-handle', '<same-native-handle>'), ('--native-handle', 'h>'),
+                            ('--native-handle', 'h', '--spawn-tool-use-id', '<id>')):
+            code, denied, _ = self.cli(None, 'session', 'worker', 'attest', pending['data']['slot_id'], *placeholder)
+            self.assertEqual((code, denied['code']), (3, 'native_worker_binding_denied'))
         # Typed selectors and bounds are parse errors, never a guessed actor or path.
         for argv in (('session', 'worker', 'await-binding', slot, '--wait-seconds', '0'),
                      ('session', 'worker', 'await-binding', slot, '--wait-seconds', '61'),
@@ -2174,6 +2181,12 @@ class DeliveryTests(Bound):
         self.assertEqual((status['state'], status['session']['pending_receipts']), ('terminal', 1))
         # The worker's bounded receive persisted its Hello outcome; an old server reports none.
         self.assertIn('not reported by the server', status['session']['hello'])
+        # Status shows the same transport-notice view as every other route, with the latest notices.
+        self.worker_ledger(self.slot).setting('transport-notices', {'auto_receipted': 3, 'recent': [
+            {'message_id': str(n), 'kind': 'hello'} for n in range(7)]})
+        with claude(): notices = worker.slot_status(self.root, self.slot)['session']['transport_notices']
+        self.assertEqual((notices['shown'], notices['auto_receipted']), (False, 3))
+        self.assertEqual([item['message_id'] for item in notices['recent']], ['2', '3', '4', '5', '6'])
 
     @isolated_profiles
     def test_claude_stop_terminal_no_start_or_regrant(self):

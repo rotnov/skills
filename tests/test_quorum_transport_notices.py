@@ -186,6 +186,48 @@ class ParentRelayTests(unittest.TestCase):
             finally: ledger.db.close()
 
     @isolated_profiles
+    def test_a_crash_between_the_ack_and_the_local_log_keeps_the_notice_in_status(self):
+        from quorum_notices import summary
+        from quorum_state import LocalLedger
+        with tempfile.TemporaryDirectory() as root:
+            ledger = LocalLedger(Path(root))
+            try:
+                relay, acked = self.relay(ledger, [hello()], [])
+                original = relay.api.call
+                def crash(operation, payload, request_id=None):
+                    result = original(operation, payload, request_id)
+                    if operation == 'session_ack': raise KeyboardInterrupt  # The service already receipted it.
+                    return result
+                relay.api.call = crash
+                with self.assertRaises(KeyboardInterrupt): relay.run_once()
+                self.assertEqual(acked, [HELLO_ID])
+                self.assertEqual([item['message_id'] for item in summary(ledger)['recent']], [HELLO_ID])
+            finally: ledger.db.close()
+
+    @isolated_profiles
+    def test_a_redelivered_notice_is_logged_once(self):
+        from quorum_notices import summary
+        from quorum_state import LocalLedger
+        with tempfile.TemporaryDirectory() as root:
+            ledger = LocalLedger(Path(root))
+            try:
+                relay, acked = self.relay(ledger, [hello()], [])
+                original = relay.api.call
+                def lost(operation, payload, request_id=None):
+                    if operation == 'session_ack':
+                        relay.api.call = original
+                        raise ConnectionError('response lost before the service acted')
+                    return original(operation, payload, request_id)
+                relay.api.call = lost
+                with self.assertRaises(ConnectionError): relay.run_once()
+                self.assertEqual(acked, [])
+                self.assertEqual(relay.run_once(), 'notice')
+                self.assertEqual(acked, [HELLO_ID])
+                self.assertEqual(summary(ledger)['auto_receipted'], 1)
+                self.assertEqual(ledger.setting('transport-notices')['peers'][PEER]['hellos'], 1)
+            finally: ledger.db.close()
+
+    @isolated_profiles
     def test_opt_out_delivers_notices_as_envelopes(self):
         from quorum_notices import set_visible
         from quorum_state import LocalLedger

@@ -255,7 +255,9 @@ row, ACP handshake and resident-roster check, with these differences:
   (`listener_exited`). Run it in one background shell task that stays alive,
   `block_until_ms: 0` with `<helper> session start ; while ($true) { Start-Sleep 60 }`,
   then run `session status` in a normal call. Stopping that task stops the
-  listener; a new start re-greets peers. `session start` and `recover` add
+  listener; a new start greets peers again, except those a
+  [reconnect dedupe](server.md#reconnect-hello-dedupe) server still counts as
+  greeted, which `session status` reports as skipped. `session start` and `recover` add
   `windows_job_warning` when they run inside a kill-on-close job. It is a warning,
   not a refusal, because an ordinary call and a background task may look alike there.
 - There is no controlling-terminal check. Grok asks to trust each new working

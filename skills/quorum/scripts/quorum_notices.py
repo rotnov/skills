@@ -65,11 +65,16 @@ def quiet(ledger, message, agent_id):
 
 
 def record(ledger, message, notice_kind, route, *, wall=time.time):
-    """Bounded local log and per-sender summary; IDs, roles and times only, never a body."""
+    """Bounded local log and per-sender summary; IDs, roles and times only, never a body.
+
+    Callers record before the service ACK: a crash between the two then keeps the notice in status, and
+    the redelivery of an unacknowledged notice is the one repeat, recognised here by its message ID.
+    """
     now = int(wall())
     saved = ledger.setting(LOG_KEY)
     saved = saved if isinstance(saved, dict) else {}
     recent = [item for item in saved.get('recent', []) if isinstance(item, dict)]
+    if any(item.get('message_id') == message.get('id') for item in recent): return
     peers = saved.get('peers') if isinstance(saved.get('peers'), dict) else {}
     recent.append({'message_id': message.get('id'), 'kind': notice_kind, 'route': route,
                    'sender_id': message.get('sender_id'), 'sender_role': message.get('sender_role'),

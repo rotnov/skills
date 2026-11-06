@@ -59,6 +59,21 @@ class KnowledgeTests(unittest.TestCase):
         self.assertEqual(calls[0][1]['agent_id'], RECORD['agent_id'])
         self.assertEqual(calls[0][1]['session_ref'], SID)
 
+    def test_create_names_its_space_so_the_server_lock_is_real_and_a_retry_matches(self):
+        from quorum_knowledge import invoke
+        calls=[]
+        class Api:
+            def call(self, *args): calls.append(args); return {}
+        create={'operation':'create','payload':{'name':'same'}}
+        for request in ('r','r','other'): invoke(Api(), RECORD, 'admin', create, request_id=request, owner_action=True)
+        spaces=[call[1]['payload']['space_id'] for call in calls]
+        self.assertEqual(spaces[0],spaces[1],'an identical retry must keep the idempotency fingerprint')
+        self.assertNotEqual(spaces[0],spaces[2])
+        self.assertEqual(create,{'operation':'create','payload':{'name':'same'}})
+        invoke(Api(), RECORD, 'admin', {'operation':'create','payload':{'space_id':SPACE,'name':'same'}},
+               request_id='own', owner_action=True)
+        self.assertEqual(calls[-1][1]['payload']['space_id'],SPACE)
+
     def test_default_role_is_an_owner_admin_operation_with_a_closed_permission_set(self):
         from quorum_knowledge import invoke, KnowledgeError
         calls=[]

@@ -106,8 +106,17 @@ shows that unreconciled history. Do not estimate usage from message length or ca
 a provider billing API.
 
 `debug import --file <path>` accepts an owner-provided artifact only when the
-run's sources include `imported-artifact`. The helper forces
-`live_observation` false. Do not import private bodies, credentials, or nonces.
+run's sources include `imported-artifact`. A run has only `local-ledger` by
+default, so the owner must ask for this when activating it, naming both sources
+to keep the ledger too. Activating with other sources while a run is active
+fails with `debug_run_active`.
+
+```text
+uv run --project <skill-dir> --frozen python <skill-dir>/scripts/quorum.py debug activate --quorum <quorum> --project-ref <project> --report-repo <owner/name> --until 5m --source local-ledger --source imported-artifact
+```
+
+The helper forces `live_observation` false. Do not import private bodies,
+credentials, or nonces.
 
 Publication uses the `gh` CLI for the one granted `owner/name` repository.
 Bodies go through `--body-file`. The helper saves a publication intent before

@@ -145,7 +145,10 @@ class ResumeTableTests(rebind_tests.RebindTests):
         found = self.live()
         self.assertEqual((found['route'], found['state'], found['slot_id']),
                          ('claude-worker', 'hand_over_pending', successor))
-        self.assertEqual(found['next_step'][-5:-2], ['worker', 'attest', successor])
+        # The value comes from the spawn receipt; no literal for a caller to paste, and the bare flag cannot run.
+        self.assertEqual(found['next_step'][-4:], ['worker', 'attest', successor, '--native-handle'])
+        self.assertEqual(found['native_handle_source'], 'spawn_receipt')
+        self.assertFalse([word for word in found['next_step'] if '<' in word])
         self.refused(self.rebind(api, old), 'native_worker_binding_denied', 'rebind_pending')
         self.attest(successor, NEW_HANDLE)
         self.assertEqual(self.live()['slot_id'], successor)

@@ -9,7 +9,8 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const read = path => readFileSync(path, 'utf8');
 const migrations = root + '/skills/quorum/supabase/migrations/';
 const applied = ['_invite_id_and_creator_gate.sql', '_native_realtime_wakeups.sql', '_native_grok_session.sql',
-  '_open_access_quorums.sql', '_native_session_coordination.sql', '_open_session_requirements.sql'];
+  '_open_access_quorums.sql', '_native_session_coordination.sql', '_open_session_requirements.sql',
+  '_native_session_engine_convergence.sql'];
 const all = readdirSync(migrations).sort();
 const fresh = all.filter(name => applied.some(suffix => name.endsWith(suffix)));
 const priority = all.find(name => name.endsWith('_urgent_message_priority.sql'));
@@ -37,12 +38,18 @@ const dedupe = '20261106120000_hello_reconnect_dedupe.sql';
 const authorityBound = '20261106130000_task_authority_project_bound.sql';
 // Exact unreceipted lookup behind owner-attested confirmed absence (#142).
 const unreceipted = '20261106140000_session_message_unreceipted.sql';
+// The Hello result reports sent and skipped apart (#146).
+const helloSplit = '20261106150000_hello_sent_skipped.sql';
 // Installations that deployed native coordination before open access apply the
 // older-dated open access file late; the final session requirements must match.
 const late = name => name.endsWith('_open_access_quorums.sql');
 const opened = name => name.endsWith('_open_session_requirements.sql');
 const coordination = name => name.endsWith('_native_session_coordination.sql');
-const upgraded = [...fresh.filter(name => !late(name) && !opened(name)), ...fresh.filter(late), ...fresh.filter(opened)];
+// A no-op after the Grok extension; a server that skipped it applies this after open access.
+const converging = name => name.endsWith('_native_session_engine_convergence.sql');
+const grok = name => name.endsWith('_native_grok_session.sql');
+const upgraded = [...fresh.filter(name => !late(name) && !opened(name) && !converging(name)),
+  ...fresh.filter(late), ...fresh.filter(opened), ...fresh.filter(converging)];
 // The deployed coordination release, then the mandatory release this skill installs.
 const historical = {protocol_version: 1, skill_version: '0.2.0'};
 const current = JSON.parse(read(root + '/skills/quorum/assets/release.json'));
@@ -182,6 +189,14 @@ const pinned = ['quorum_private.call(text,jsonb,text)', 'quorum_private.call_inv
   'quorum_private.native_session(uuid,text)', 'quorum_private.owned_agent(uuid,uuid)',
   'quorum_private.member(uuid,uuid)', 'public.session_inbox(uuid,text)'];
 
+// Applying the convergence file changes neither the bodies nor the engine check.
+async function convergenceChangesNothing(db, expected) {
+  const file = read(migrations + all.find(name => name.endsWith('_native_session_engine_convergence.sql')));
+  await db.exec(file);
+  const result = await db.query(`select pg_get_constraintdef(oid) engines from pg_constraint where conname='agents_engine_check'`);
+  if (result.rows[0].engines !== expected.engines) throw new Error('convergence changed a converged server');
+}
+
 async function drifted(fn, expected, order = fresh, file = priority, check = untouched) {
   const db = await database(order);
   try {
@@ -204,7 +219,7 @@ try {
     await released(order);
   }
   // Open session requirements must refuse a server without open access.
-  const withoutOpen = upgraded.filter(name => !late(name) && !opened(name));
+  const withoutOpen = upgraded.filter(name => !late(name) && !opened(name) && !converging(name));
   await gated(withoutOpen, read(migrations + fresh.find(opened)), 'open_access_required', 'requirements without open access');
   // The priority migration accepts only the reviewed 150000 -> 152603 -> 160000 chain.
   await gated(fresh.filter(name => !opened(name)), read(migrations + priority), 'reviewed_release_changed',
@@ -224,7 +239,7 @@ try {
   }
   const portableTail = [priority, serialization, maintenance, memberAuthority];
   const reviewedTail = [...portableTail, knowledge, wiki, hello, ttl, roles, status, defaultRole, dedupe, authorityBound,
-    unreceipted];
+    unreceipted, helloSplit];
   if (JSON.stringify(all.filter(name => name >= priority)) !== JSON.stringify(reviewedTail)) {
     throw new Error('unreviewed migration after the close serialization');
   }
@@ -451,6 +466,103 @@ try {
       await lookupDb.close();
     }
   }
+  // The split pins the Hello wrapper it replaces, the core, the heartbeat, the dispatcher, the binding
+  // check and the release; it refuses drift, reapplication or a missing predecessor, changing nothing.
+  const noSplit = async (db, label) => {
+    const result = await db.query(`select
+      to_regprocedure('quorum_private.session_heartbeat_hello_before_split(uuid,text,uuid,integer,text)') moved,
+      to_regprocedure('quorum_private.session_heartbeat_before_status(uuid,text,uuid,integer,text)') current,
+      exists(select 1 from information_schema.columns where table_schema='quorum_private'
+       and table_name='session_hellos' and column_name='skipped') col`);
+    const row = result.rows[0];
+    if (row.moved !== null || row.current === null || row.col) throw new Error(label + ': partial split apply');
+  };
+  const beforeSplit = [...beforeLookup, unreceipted];
+  await gated([...beforeSplit, helloSplit], read(migrations + helloSplit), 'hello_split_present', 'split reapplied');
+  await gated(beforeBound, read(migrations + helloSplit), 'task_authority_bound_required', 'split without the bound', noSplit);
+  for (const fn of ['public.session_heartbeat(uuid,text,uuid,integer,text,integer,timestamptz,uuid,timestamptz)',
+    'quorum_private.session_heartbeat_before_status(uuid,text,uuid,integer,text)',
+    'quorum_private.session_heartbeat_before_hello(uuid,text,uuid,integer,text)', 'quorum_private.call(text,jsonb,text)',
+    'quorum_private.native_session(uuid,text)', 'public.session_requirements()']) {
+    await drifted(fn, 'reviewed_dispatcher_changed: ' + fn, beforeSplit, helloSplit, noSplit);
+  }
+  {
+    const splitDb = await database([...beforeSplit, helloSplit]);
+    try {
+      await release(splitDb, current);
+      for (const name of ROLE_COMPATIBLE) await splitDb.exec(suite(name));
+      await splitDb.exec(suite('quorum_peer_status_backend.sql'));
+      await splitDb.exec(suite('quorum_hello_dedupe_backend.sql'));
+      await splitDb.exec(suite('quorum_hello_split_backend.sql'));
+    } finally {
+      await splitDb.exec('rollback');
+      await splitDb.close();
+    }
+  }
+  // A server that skipped the Grok extension: the priority release refuses it until the convergence
+  // file gives it the reviewed bodies, after which the whole reviewed tail applies. Elsewhere the file
+  // changes nothing, and it refuses a server before open access or any other body.
+  const state = async db => (await db.query(`select
+    (select encode(sha256(convert_to(prosrc,'UTF8')),'hex') from pg_proc
+      where oid='quorum_private.native_session(uuid,text)'::regprocedure) session,
+    (select encode(sha256(convert_to(prosrc,'UTF8')),'hex') from pg_proc
+      where oid=to_regprocedure('quorum_private.receive_wakeup(text)')) wakeup,
+    (select pg_get_constraintdef(oid) from pg_constraint where conname='agents_engine_check') engines`)).rows[0];
+  const withoutGrok = fresh.filter(name => !grok(name) && !converging(name));
+  const reviewedDb = await database(fresh);
+  const reviewedState = await state(reviewedDb);
+  await convergenceChangesNothing(reviewedDb, reviewedState);
+  await reviewedDb.exec('rollback');
+  await reviewedDb.close();
+  const skippedDb = await database(withoutGrok);
+  try {
+    const before = await state(skippedDb);
+    if (before.session !== '60f40e2723322c2351430ec45f17600a8d2622c68ecb61845d8d1592546c9b7a') {
+      throw new Error('the skipped-Grok fixture is not the reported body: ' + before.session);
+    }
+    await expectError(skippedDb, read(migrations + priority),
+      'reviewed_dispatcher_changed: quorum_private.native_session(uuid,text)', 'priority without the Grok extension');
+    await skippedDb.exec(read(migrations + fresh.find(converging)));
+    const after = await state(skippedDb);
+    for (const key of ['session', 'wakeup', 'engines']) {
+      if (after[key] !== reviewedState[key]) throw new Error(`convergence ${key}: ${after[key]} <> ${reviewedState[key]}`);
+    }
+    await convergenceChangesNothing(skippedDb, after);
+    for (const name of [...portableTail, hello, ttl, roles, status, dedupe, authorityBound, unreceipted, helloSplit]) {
+      await skippedDb.exec(read(migrations + name));
+    }
+    await convergenceChangesNothing(skippedDb, after);
+    await release(skippedDb, current);
+    for (const name of ROLE_COMPATIBLE) await skippedDb.exec(suite(name));
+    await skippedDb.exec(suite('quorum_hello_split_backend.sql'));
+  } finally {
+    await skippedDb.exec('rollback');
+    await skippedDb.close();
+  }
+  await gated(fresh.filter(name => !late(name) && !opened(name) && !coordination(name) && !converging(name)),
+    read(migrations + fresh.find(converging)), 'open_access_required', 'convergence before open access');
+  await gated(fresh.filter(name => !grok(name) && !late(name) && !opened(name) && !coordination(name) && !converging(name)),
+    read(migrations + fresh.find(converging)), 'open_access_required', 'convergence before open access without Grok');
+  await drifted('quorum_private.native_session(uuid,text)', 'reviewed_dispatcher_changed: quorum_private.native_session(uuid,text)',
+    withoutGrok, fresh.find(converging), async (db, label) => {
+      if ((await state(db)).engines.includes('grok')) throw new Error(label + ': partial convergence');
+    });
+  await drifted('quorum_private.receive_wakeup(text)', 'reviewed_dispatcher_changed: quorum_private.receive_wakeup(text)',
+    withoutGrok, fresh.find(converging), async (db, label) => {
+      if ((await state(db)).engines.includes('grok')) throw new Error(label + ': partial convergence');
+    });
+  // A server that skipped the Realtime extension as well keeps polling: nothing is created for it.
+  const noRealtimeDb = await database(withoutGrok.filter(name => !name.endsWith('_native_realtime_wakeups.sql')));
+  try {
+    await noRealtimeDb.exec(read(migrations + fresh.find(converging)));
+    const after = await state(noRealtimeDb);
+    if (after.session !== reviewedState.session || after.engines !== reviewedState.engines || after.wakeup !== null) {
+      throw new Error('convergence without Realtime: ' + JSON.stringify(after));
+    }
+  } finally {
+    await noRealtimeDb.exec('rollback');
+    await noRealtimeDb.close();
+  }
   // A server without project knowledge refuses the default-role migration before any change.
   await gated([...beforeStatus, status], read(migrations + defaultRole), 'knowledge_wiki_required',
     'default role without knowledge', async (db, label) => {
@@ -462,7 +574,7 @@ try {
     });
   if (!coordination(upgraded[3]) || !late(upgraded[4])) throw new Error('upgraded order is not coordination first');
   console.log('Invitation, session, Realtime, open-access, coordination, open-session, coordination-only refusal, '
-    + 'mandatory priority release, close serialization, member authority ACLs, open-member priority, Hello reporting/roster, 60-minute open invitations, invitation role assignment/owner retire, heartbeat peer status, knowledge default-role prerequisite, reconnect Hello dedupe, task authority project bound and pinned-chain drift regression '
+    + 'mandatory priority release, close serialization, member authority ACLs, open-member priority, Hello reporting/roster, 60-minute open invitations, invitation role assignment/owner retire, heartbeat peer status, knowledge default-role prerequisite, reconnect Hello dedupe, task authority project bound, Hello sent/skipped split, native session convergence and pinned-chain drift regression '
     + '(fresh and coordination-first upgraded order): PASS (disposable PostgreSQL)');
 } catch (error) {
   console.error(error.message, error.where || '');

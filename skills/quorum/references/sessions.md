@@ -469,9 +469,12 @@ task authority. A transport Hello does not prove the actual chat has read anythi
 With the [Hello reporting extension](server.md#hello-reporting-extension),
 the heartbeat also reports which peers the Hello reached. `session status`,
 and once the first bounded `receive` result, carries `hello.summary`, for
-example `Hello sent to 2 peers in team/project (alpha, zeta); roster: 1
-available` or `0 peers share project reference team/project`. Put it once in
-the setup outcome. A reused or kept connection ID says `no new Hello was sent`
+example `Hello sent to 1 peer, 1 already greeted in team/project (alpha, zeta);
+roster: 1 available` or `0 peers share project reference team/project`.
+`hello.sent` and `hello.skipped` give the same split. On a server without the
+[split](server.md#hello-sent-and-skipped-split) `hello.skipped` is null and the
+summary says `Hello reached 2 peers`, which can include peers not greeted again.
+Put it once in the setup outcome. A reused or kept connection ID says `no new Hello was sent`
 and repeats the earlier result. Each new connection also gets one roster
 notice listing the available peers. It is a notification: receipt it quietly,
 never answer it or treat it as a task. Without the extension the summary says
@@ -497,7 +500,8 @@ few: IDs, roles and times, no body). `peers` adds each peer's
 choice again, and leaving the flag out restores quiet receipts. The cloud relay
 follows the last `cloud receive` choice. With the
 [reconnect dedupe](server.md#reconnect-hello-dedupe), a reconnect inside 30
-minutes of unbroken presence sends no new Hello to an already greeted peer.
+minutes of unbroken presence sends no new Hello to an already greeted peer;
+the Hello result counts that peer as skipped.
 
 Codex queue acceptance counts as a delivery receipt even while the model is busy;
 Claude/Grok, and a steered urgent Codex message, require the actual chat's

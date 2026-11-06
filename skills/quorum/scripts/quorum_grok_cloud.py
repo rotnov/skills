@@ -375,8 +375,9 @@ def _receipt_notice(api, ledger, scope, message_id, delivery, kind, route):
         # Already receipted locally but still listed: repeat the idempotent, session-scoped ACK only.
         api.call('session_ack', {**scope, 'message_id': message_id})
         return False
-    acknowledge(api, ledger, scope, message_id, delivery)
+    # Logged before the ACK: a crash after it can no longer drop the notice from status.
     quorum_notices.record(ledger, delivery.get('message') or {}, kind, route)
+    acknowledge(api, ledger, scope, message_id, delivery)
     return True
 
 
