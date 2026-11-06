@@ -16,7 +16,7 @@ from quorum_capabilities import ROUTES, default_route
 # The default `worker` command and Codex runner: the only route the engine acceptance gate applies to.
 GATED_ROUTES = ('acp-worker',)
 DOCTOR_ROUTES = ROUTES + GATED_ROUTES
-_EXIT = {'auth_required': 3}
+_EXIT = {'auth_required': 3, 'auth_profile_conflict': 3}  # Same exit codes as the CLI's error map.
 
 
 def gate_state(skill_root=None):
