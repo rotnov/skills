@@ -55,10 +55,40 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(value['continuous_background_reception']['status'], 'unsupported')
         self.assertEqual(value['continuous_background_reception']['reason'], 'no_process_between_calls')
 
-    def test_claude_worker_matches_tool_inbox_limits(self):
-        value = caps.report('claude-worker')['capabilities']
-        self.assertEqual(value['bounded_receive']['status'], 'supported')
-        self.assertEqual(value['continuous_background_reception']['status'], 'unsupported')
+    def test_each_route_states_its_fixed_receive_claims(self):
+        expected = {
+            'codex-tool-inbox': (('supported', 'finite_tool_call'), ('unsupported', 'no_process_between_calls')),
+            'claude-worker': (('supported', 'finite_tool_call'),
+                              ('conditional', 'client_and_worker_must_stay_alive')),
+            'parent-session': (('unsupported', 'parent_queue_route'), ('conditional', 'client_must_stay_available')),
+            'grok-cloud': (('unsupported', 'parent_queue_route'),
+                           ('conditional', 'cloud_computer_must_stay_active')),
+            'claude-listener-pilot': (('unsupported', 'separate_headless_handler'),
+                                      ('conditional', 'owner_subscription_approval')),
+        }
+        self.assertEqual(set(expected), set(caps.ROUTES))
+        for route, (bounded, continuous) in expected.items():
+            value = caps.report(route)['capabilities']
+            with self.subTest(route=route):
+                self.assertEqual((value['bounded_receive']['status'], value['bounded_receive']['reason']), bounded)
+                entry = value['continuous_background_reception']
+                self.assertEqual((entry['status'], entry['reason']), continuous)
+
+    def test_claude_worker_receives_across_idle_turns_only_while_the_client_lives(self):
+        detail = caps.report('claude-worker')['capabilities']['continuous_background_reception']['detail']
+        for phrase in ('across idle parent turns', 'Claude Code client and that worker stay alive',
+                       "brief's limit", 'slot deadline', 'Nothing restarts after the client exits', 'rebind'):
+            self.assertIn(phrase, detail)
+
+    def test_codex_worker_may_be_suspended_when_the_parent_turn_ends(self):
+        detail = caps.report('codex-tool-inbox')['capabilities']['continuous_background_reception']['detail']
+        self.assertIn('parent turn ending can suspend it', detail)
+        self.assertIn('receipt_timeout', detail)
+
+    def test_parent_session_names_the_windows_grok_background_task(self):
+        detail = caps.report('parent-session')['capabilities']['continuous_background_reception']['detail']
+        self.assertIn('Grok TUI route', detail)
+        self.assertIn('background shell task', detail)
 
     def test_listener_pilot_receives_continuously_only_with_owner_approval(self):
         value = caps.report('claude-listener-pilot')['capabilities']
@@ -150,6 +180,17 @@ class InstructionTests(unittest.TestCase):
             self.assertIn(phrase, flat)
         listener = ' '.join((SKILL / 'references/listener.md').read_text(encoding='utf-8').split())
         self.assertIn('not until-stop project execution', listener)
+
+    def test_references_defer_worker_lifetime_to_the_report(self):
+        inbox = ' '.join((SKILL / 'references/native-inbox.md').read_text(encoding='utf-8').split())
+        service = ' '.join((SKILL / 'references/service-agent.md').read_text(encoding='utf-8').split())
+        # No route-wide claim that every worker ends with the parent turn; the report states each route.
+        self.assertNotIn('keeps receiving while the parent turn lasts', inbox)
+        self.assertNotIn('or when the parent turn ends', inbox)
+        self.assertNotIn("can pause when the parent's turn ends", service)
+        self.assertIn('one canonical per-route statement', inbox)
+        self.assertIn('`continuous_background_reception`', inbox)
+        self.assertIn('native-inbox.md#background-capability', service)
 
 
 if __name__ == '__main__':
