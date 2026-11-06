@@ -220,6 +220,8 @@ class StatusWatch:
             if not isinstance(page, dict) or not isinstance(page.get('rows'), list): return
             rows = [row for row in map(status_row, page['rows']) if row]
             self._follow(rows)
+            # A timed status starts its own window, which an earlier check could not have scheduled.
+            if any(row['status'] in STUCK_STATUSES for row in rows): note_sent(self.ledger, wall=self.wall)
             for row in rows:
                 if row['status'] in MATERIAL: self._alert(row, row['status'])
             if type(page.get('cursor')) is int and page['cursor'] >= cursor: cursor = page['cursor']

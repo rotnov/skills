@@ -292,6 +292,36 @@ class WatchTests(LedgerCase):
                          [(OTHER, 'in_progress', False)])
         self.assertEqual(saved['total'], 1)
 
+    def test_a_timed_status_after_the_last_deadline_starts_a_new_check(self):
+        for status in ('queued', 'in_progress', 'needs_owner'):
+            for saved in ({'due': None}, None):
+                with self.subTest(status=status, saved=saved):
+                    self.ledger.db.execute("delete from settings where key like 'delivery-%'")
+                    if saved: self.ledger.setting(CHECK_KEY, saved)
+                    late = row(status, unread=status == 'queued')
+                    api = Service([{'rows': [row(status, 7)], 'cursor': 7, 'more': False}],
+                                  stuck={'open': 1, 'stuck_total': 1, 'next_check_seconds': None, 'limit_seconds': 900,
+                                         'stuck': [late]})
+                    watch = self.watch(api)
+                    watch.signal()
+                    self.assertEqual(self.ledger.setting(CHECK_KEY), {'due': self.now + 900})
+                    self.assertNotIn('session_delivery_stuck', api.ops())
+                    self.now += 901
+                    watch.tick()
+                    self.assertEqual(outgoing_summary(self.ledger)['stuck'][0]['status'], status)
+
+    def test_a_status_with_no_time_limit_starts_no_check(self):
+        for status in ('read', 'deferred', 'answered', 'declined', 'done', 'failed'):
+            with self.subTest(status=status):
+                self.ledger.setting(CHECK_KEY, {'due': None})
+                self.watch(Service([{'rows': [row(status)], 'cursor': 1, 'more': False}])).signal()
+                self.assertEqual(self.ledger.setting(CHECK_KEY), {'due': None})
+
+    def test_a_timed_status_keeps_an_earlier_deadline(self):
+        self.ledger.setting(CHECK_KEY, {'due': 1100.0})
+        self.watch(Service([{'rows': [row('in_progress')], 'cursor': 1, 'more': False}])).signal()
+        self.assertEqual(self.ledger.setting(CHECK_KEY), {'due': 1100.0})
+
     def test_a_pull_route_takes_alerts_once_in_its_own_result(self):
         watch = self.watch(Service([{'rows': [row('failed')], 'cursor': 1, 'more': False}]), notify=None)
         watch.signal()
@@ -434,6 +464,48 @@ class ParentProofTests(ParentRoute):
                 self.assertIn('session_ack', api.ops())
                 self.assertEqual(api.marks(), [])
 
+    def test_a_repeated_receipt_of_a_pointer_proves_nothing(self):
+        for action, fields in (('received', {}), ('reply', {'text_stdin': True, 'priority': 'normal'})):
+            with self.subTest(action=action):
+                self.pointer()
+                api = Service()
+                self.run_session(api, 'received', message_id=MID)
+                self.run_session(api, action, message_id=MID, **fields)
+                self.assertEqual(api.marks(), [])
+
+    def test_a_retry_after_an_uncertain_ack_of_a_pointer_proves_nothing(self):
+        for action, fields in (('received', {}), ('reply', {'text_stdin': True, 'priority': 'normal'})):
+            with self.subTest(action=action):
+                self.pointer()
+                api = Service()
+                api.fail['session_ack'] = QuorumError('service_unavailable', transient=True)
+                with self.assertRaises(QuorumError): self.run_session(api, 'received', message_id=MID)
+                self.assertEqual(self.ledger.setting('delivery:' + MID), {'state': 'queued', 'attempt_id': ATTEMPT})
+                del api.fail['session_ack']
+                self.run_session(api, action, message_id=MID, **fields)
+                self.assertEqual(api.marks(), [])
+                self.assertEqual(self.ledger.setting('delivery:' + MID), {'state': 'acked', 'attempt_id': ATTEMPT})
+
+    def test_a_receipt_after_an_attested_attempt_proves_nothing(self):
+        self.ledger.setting('delivery:' + MID, {'state': 'intent', 'attempt_id': ATTEMPT})
+        api = Service()
+        self.run_session(api, 'reconcile', message_id=MID, confirmed_queued=True, confirmed_absent=False)
+        self.run_session(api, 'received', message_id=MID)
+        self.assertEqual(api.marks(), [{**SCOPE, 'message_id': MID, 'status': 'queued'}])
+
+    def test_a_retry_after_an_uncertain_ack_of_an_envelope_still_proves_it(self):
+        api = Service()
+        api.fail['session_ack'] = QuorumError('service_unavailable', transient=True)
+        with self.assertRaises(QuorumError): self.run_session(api, 'received', message_id=MID)
+        del api.fail['session_ack']
+        self.run_session(api, 'received', message_id=MID)
+        self.assertEqual(api.marks(), [{**SCOPE, 'message_id': MID, 'status': 'read', 'proof': 'received'}])
+
+    def test_a_listener_pass_keeps_a_pointers_provenance(self):
+        self.ledger.setting('delivery:' + MID, {'state': 'queued', 'attempt_id': ATTEMPT})
+        Deliveries(self.ledger).mark_acked(MID)
+        self.assertEqual(self.ledger.setting('delivery:' + MID), {'state': 'acked', 'attempt_id': ATTEMPT})
+
     @isolated_profiles
     def test_only_a_returned_body_proves_a_pointer(self):
         self.pointer()
@@ -445,7 +517,7 @@ class ParentProofTests(ParentRoute):
         api = Reader()
         self.run_session(api, 'message', message_id=MID, conversation_id=OTHER, sequence=1)
         self.assertEqual(api.marks(), [{**SCOPE, 'message_id': MID, 'status': 'read', 'proof': 'body_read'}])
-        self.assertEqual(self.ledger.setting('delivery:' + MID), {'state': 'acked'})
+        self.assertEqual(self.ledger.setting('delivery:' + MID), {'state': 'acked', 'attempt_id': ATTEMPT})
 
     @isolated_profiles
     def test_a_failed_read_proves_nothing(self):

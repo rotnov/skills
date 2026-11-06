@@ -1116,7 +1116,8 @@ def acknowledge(api, ledger, scope, message_id, *, proof=None):
 
 
 def body_proof(delivery, proof):
-    """`proof` when this row's envelope carried the body. A `codex queue` pointer did not: only its body read counts."""
+    """`proof` when this row's envelope carried the body. A row with an attempt UUID, in any state, is a `codex queue`
+    pointer or an unresolved push: only a body read counts there."""
     return None if 'attempt_id' in delivery else proof
 
 

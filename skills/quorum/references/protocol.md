@@ -62,7 +62,7 @@ routes differ on purpose, and this table is their contract.
 | Route | Local states | Who acknowledges, and when | After a crash |
 | --- | --- | --- | --- |
 | Parent Claude pipe, parent Grok leader frame, Codex `turn/steer` | `intent`, `submitted`, `queued`, `acked` | The same chat, with `received` or `reply`. The CLI records `queued` first, then runs `session_ack`, then writes `acked`. A pipe write, a whole frame or an accepted steer is not a receipt | An `intent` is never replayed and needs [owner reconciliation](sessions.md#failure-and-recovery). A `submitted` row stays and nothing is sent again. A `queued` row is finished by the next listener pass |
-| Parent `codex queue` | As above, and `submitted` keeps its attempt UUID | The same chat, when `session message` returns the body, or with `received` or `reply`. CLI acceptance writes no receipt | As above. An accepted pointer is never queued again unless the owner [attests its absence](sessions.md#a-queued-message-stays-unread) |
+| Parent `codex queue` | As above, and every state keeps the attempt UUID | The same chat, when `session message` returns the body, or with `received` or `reply`. CLI acceptance writes no receipt | As above. An accepted pointer is never queued again unless the owner [attests its absence](sessions.md#a-queued-message-stays-unread) |
 | Codex tool inbox, Claude worker | `offered`, `parked`, `acked` | The worker. `received` and `reply` run `session_ack`, then write `acked`. `park` and dismiss write the row first, then run `session_ack`. `receive` parks an offer whose window ended | An `offered` row is offered again. A `parked` row whose receipt was lost is acknowledged again by the next `receive`. An `intent` or `submitted` row left by parent reception refuses `receive` with `session_delivery_unknown` |
 | Grok Bot cloud | `offered`, `acked` | The parent chat, with `received` or `reply`: `session_ack`, then one attempt to write `acked`. The wake relay never acknowledges a peer message | An `offered` row is offered again, and its receipt can be repeated |
 
@@ -139,7 +139,8 @@ retried, a tool-inbox worker in its `receive` result as `delivery_alerts`.
 
 Unread past the limit has no event, and the server has no scheduled job. So `session send`
 sets a local deadline, and the listener reads `session_delivery_stuck` only when it comes
-due. The answer gives the next deadline, or none, so an idle agent reads nothing. The
+due. The answer gives the next deadline, or none, so an idle agent reads nothing. A feed
+change to a status with a time limit sets a deadline again, because it starts a new window. The
 limit is 900 seconds, from the service. A reply is not chased, and a receipt with no status
 row is an older client, which proves neither read nor unread.
 
