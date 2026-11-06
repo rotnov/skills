@@ -235,15 +235,18 @@ def main(argv=None):
                  'engine_acceptance_pending': 4, 'service_profile_ambiguous': 4, 'machine_profile_unavailable': 4,
                  'auth_profile_conflict': 3, 'service_config_conflict': 4, 'service_unavailable': 5, 'service_error': 5,
                  'response_too_large': 5, 'invalid_response': 5, 'listener_start_failed': 5, 'listener_stop_failed': 5, 'listener_not_ready': 5,
+                 'listener_stop_pending': 5,
                  'anonymous_login_unavailable': 4, 'open_invite_required': 3, 'owner_required': 3, 'agent_denied': 3,
                  'owner_retire_unavailable': 4, 'coordination_unavailable': 4, 'update_target_changed': 3}
         codes.update({'update_extension_unavailable':4, 'runtime_source_unavailable':4})
         codes.update({code: exit_code for _, code, exit_code in SERVER_ERRORS.values()})
         code = str(error) if str(error) in codes else 'operation_failed'
+        from quorum_listener import ListenerPending
         from quorum_release import ReleaseMismatch
         from quorum_updates import UpdateFailure
         data = {'release':error.diagnostic} if isinstance(error, ReleaseMismatch) else {}
         if isinstance(error, UpdateFailure): data = {'update':error.diagnostic}
+        if isinstance(error, ListenerPending): data = error.diagnostic
         print(json.dumps({'ok': False, 'code': code, 'data': data}))
         return codes.get(code, 3)
     except GrokBindingError as error:

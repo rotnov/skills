@@ -1,4 +1,4 @@
-"""Owner stop against every start window: lock table, stop windows and crash windows.
+"""Owner stop against every start window, and a start right after a stop: lock, stop and crash tables.
 
 Disposable ledgers and a fake child only; no service, model or real listener. Portable, so the
 Windows CI job runs the same table against real `msvcrt` locks.
@@ -69,7 +69,7 @@ class Child:
     terminate = kill = close
 
 
-class StopDuringStart(unittest.TestCase):
+class Harness(unittest.TestCase):
     def setUp(self):
         from quorum_state import LocalLedger
         temporary = self.enterContext(tempfile.TemporaryDirectory())
@@ -137,6 +137,8 @@ class StopDuringStart(unittest.TestCase):
         self.assertEqual(self.reception(), {'enabled':False})
         self.assertFalse(any(child.alive() for child in self.children), 'no listener outlives the stop')
 
+
+class StopDuringStart(Harness):
     def test_lock_table_holds_control_only_around_ledger_mutations(self):
         self.start()
         self.assertEqual(self.table, {  # step: (listener-start.lock, listener-control.lock)
@@ -453,6 +455,267 @@ class OtherStartersYieldToStop(unittest.TestCase):
              contextlib.redirect_stdout(output):
             quorum.main(['--state', str(self.root), 'status'])
         self.assertEqual(json.loads(output.getvalue())['code'], 'listener_start_stopped')
+
+
+class OldRun:
+    """The stopped generation's process: holds its locks until it acts on the stop, then frees them in order."""
+    def __init__(self, root, state='waiting', *, skill_version=None):
+        from quorum_listener import Control
+        from quorum_os import FileLock
+        from quorum_release import installed_release
+        from quorum_state import LocalLedger
+        self.ledger, self.run_id = LocalLedger(root), str(uuid.uuid4())
+        release = {**installed_release(), **({'skill_version':skill_version} if skill_version else {})}
+        self.control = Control(self.ledger)
+        self.held = {'supervisor':FileLock(root / 'supervisor.lock').__enter__(),
+                     'listener':FileLock(root / 'listener.lock').__enter__()}
+        self.control.update(self.run_id, state, 0, timeout=0, release=release)
+
+    def report(self):
+        self.control.update(self.run_id, 'stopped', 0, timeout=0)
+
+    def free(self, name):
+        self.held.pop(name).__exit__()
+
+    def exit(self):
+        # run_listener's `with` unwinds listener.lock first, so supervisor.lock outlives it.
+        for name in ('listener', 'supervisor'):
+            if name in self.held: self.free(name)
+
+    def close(self):
+        self.exit()
+        self.ledger.db.close()
+
+
+class Idle:
+    def reconcile(self): pass
+    def run_once(self): return 'idle'
+
+
+STARTED, NOT_READY = 'started', 'listener_not_ready'
+STOP_PENDING, STOPPED = 'listener_stop_pending', 'listener_start_stopped'
+FIRST_STOP = 'stop'
+# name: (events before the start, {wait tick: events}, expected outcome, options).
+# Events: `stop`, one owner stop; `report`, the old run's last ledger write; `listener` and `supervisor`, the
+# release of that lock; `exit`, both. Each row's first stop has returned before its start takes the guard.
+INTERLEAVINGS = {
+    'old_run_gone_before_the_start': ((FIRST_STOP, 'exit'), {}, STARTED, {}),
+    'old_run_exits_during_the_start': ((FIRST_STOP,), {3:('exit',)}, STARTED, {}),
+    'old_run_takes_a_ten_second_poll': ((FIRST_STOP,), {50:('exit',)}, STARTED, {}),
+    'old_run_reported_stopped_but_holds_its_locks': ((FIRST_STOP, 'report'), {2:('exit',)}, STARTED, {}),
+    'listener_lock_free_but_supervisor_lock_held': ((FIRST_STOP, 'listener'), {2:('supervisor',)}, STARTED, {}),
+    'degraded_old_run_exits': ((FIRST_STOP,), {3:('exit',)}, STARTED, {'old_state':'degraded'}),
+    'old_run_of_an_older_skill_copy_exits': ((FIRST_STOP,), {3:('exit',)}, STARTED, {'old_copy':'0.0.1'}),
+    'rebind_waits_for_the_old_run': ((FIRST_STOP,), {3:('exit',)}, STARTED, {'endpoint':'/synthetic/new'}),
+    'rebind_waits_for_the_supervisor_lock': ((FIRST_STOP, 'listener'), {2:('supervisor',)}, STARTED,
+                                             {'endpoint':'/synthetic/new'}),
+    'old_run_never_exits': ((FIRST_STOP,), {}, STOP_PENDING, {}),
+    'rebind_old_run_never_exits': ((FIRST_STOP,), {}, STOP_PENDING, {'endpoint':'/synthetic/new'}),
+    'stop_during_the_wait': ((FIRST_STOP,), {2:('stop',)}, STOPPED, {}),
+    'stop_as_the_old_run_exits': ((FIRST_STOP,), {2:('exit', 'stop')}, STOPPED, {}),
+    'stop_during_the_rebind_wait': ((FIRST_STOP,), {2:('stop',)}, STOPPED, {'endpoint':'/synthetic/new'}),
+    'stop_before_the_new_child_spawns': ((FIRST_STOP, 'exit'), {}, STOPPED, {'stop_at':'spawn'}),
+    'stop_while_the_new_child_is_unconfirmed': ((FIRST_STOP,), {2:('exit',)}, STOPPED, {'stop_at':'spawned'}),
+}
+
+
+class StartAfterStop(Harness):
+    """#155: `session stop` only records its flag, so the old process can outlive it by a poll."""
+    def setUp(self):
+        super().setUp()
+        self.old, self.ticks, self.free_at_spawn = None, {}, []
+        self.addCleanup(lambda: self.old and self.old.close())
+
+    def step(self, name):
+        from quorum_listener import locked
+        if name == 'spawn':
+            self.free_at_spawn.append(not (locked(self.root / 'listener.lock')
+                                           or locked(self.root / 'supervisor.lock')))
+        super().step(name)
+
+    def apply(self, events):
+        for event in events:
+            if event == 'stop': self.owner_stop()
+            elif event == 'report': self.old.report()
+            elif event == 'exit': self.old.exit()
+            else: self.old.free(event)
+
+    def waited(self, native=time.sleep):
+        tick = [0]
+        def wait(_):
+            tick[0] += 1
+            self.apply(self.ticks.get(tick[0], ()))
+            native(0)
+        return patch('time.sleep', side_effect=wait)
+
+    def play(self, before, ticks, expected, *, old_state='waiting', old_copy=None, stop_at=None, **options):
+        from quorum_resume import enable
+        enable(self.other, self.record)
+        self.old = OldRun(self.root, old_state, skill_version=old_copy)
+        self.apply(before)
+        self.assertEqual(self.reception(), {'enabled':False})
+        self.ticks = ticks
+        if stop_at: self.at_step(stop_at, self.owner_stop)
+        # Only the bound shrinks; a row that exits does so on its ticks, well inside it.
+        with self.waited(), patch('quorum_listener.EXIT_SECONDS', .05 if expected == STOP_PENDING else 60):
+            if expected == STARTED: return self.assert_started(self.start(**options))
+            with self.assertRaisesRegex(ValueError, f'^{expected}$') as caught:
+                self.start(**options)
+        self.assertEqual(self.reception(), {'enabled':False}, 'never armed without a confirmed run')
+        self.assertFalse(any(child.alive() for child in self.children), 'no listener outlives the stop')
+        if expected == STOP_PENDING:
+            self.assertEqual(self.children, [], 'a child cannot share the old run\'s locks')
+            self.assertEqual(caught.exception.diagnostic['reason'], 'old_listener_exiting')
+            self.assertIs(caught.exception.diagnostic['retryable'], True)
+            self.assertIn('session status', caught.exception.diagnostic['next_step'])
+            self.assertEqual(self.stopped_run(), self.old.run_id, 'the first stop stays in force')
+            # The promised retry works once the old process has gone.
+            self.old.exit()
+            self.assert_started(self.start(**options))
+
+    def assert_started(self, result):
+        child = self.children[-1]
+        self.assertTrue(child.alive())
+        self.assertEqual(result['run_id'], child.run_id)
+        self.assertEqual((result['listener'], result['state']), ('running', 'waiting'))
+        self.assertFalse(result['stop_requested'])
+        self.assertTrue(self.reception()['enabled'], 'a successful start leaves reception on')
+        self.assertTrue(self.free_at_spawn[-1], 'the child needs both of the old run\'s locks')
+
+    def test_a_real_run_exits_under_a_waiting_start(self):
+        # The genuine loop and lock order: stop returns while the run sleeps out its poll, as in the report.
+        from quorum_listener import run_listener
+        from quorum_resume import enable
+        from quorum_state import LocalLedger
+        enable(self.other, self.record)
+        run_id, native = str(uuid.uuid4()), time.sleep
+        polling = threading.Event()
+        def nap(_):
+            polling.set()
+            native(.1)
+        def old_process():
+            own = LocalLedger(self.root)
+            try: run_listener(own, Idle, run_id, sleep=nap)
+            finally: own.db.close()
+        thread = threading.Thread(target=old_process)
+        thread.start()
+        self.addCleanup(thread.join, 5)
+        self.addCleanup(lambda: self.other.setting('listener-stop', {'run_id':run_id}))
+        self.assertTrue(polling.wait(5))
+        self.owner_stop()
+        self.assertEqual((self.result['listener'], self.result['stop_requested']), ('running', True))
+        self.assert_started(self.start())
+        thread.join(5)
+        self.assertFalse(thread.is_alive())
+
+    def test_stop_right_after_the_wait_loses_no_ground(self):
+        # The wait's last check passed; the control section's own compare still catches this stop.
+        import quorum_session
+        real = quorum_session.await_exit
+        def wait(*args, **options):
+            real(*args, **options)
+            self.owner_stop()
+        self.old = OldRun(self.root)
+        self.owner_stop()
+        self.ticks = {2:('exit',)}
+        with self.waited(), patch('quorum_session.await_exit', wait):
+            with self.assertRaisesRegex(ValueError, f'^{STOPPED}$'):
+                self.start()
+        self.assertEqual(self.children, [])
+        self.assertEqual(self.other.setting('listener')['run_id'], self.old.run_id, 'no new run published')
+
+    def test_a_running_unstopped_older_copy_is_still_refused(self):
+        self.old = OldRun(self.root, skill_version='0.0.1')
+        with self.assertRaisesRegex(ValueError, '^skill_update_required$'):
+            self.start()
+        self.assertEqual(self.children, [])
+        self.assertEqual(self.stopped_run(), self.old.run_id)
+
+    def test_a_running_unstopped_listener_is_still_reused(self):
+        from quorum_resume import enable
+        enable(self.other, self.record)
+        self.old = OldRun(self.root)
+        self.assertEqual(self.start()['run_id'], self.old.run_id)
+        self.assertEqual(self.children, [])
+        self.assertTrue(self.reception()['enabled'])
+
+    def test_a_listener_that_stays_unready_is_refused_with_a_reason_and_left_running(self):
+        from quorum_listener import ListenerPending
+        for state, reason in (('degraded', 'listener_degraded'), ('starting', 'listener_unsettled')):
+            with self.subTest(state=state):
+                if self.old: self.old.close()
+                self.old = OldRun(self.root, state)
+                with patch('quorum_session.READY_SECONDS', .05), self.assertRaises(ListenerPending) as caught:
+                    self.start()
+                self.assertEqual(str(caught.exception), NOT_READY)
+                self.assertEqual(caught.exception.diagnostic['reason'], reason)
+                self.assertTrue(caught.exception.diagnostic['next_step'])
+                self.assertNotEqual(self.stopped_run(), self.old.run_id, 'another run is never stopped here')
+                self.assertEqual(self.children, [])
+
+    def test_a_locked_listener_without_a_published_run_cannot_be_rebound(self):
+        from quorum_listener import Control, ListenerPending, StartGuard
+        from quorum_os import FileLock
+        from quorum_session import rebind
+        with StartGuard(self.ledger) as guard, FileLock(self.root / 'listener.lock'), \
+             self.assertRaises(ListenerPending) as caught:
+            rebind(self.ledger, Control(self.ledger), SID, '/synthetic/new', guard, inbox=lambda: [])
+        self.assertEqual(str(caught.exception), STOP_PENDING)
+        self.assertEqual(caught.exception.diagnostic['reason'], 'listener_run_unknown')
+        self.assertEqual(self.other.setting('session-agent'), self.record)
+
+    def other_starts(self, api):
+        import quorum_grok_cloud
+        from quorum_listener import start_listener
+        return {'listen':lambda: start_listener(self.ledger, str(self.state), 60, True),
+                'cloud':lambda: quorum_grok_cloud.start(self.ledger, self.ledger, api)}
+
+    def test_the_other_starts_wait_for_a_stopped_run_rather_than_report_it(self):
+        # Returning the exiting run would claim success, then go offline without a word.
+        api = Api(self.step)
+        for name, start in self.other_starts(api).items():
+            with self.subTest(start=name), patch('quorum_live.api_for', return_value=(api, None, None)), \
+                 patch('quorum_grok_cloud.command', side_effect=lambda _, *run: list(run)):
+                self.old = OldRun(self.root)
+                self.owner_stop()
+                self.ticks = {2:('exit',)}
+                with self.waited(): result = start()
+                self.old.close()
+                self.assertEqual(result['run_id'], self.children[-1].run_id)
+                self.assertTrue(self.free_at_spawn[-1])
+                self.children[-1].close()
+
+    def test_the_other_starts_still_reuse_an_unstopped_run(self):
+        api = Api(self.step)
+        self.old = OldRun(self.root)
+        with patch('quorum_live.api_for', return_value=(api, None, None)):
+            for start in self.other_starts(api).values():
+                self.assertEqual(start()['run_id'], self.old.run_id)
+        self.assertEqual(self.children, [])
+
+    def test_a_pending_refusal_crosses_the_cli_boundary_with_its_reason(self):
+        import contextlib
+        import io
+        import quorum
+        from quorum_listener import ListenerPending
+        for code, reason in ((STOP_PENDING, 'old_listener_exiting'), (NOT_READY, 'listener_degraded')):
+            output = io.StringIO()
+            with self.subTest(code=code), patch('quorum.LocalLedger', side_effect=ListenerPending(code, reason)), \
+                 contextlib.redirect_stdout(output):
+                exit_code = quorum.main(['--state', str(self.state), 'status'])
+            result = json.loads(output.getvalue())
+            self.assertEqual((exit_code, result['ok'], result['code']), (5, False, code))
+            self.assertEqual(result['data'], ListenerPending(code, reason).diagnostic)
+
+
+def interleaving(before, ticks, expected, options):
+    def case(self):
+        self.play(before, ticks, expected, **options)
+    return case
+
+
+for name, row in INTERLEAVINGS.items():
+    setattr(StartAfterStop, 'test_' + name, interleaving(*row))
 
 
 if __name__ == '__main__':

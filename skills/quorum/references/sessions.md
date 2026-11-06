@@ -131,6 +131,16 @@ unconfirmed child, and reception stays revoked; such a start fails with
 `listener_start_stopped`. Do not retry it: only a new explicit owner-authorized
 `session start` arms reception again.
 
+`session stop` records its flag and returns while the old process may still be
+finishing its current poll. A later `session start` waits up to 60 seconds for that
+process to release its locks and then starts normally. If it has not left by then,
+the start fails with `listener_stop_pending`, starts nothing and leaves reception
+off; `data` carries `reason`, `retryable` and `next_step`. A `listener_not_ready`
+refusal for a run that is up without being stopped carries the same fields, and
+that run keeps running. Retry either one once `session status` shows the state
+its `next_step` names. A stop issued during the wait still wins with
+`listener_start_stopped`.
+
 The listener checks its own current route before selecting another inbox message.
 A vanished socket stops reception with `claude_pipe_unavailable` before creating
 a delivery intent. A Grok listener reads its bound TUI and leader before each inbox

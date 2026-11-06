@@ -11,8 +11,8 @@ import uuid
 from quorum_api import QuorumError, rpc_missing
 from quorum_capabilities import GROK_LEADER_PLATFORMS
 from quorum_claude_pipe import DeliveryUnsent, run_child
-from quorum_listener import (Control, READY_SECONDS, START_LOCK, StartGuard, UPSERT, await_started, control_lock,
-                             locked, ready, run_listener, spawn_background, stop_listener)
+from quorum_listener import (Control, ListenerPending, READY_SECONDS, START_LOCK, StartGuard, UPSERT, await_exit,
+                             await_started, control_lock, locked, ready, run_listener, spawn_background, stop_listener)
 from quorum_os import FileLock
 from quorum_state import LocalLedger, default_state_root
 from quorum_delegation import (carried_grant, delegation_state, grant, held_status, instruction, member_grant, member_trust, opening, task_check,
@@ -861,7 +861,7 @@ def add_transport_arguments(parser):
                         help='Expected parent thread UUID of the tool-inbox worker; a relationship, not authority')
 
 
-def rebind(ledger, control, sid, endpoint, guard, *, inbox, stop_seconds=60, engine='claude', authorize=None):
+def rebind(ledger, control, sid, endpoint, guard, *, inbox, engine='claude', authorize=None):
     """Move this same chat to its current, already validated native transport.
 
     The caller has proven the session identity and endpoint from its own
@@ -875,17 +875,12 @@ def rebind(ledger, control, sid, endpoint, guard, *, inbox, stop_seconds=60, eng
     # An uncertain head stays for the owner to reconcile; never rebind past it.
     if head_intent(ledger, inbox()): raise ValueError('session_delivery_unknown')
     if authorize: authorize()  # A stop during that read must win before the listener is disturbed.
-    lock = ledger.root/'listener.lock'
-    if locked(lock):
+    if locked(ledger.root/'listener.lock'):
         run_id = (ledger.setting('listener') or {}).get('run_id')
-        if not run_id: raise ValueError('listener_stop_pending')
+        if not run_id: raise ListenerPending('listener_stop_pending', 'listener_run_unknown')
         control.request_stop(run_id)
-        deadline = time.monotonic()+stop_seconds
-        while locked(lock):
-            if authorize: authorize()
-            # The stop request stays; retry start once status shows offline.
-            if time.monotonic() >= deadline: raise ValueError('listener_stop_pending')
-            time.sleep(.2)
+        # The stop request stays; retry start once status shows offline.
+        await_exit(ledger, authorize or guard.check)
     # A delivery may have begun after the first snapshot while the old run
     # was exiting. It now holds no lock and cannot add another write intent.
     if head_intent(ledger, inbox()): raise ValueError('session_delivery_unknown')
@@ -900,8 +895,7 @@ def rebind(ledger, control, sid, endpoint, guard, *, inbox, stop_seconds=60, eng
 
 
 def await_ready(control, authorize):
-    """Wait within the readiness bound for the already running listener; None if it ended meanwhile."""
-    from quorum_api import QuorumError
+    """Wait within the readiness bound for the already running listener; None if it ended or is stopping."""
     deadline = time.monotonic()+READY_SECONDS
     while True:
         authorize()
@@ -909,9 +903,12 @@ def await_ready(control, authorize):
         if ready(status):
             authorize()
             return status
-        if status['listener'] != 'running': return None
+        # A stop only sets its flag and returns: this run is leaving, so the caller waits it out.
+        if status['listener'] != 'running' or status['stop_requested']: return None
         # Not this start's child: never stop it; the owner can inspect status or stop it explicitly.
-        if status['stop_requested'] or time.monotonic() >= deadline: raise QuorumError('listener_not_ready')
+        if time.monotonic() >= deadline:
+            reason = 'listener_degraded' if status['state'] == 'degraded' else 'listener_unsettled'
+            raise ListenerPending('listener_not_ready', reason)
         time.sleep(.1)
 
 
@@ -952,6 +949,7 @@ def start(auth_state, ledger, sid, *, api, endpoint=None, grok_transport=None, r
             if status is not None:
                 with guard.section(): commit()
                 return status
+        await_exit(ledger, authorize)
         run_id = str(uuid.uuid4())
         with guard.section():
             # The new child announces a new connection; never report the previous run's Hello as this one.
