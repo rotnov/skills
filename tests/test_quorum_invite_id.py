@@ -290,8 +290,10 @@ class IdInvitationTests(unittest.TestCase):
                 code = quorum.main(['--state', root, 'accept-id', INVITE, '--origin','https://example.com',
                                     '--publishable-key','sb_publishable_synthetic'])
             result = json.loads(output.getvalue())
+            # The same refusal connect gives, with its next step; the mocks prove the invitation stayed unused.
             self.assertEqual((code, result['code'], result['data']['reason']),
-                             (3, 'unsupported_client', 'grok_leader_unavailable'))
+                             (3, 'grok_transport_unavailable', 'leader_socket_missing'))
+            self.assertIn('--resume', result['data']['next_step'])
             self.assertNotIn(home, output.getvalue())
 
     @isolated_profiles

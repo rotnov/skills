@@ -116,7 +116,8 @@ requests one normal maintenance notice per other eligible registered participant
 across the selected quorum's projects and engines. An already-current initiator
 still notifies peers. Repeating the same target reuses notices; retry an uncertain
 response with the same request ID to reuse its original target without refetching
-moving main. Keep the returned persistent copy; never replace live code in place.
+moving main. Reusing a request ID for another target reports `update_target_changed`;
+report that blocker. Keep the returned persistent copy; never replace live code in place.
 
 This requires the separately deployed owner-maintenance extension in
 [server](server.md#owner-maintenance-extension). `update_extension_unavailable`

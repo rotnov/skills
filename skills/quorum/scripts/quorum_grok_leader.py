@@ -41,6 +41,27 @@ class GrokBindingError(ValueError):
         return {}
 
 
+class GrokRefused(ValueError):
+    """A verification refusal other than a missing leader: its fixed code with a typed reason and next step."""
+    REASONS = {
+        'grok_transport_unavailable': ('leader_unavailable', (
+            'This chat\'s Grok leader could not be read or reached, or it runs an unsupported build. Nothing was '
+            'registered, accepted or sent. Keep the chat open and report this blocker; references/grok.md lists '
+            'the supported builds and relaunch.')),
+        'session_binding_denied': ('session_unverified', (
+            'This chat\'s session, TUI process, working directory or resident leader session could not be '
+            'verified. Nothing was registered, accepted or sent. Rerun from the same chat and project directory; '
+            'never borrow another session, and report this blocker if it repeats.'))}
+
+    def __init__(self, code):
+        super().__init__(code)
+        self.code = code
+
+    def diagnostic(self):
+        reason, next_step = self.REASONS[self.code]
+        return {'reason': reason, 'next_step': next_step}
+
+
 # macOS leader builds this adapter accepts; the handshake must report one of them.
 VERSIONS = ('1.0.67', '1.0.70')
 # Only 1.0.70 and 1.0.77 have been qualified on the Windows named-pipe leader.
@@ -61,7 +82,8 @@ class GrokBuildChanged(ValueError):
         self.running, self.installed = running, installed
 
     def diagnostic(self):
-        return {'running_build': self.running, 'installed_build': self.installed, 'next_step': (
+        return {'reason': 'tui_build_changed', 'running_build': self.running, 'installed_build': self.installed,
+                'next_step': (
             'Grok on PATH was updated to ' + self.installed + ' while this TUI still runs ' + self.running
             + ', which this Quorum adapter does not support, so it cannot verify this chat. Nothing was '
             'registered, started or sent. Ask the owner to quit this TUI completely and relaunch the same '
@@ -247,14 +269,14 @@ def checked_binding(session_id, cwd):
         try: return windows_binding(session_id, cwd), None
         except ValueError: raise  # Fixed codes, including GrokBindingError.
         except Exception: raise ValueError('session_binding_denied') from None
-    if sys.platform != 'darwin' or not hasattr(socket, 'AF_UNIX'):
-        raise ValueError('grok_transport_unavailable')
     home = Path(os.environ.get('GROK_HOME') or Path.home()/'.grok')
     # --leader-socket exports GROK_LEADER_SOCKET and the process guard requires
     # that flag, so without the export this chat has no usable leader socket.
     # A stale or foreign default ~/.grok/leader.sock must not be probed.
     endpoint = os.environ.get('GROK_LEADER_SOCKET')
     if not endpoint: raise GrokBindingError('leader_socket_missing')
+    if sys.platform != 'darwin' or not hasattr(socket, 'AF_UNIX'):
+        raise ValueError('grok_transport_unavailable')
     from quorum_claude_pipe import unix_endpoint
     try:
         Path(endpoint).lstat()
@@ -393,6 +415,15 @@ def connect(transport):
 
 
 def binding(session_id, cwd):
+    """Connect and accept-id share this check, so both report the same code, reason and next step."""
+    try: return verified_binding(session_id, cwd)
+    except (GrokBindingError, GrokBuildChanged): raise
+    except ValueError as error:
+        if str(error) in GrokRefused.REASONS: raise GrokRefused(str(error)) from None
+        raise
+
+
+def verified_binding(session_id, cwd):
     result, build = checked_binding(session_id, cwd)
     try:
         leader = connect(result)

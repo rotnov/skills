@@ -420,7 +420,7 @@ class CloudTests(Harness):
         with context():
             self.connect(api)
             code, result, _ = self.cli(api, 'cloud', 'receive')
-        self.assertEqual((code, result['code']), (3, 'operation_failed'))
+        self.assertEqual((code, result['code']), (3, 'invalid_priority'))
         self.assertIsNone(self.cloud_ledger().setting('delivery:' + M3))
 
     @isolated_profiles
@@ -706,7 +706,7 @@ class CloudTests(Harness):
             self.assertIn('No matching local owner delegation', envelope['data']['notice'])
             code, result, _ = self.cli(api, 'cloud', 'connect', 'team', '--role', 'grok-bot', '--project-ref',
                                        'team/project', '--dispatch-mode', 'native-subagent')
-            self.assertEqual((code, result['code']), (3, 'operation_failed'))
+            self.assertEqual((code, result['code']), (3, 'dispatch_mode_requires_coordinator'))
 
     def test_native_delegation_text_is_unchanged(self):
         from quorum_delegation import grant, instruction
