@@ -2,7 +2,7 @@
 
 Protocol1: four-byte big-endian JSON, Register then session-scoped ACP. Verified
 with installed Grok1.0.67/1.0.70 and xai-org/grok-build. Queue admission is not UI receipt.
-Windows (1.0.70, experimental) uses the named-pipe leader in quorum_grok_win.
+Windows (1.0.70 and 1.0.77, experimental) uses the named-pipe leader in quorum_grok_win.
 """
 from datetime import datetime, timedelta, timezone
 import json
@@ -124,7 +124,7 @@ def own_entry(entries, session_id, cwd):
 
 
 def opened_at(entry):
-    """Row creation in Unix microseconds; 1.0.70 on Windows records no process birth."""
+    """Row creation in Unix microseconds; 1.0.70/1.0.77 on Windows record no process birth."""
     try:
         value = datetime.fromisoformat(entry['opened_at'].replace('Z', '+00:00'))
         if value.tzinfo is None: raise ValueError
@@ -225,8 +225,8 @@ class Leader:
             self.socket.connect(endpoint)
             self.send({'type':'register', 'client_type':'quorum', 'mode':'stdio', 'capabilities':{}})
             registered = self.receive(time.monotonic()+5)
-            # Only 1.0.70 has been qualified on the Windows named-pipe leader.
-            versions = ('1.0.67', '1.0.70') if server is None else ('1.0.70',)
+            # Only 1.0.70 and 1.0.77 have been qualified on the Windows named-pipe leader.
+            versions = ('1.0.67', '1.0.70') if server is None else ('1.0.70', '1.0.77')
             if (registered.get('type') != 'registered'
                     or registered.get('leader_protocol_version') != 1
                     or registered.get('leader_binary_version') not in versions

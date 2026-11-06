@@ -155,9 +155,10 @@ class WindowsBindingTests(unittest.TestCase):
         self.assertIn('--leader-socket <path>', hint['next_step'])
 
     @isolated_profiles
-    def test_pipe_leader_accepts_only_qualified_1_0_70(self):
+    def test_pipe_leader_accepts_only_qualified_versions(self):
         from quorum_grok_leader import Leader
-        for version, accepted in (('1.0.70', True), ('1.0.67', False), ('1.0.71', False)):
+        for version, accepted in (('1.0.70', True), ('1.0.77', True), ('1.0.67', False),
+                                  ('1.0.71', False), ('1.0.78', False)):
             pipe = FramedPipe(version)
             with self.subTest(version=version), patch('quorum_grok_win.Pipe', pipe):
                 if accepted: Leader(PIPE, (200, TUI_START)).close()

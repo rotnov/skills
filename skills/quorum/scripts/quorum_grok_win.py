@@ -1,6 +1,6 @@
 """Windows existing Grok TUI leader: process identity and named-pipe client. Experimental.
 
-Grok Build 1.0.70 on Windows serves the leader on \\\\.\\pipe\\grok-leader-<16 hex>. The name
+Grok Build 1.0.70 and 1.0.77 on Windows serve the leader on \\\\.\\pipe\\grok-leader-<16 hex>. The name
 is an undocumented hash of the --leader-socket path, so the pipe is discovered by its server:
 the resident `grok.exe agent leader` child of the bound TUI, owned by the current user.
 Every check reads OS process metadata (birth time, owner SID, image, parent, command line);
