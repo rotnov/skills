@@ -52,8 +52,8 @@ KNOWLEDGE = ('search', 'read', 'propose')
 KNOWLEDGE_ACTIONS = {'search': 'search', 'read': 'read', 'write': 'propose'}
 # standing-check is added to a scope's operations only when it carries standing grants.
 KNOWN = tuple(dict.fromkeys([name for names in OPERATIONS.values() for name in names] + ['standing-check']))
-SESSION_ACTIONS = ('connect', 'receive', 'received', 'reply', 'status', 'stop', 'task-check', 'standing-check',
-                   'park', 'hold', 'awaiting', 'mark')
+SESSION_ACTIONS = ('connect', 'receive', 'wait', 'received', 'reply', 'status', 'stop', 'task-check',
+                   'standing-check', 'park', 'hold', 'awaiting', 'mark')
 COMPETING = ('CODEX_THREAD_ID', 'GROK_SESSION_ID', 'GROK_LEADER_SOCKET', 'CURSOR_CONVERSATION_ID')
 NAME = re.compile('[a-z][a-z0-9-]{0,47}')
 DIGEST = re.compile('[0-9a-f]{64}')
@@ -840,10 +840,11 @@ def _session_status(root, record):
 
 
 def _brief():
-    """The receive-loop part of the `quorum` worker brief the parent passes on with `bootstrap_command` (#127)."""
-    from quorum_native_inbox import RECEIVE_LOOP
+    """The wait-route part of the `quorum` worker brief the parent passes on with `bootstrap_command` (#127, #164)."""
+    from quorum_native_inbox import WAIT_LOOP
     return ('Run bootstrap_command first, then this worker\'s own capability commands per '
-            'references/claude-worker.md. ' + RECEIVE_LOOP)
+            'references/claude-worker.md. Once connected, run session receive --wait-seconds 0 once: its result '
+            'carries the Hello outcome and wait_command. ' + WAIT_LOOP)
 
 
 def _bootstrap(root, slot_id):
@@ -1505,6 +1506,10 @@ def _alias_free(root, sid, alias, session_ref):
     if actor != session_ref: raise _denied('actor_claimed')
 
 
+class _WorkerRunning(ValueError):
+    """The fixed refusal of a hand-over while the previous worker holds the consumer locks."""
+
+
 def _attest_rebind(root, sid, ledger, record, handle, tool):
     """Activate a pending rebind slot; the caller holds the index lock and this slot's lock.
 
@@ -1560,7 +1565,7 @@ def _attest_rebind(root, sid, ledger, record, handle, tool):
                 if not inbox.enabled(actor): raise _denied('reception_stopped')
                 # The previous worker may still be inside a receive; never take its offer or epoch mid-call.
                 if locked(actor.root / 'listener.lock') or supervisor_running(actor.root):
-                    raise ValueError('worker_already_running')
+                    raise _WorkerRunning('worker_already_running')
                 token = secrets.token_urlsafe(32)
                 _write_capability(root, record['slot_id'], token)
                 if source['state'] == 'active' or unfinished != record['slot_id']:
@@ -1573,6 +1578,10 @@ def _attest_rebind(root, sid, ledger, record, handle, tool):
                 actor.db.execute("update settings set data=? where key='session-agent'", (json.dumps(updated),))
                 # The new worker's first receive says Hello with a fresh presence epoch.
                 actor.db.execute("delete from settings where key='presence-epoch'")
+        except _WorkerRunning:
+            # After the rollback: a wait can outlive its client, so a retried attest must not depend on its bound.
+            inbox.yield_wait(actor)
+            raise
         finally: actor.db.close()
         index = _ledger(root)
         if index is None: raise _unavailable('path_unsafe')
@@ -1929,6 +1938,8 @@ def preflight(args):
         if args.action not in SESSION_ACTIONS:
             raise ClaudeWorkerError('native_inbox_transport_conflict')
         operation = args.action
+        # A wait is the blocking half of receive: the same scope operation, so no capability or scope changes.
+        if operation == 'wait': operation = 'receive'
         if operation in ('park', 'hold', 'awaiting', 'mark'):
             # Awaiting-owner actions and a status report reuse the scope's existing receipt or reply permission.
             from quorum_native_inbox import scope_operation
@@ -2098,7 +2109,7 @@ def _session_action(args, auth_ledger, register_agent, context, ledger, record, 
     from quorum_release import ReleaseGuard
     from quorum_session import PRIORITIES
     action, session_ref, scope = args.action, context['session_ref'], context['scope']
-    if action in ('connect', 'receive'):
+    if action in ('connect', 'receive', 'wait'):
         release = ReleaseGuard(guarded, ledger)
         release.check()
         release.running()
@@ -2157,10 +2168,11 @@ def _session_action(args, auth_ledger, register_agent, context, ledger, record, 
                 'delegation': fresh.get('delegation')}
     if not record: raise ValueError('session_not_connected')
     # The shared delivery code reuses this tracker, so every dispatched operation stays known.
-    if action == 'receive':
+    if action in ('receive', 'wait'):
         import quorum_notices
         # The owner's debugging opt-out is stated per receive; omitting it receipts transport notices quietly.
         quorum_notices.set_visible(ledger, getattr(args, 'show_transport_notices', False) is True)
+        if action == 'wait': return inbox.wait(guarded, auth_ledger, ledger, record, args.max_seconds, authorize=check)
         return inbox.receive(guarded, auth_ledger, ledger, record, args.wait_seconds, authorize=check)
     if action == 'standing-check':
         current = lambda: ledger.setting('session-agent')

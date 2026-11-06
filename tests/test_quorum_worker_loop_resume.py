@@ -107,7 +107,9 @@ class ClaudeReceiveFieldTests(claude_tests.Bound):
         api = claude_tests.OwnerApi()
         self.bound(api, self.accept_scope(quorum_slug='team'), handle='agent_09 quorum')
         data = self.offer(api)
-        self.assertEqual((data['state'], data['continue'], data['next_step']), ('timeout', True, 'receive'))
+        self.assertEqual((data['state'], data['continue'], data['next_step']), ('timeout', True, 'wait'))
+        self.assertEqual(data['wait_command'][-4:], ['session', '--worker-capability', str(self.cap), 'wait'])
+        # An older brief's loop keeps its command.
         self.assertEqual(data['receive_command'][-6:], ['session', '--worker-capability', str(self.cap), 'receive',
                                                         '--wait-seconds', '0'])
         self.assertNotIn('token', json.dumps(data))

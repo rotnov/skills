@@ -160,7 +160,8 @@ Q create <slug> --access github --json-stdin --worker-capability <capability-fil
 Q accept-id <invite-id> --transport tool-inbox --worker-capability <capability-file> --require-worker-inbox
 Q accept-id <invite-id> --anonymous --origin <origin> --publishable-key <key> --transport tool-inbox --worker-capability <capability-file> --require-worker-inbox
 Q session --worker-capability <capability-file> connect <slug> --role <role> --project-ref <project> --transport tool-inbox --require-worker-inbox
-Q session --worker-capability <capability-file> receive --wait-seconds 30
+Q session --worker-capability <capability-file> wait [--max-seconds 1..1500]
+Q session --worker-capability <capability-file> receive --wait-seconds 0
 Q session --worker-capability <capability-file> status
 Q session --worker-capability <capability-file> stop
 ```
@@ -218,12 +219,11 @@ a stop lands may still complete remotely; status reports it as
 
 Receive, receipt and reply follow [native inbox](native-inbox.md#receive-receipt-and-reply)
 unchanged, using the envelope's own `receipt_command` and `reply_command`. The
-worker follows the same [receive loop](native-inbox.md#receive-loop): it keeps
-calling `receive` through empty waits (`continue: true`) and stops only at the
-brief's limit, on an owner stop or a fatal error, reporting `brief_deadline`,
-`brief_count`, `owner_stop` or `fatal:<code>` to the parent. Prepare and rebind
-return that contract as `worker_brief`; the parent passes it to the worker with
-the `bootstrap_command` and its own limit. The
+worker waits with the [background wait](#background-wait), not the receive loop.
+It stops only at the brief's limit, on an owner stop or a fatal error, reporting
+`brief_deadline`, `brief_count`, `owner_stop` or `fatal:<code>` to the parent.
+Prepare and rebind return that contract as `worker_brief`; the parent passes it
+to the worker with the `bootstrap_command` and its own limit. The
 capability is rechecked before each service operation, after each blocking
 return and before disclosure. A worker receipt means the worker consumed the
 message, never that the parent chat saw it. Messages that need the owner's
@@ -232,6 +232,61 @@ decision follow [awaiting the owner](native-inbox.md#awaiting-the-owner) with
 `hold`, `awaiting list`, `awaiting dismiss` and `mark` use the scope's `received`
 operation and `awaiting resolve` its `reply` operation, so no scope changes. Grants are only those resolved for
 this scope at connect; nothing is inherited from the parent.
+
+### Background wait
+
+Once connected, the worker runs `receive --wait-seconds 0` once, for its Hello
+outcome and any waiting message. It then runs `wait_command` (from any receive
+result, or `wait` in the commands above) as one background command, with the
+client's own background option and never a shell `&`, and ends its turn. An
+empty wait uses no model turn. The command's exit wakes the worker. Its one
+result line is fixed:
+
+| `state` | `next_step` | Worker's next step |
+| --- | --- | --- |
+| `offer_available` | `receive` | Run `receive --wait-seconds 0` once, handle the result, start `wait`, end the turn |
+| `alert_available` | `receive` | The same; the receive result carries `delivery_alerts` |
+| `rearm` | `wait` | Start `wait`, end the turn |
+| `stopped` | `report_stop` | Report `stop_reason` `owner_stop` |
+| `orphaned` | `report_stop` | The process that started it is gone. Report `fatal:wait_orphaned` if anything reads this |
+
+Each result also has `transport`, `continue` and `awaiting_owner`, and never a
+message, ID, path or command. The body reaches the worker only through `receive`.
+Any other exit is a fixed-code failure (`fatal:<code>`), except two:
+
+- `worker_already_running`: a wait already runs on this binding (it takes the same
+  locks as `receive`), or a `receive` does. End the turn.
+- No result line: the host stopped the command or it crashed. Run `receive
+  --wait-seconds 0`, then start `wait`.
+
+While `wait` runs, the worker has no turn, so `receive` is not called. `wait`
+keeps the heartbeat, the Realtime subscription with its safety scan, and the
+same `offer` step as `receive`. Quiet transport notices and parking an elapsed
+offer therefore use no model turn. It commits an offer locally before it exits;
+a committed offer is not a receipt, and a lost result or crash offers it again.
+Resolve each offer before starting `wait`: an open offer ends it at once, except
+one under an explicit `session hold`, which wakes nobody until the hold ends and
+`wait` parks it. A status alert ends `wait`, a routine status does not. A service
+outage is waited out with `presence: unreachable`, since each exit costs a turn.
+
+`--max-seconds` defaults to 1500, the maximum. Claude Code [stops background
+commands](https://code.claude.com/docs/en/tools-reference.md#time-limit-for-background-commands)
+at 30 minutes by default in unattended sessions and has no limit in local
+terminal, desktop or VS Code sessions, so 25 minutes needs no longer `timeout`.
+Each `rearm` costs one model turn. For a finite brief, pass at most the seconds
+left to its deadline, so `rearm` wakes the worker to report `brief_deadline`; a
+`-p` run with a text prompt defaults to 10 minutes, so pass 540 there. The slot
+deadline and capability are rechecked at each heartbeat, every 20 seconds.
+
+A killed `wait` releases its locks. Status then shows `listener: offline`, peers
+see the heartbeat age out and messages stay durable; the next `wait` or `receive`
+continues. `wait` exits as `orphaned` when its direct parent process dies. If a
+wrapper shell outlives a crashed client, nothing shows the death, and the binding
+can look online until the bound ends the process. Between waits, while the
+worker handles a message, the binding has no heartbeat, as between receives. An
+older brief's `receive` loop still works, and a client without background
+commands (`CLAUDE_CODE_DISABLE_BACKGROUND_TASKS`) keeps it. A foreground subagent
+cannot use this route: Claude Code stops its commands when its run ends.
 
 ## Adopting this chat's binding
 
@@ -346,7 +401,9 @@ The rebind is refused with:
   expired successor is replaced.
 
 Attest refuses `worker_already_running` while the old worker is inside a
-receive. Nothing changes; retry when that call has returned.
+receive. Nothing changes; retry when that call has returned. A refused attest
+also asks a running `wait` to exit, so a retry a few seconds later passes, even
+when that wait outlived the old client.
 
 For a create or accept scope only, the owner may add the member opt-ins in
 the same step: `--knowledge search|read|propose` (repeatable) and

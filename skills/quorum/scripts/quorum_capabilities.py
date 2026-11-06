@@ -30,13 +30,18 @@ _ROUTES = {
     },
     'claude-worker': {
         'bounded_receive': ('supported', 'finite_tool_call',
-                            'session --worker-capability <file> receive --wait-seconds 0..60 per call.'),
+                            'session --worker-capability <file> receive --wait-seconds 0..60 per call; older briefs '
+                            'and clients without background commands repeat it.'),
         'continuous_background_reception': (
             'conditional', 'client_and_worker_must_stay_alive',
-            'A background worker whose brief loops bounded receives keeps receiving across idle parent turns only '
-            'while the Claude Code client and that worker stay alive. It stops at its brief\'s limit or the slot '
-            'deadline (lifetime until-owner-stop has none). Nothing restarts after the client exits; the resumed '
-            'chat must rebind. Status is the last observed state, not provider liveness.'),
+            'A background worker keeps receiving across idle parent turns only while the Claude Code client and that '
+            'worker stay alive. Its brief runs session wait as a background command: no model turn runs during an '
+            'empty wait, and the command\'s exit wakes the worker. That wake was observed on macOS for a 90-second '
+            'wait; hours-long waits and Windows are not yet observed, so this is not perpetual service. A wait exits '
+            'at 1500 seconds for the worker to start it again, which costs one model turn. The worker stops at its '
+            'brief\'s limit or the slot deadline (lifetime until-owner-stop has none). Nothing restarts after the '
+            'client exits; the resumed chat must rebind. A dead wait shows offline and messages stay durable. Status '
+            'is the last observed state, not provider liveness.'),
     },
     'parent-session': {
         'bounded_receive': ('unsupported', 'parent_queue_route',
