@@ -312,7 +312,7 @@ def _unsafe(reason='rollout_unsafe'):
 
 
 def _check(info, *, kind):
-    """`kind`: 'ancestor' (root- or user-owned; shared only if sticky), 'private' directory or 'file'."""
+    """`kind`: 'ancestor' (root- or user-owned; shared only if sticky), 'private' or 'dated' directory, or 'file'."""
     directory = kind != 'file'
     if not (stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode)): raise _unsafe()
     if kind == 'ancestor':
@@ -421,7 +421,7 @@ def _rollout(sid):
                     _check_fd(fd, 'file')
                     if len(found) > 1: raise _unsafe('rollout_ambiguous')
                     continue
-                fd = _open_dir(child, parent, 'private')
+                fd = _open_dir(child, parent, 'dated')
                 if fd is None: continue
                 try: scan(fd, patterns[1:])
                 finally: os.close(fd)

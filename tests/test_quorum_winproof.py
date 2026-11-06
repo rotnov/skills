@@ -142,6 +142,32 @@ class DescriptorDecisionTests(unittest.TestCase):
                 self.assertFalse(accepted(descriptor(USER, profile + [(0, 0, right, USERS)]), 'file', 'codex'))
         self.assertFalse(accepted(descriptor(OTHER, profile), 'file', 'codex'))
 
+    def test_codex_date_directories_also_accept_a_trusted_administrative_owner(self):
+        profile = [(0, 0x10, FULL, SYSTEM), (0, 0x10, FULL, ADMINS), (0, 0x10, FULL, USER), (0, 0, READ, USERS)]
+        for owner in (USER, ADMINS, SYSTEM):
+            with self.subTest(owner=proof.sid_text(owner)):
+                self.assertTrue(accepted(descriptor(owner, profile, protected=False), 'dated', 'codex'))
+        self.assertFalse(accepted(descriptor(OTHER, profile), 'dated', 'codex'))
+        self.assertFalse(accepted(descriptor(ADMINS, profile + [(0, 0, MODIFY, USERS)]), 'dated', 'codex'))
+        self.assertFalse(accepted(descriptor(ADMINS, profile, protected=False), 'dated', 'claude'))
+        for kind in ('private', 'file'):
+            with self.subTest(kind=kind):
+                self.assertFalse(accepted(descriptor(ADMINS, profile, protected=False), kind, 'codex'))
+
+    def test_codex_scan_relaxes_the_owner_only_for_date_directories(self):
+        import quorum_native_inbox as inbox
+        sid, kinds = '01a1a187-9e84-7b40-b7c0-2fde1784ec3d', []
+        names = iter((['2026'], ['11'], ['03'], ['rollout-2026-11-03T13-09-42-' + sid + '.jsonl']))
+        blank = lambda: os.open(os.devnull, os.O_RDONLY)
+        def open_dir(name, _parent, kind):
+            kinds.append((name, kind))
+            return blank()
+        with patch.object(inbox, '_ownership_proof_available', return_value=True),                 patch.object(inbox, '_codex_home', return_value=Path(os.path.abspath(os.sep)) / 'home' / '.codex'),                 patch.object(inbox, '_open_root', side_effect=lambda _name: blank()),                 patch.object(inbox, '_open_dir', side_effect=open_dir),                 patch.object(inbox, '_children', side_effect=lambda *_: next(names)),                 patch.object(inbox, '_open_file', side_effect=lambda *_: blank()),                 patch.object(inbox, '_check_fd') as check:
+            os.close(inbox._rollout(sid))
+        self.assertEqual(kinds, [('home', 'ancestor'), ('.codex', 'private'), ('sessions', 'private'),
+                                 ('2026', 'dated'), ('11', 'dated'), ('03', 'dated')])
+        self.assertEqual(check.call_args.args[1], 'file')
+
     def test_malformed_descriptors_refuse(self):
         good = descriptor(USER, [(0, 3, FULL, USER)])
         bad = [b'', good[:19], b'\x02' + good[1:], good[:2] + struct.pack('<H', 0x1004) + good[4:],

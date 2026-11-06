@@ -28,7 +28,9 @@ use, registration or RPC, that:
   when sticky (such as `/tmp`). On Windows, handles opened relative to their
   verified parent refuse any reparse point, and the owner and DACL come from the
   handle: the home, provider directories and file are the user's, and only the
-  user, SYSTEM and Administrators may write them. Ancestors are owned by the user,
+  user, SYSTEM and Administrators may write them. SYSTEM or Administrators may also
+  own a `YYYY/MM/DD` directory, as an elevated Codex run leaves it; the home,
+  `sessions` and the rollout stay the user's. Ancestors are owned by the user,
   SYSTEM, Administrators or TrustedInstaller, and nobody else may delete, rename
   or re-permission them (AppContainer package and capability rules count as the
   user's own; other accounts do not). The home must be on a local NTFS or ReFS drive. Only directory names are listed, the whole

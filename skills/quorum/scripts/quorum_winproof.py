@@ -112,6 +112,8 @@ def evaluate(descriptor, kind, policy, user, owners):
       0600). Inherited ACEs come from the verified protected parent (SQLite journals, lock files).
     - 'codex' 'private'/'file': owned by the user; no other principal holds a write-class right (POSIX
       not group/other writable); read access by others stays acceptable, as on POSIX.
+    - 'codex' 'dated' YYYY/MM/DD directory: as 'private', but SYSTEM or Administrators may also own it. An
+      elevated Codex run leaves these owned by Administrators, who can already write the whole tree.
     """
     owner, protected, aces = parse(descriptor)
     administrators = {SYSTEM, ADMINISTRATORS}
@@ -120,7 +122,8 @@ def evaluate(descriptor, kind, policy, user, owners):
         if owner not in trusted: raise Unsafe()
     else:
         trusted, limit = {user, *administrators}, WRITE
-        if owner not in {user, *owners}: raise Unsafe()
+        relaxed = administrators if kind == 'dated' and policy == 'codex' else ()
+        if owner not in {user, *owners, *relaxed}: raise Unsafe()
     # The owner was just required to be trusted, so OWNER RIGHTS reaches no one else. CPython's
     # os.mkdir(mode=0o700) on Windows writes exactly {SYSTEM, Administrators, OWNER RIGHTS}.
     trusted.add(OWNER_RIGHTS)
