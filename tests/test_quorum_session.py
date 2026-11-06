@@ -35,6 +35,8 @@ class RequirementsApi:
         self.calls.append((operation, payload))
         if operation == 'session_inbox': return self.inbox
         if operation == 'conversation_read': return [{'sequence': 1, 'body': 'synthetic'}]
+        if operation == 'session_release_report': return {'recorded': True}
+        if operation == 'session_release_status': return {'target': None, 'agents': []}
         raise AssertionError(operation)
 
 

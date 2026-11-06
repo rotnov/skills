@@ -191,7 +191,9 @@ class DebugLifecycleTests(unittest.TestCase):
         self.assertFalse(activated['automatic_runtime_restoration'])
         self.assertTrue(activated['collection']['live_observation'])
         self.assertEqual(activated['coverage']['participants'][0]['binding'], SID)
-        self.assertEqual(activated['versions']['skill_version'], '0.3.0')
+        from quorum_release import installed_identity
+        self.assertEqual(activated['versions'], {key: installed_identity()[key]
+                                                 for key in ('protocol_version', 'release')})
         assert_redacted(self, self.root)
         restored = open_service(self.root, self.clock, self.github).status()
         self.assertEqual(restored['run_id'], activated['run_id'])

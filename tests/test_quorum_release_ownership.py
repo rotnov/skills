@@ -147,7 +147,7 @@ class ReleaseOwnershipTests(unittest.TestCase):
     def test_stale_chat_helpers_reject_without_stopping_verified_newer_run(self):
         from quorum_listener import Control
         from quorum_os import FileLock
-        from quorum_release import ReleaseMismatch
+        from quorum_release import ReleaseMismatch, installed_identity
         from quorum_session import dispatch
         from quorum_state import LocalLedger
         required = {'protocol_version':1, 'skill_version':'0.3.0'}
@@ -170,8 +170,8 @@ class ReleaseOwnershipTests(unittest.TestCase):
                         self.assertFalse(Control(ledger).stopping('upgraded-run'))
                     self.assertEqual(str(raised.exception), 'skill_update_required')
                     self.assertEqual(raised.exception.diagnostic,
-                                     {'installed':RELEASE, 'required':required, 'update_required':True,
-                                      'code':'skill_update_required'})
+                                     {'installed':installed_identity(), 'required':{'protocol_version':1},
+                                      'update_required':True, 'code':'skill_update_required'})
                     self.assertEqual(ledger.setting('delivery:' + MID), {'state':'submitted'})
                     self.assertEqual([op for op,_ in backend.calls], ['session_requirements'])
                 finally: ledger.db.close(); auth.db.close()

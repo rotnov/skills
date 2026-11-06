@@ -111,9 +111,7 @@ def validate_source(root):
         project = tomllib.loads((root / 'pyproject.toml').read_text(encoding='utf-8'))
         lock = tomllib.loads((root / 'uv.lock').read_text(encoding='utf-8'))
         from quorum_release import read_release
-        release = read_release(root / 'assets/release.json')
-        if release['skill_version'] != project.get('project', {}).get('version'):
-            raise ValueError('invalid_release_manifest')
+        read_release(root / 'assets/release.json')
         if not project.get('project', {}).get('requires-python') or not lock.get('version'):
             raise ValueError('missing_lock_contract')
         for path in (root / 'scripts').glob('*.py'):

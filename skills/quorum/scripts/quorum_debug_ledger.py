@@ -13,7 +13,7 @@ from pathlib import Path
 
 SAFE = re.compile(r'^[A-Za-z0-9_.:@/+-]{1,128}$')
 UUID_RE = re.compile(r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$')
-VERSION_RE = re.compile(r'^[0-9]{1,6}\.[0-9]{1,6}\.[0-9]{1,6}$')
+RELEASE_RE = re.compile(r'^[0-9a-f]{7}$')
 BINDING_KEYS = ('session-agent', 'cloud-agent', 'pilot-agent')
 IDENTITY_FIELDS = ('quorum', 'quorum_id', 'project_ref', 'role', 'engine', 'agent_id', 'transport')
 DELIVERY_STATES = ('intent', 'queued', 'submitted', 'offered', 'acked')
@@ -171,13 +171,15 @@ def _settings_metadata(db, snapshot):
     if release_row is not None:
         nested = release_row[0] == 'object'
         if nested:
-            paths = ('$.installed.protocol_version', '$.installed.skill_version')
+            paths = ('$.installed.protocol_version', '$.installed.release')
         else:
-            paths = ('$.protocol_version', '$.skill_version')
+            paths = ('$.protocol_version', '$.release')
         release = _project(db, 'release', paths)
-        protocol, version = release if release is not None else (None, None)
-        if type(protocol) is int and isinstance(version, str) and VERSION_RE.fullmatch(version):
-            snapshot['release'] = {'protocol_version': protocol, 'skill_version': version}
+        protocol, short = release if release is not None else (None, None)
+        if type(protocol) is int:
+            # A diagnostic saved before #168 has no hash; the protocol is still known.
+            snapshot['release'] = {'protocol_version': protocol,
+                                   'release': short if isinstance(short, str) and RELEASE_RE.fullmatch(short) else None}
 
 
 def _attempts(db, snapshot):

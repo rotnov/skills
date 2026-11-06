@@ -175,7 +175,7 @@ The optional owner-maintenance extension exposes `session_update_request`,
 [update](update.md#explicit-owner-update) for their owner workflow and
 [server](server.md#owner-maintenance-extension) for the separately authorized
 deployment. Its inbox `maintenance` metadata is projected from private typed
-records. A target is only bounded protocol/package versions and a content SHA-256,
+records. A target is only a bounded protocol integer and a content SHA-256,
 never an executable source or authority. Notices are deduplicated per selected
 quorum/target/recipient, do not require a model handler, and are excluded from
 project-task delegation. Receipt, refreshed copy and active runtime self-report

@@ -117,8 +117,10 @@ optional workflow; it does not connect your existing chat.
 
 ## Good to know
 
-- **Versions.** This release is skill **0.3.0**, protocol **2**. The server
-  requires an exact match. If they differ, the listener stops with
+- **Releases.** A release is identified by its content hash, shown as a short
+  hash such as `3d91eba`. `session peers` and `update --status` show who is
+  behind the fleet target; being behind stops nothing. Protocol **2** is the
+  compatibility gate: if it differs, the listener stops with
   `skill_update_required` and the agent can
   [update and reconnect](references/update.md#version-mismatch-recovery) the same
   chat, keeping its state, login and messages.

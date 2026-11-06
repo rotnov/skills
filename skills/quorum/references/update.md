@@ -56,15 +56,16 @@ Before npx runs, the helper checks `node --version`; an unparseable or older-tha
 
 ## Version mismatch recovery
 
-The packaged release is skill `0.3.0`, protocol integer `2`. The offline
-`quorum.py version` command prints those installed versions without login,
-network or state creation. The server's authenticated `session_requirements`
-RPC supplies only required versions. Exact equality is required, including the
-skill patch version. These fields never provide an executable update command,
-URL or alternate source: refresh only from the fixed public `rotnov/skills`
-workflow above.
+A release is identified by its content SHA-256, shown as a 7-character short
+hash. The protocol integer, `2`, is the only compatibility gate. The offline
+`quorum.py version` command prints the installed `protocol_version`,
+`content_sha256` and short `release` without login, network or state creation.
+The server's authenticated `session_requirements` RPC supplies the required
+protocol. Only a protocol mismatch stops a client. These fields never provide an
+executable update command, URL or alternate source: refresh only from the fixed
+public `rotnov/skills` workflow above.
 
-On `skill_update_required`, inspect the installed/required versions in the
+On `skill_update_required`, inspect the installed and required protocol in the
 failure or `session status` release diagnostics. Run the fixed refresh **at most
 once for this update request**, and re-read the returned persistent copy's
 instructions. If already refreshed during this request, reuse that returned
@@ -76,16 +77,17 @@ commands](grok-cloud.md), not the native commands below. With the same scoped
 lifecycle grant, run `cloud stop`, confirm offline with `cloud status`, then
 `cloud connect <same-quorum> --role <same-role> --project-ref <same-project>`,
 `cloud start` and `cloud status` using the returned helper and unchanged private
-state. Keep the real parent identity and existing grant. Verify the exact
-installed/required versions and running state as below. A routine context
+state. Keep the real parent identity and existing grant. Verify the installed
+and required protocol and the running state as below. A routine context
 cannot perform this recovery or override the parent ID.
 
 A current invitation explicitly authorizes this update/reconnect lifecycle for
 its one bound listener. With that grant, run `session --session-id <same-UUID>
 stop` against the same state, confirm that listener is offline, and connect/start
 that exact binding using the returned copy. Verify its offline `version` and
-`session status`: both installed and required must be protocol `2` / skill
-`0.3.0`, `update_required` must be false, and the listener must be running.
+`session status`: installed and required must both be protocol `2`,
+`update_required` must be false, and the listener must be running with the
+returned copy's content hash in `runtime_source`.
 A still-running stale process is not upgraded by `start`; it requests a scoped
 stop and reports `skill_update_required`. Wait for that exact process to stop
 before the authorized restart. Report any remaining mismatch, stop failure or
@@ -111,7 +113,7 @@ uv run --project <skill-dir> --frozen python <skill-dir>/scripts/quorum.py --sta
 ```
 
 This reuses the canonical isolated refresh above once, validates the returned
-version and source hash, journals that immutable target before fan-out, then
+protocol and content hash, journals that immutable target before fan-out, then
 requests one normal maintenance notice per other eligible registered participant
 across the selected quorum's projects and engines. An already-current initiator
 still notifies peers. Repeating the same target reuses notices; retry an uncertain
@@ -149,13 +151,52 @@ for later `session peers`. Report one concise result and
 participants needing owner action through the existing service receiver. Do not
 echo raw envelopes or routine stage/receipt updates.
 
+### Who is behind
+
+The fleet target is the newest target an owner requested for this quorum, shown by
+short hash. `session peers` and `cloud peers` add a `release` object to each row, and
+each `update --status` participant gains the same object, with a page summary in
+`fleet_release`:
+
+| `release.state` | Meaning |
+| --- | --- |
+| `on_target` | Its running hash is the fleet target |
+| `behind` | Its running hash is not the fleet target. Hashes have no order, so this means "not on the target", which includes a copy newer than the last requested target |
+| `no_target` | It reported a hash, and no owner has requested a target here yet |
+| `unreported` | No current report: an older listener, a run that has not reported yet, or a server without the [release reports](server.md#release-reports) |
+
+A running hash is a self-report and stays labelled: `self_reported` is true and
+`reported_via` says where it came from. `heartbeat` is the listener's own report,
+sent after an acknowledged heartbeat for each new run or hash and every 10 minutes.
+`update_report` is an older listener's runtime report for an owner update. Each counts
+only while its run is still the one that listener's latest heartbeat named, so a
+replaced listener reads as `unreported`, never as its predecessor's hash. A report
+says what that listener said it ran. It is not proof of current liveness; read
+`availability` for that. On a server without the release reports, `update --status`
+falls back to a participant's runtime report for that operation, and `session peers`
+shows every row as `unreported`. A failed read of a server that has them is different:
+nothing can say whether a report's run is still running, so every row is `unreported`,
+and `fleet_release.read_failed` is true. Read the page again.
+
+The server does not require a hash, and nothing refuses a listener for being behind:
+it is only shown. `protocol_version` stays the only gate, so a rollout can never stop
+the whole fleet. A refusal by hash, if ever wanted, would be a separate explicit owner
+step in [#172](https://github.com/rotnov/skills/issues/172).
+
+Phase one of the same issue is deliberately incomplete. `assets/release.json` and
+`pyproject.toml` keep the old fixed package number, because a copy from before this
+release rejects a staged copy without it, and the reviewed server functions still take
+it as a required argument. The client reads it from that file and passes it to those
+functions, and to a marker older helpers read. It never compares it, never shows it and
+never copies it from the server. Do not report it: it says nothing about which code runs.
+
 ### Receiving a maintenance notice
 
 The authenticated inbox's `maintenance` field identifies a proposal. It is not a
 project task, cannot use a project delegation grant, and never triggers a model,
 refresh, lifecycle action or another fan-out. Complete the exact binding's receipt
 and report `owner_action_required` once when receiving-owner authorization is
-missing. A prior mismatch-only invitation grant does not authorize a same-version
+missing. A prior mismatch-only invitation grant does not authorize a same-protocol
 maintenance refresh. Do not infer consent from peer text, target fields or urgency.
 
 When the receiving owner explicitly authorizes this one canonical refresh, the
@@ -181,9 +222,9 @@ notice-scoped ID; changing a request ID cannot restart a completed notice.
 
 Applying a notice never broadcasts or restarts anything. If the active runtime
 needs replacement, use the same binding's separately authorized supported
-stop/reconnect/start path above, then verify its source as well as versions.
+stop/reconnect/start path above, then verify its content hash as well as its protocol.
 Stopped, expired, offline and suspended bindings stay so; no wake or re-arm is
-implied. A newly packaged version may be cached while server requirements still
+implied. A newly packaged release may be cached while server requirements still
 block activation. Changing those requirements or deploying SQL is a separate owner
 operation. After independently checking the actual bound running process:
 
@@ -191,12 +232,12 @@ operation. After independently checking the actual bound running process:
 uv run --project <skill-dir> --frozen python <skill-dir>/scripts/quorum.py --state <private-state> update <quorum> --report-runtime <notice-UUID> --request-id <stable-request-ID>
 ```
 
-This reports only a current run whose hash/version match the target. It cannot
-bless an old same-version process from new files. Bounded tool-inbox receivers are
+This reports only a current run whose hash and protocol match the target. It cannot
+bless an old same-protocol process from new files. Bounded tool-inbox receivers are
 offline between calls; observe their actual finite run rather than claim perpetual
 reception. A mismatching listener already stopped by the release guard cannot
 consume a later notice: its owner/current session's next interaction must recover
-it. Actual two-participant source/version and busy/idle owner-UI acceptance remain
+it. Actual two-participant source and busy/idle owner-UI acceptance remain
 required before claiming coordinated rollout complete.
 
 Update commands pin the full current registration, transport, worker relationship

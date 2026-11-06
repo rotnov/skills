@@ -336,7 +336,7 @@ class ClaudeResumeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '^session_binding_denied$'): self.dispatch()
         self.ledger.setting('session-agent', self.record)
         original = self.api.call
-        self.api.call = lambda op, data, request_id=None: ({'protocol_version':2, 'skill_version':'99.0.0'}
+        self.api.call = lambda op, data, request_id=None: ({'protocol_version':99}
                         if op == 'session_requirements' else original(op, data, request_id))
         with self.assertRaisesRegex(Exception, '^skill_update_required$'): self.dispatch()
         self.assertEqual(self.ledger.setting('delivery:'+MID)['attempt_id'], ATTEMPT)

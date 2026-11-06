@@ -315,7 +315,7 @@ class MemberCommandTests(unittest.TestCase):
                                          members=True, coordinator_role=None), auth, register)
             self.assertEqual(session.setting('session-agent')['delegation']['coordinator_id'], SENDER)
             api.owned = True
-            api.required = {**installed_release(), 'skill_version': '999.0.0'}
+            api.required = {**installed_release(), 'protocol_version': 99}
             with self.assertRaises(ReleaseMismatch):
                 dispatch(SimpleNamespace(session_id=SESSION, action='task-check', message_id=MESSAGE),
                          auth, register)

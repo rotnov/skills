@@ -7,7 +7,8 @@ import uuid
 
 from quorum_api import QuorumError, guarded_call, server_refused
 from quorum_os import FileLock
-from quorum_release import read_release, runtime_evidence, source_identity
+from quorum_release import (public_source, read_release, release_status, release_view, runtime_evidence, same_source,
+                            short_hash, source_identity, without_carried)
 from quorum_resume import binding as resume_binding
 from quorum_update import refresh as canonical_refresh, validate_source
 
@@ -81,7 +82,7 @@ def _cached(journal):
     try:
         selected = Path(journal['local']['skill_dir'])
         target = {**read_release(selected/'assets/release.json'), 'content_sha256':validate_source(selected)}
-        if target != journal['target']: raise ValueError
+        if not same_source(target, journal['target']): raise ValueError
     except (OSError, ValueError, TypeError, KeyError):
         raise ValueError('update_cache_conflict') from None
 
@@ -110,7 +111,7 @@ def owner_update(api, ledger, record, request_id, *, current, cache,
             fanout = _call(api, 'session_update_request', payload, request_id, authorize)
         except QuorumError as error:
             refused = str(error) in ('update_extension_unavailable', 'update_target_changed') or server_refused(error)
-            raise UpdateFailure(error, {'target':journal['target'], 'local':journal['local'],
+            raise UpdateFailure(error, {'target':public_source(journal['target']), 'local':journal['local'],
                                 'request_id':request_id, 'runtime':runtime_evidence(ledger),
                                 'fanout_state':'unavailable' if refused else 'unknown'}) from None
         try:
@@ -125,7 +126,7 @@ def owner_update(api, ledger, record, request_id, *, current, cache,
         fanout = {'operation_id':operation_id, **counts}
         if failure_count: fanout['failed'] = failure_count
         ledger.setting(key, {**journal, 'state':'queued', 'fanout':fanout})
-        return {'target':journal['target'], 'local':journal['local'], 'fanout':fanout,
+        return {'target':public_source(journal['target']), 'local':journal['local'], 'fanout':fanout,
                 'runtime':runtime_evidence(ledger), 'all_participants_upgraded':False}
 
 
@@ -146,7 +147,7 @@ def apply_notice(api, ledger, record, notice_id, request_id, *, owner_refresh=Fa
     notice_id = str(uuid.UUID(notice_id))
     target = _notice(api, record, notice_id, authorize)
     if not owner_refresh:
-        return {'state':'owner_action_required', 'target':target, 'runtime':runtime_evidence(ledger)}
+        return {'state':'owner_action_required', 'target':public_source(target), 'runtime':runtime_evidence(ledger)}
     # A notice's recipient/target is immutable. Invocation IDs may change on
     # retry, but cannot create another installer/report operation for that notice.
     key = 'notice-update:' + hashlib.sha256(notice_id.encode()).hexdigest()
@@ -159,14 +160,14 @@ def apply_notice(api, ledger, record, notice_id, request_id, *, owner_refresh=Fa
             journal = {'binding':_binding(record), 'target':target, 'authority':'explicit_owner_refresh',
                        'state':'authorized'}
             ledger.setting(key, journal)
-        if journal.get('binding') != _binding(record) or journal.get('target') != target:
+        if journal.get('binding') != _binding(record) or not same_source(journal.get('target'), target):
             raise ValueError('update_notice_denied')
         if journal.get('state') not in ('authorized', 'refreshed', 'reported'):
             raise ValueError('update_cache_conflict')
         if journal.get('state') == 'authorized':
             try:
                 refreshed, local = _fresh(current, cache, record, refresh, authorize)
-                if refreshed != target: raise ValueError('update_target_changed')
+                if not same_source(refreshed, target): raise ValueError('update_target_changed')
             except ValueError as error:
                 if str(error) in BLOCKERS:
                     reported = SERVER_BLOCKER.get(str(error), str(error))
@@ -185,7 +186,7 @@ def apply_notice(api, ledger, record, notice_id, request_id, *, owner_refresh=Fa
                   'event':'refreshed', 'evidence':target}, 'refresh:'+hashlib.sha256(notice_id.encode()).hexdigest(), authorize)
             journal = {**journal, 'state':'reported'}
             ledger.setting(key, journal)
-        return {'state':'refreshed', 'target':target, 'local':journal['local'],
+        return {'state':'refreshed', 'target':public_source(target), 'local':journal['local'],
                 'runtime':runtime_evidence(ledger), 'lifecycle_required':True}
 
 
@@ -194,13 +195,50 @@ def report_runtime(api, ledger, record, notice_id, request_id, *, authorize=lamb
     _request(request_id)
     target = _notice(api, record, notice_id, authorize)
     active = runtime_evidence(ledger)
-    if not active['verified'] or active['source'] != target:
-        return {'state':'runtime_unverified', 'target':target, 'runtime':active}
+    if not active['verified'] or not same_source(active['source'], target):
+        return {'state':'runtime_unverified', 'target':public_source(target), 'runtime':active}
     # The run is part of the identity: a restarted listener's report is a new fact, not a conflicting replay.
     _call(api, 'session_update_report', {**_scope(record), 'notice_id':notice_id, 'event':'active',
           'evidence':{**target, 'run_id':active['run_id']}},
           'runtime:'+hashlib.sha256((request_id+':'+active['run_id']).encode()).hexdigest(), authorize)
-    return {'state':'active_reported', 'target':target, 'runtime':active}
+    return {'state':'active_reported', 'target':public_source(target), 'runtime':active}
+
+
+def with_fleet_release(api, record, status, page, authorize):
+    """One status page by content hash: each participant's running hash against the fleet target.
+
+    The fleet target is the quorum's newest requested target, which may be newer than this operation's. A running
+    hash is the listener's own report, or only on a server without that RPC its runtime report for this operation.
+    Both are self-reports. A failed read shows `unreported`: only the server can tell whether that report's run is
+    still running. `behind` means not on the target: hashes have no order. No update state changes here.
+    """
+    if not isinstance(status, dict): return status
+    target = source_identity(status.get('target'))
+    participants = status.get('participants')
+    shown = {**status, 'target':public_source(target)}
+    if not isinstance(participants, list): return shown
+    authorize()
+    fleet = release_status(api, {key: record[key] for key in ('agent_id', 'session_ref')}, **page)
+    authorize()
+    running = fleet['agents'] if fleet else {}
+    fleet_target = (fleet['target'] if fleet else None) or (target or {}).get('content_sha256')
+    rows, counts, behind = [], {'on_target':0, 'unreported':0}, []
+    for item in participants:
+        if not isinstance(item, dict):
+            rows.append(item)
+            continue
+        report = item.get('runtime_report')
+        report = without_carried(report) if isinstance(report, dict) else report
+        row = running.get(item.get('agent_id'))
+        # With the server's reports its run check stands: an older report never overrules it.
+        if fleet is None and isinstance(report, dict): row = {**report, 'reported_via':'update_report'}
+        view = release_view(row, fleet_target)
+        if view['state'] == 'behind': behind.append({'agent_id':item.get('agent_id'), 'running':view['running']})
+        elif view['state'] in counts: counts[view['state']] += 1
+        rows.append({**item, **({'runtime_report':report} if 'runtime_report' in item else {}), 'release':view})
+    summary = {'target':short_hash(fleet_target), **counts, 'behind':behind}
+    if fleet and fleet.get('read_failed'): summary['read_failed'] = True
+    return {**shown, 'participants':rows, 'fleet_release':summary}
 
 
 def with_restart_visibility(api, ledger, record, status, authorize):
@@ -294,8 +332,10 @@ def dispatch(args, auth):
         if args.status:
             payload = {**_scope(record), 'operation_id':str(uuid.UUID(args.status))}
             if args.after_agent: payload['after_agent'] = str(uuid.UUID(args.after_agent))
-            return with_restart_visibility(api, with_ledger, record,
-                                           _call(api, 'session_update_status', payload, None, authorize), authorize)
+            page = {key:payload[key] for key in ('operation_id', 'after_agent') if key in payload}
+            status = with_fleet_release(api, record, _call(api, 'session_update_status', payload, None, authorize),
+                                        page, authorize)
+            return with_restart_visibility(api, with_ledger, record, status, authorize)
         if args.apply_notice:
             return apply_notice(api, with_ledger, record, args.apply_notice, args.request_id,
                                 owner_refresh=args.owner_refresh, **options)

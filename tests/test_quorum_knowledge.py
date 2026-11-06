@@ -301,7 +301,7 @@ class KnowledgeDispatchTests(unittest.TestCase):
     def test_real_dispatch_refuses_mismatching_release_before_knowledge_mutation(self):
         with tempfile.TemporaryDirectory() as root:
             code,result,calls=self.run_command(root,'write',{'space_id':SPACE,'operation':'propose','payload':ENTRY},
-                required={'protocol_version':2,'skill_version':'999.0.0'})
+                required={'protocol_version':99})
             self.assertEqual(code,4)
             self.assertEqual(result['code'],'skill_update_required')
             self.assertEqual(calls,['session_requirements'])

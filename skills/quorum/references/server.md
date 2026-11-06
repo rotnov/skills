@@ -55,9 +55,9 @@ Review and apply the following in one administrator-controlled transaction:
    It pins the exact reviewed dispatcher, session authorization, inbox and
    requirements bodies from these files, and fails closed before any change on
    any other body, a missing step or a second application.
-   In the same transaction it advances the required release from skill `0.2.0` /
-   protocol `1` to skill `0.3.0` / protocol `2`. Without it, every `0.3.0`
-   client stops with `skill_update_required` before any send or reply.
+   In the same transaction it advances the required release from protocol `1` to
+   protocol `2`. Without it, every current client stops with
+   `skill_update_required` before any send or reply.
    Then apply the mandatory
    [open access close serialization](../supabase/migrations/20261022180000_open_access_close_serialization.sql).
    It makes closing a quorum wait for, or be waited on by, any in-flight open
@@ -399,6 +399,34 @@ To roll back, in one transaction drop the trigger `delivery_status_answered` on
 `delivery_status_answered`, `delivery_status_apply`, `delivery_status_view` and
 `delivery_status_applies`, the tables `delivery_statuses` and
 `delivery_status_streams`, and the index `deliveries_quorum_recent`.
+
+## Release reports
+
+After reviewing the source and obtaining administrator deployment authorization,
+apply
+[`20261106180000_release_reports.sql`](../supabase/migrations/20261106180000_release_reports.sql)
+in one transaction after `20261106170000_delivery_statuses.sql`. It pins the binding
+check, `session_update_request`, `session_update_report` and the release, and refuses
+drift, reapplication or a server without that predecessor before any change. It does
+not change the required release, any existing function body, table access or task
+authority. Refresh PostgREST's schema cache after applying.
+
+It adds the private `session_release` table, with one row per agent, and two RPCs.
+`session_release_report` records a bound session's running content SHA-256 and the run
+that sent it. `session_release_status` returns the fleet target and each agent's
+report: the agents `session_peers` shows when called without an operation, or a page
+of one operation's recipients for its initiator alone. A report is a self-report and a
+fact, never a grant, and nothing reads one to refuse a listener.
+[Who is behind](update.md#who-is-behind) has the contract.
+
+`session_heartbeat` and `session_peers` are untouched, so a client without this keeps
+working exactly as before and shows as `unreported`. A new client on a server without
+this keeps heartbeating, asks again every 10 minutes and shows every peer as
+`unreported`. Its heartbeat still passes the unchanged version check, because it sends
+the value in its own manifest, not because the server was changed to tolerate it.
+
+To roll back, in one transaction drop the two public RPCs and the table
+`session_release`. Listeners go back to `unreported`; nothing else changes.
 
 ## Hello reporting extension
 

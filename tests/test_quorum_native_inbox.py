@@ -105,6 +105,8 @@ class Api:
         if operation == 'agent_status': return {'agent_id': payload['agent_id']}
         if operation == 'resolve_role': return {'agent_id': PEER}
         if operation == 'session_heartbeat': return {'online': True}
+        if operation == 'session_release_report': return {'recorded': True}
+        if operation == 'session_release_status': return {'target': None, 'agents': []}
         if operation == 'session_inbox': return [m for m in self.inbox if m['id'] not in self.acked]
         if operation == 'session_ack':
             if payload['message_id'] not in self.acked: self.acked.append(payload['message_id'])

@@ -30,7 +30,7 @@ MIGRATION_GUARDS = frozenset("""
     knowledge_default_role_present knowledge_native_binding_required knowledge_vector_schema_required
     knowledge_wiki_required message_unreceipted_present open_access_required open_invite_ttl_present
     owner_update_maintenance_required peer_status_present peer_status_required priority_core_present
-    reviewed_dispatcher_changed reviewed_function_changed reviewed_gate_not_unique reviewed_release_changed
+    delivery_statuses_required release_reports_present reviewed_dispatcher_changed reviewed_function_changed reviewed_gate_not_unique reviewed_release_changed
     role_assignment_present role_assignment_required serial_core_present task_authority_bound_present
     task_authority_bound_required update_extension_present
 """.split())

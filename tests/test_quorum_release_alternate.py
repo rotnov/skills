@@ -49,8 +49,7 @@ class AlternateReleaseTests(unittest.TestCase):
             self.assertEqual(result,4)
             response=json.loads(output.getvalue())
             self.assertEqual(response['code'],'skill_update_required')
-            self.assertEqual(response['data']['release']['required'],
-                             {'protocol_version':1,'skill_version':'0.3.0'})
+            self.assertEqual(response['data']['release']['required'],{'protocol_version':1})
             self.assertNotIn('private-secret',output.getvalue())
             self.assertEqual([op for op,_ in backend.calls],['session_requirements'])
 
@@ -215,7 +214,7 @@ class AlternateReleaseTests(unittest.TestCase):
                     result=dispatch(args,ledger)
                 self.assertEqual((result['listener'],result['state']),('offline','stopped'))
                 self.assertEqual(ledger.setting('listener-release'),{**RELEASE,'run_id':'matching-run'})
-                self.assertEqual(result['release']['required'],RELEASE)
+                self.assertEqual(result['release']['required'],{'protocol_version':RELEASE['protocol_version']})
                 self.assertFalse(result['release']['update_required'])
                 self.assertEqual([op for op,_ in backend.calls],['session_requirements'])
             finally: ledger.db.close()
@@ -240,5 +239,6 @@ class AlternateReleaseTests(unittest.TestCase):
                 with patch('quorum_session.subprocess.Popen',side_effect=spawn):
                     with self.assertRaisesRegex(QuorumError,'^skill_update_required$') as raised:
                         start(Path(root),ledger,'session',api=backend)
-                self.assertEqual(getattr(raised.exception,'diagnostic',None),failure)
+                self.assertEqual(getattr(raised.exception,'diagnostic',None),
+                                 {**failure,'installed':{'protocol_version':2},'required':{'protocol_version':1}})
             finally: ledger.db.close()

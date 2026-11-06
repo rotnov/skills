@@ -6,9 +6,11 @@ suite separately proves the real coordination-only and upgraded contracts.
 import io
 import json
 import os
+import re
 from pathlib import Path
 import sys
 import tempfile
+import tomllib
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -87,22 +89,28 @@ def installed():
 
 
 class MandatoryReleaseTests(Gate):
-    def test_the_next_release_is_skill_0_3_0_protocol_2(self):
+    def test_the_release_is_named_by_protocol_and_hash_never_by_a_number(self):
         manifest = json.loads((ROOT / 'skills/quorum/assets/release.json').read_text(encoding='utf-8'))
-        self.assertEqual(manifest, CURRENT)
-        self.assertIn('version = "0.3.0"', (ROOT / 'skills/quorum/pyproject.toml').read_text(encoding='utf-8'))
-        # Owner-facing guidance names the exact tuple.
+        self.assertEqual(manifest['protocol_version'], 2)
+        # Installed copies from before #168 refuse a staged copy unless these two agree.
+        project = tomllib.loads((ROOT / 'skills/quorum/pyproject.toml').read_text(encoding='utf-8'))
+        self.assertEqual(manifest['skill_version'], project['project']['version'])
+        number = re.compile(re.escape(manifest['skill_version']))
+        # Owner-facing guidance names the protocol and the content hash, and no number.
+        for path in [ROOT / 'skills/quorum/README.md', ROOT / 'skills/quorum/SKILL.md',
+                     *(ROOT / 'skills/quorum/references').glob('*.md')]:
+            text = path.read_text(encoding='utf-8')
+            self.assertIsNone(number.search(text), path.name)
+            self.assertNotIn('0.2.0', text, path.name)
         for name in ('README.md', 'references/update.md', 'references/sessions.md'):
-            text = (ROOT / 'skills/quorum' / name).read_text(encoding='utf-8')
-            self.assertIn('0.3.0', text, name)
-            self.assertNotIn('0.2.0', text, name)
-        # Invitations freeze no version: the recipient's refreshed join guide verifies the exact tuple.
+            self.assertIn('content hash', (ROOT / 'skills/quorum' / name).read_text(encoding='utf-8'), name)
+        # Invitations freeze no version: the recipient's refreshed join guide verifies the running identity.
         from quorum_invitations import EXPIRY, authorizations, bootstrap, connect_line
         for text in (authorizations('coordinator'), bootstrap(), EXPIRY, connect_line(None, 'coordinator', True)):
             self.assertNotIn('0.3.0', text)
             self.assertNotIn('protocol 2', text)
         join = ' '.join((ROOT / 'skills/quorum/references/join.md').read_text(encoding='utf-8').split())
-        self.assertIn('verify exact installed/required versions', join)
+        self.assertIn('verify the installed and required protocol', join)
         source = (ROOT / 'skills/quorum/scripts/quorum_invitations.py').read_text(encoding='utf-8')
         self.assertNotIn('0.2.0', source)
 
@@ -116,7 +124,7 @@ class MandatoryReleaseTests(Gate):
                     with self.assertRaisesRegex(ReleaseMismatch, 'skill_update_required') as caught:
                         self.run_action(backend, action, priority)
                     self.assertEqual(backend.calls, ['session_requirements'])
-                    self.assertEqual(caught.exception.diagnostic['required'], COORDINATION_ONLY)
+                    self.assertEqual(caught.exception.diagnostic['required'], {'protocol_version': 1})
 
     @isolated_profiles
     def test_an_upgraded_server_handles_normal_and_urgent_send_and_reply(self):
