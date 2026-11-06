@@ -56,6 +56,7 @@ class ListenerLossTests(unittest.TestCase):
         with patch.dict(os.environ, {'GROK_SESSION_ID':SID}), patch('pathlib.Path.cwd', return_value=self.root), \
              patch('quorum_live.api_for', return_value=(self.api, None, None)), \
              patch('quorum_grok_leader.binding', return_value=self.transport), \
+             patch('quorum_grok_leader.GROK_LEADER_PLATFORMS', (sys.platform,)), \
              patch('quorum_session.spawn_background', side_effect=self.spawn):
             return dispatch(SimpleNamespace(action=action, session_id=SID, **extra), SimpleNamespace(root=self.root),
                             None)
