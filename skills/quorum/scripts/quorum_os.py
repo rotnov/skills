@@ -266,6 +266,88 @@ class FileLock:
         os.close(self.fd)
 
 
+# Enough to pass an interpreter launcher, `uv run` and the shells of a client's background command.
+ANCESTOR_LIMIT = 5
+
+
+def _ended(pid):
+    """Query-only on POSIX. A process this user may not signal is alive, and a reused ID reads as alive."""
+    try: os.kill(pid, 0)
+    except ProcessLookupError: return True
+    except OSError: pass
+    return False
+
+
+def _parent_of(pid):
+    import subprocess
+    try:
+        found = subprocess.run(['ps', '-o', 'ppid=', '-p', str(pid)], capture_output=True, text=True, timeout=2)
+    except (OSError, subprocess.SubprocessError): return None
+    parent = found.stdout.strip()
+    return int(parent) if parent.isdigit() and int(parent) > 1 else None
+
+
+def _posix_probes(limit):
+    direct = pid = os.getppid()
+    probes = [lambda: os.getppid() != direct]
+    while len(probes) < limit:
+        pid = _parent_of(pid)
+        if pid is None: break
+        probes.append(lambda pid=pid: _ended(pid))
+    return probes
+
+
+def _process_handle(kernel, pid):
+    return kernel.OpenProcess(0x00101000, False, pid)  # SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION
+
+
+def _windows_probes(limit):
+    """Handles held to each ancestor, so an ended process's ID can never be reused under a probe.
+
+    Windows keeps a dead parent's ID, so a parent newer than its child is an unrelated process and ends the walk.
+    """
+    import ctypes
+    from ctypes import wintypes as w
+    probes = []
+    try:
+        kernel, native = ctypes.WinDLL('kernel32', use_last_error=True), ctypes.WinDLL('ntdll')
+        kernel.GetCurrentProcess.restype = w.HANDLE
+        kernel.OpenProcess.argtypes, kernel.OpenProcess.restype = [w.DWORD, w.BOOL, w.DWORD], w.HANDLE
+        kernel.CloseHandle.argtypes = [w.HANDLE]
+        kernel.WaitForSingleObject.argtypes, kernel.WaitForSingleObject.restype = [w.HANDLE, w.DWORD], w.DWORD
+        kernel.GetProcessTimes.argtypes = [w.HANDLE] + [ctypes.POINTER(w.FILETIME)] * 4
+        native.NtQueryInformationProcess.argtypes = [w.HANDLE, ctypes.c_int, ctypes.c_void_p, ctypes.c_ulong,
+                                                     ctypes.c_void_p]
+        native.NtQueryInformationProcess.restype = ctypes.c_long
+        class Basic(ctypes.Structure):
+            _fields_ = [('exit_status', ctypes.c_void_p), ('peb', ctypes.c_void_p), ('affinity', ctypes.c_size_t),
+                        ('priority', ctypes.c_void_p), ('pid', ctypes.c_size_t), ('parent', ctypes.c_size_t)]
+        def started(handle):
+            created, exited, system, user = w.FILETIME(), w.FILETIME(), w.FILETIME(), w.FILETIME()
+            if not kernel.GetProcessTimes(handle, ctypes.byref(created), ctypes.byref(exited), ctypes.byref(system),
+                                          ctypes.byref(user)): return None
+            return created.dwHighDateTime << 32 | created.dwLowDateTime
+        current = kernel.GetCurrentProcess()
+        while len(probes) < limit:
+            basic = Basic()
+            if native.NtQueryInformationProcess(current, 0, ctypes.byref(basic), ctypes.sizeof(basic), None): break
+            handle = _process_handle(kernel, basic.parent)
+            if not handle: break
+            child, parent = started(current), started(handle)
+            if child is None or parent is None or parent > child or kernel.WaitForSingleObject(handle, 0) == 0:
+                kernel.CloseHandle(handle)
+                break
+            probes.append(lambda handle=handle: kernel.WaitForSingleObject(handle, 0) == 0)
+            current = handle
+    except (AttributeError, OSError, TypeError, ValueError): pass
+    return probes
+
+
+def ancestor_probes():
+    """One zero-argument check per process above this one, true once it has ended. A refused query adds none."""
+    return _windows_probes(ANCESTOR_LIMIT) if os.name == 'nt' else _posix_probes(ANCESTOR_LIMIT)
+
+
 class WindowsJob:
     """Own only this handler's process tree; closing the job terminates its children."""
     def __init__(self, process):

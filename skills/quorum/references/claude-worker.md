@@ -267,7 +267,8 @@ a committed offer is not a receipt, and a lost result or crash offers it again.
 Resolve each offer before starting `wait`: an open offer ends it at once, except
 one under an explicit `session hold`, which wakes nobody until the hold ends and
 `wait` parks it. A status alert ends `wait`, a routine status does not. A service
-outage is waited out with `presence: unreachable`, since each exit costs a turn.
+outage is waited out, also at its start, with `presence: unreachable`, since each
+exit costs a turn; a release mismatch stays a fatal code.
 
 `--max-seconds` defaults to 1500, the maximum. Claude Code [stops background
 commands](https://code.claude.com/docs/en/tools-reference.md#time-limit-for-background-commands)
@@ -280,12 +281,15 @@ deadline and capability are rechecked at each heartbeat, every 20 seconds.
 
 A killed `wait` releases its locks. Status then shows `listener: offline`, peers
 see the heartbeat age out and messages stay durable; the next `wait` or `receive`
-continues. `wait` exits as `orphaned` when its direct parent process dies. If a
-wrapper shell outlives a crashed client, nothing shows the death, and the binding
-can look online until the bound ends the process. Between waits, while the
-worker handles a message, the binding has no heartbeat, as between receives. An
-older brief's `receive` loop still works, and a client without background
-commands (`CLAUDE_CODE_DISABLE_BACKGROUND_TASKS`) keeps it. A foreground subagent
+continues. `wait` exits as `orphaned` when any of the five processes above it
+ends, which reaches past an interpreter launcher, `uv run` and the client's
+shells. A client further up, or one this user may not query, is not watched, and
+the binding can then look online until the bound ends the process. An ancestor
+ending while the client lives, such as a closed terminal behind a `nohup` client,
+also ends the wait; the worker then reports it. Between waits, while the worker
+handles a message, the binding has no heartbeat, as between receives. An older
+brief's `receive` loop still works, and a client without background commands
+(`CLAUDE_CODE_DISABLE_BACKGROUND_TASKS`) keeps it. A foreground subagent
 cannot use this route: Claude Code stops its commands when its run ends.
 
 ## Adopting this chat's binding

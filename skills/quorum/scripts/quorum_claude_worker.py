@@ -2109,10 +2109,12 @@ def _session_action(args, auth_ledger, register_agent, context, ledger, record, 
     from quorum_release import ReleaseGuard
     from quorum_session import PRIORITIES
     action, session_ref, scope = args.action, context['session_ref'], context['scope']
-    if action in ('connect', 'receive', 'wait'):
+    if action in ('connect', 'receive'):
         release = ReleaseGuard(guarded, ledger)
         release.check()
         release.running()
+    # The wait's first pass reads the release under its outage retry; a mismatch there stays fatal.
+    if action == 'wait': ReleaseGuard(guarded, ledger).running()
     if action == 'connect':
         ledger.setting('listener-mode', 'claude_tool_inbox')
         data = {'engine': PROVIDER, 'session_ref': session_ref, 'project_ref': scope['project_ref'],

@@ -22,7 +22,7 @@ NEW_HANDLE = 'agent_02 quorum after restart'
 HELLO = 'Hello! Listener connected: alpha (project team/project). Transport notice; no reply required.'
 # One real `wait` process on the worker's own ledger. Its waiter says ready once the consumer locks are held.
 WAIT = textwrap.dedent('''
-    import json, sys, time
+    import json, os, sys, time
     from pathlib import Path
     sys.path.insert(0, sys.argv[1])
     import quorum_native_inbox as inbox
@@ -33,7 +33,7 @@ WAIT = textwrap.dedent('''
             if operation == 'session_requirements': return dict(installed_release())
             return [] if operation == 'session_inbox' else {}
     class Waiter:
-        def prepare(self, stopping): print('ready', flush=True)
+        def prepare(self, stopping): print('ready', os.getpid(), flush=True)
         def pulse(self, stopping=None): pass
         def wait(self, stopping): time.sleep(0.05)
         def close(self): pass
@@ -41,11 +41,16 @@ WAIT = textwrap.dedent('''
     result = inbox.wait(Api(), ledger, ledger, ledger.setting('session-agent'), 120, waiter=Waiter())
     print(json.dumps(result), flush=True)
 ''')
-# A parent that dies under the wait: it passes the child's lines on through a file.
+# What stands between a client and an interpreter: a Windows venv launcher or `uv run` waits on its child.
+LAUNCHER = textwrap.dedent('''
+    import subprocess, sys
+    sys.exit(subprocess.call([sys.executable, *sys.argv[1:]]))
+''')
+# A parent that dies above the wait, directly or above a launcher that stays. Lines go through a file.
 PARENT = textwrap.dedent('''
-    import subprocess, sys, time
-    with open(sys.argv[3], 'wb') as output:
-        subprocess.Popen([sys.executable, '-c', sys.argv[4], sys.argv[1], sys.argv[2]], stdout=output)
+    import json, subprocess, sys, time
+    command = json.loads(sys.argv[1])
+    with open(sys.argv[2], 'wb') as output: subprocess.Popen(command, stdout=output)
     time.sleep(120)
 ''')
 
@@ -284,6 +289,22 @@ class WaitRouteTests(WaitCase):
         self.assertNotIn(str(self.root), text)
 
     @isolated_profiles
+    def test_an_outage_at_the_start_is_waited_out_and_a_release_mismatch_stays_fatal(self):
+        api = Api(inbox=[message(M1)])
+        self.bound(api)
+        api.fail['session_requirements'] = ['service_unavailable', 'service_unavailable', None]
+        with patch('quorum_native_inbox.RealtimeWait', lambda *_, **__: StubWaiter()), \
+                patch('quorum_native_inbox.pause') as pause:
+            code, result, text = self.worker(api, 'wait', '--max-seconds', '60')
+        self.assertEqual((code, result['data']['state']), (0, 'offer_available'), text)
+        self.assertEqual(pause.call_count, 30, 'the listener\'s 10 and 20 second delays')
+        api.required = {'protocol_version': 99, 'skill_version': '9.9.9'}
+        with patch('quorum_native_inbox.RealtimeWait', lambda *_, **__: StubWaiter()):
+            code, result, _ = self.worker(api, 'wait', '--max-seconds', '60')
+        self.assertEqual(result['code'], 'skill_update_required')
+        self.assertNotEqual(code, 0)
+
+    @isolated_profiles
     def test_a_scope_without_receive_cannot_wait(self):
         api = Api()
         self.bound(api, self.accept_scope(operations=['accept', 'connect', 'status', 'stop']))
@@ -396,7 +417,7 @@ class ProcessTests(Bound):
         self.addCleanup(process.stdout.close)
         self.addCleanup(process.wait)
         self.addCleanup(process.kill)
-        self.assertEqual(process.stdout.readline().strip(), 'ready')
+        self.assertEqual(process.stdout.readline().split()[0], 'ready')
         return process
 
     def session(self):
@@ -444,52 +465,76 @@ class ProcessTests(Bound):
         self.assertTrue(self.freed())
         self.assertEqual(self.session()['listener'], 'offline')
 
-    @isolated_profiles
-    def test_a_wait_whose_parent_died_exits_and_frees_its_lock(self):
+    def orphaned_under(self, *wrapper):
+        """Kill what started the wait: the wait reports `orphaned`, frees its lock and exits."""
         self.api = Api()
         self.bound(self.api)
         self.ledger_root = self.root / 'sessions' / actor_directory(actor())
         output = self.base / 'wait.out'
-        parent = subprocess.Popen([sys.executable, '-c', PARENT, str(SCRIPTS), str(self.ledger_root), str(output), WAIT])
+        command = [sys.executable, *wrapper, '-c', WAIT, str(SCRIPTS), str(self.ledger_root)]
+        parent = subprocess.Popen([sys.executable, '-c', PARENT, json.dumps(command), str(output)])
         self.addCleanup(parent.wait)
         self.addCleanup(parent.kill)
         deadline = time.monotonic() + 30
         while time.monotonic() < deadline and not (output.exists() and output.read_text().strip()): time.sleep(0.05)
-        self.assertEqual(output.read_text().strip(), 'ready')
+        ready, pid = output.read_text().split()
+        self.assertEqual(ready, 'ready')
         parent.kill()
         parent.wait()
         self.assertTrue(self.freed())
-        # A Windows venv launcher's job can end the child before it reports; the lock is the contract.
-        if os.name != 'nt': self.assertEqual(json.loads(output.read_text().splitlines()[1])['state'], 'orphaned')
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline and len(output.read_text().splitlines()) < 2: time.sleep(0.05)
+        self.assertEqual(json.loads(output.read_text().splitlines()[1])['state'], 'orphaned')
+        if os.name == 'nt':
+            from quorum_debug import _windows_pid_alive
+            while time.monotonic() < deadline and _windows_pid_alive(int(pid)): time.sleep(0.05)
+            self.assertFalse(_windows_pid_alive(int(pid)), 'nothing may keep the ledger open')
+
+    @isolated_profiles
+    def test_a_wait_whose_parent_died_exits_and_frees_its_lock(self):
+        self.orphaned_under()
+
+    @isolated_profiles
+    def test_a_launcher_that_stays_between_does_not_hide_the_death_above_it(self):
+        launcher = self.base / 'launcher.py'
+        launcher.write_text(LAUNCHER, encoding='utf-8')
+        self.orphaned_under(str(launcher))
 
 
 @OWNER_PROOF
 class ParentWatchTests(unittest.TestCase):
+    def test_this_process_watches_live_ancestors_and_any_ending_is_a_death(self):
+        from quorum_native_inbox import ParentWatch
+        self.assertFalse(ParentWatch().gone())
+        ended = [False]
+        watch = ParentWatch(probes=[lambda: False, lambda: ended[0]])
+        self.assertFalse(watch.gone())
+        ended[0] = True
+        self.assertTrue(watch.gone())
+
+    def test_the_watch_is_bounded_and_nothing_refused_reads_as_a_death(self):
+        import quorum_os
+        self.assertLessEqual(len(quorum_os.ancestor_probes()), quorum_os.ANCESTOR_LIMIT)
+        chain = quorum_os._windows_probes if os.name == 'nt' else quorum_os._posix_probes
+        seam = '_process_handle' if os.name == 'nt' else '_parent_of'
+        with patch.object(quorum_os, seam, return_value=None):
+            probes = chain(quorum_os.ANCESTOR_LIMIT)
+        self.assertFalse(any(probe() for probe in probes))
+
     @unittest.skipIf(os.name == 'nt', 'POSIX reparenting')
     def test_reparenting_is_a_death(self):
-        from quorum_native_inbox import ParentWatch
-        watch = ParentWatch()
-        self.assertFalse(watch.gone())
-        with patch('os.getppid', return_value=watch.parent + 1): self.assertTrue(watch.gone())
+        import quorum_os
+        probes = quorum_os.ancestor_probes()
+        self.assertFalse(any(probe() for probe in probes))
+        with patch('os.getppid', return_value=os.getppid() + 1): self.assertTrue(any(probe() for probe in probes))
 
-    def test_a_windows_parent_it_may_not_query_is_never_read_as_dead(self):
-        import quorum_debug  # noqa: F401  Imported before os.name changes below.
-        from quorum_native_inbox import ParentWatch
-        with patch('quorum_native_inbox.os.name', 'nt'), patch('quorum_debug._windows_pid_alive', return_value=False):
-            watch = ParentWatch()
-            self.assertFalse(watch.watched)
-            self.assertFalse(watch.gone())
-
-    def test_a_windows_parent_that_ends_is_a_death(self):
-        import quorum_debug  # noqa: F401  Imported before os.name changes below.
-        from quorum_native_inbox import ParentWatch
-        alive = [True]
-        with patch('quorum_native_inbox.os.name', 'nt'), \
-                patch('quorum_debug._windows_pid_alive', side_effect=lambda _: alive[0]):
-            watch = ParentWatch()
-            self.assertFalse(watch.gone())
-            alive[0] = False
-            self.assertTrue(watch.gone())
+    @unittest.skipIf(os.name == 'nt', 'POSIX signal probe')
+    def test_a_permission_refusal_is_a_live_ancestor(self):
+        import quorum_os
+        with patch('os.kill', side_effect=PermissionError):
+            self.assertFalse(quorum_os._ended(1))
+        with patch('os.kill', side_effect=ProcessLookupError):
+            self.assertTrue(quorum_os._ended(1))
 
 
 if __name__ == '__main__':

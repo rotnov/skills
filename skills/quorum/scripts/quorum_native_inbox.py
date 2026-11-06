@@ -17,7 +17,7 @@ from quorum_api import QuorumError, guarded_call, is_transient_service
 from quorum_delivery import Deliveries, PULL_STATES, server_ack
 from quorum_delivery_status import MARK_HINT, Reports, StatusWatch, reportable
 from quorum_listener import control_lock
-from quorum_os import FileLock
+from quorum_os import FileLock, ancestor_probes
 from quorum_presence import Presence, hello_once
 from quorum_realtime import RealtimeWait
 import quorum_notices
@@ -70,6 +70,8 @@ WAIT_LOOP = ('Do not repeat session receive through empty waits. Run session wai
 NOTICE = object()
 # Patchable wall clock for parked/hold timestamps (persisted across calls, unlike the monotonic budget).
 wall = time.time
+# Patchable pause between a wait's outage retries.
+pause = time.sleep
 
 
 class NativeInboxError(ValueError):
@@ -834,23 +836,15 @@ def receive(api, auth_ledger, ledger, record, wait_seconds, *, waiter=None, pres
 
 
 class ParentWatch:
-    """Whether the process that started this one has gone, so nothing is left to read a result.
+    """Whether a process above this one has ended, so nothing is left to read a result.
 
-    It sees the direct parent only. A wrapper shell that outlives the client hides the client's death, and then
-    the wait bound ends the process. On Windows `os.getppid` never changes, and a parent this user may not query
-    is not watched, so a refused query is never read as a death.
+    The direct parent alone proves nothing: a Windows venv launcher or `uv run` stays alive, waiting on this
+    process, after whatever started it has gone.
     """
-    def __init__(self):
-        self.parent = os.getppid()
-        self.watched = os.name != 'nt' or self._alive()
+    def __init__(self, probes=None):
+        self.probes = ancestor_probes() if probes is None else probes
 
-    def _alive(self):
-        from quorum_debug import _windows_pid_alive
-        return _windows_pid_alive(self.parent)
-
-    def gone(self):
-        if not self.watched: return False
-        return not self._alive() if os.name == 'nt' else os.getppid() != self.parent
+    def gone(self): return any(probe() for probe in self.probes)
 
 
 def _held_offer(ledger, message_id):
@@ -872,7 +866,7 @@ def wait_result(ledger, record, state):
 
 
 def wait(api, auth_ledger, ledger, record, max_seconds=WAIT_BOUND, *, waiter=None, presence=None, clock=None,
-         sleep=time.sleep, parent=None, authorize=None):
+         sleep=None, parent=None, authorize=None):
     """Block without a model until an offer or alert is available, a stop, a fatal code or the bound.
 
     It runs as one background command, under the consumer locks `receive` takes, so two consumers cannot run.
@@ -887,7 +881,7 @@ def wait(api, auth_ledger, ledger, record, max_seconds=WAIT_BOUND, *, waiter=Non
     if authorize is not None:
         api = _guarded(api, authorize)
         api.check()
-    clock = clock or time.monotonic
+    clock, sleep = clock or time.monotonic, sleep or pause
     parent = parent or ParentWatch()
     control = Control(ledger)
     watch = StatusWatch(api, ledger, record, catch_up=False)
