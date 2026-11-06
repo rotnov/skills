@@ -18,6 +18,7 @@ import sqlite3
 import stat
 import sys
 import time
+from types import SimpleNamespace
 import unicodedata
 from urllib.parse import quote
 import uuid
@@ -109,10 +110,15 @@ def actual_session():
 
 
 def _label(value):
-    """Exact bounded native string: 1..256 UTF-8 bytes, no control characters, never normalized."""
+    """Exact bounded native string: 1..256 UTF-8 bytes, no control characters, never normalized.
+
+    `<` and `>` never occur in a provider handle or tool ID; refusing them stops a pasted documentation
+    placeholder from binding as a new logical actor.
+    """
     try: size = len(value.encode('utf-8')) if isinstance(value, str) else 0
     except UnicodeError: size = 0
-    if not 1 <= size <= LABEL_LIMIT or any(unicodedata.category(char) == 'Cc' for char in value):
+    if (not 1 <= size <= LABEL_LIMIT or '<' in value or '>' in value
+            or any(unicodedata.category(char) == 'Cc' for char in value)):
         raise _denied('handle_invalid')
     return value
 
@@ -722,6 +728,7 @@ def _session_status(root, record):
     settings = {key: json.loads(data) for key, data in rows}
     listener = settings.get('listener') or {}
     from quorum_native_inbox import awaiting_summary
+    import quorum_notices
     # The same awaiting-owner fields as the Codex status; rows keep their ledger order.
     awaiting = awaiting_summary([(key, value) for key, value in settings.items() if key.startswith('delivery:')])
     state = listener.get('state', 'stopped')
@@ -733,10 +740,8 @@ def _session_status(root, record):
                                     if key.startswith('delivery:')),
             # The last connection's Hello outcome; a summary string only, never a message body.
             'hello': (settings.get('hello') or {}).get('summary') if isinstance(settings.get('hello'), dict) else None,
-            # Hello/roster transport notices this worker receipted quietly (#126); counts only.
-            'transport_notices': {'shown': settings.get('show-transport-notices') is True,
-                                  'auto_receipted': int((settings.get('transport-notices') or {}).get('auto_receipted', 0))
-                                  if isinstance(settings.get('transport-notices'), dict) else 0},
+            # Hello/roster transport notices this worker receipted quietly (#126): IDs, roles and times only.
+            'transport_notices': quorum_notices.summary(SimpleNamespace(setting=settings.get)),
             **awaiting}
 
 

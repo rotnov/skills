@@ -163,7 +163,7 @@ class Presence:
             self.ledger.setting('hello', {**record, 'recorded_at': self.wall() if self.persist else time.time()})
 
 
-HELLO_FIELDS = ('sent', 'roles', 'available', 'available_roles', 'roster')
+HELLO_FIELDS = ('sent', 'skipped', 'roles', 'available', 'available_roles', 'roster')
 
 
 def hello_result(value):
@@ -176,22 +176,29 @@ def hello_result(value):
         item = value.get(key)
         if not isinstance(item, list): return []
         return [str(role)[:48] for role in item[:16] if isinstance(role, str)]
-    return {'sent': count('peers'), 'roles': roles('roles'), 'available': count('available'),
+    # `peers` includes peers the reconnect dedupe skipped; without a valid `skipped` the split is unknown.
+    peers, skipped = count('peers'), count('skipped')
+    if peers is None or skipped is None or skipped > peers: skipped = None
+    return {'sent': None if peers is None else peers - (skipped or 0), 'skipped': skipped,
+            'roles': roles('roles'), 'available': count('available'),
             'available_roles': roles('available_roles'), 'roster': isinstance(value.get('roster_message_id'), str)}
 
 
 def hello_summary(record):
     """One owner-facing line for the setup outcome and `session status`."""
     project = record.get('project_ref') or 'this project'
-    sent = record.get('sent')
+    sent, skipped = record.get('sent'), record.get('skipped')
     if sent is None:
         result = 'Hello result not reported by the server (Hello reporting extension not applied)'
-    elif sent == 0:
+    elif sent + (skipped or 0) == 0:
         result = '0 peers share project reference ' + project + '; the Hello reached no one'
     else:
-        result = 'Hello sent to ' + str(sent) + ' peer' + ('' if sent == 1 else 's') + ' in ' + project
+        # Without the split the count can include peers the reconnect dedupe did not greet again.
+        result = ('Hello reached ' if skipped is None else 'Hello sent to ') + str(sent) + ' peer' + (
+            '' if sent == 1 else 's') + (', ' + str(skipped) + ' already greeted' if skipped else '') + ' in ' + project
         if record.get('roles'):
-            result += ' (' + ', '.join(record['roles']) + (', ...' if sent > len(record['roles']) else '') + ')'
+            result += ' (' + ', '.join(record['roles']) + (
+                ', ...' if sent + (skipped or 0) > len(record['roles']) else '') + ')'
     if record.get('available') is not None:
         result += '; roster: ' + str(record['available']) + ' available'
     if record.get('reused') or record.get('kept'):

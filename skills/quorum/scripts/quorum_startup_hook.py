@@ -9,6 +9,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 import subprocess
 import sys
@@ -28,14 +29,26 @@ class HookError(ValueError):
     """Fixed codes only; never file contents, environment or exception text."""
 
 
+CMD_METACHARACTERS = set('&|<>^()!;,=')
+
+
 # Grok's turn-end (Stop) check for a listener lost while the chat stayed open (#135). Short: it only reads.
 STOP_TIMEOUT_SECONDS = 30
 
 
-def hook_command(state, client, *extra):
+def cmd_word(value):
+    """One argument for a cmd.exe hook line; list2cmdline only quotes spaces, tabs and empty strings."""
+    # cmd.exe expands %NAME% inside double quotes as well, so no quoting can make this text literal.
+    if '%' in value: raise HookError('startup_hook_path_unsafe')
+    word = subprocess.list2cmdline([value])
+    if word.startswith('"') or not set(word) & CMD_METACHARACTERS: return word
+    return '"' + re.sub(r'(\\+)$', r'\1\1', word) + '"'  # A trailing backslash must not escape the quote.
+
+
+def hook_command(state, client, *extra, windows=os.name == 'nt'):
     argv = ['uv', 'run', '--project', str(SKILL_DIR), '--frozen', 'python', str(SKILL_DIR / 'scripts' / MARKER),
             '--state', str(Path(state).resolve()), '--client', client, *extra]
-    return subprocess.list2cmdline(argv) if os.name == 'nt' else shlex.join(argv)
+    return ' '.join(map(cmd_word, argv)) if windows else shlex.join(argv)
 
 
 def handler(state, client):

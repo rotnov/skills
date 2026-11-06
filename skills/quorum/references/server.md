@@ -45,6 +45,11 @@ Review and apply the following in one administrator-controlled transaction:
    table access and never revokes users on timeout. A server that already
    deployed native coordination applies open access next, then open session
    requirements; that file refuses to run before open access.
+   A server that skipped step 4 must not apply it now, because that would undo
+   the open-access gate; apply
+   [native session engine convergence](../supabase/migrations/20261022165000_native_session_engine_convergence.sql)
+   instead. It gives such a server the bodies this order installs. On a server
+   that applied step 4, live included, it changes nothing and can be skipped.
    Then apply the mandatory
    [urgent message priority](../supabase/migrations/20261022170000_urgent_message_priority.sql).
    It pins the exact reviewed dispatcher, session authorization, inbox and
@@ -246,7 +251,8 @@ A new listener connection still sends a Hello to each same-project peer, except
 to a peer that already got a Hello from the same sender within the last 30
 minutes of the sender's unbroken presence. The first connection, and a
 reconnect after the sender's health was at least 60 seconds stale, announce to
-every peer. A skipped peer still counts in the `hello` result and the roster.
+every peer. A skipped peer still counts in the `hello` result and the roster;
+the [Hello sent and skipped split](#hello-sent-and-skipped-split) reports how many.
 An agent seen only before this release announces once more, then is deduplicated.
 Clients need no change; current clients also receipt transport notices quietly.
 
@@ -292,6 +298,29 @@ works behind a newer urgent head. It returns the message UUID and one boolean,
 never a body or sender, and writes nothing. A client on a server without it falls
 back to the inbox head and fails closed. To roll back, in one transaction drop
 `public.session_message_unreceipted(uuid,text,uuid)`.
+
+## Hello sent and skipped split
+
+After reviewing the source and obtaining administrator deployment authorization,
+apply
+[`20261106150000_hello_sent_skipped.sql`](../supabase/migrations/20261106150000_hello_sent_skipped.sql)
+in one transaction after `20261106140000_session_message_unreceipted.sql`. The
+heartbeat `hello` object gains `skipped`, how many of `peers` the reconnect dedupe did not greet
+again on this connection, so clients can report sent and skipped apart. `peers`
+and the roster text keep their meaning. It pins the peer-status heartbeat, the
+Hello wrapper it replaces, the core, the dispatcher, the binding check and the
+release, and refuses drift, reapplication or a server without the task authority
+bound before any change. It does not change the required release, Hello
+recipients, table access or task authority.
+
+Clients need no change. A client on a server without this file, or reading a
+connection recorded before it, gets no split and reports `Hello reached N
+peers`, because N can then include peers that were not greeted again.
+
+The previous Hello wrapper stays private as
+`quorum_private.session_heartbeat_hello_before_split`. To roll back, in one
+transaction drop the new `session_heartbeat_before_status`, rename that function
+back to it and drop the `skipped` column of `session_hellos`.
 
 ## Hello reporting extension
 

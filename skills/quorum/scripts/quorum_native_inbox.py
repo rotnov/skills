@@ -778,9 +778,10 @@ def offer(api, auth_ledger, ledger, record, stopping=lambda: False):
     transport = quorum_notices.quiet(ledger, message, record['agent_id']) if delivery.get('state') == 'offered' else None
     if transport:
         # A server Hello/roster transport notice: this worker receipts it itself, with no envelope or model turn.
-        acknowledge(api, ledger, record, message_id)
+        # Logged before the ACK: a crash after it can no longer drop the notice from status.
         quorum_notices.record(ledger, message, transport, 'claude-worker' if record.get('engine') == 'claude'
                               else 'tool-inbox')
+        acknowledge(api, ledger, record, message_id)
         return NOTICE
     # Delegation is re-read at output time; a queued offer may predate a revocation.
     current = {**record, 'delegation': (ledger.setting('session-agent') or {}).get('delegation')}

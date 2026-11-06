@@ -130,6 +130,19 @@ class StartupHookTests(unittest.TestCase):
             code = main(['--state', str(self.state), *argv])
         return code, json.loads(output.getvalue())
 
+    def test_windows_hook_command_quotes_cmd_metacharacters_and_refuses_expansion(self):
+        from quorum_startup_hook import HookError, cmd_word, hook_command
+        self.assertEqual(cmd_word('plain'), 'plain')
+        self.assertEqual(cmd_word('C:\\two words\\state'), '"C:\\two words\\state"')
+        for word in ('a|b', 'a&b', 'a^b', 'a<b', 'a>b', '(a)'):
+            with self.subTest(word=word): self.assertEqual(cmd_word(word), '"' + word + '"')
+        # A trailing backslash may not swallow the closing quote.
+        self.assertEqual(cmd_word('C:\\a&b\\'), '"C:\\a&b\\\\"')
+        # cmd.exe expands %NAME% inside double quotes too, so nothing is emitted for it.
+        with self.assertRaises(HookError) as refused: cmd_word('C:\\%USERPROFILE%\\state')
+        self.assertEqual(str(refused.exception), 'startup_hook_path_unsafe')
+        self.assertIn('--client', hook_command('state', 'codex', windows=True))
+
     def test_default_prints_documented_configuration_and_writes_nothing(self):
         code, result = self.run_hook('--client', 'codex', '--project-dir', str(self.project))
         self.assertEqual(code, 0)

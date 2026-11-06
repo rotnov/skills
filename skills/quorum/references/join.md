@@ -45,7 +45,8 @@ other-directory binding cannot be resumed and does not block acceptance.
 - Claude worker: `session worker rebind <slot-uuid>`
   ([rebind](claude-worker.md#rebind-after-a-parent-restart)), including the
   old slot of an interrupted hand-over whose successor lapsed; a hand-over
-  still pending (`state: hand_over_pending`) finishes by repeating its attest.
+  still pending (`state: hand_over_pending`) finishes by repeating its attest
+  with the exact handle from that spawn's tool receipt, never a placeholder.
 - Grok cloud parent: `cloud start` ([cloud](grok-cloud.md)).
 
 `accept-id <invite-id> --quorum <slug>` applies the rule itself. Before any

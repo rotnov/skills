@@ -281,8 +281,10 @@ def live_binding(state, quorum, *, sid=None, parent=None, cloud=None):
                      'agent_id': item['agent_id'], 'state': item['state']}
             if item['state'] == 'hand_over_pending':
                 # Repeat the interrupted attest with the same handle; once it expires, rebind the old slot.
-                found['next_step'] = _quorum_command(state, 'worker', 'attest', item['slot_id'],
-                                                     '--native-handle', '<same-native-handle>')
+                # The value stays out of the command: only the parent's own spawn receipt holds it, and an
+                # incomplete command fails instead of binding a pasted placeholder as a new actor.
+                found['next_step'] = _quorum_command(state, 'worker', 'attest', item['slot_id'], '--native-handle')
+                found['native_handle_source'] = 'spawn_receipt'
             else: found['next_step'] = _quorum_command(state, 'worker', 'rebind', item['slot_id'])
             return found
     if cloud is not None:

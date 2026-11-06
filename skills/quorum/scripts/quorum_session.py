@@ -577,12 +577,14 @@ class Relay:
             # A server Hello/roster transport notice: receipt it here, with no chat envelope or model turn.
             self.release.check()
             self.authorize()
+            already = previous and previous['state'] == 'acked'
+            # Logged before the ACK: a crash after it can no longer drop the notice from status.
+            if not already: quorum_notices.record(self.ledger, message, transport, 'parent')
             self.api.call('session_ack', {**self.scope(), 'message_id':message['id']})
             if key in self.awaiting: self.awaiting.remove(key)
             # One already receipted here but still listed only repeats the idempotent ACK, then waits.
-            if previous and previous['state'] == 'acked': return 'idle'
+            if already: return 'idle'
             self.ledger.setting(key, {'state':'acked'})
-            quorum_notices.record(self.ledger, message, transport, 'parent')
             return 'notice'
         if not previous:
             self.release.check()

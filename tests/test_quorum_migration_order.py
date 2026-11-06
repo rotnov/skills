@@ -6,6 +6,7 @@ import unittest
 
 SKILL = Path(__file__).resolve().parents[1] / 'skills/quorum'
 MIGRATIONS = sorted((SKILL / 'supabase/migrations').glob('*.sql'))
+BOOTSTRAP = (SKILL / 'references/server-bootstrap.sql').read_text(encoding='utf-8')
 SERIALIZATION = '_open_access_close_serialization.sql'
 PRIORITY_PATH = next(path for path in MIGRATIONS if path.name.endswith('_urgent_message_priority.sql'))
 SERIALIZATION_PATH = next(path for path in MIGRATIONS if path.name.endswith(SERIALIZATION))
@@ -31,6 +32,9 @@ DEFAULT_ROLE = '20261106100000_knowledge_member_default_role.sql'
 DEDUPE = '20261106120000_hello_reconnect_dedupe.sql'
 AUTHORITY = '20261106130000_task_authority_project_bound.sql'
 UNRECEIPTED = '20261106140000_session_message_unreceipted.sql'
+SPLIT = '20261106150000_hello_sent_skipped.sql'
+CONVERGENCE = '20261022165000_native_session_engine_convergence.sql'
+GROK = '20261022094041_native_grok_session.sql'
 # prosrc hashes after the reviewed tail through 190000; tests/quorum-backend recomputes them by drift injection.
 ROLE_PINS = {
     'quorum_private.call(text,jsonb,text)': 'ca718afbcda8682ade19ea6b246ccc2f1bfd5523eb7d1076cf4e9583e24f3ab7',
@@ -46,9 +50,191 @@ ROLE_PINS = {
 }
 
 
+PIN = re.compile(r"'([a-z_.]+\([a-z,\[\]]*\))','([0-9a-f]{64})'")
+STATEMENT = re.compile(
+    r"^\s*create (?:or replace )?function\s+(?P<name>[a-z_]+\.[a-z_0-9]+)\s*\("
+    r"|^\s*alter function\s+(?P<moved>[a-z_]+\.[a-z_0-9]+\([^)]*\))\s+"
+    r"(?:rename to\s+(?P<renamed>[a-z_0-9]+)|set schema\s+(?P<schema>[a-z_]+))"
+    r"|perform pg_temp\.quorum_gate\('(?P<gated>[^']+)',\s*\$g\$(?P<gate>.*?)\$g\$,\s*'(?P<replacement>[^']*)'",
+    re.I | re.M | re.S)
+TYPE_NAMES = {'timestamp with time zone': 'timestamptz'}
+
+
+def argument_types(parameters):
+    """The regprocedure argument list of a function header, without names or defaults."""
+    types = []
+    for parameter in filter(None, (item.strip() for item in re.split(r',(?![^(]*\))', parameters))):
+        words = re.split(r'\s+default\s+|\s*=\s*', parameter, flags=re.I)[0].split()
+        name = ' '.join(words[1:] or words).lower()
+        types.append(TYPE_NAMES.get(name, name))
+    return ','.join(types)
+
+
+def prosrc(functions, signature):
+    return hashlib.sha256(functions[signature].encode()).hexdigest()
+
+
+def apply_source(functions, text):
+    """Replay one source's function definitions, renames, moves and gate rewrites onto `functions`."""
+    position = 0
+    while (found := STATEMENT.search(text, position)):
+        position = found.end()
+        if found['name']:
+            close = position
+            depth = 1
+            while depth:
+                depth += {'(': 1, ')': -1}.get(text[close], 0)
+                close += 1
+            tag = re.compile(r'\bas\s+(\$[a-z]*\$)', re.I).search(text, close)
+            end = text.index(tag[1], tag.end())
+            functions[found['name'].lower() + '(' + argument_types(text[position:close - 1]) + ')'] = text[tag.end():end]
+            position = end + len(tag[1])
+        elif found['moved']:
+            signature = found['moved'].replace(' ', '')
+            schema_name, arguments = signature.split('(', 1)
+            schema, name = schema_name.split('.')
+            target = f"{found['schema'] or schema}.{found['renamed'] or name}({arguments}"
+            functions[target] = functions.pop(signature)
+        else:
+            functions[found['gated']] = functions[found['gated']].replace(found['gate'], found['replacement'])
+
+
+def replay(sources):
+    """Each reviewed pin compared with the prosrc the sources before it install; pin mismatches, in order."""
+    functions, mismatches = {}, []
+    apply_source(functions, BOOTSTRAP)
+    for name, text in sources:
+        for signature, pin in PIN.findall(text):
+            if signature not in functions or prosrc(functions, signature) != pin: mismatches.append((name, signature))
+        apply_source(functions, text)
+    return functions, mismatches
+
+
+def sources(through=None, leaving_out=()):
+    return [(path.name, path.read_text(encoding='utf-8')) for path in MIGRATIONS
+            if path.name not in leaving_out and (through is None or path.name <= through)]
+
+
 def defining(signature):
     pattern = re.compile(r'create (?:or replace )?function ' + re.escape(signature), re.I)
     return [path for path in MIGRATIONS if pattern.search(path.read_text(encoding='utf-8'))]
+
+
+class PinRecomputationTests(unittest.TestCase):
+    """Pins are recomputed from the source bodies, never compared with a copied hash."""
+
+    def test_every_pin_is_the_prosrc_the_reviewed_chain_installs(self):
+        functions, mismatches = replay(sources())
+        self.assertEqual(mismatches, [])
+        self.assertGreater(sum(len(PIN.findall(text)) for _, text in sources()), 60)
+        self.assertIn('quorum_private.native_session(uuid,text)', functions)
+
+    def test_the_tables_in_this_file_are_the_recomputed_prosrc(self):
+        serial, _ = replay(sources(through='20261022170000_urgent_message_priority.sql'))
+        for signature, pin in SERIALIZATION_PINS.items():
+            self.assertEqual(prosrc(serial, signature), pin, signature)
+        before_roles, _ = replay(s for s in sources() if s[0] < ROLES)
+        for signature, pin in ROLE_PINS.items():
+            self.assertEqual(prosrc(before_roles, signature), pin, signature)
+
+    def test_a_changed_body_or_pin_is_caught(self):
+        chain = sources()
+        index = next(i for i, (name, _) in enumerate(chain) if name == GROK)
+        name, text = chain[index]
+        changed = text.replace("provider='github'", "provider='gitlab'", 1)
+        self.assertNotEqual(text, changed)
+        self.assertTrue(replay(chain[:index] + [(name, changed)] + chain[index + 1:])[1])
+        last = len(chain) - 1
+        name, text = chain[last]
+        digest = PIN.findall(text)[0][1]
+        flipped = text.replace(digest, digest[::-1], 1)
+        self.assertEqual(replay(chain[:last] + [(name, flipped)])[1], [(name, PIN.findall(flipped)[0][0])])
+
+
+class NativeSessionConvergenceTests(unittest.TestCase):
+    PATH = SKILL / 'supabase/migrations' / CONVERGENCE
+
+    def constant(self, name):
+        body = self.PATH.read_text(encoding='utf-8')
+        return re.search(name + r" constant text:=\$t\$(.*?)\$t\$", body)[1]
+
+    def test_the_applied_chain_keeps_one_body_and_this_file_only_adds_to_it(self):
+        names = [path.name for path in MIGRATIONS]
+        self.assertEqual(names[names.index(CONVERGENCE) - 1], '20261022160000_open_session_requirements.sql')
+        self.assertEqual(names[names.index(CONVERGENCE) + 1], PRIORITY_PATH.name)
+        # Every release after the priority file pins the single reviewed body.
+        for path in MIGRATIONS:
+            pins = dict(PIN.findall(path.read_text(encoding='utf-8')))
+            if 'quorum_private.native_session(uuid,text)' in pins:
+                self.assertTrue(pins['quorum_private.native_session(uuid,text)'].startswith('60778eaf'), path.name)
+
+    def test_a_server_without_the_grok_file_reaches_the_reviewed_bodies(self):
+        reviewed, _ = replay(sources(through=CONVERGENCE))
+        skipped, _ = replay(sources(through='20261022160000_open_session_requirements.sql', leaving_out=(GROK,)))
+        text = self.PATH.read_text(encoding='utf-8')
+        self.assertTrue(text.startswith('-- SOURCE ONLY.'))
+        session, wakeup = 'quorum_private.native_session(uuid,text)', 'quorum_private.receive_wakeup(text)'
+        self.assertNotEqual(skipped[session], reviewed[session])
+        for signature in (session, wakeup):
+            self.assertIn(prosrc(skipped, signature), text)
+            self.assertIn(prosrc(reviewed, signature), text)
+            self.assertEqual(skipped[signature].replace(self.constant('without_grok'), self.constant('with_grok')),
+                             reviewed[signature], signature)
+        # The two bodies before open access are refused by their exact hashes.
+        before_open, _ = replay(sources(through=GROK))
+        bootstrap, _ = replay([])
+        for functions in (before_open, bootstrap):
+            self.assertIn(prosrc(functions, session), text)
+
+    def test_the_guard_changes_nothing_on_the_reviewed_body_and_fails_closed_otherwise(self):
+        text = self.PATH.read_text(encoding='utf-8')
+        code = text[text.index('begin\n'):]
+        self.assertLess(code.index('then return; end if;'), code.index('alter table'))
+        self.assertLess(code.index("raise exception 'open_access_required'"), code.index('alter table'))
+        self.assertLess(code.index("raise exception 'reviewed_dispatcher_changed: quorum_private.native_session"),
+                        code.index('alter table'))
+        self.assertEqual(re.findall(r'^\s*(?:create|grant|revoke|drop function)\b', code, re.I | re.M), [])
+        guide = (SKILL / 'references/server.md').read_text(encoding='utf-8')
+        self.assertLess(guide.index(CONVERGENCE), guide.index(PRIORITY_PATH.name))
+
+
+class HelloSplitTests(unittest.TestCase):
+    PATH = SKILL / 'supabase/migrations' / SPLIT
+
+    def test_split_follows_the_tail_pins_the_chain_and_adds_only_the_count(self):
+        names = [path.name for path in MIGRATIONS]
+        self.assertEqual(names[-1], SPLIT)
+        body = self.PATH.read_text(encoding='utf-8')
+        self.assertTrue(body.startswith('-- SOURCE ONLY.'))
+        wrapper = 'quorum_private.session_heartbeat_before_status(uuid,text,uuid,integer,text)'
+        pins = dict(PIN.findall(body))
+        self.assertEqual(set(pins), {'public.session_heartbeat(uuid,text,uuid,integer,text,integer,timestamptz,uuid,timestamptz)',
+                                     wrapper, 'quorum_private.session_heartbeat_before_hello(uuid,text,uuid,integer,text)',
+                                     'quorum_private.call(text,jsonb,text)', 'quorum_private.native_session(uuid,text)',
+                                     'public.session_requirements()'})
+        guard = body.split('end $migration$;', 1)[0]
+        for code in ('hello_split_present', 'task_authority_bound_required'):
+            self.assertIn(f"raise exception '{code}'", guard)
+        self.assertIn("raise exception 'reviewed_dispatcher_changed: %',f;", guard)
+        for change in ('alter ', 'create ', 'drop ', 'insert ', 'update ', 'grant '):
+            self.assertNotIn(change, guard.split('begin', 1)[1].lower())
+        # The new wrapper is the reviewed one plus exactly the lines marked #146.
+        old = replay(sources(through=DEDUPE))[0][wrapper]
+        new = body.split('$function$')[1]
+        old_lines, new_lines = old.splitlines(), new.splitlines()
+        changed = [line for line in new_lines if line not in old_lines]
+        self.assertEqual(len(changed), 3)
+        self.assertTrue(all(line.endswith('-- #146') for line in changed), changed)
+        self.assertEqual(len([line for line in old_lines if line not in new_lines]), 3)
+        # Peers, the roster text and the Hello recipients are unchanged, and so is every grant.
+        self.assertIn('hello.peers', new)
+        self.assertEqual(re.findall(r'quorum roster', old, re.I), re.findall(r'quorum roster', new, re.I))
+        code = '\n'.join(line.split('--', 1)[0] for line in body.splitlines())
+        self.assertEqual(re.findall(r'grant [^;]*;', code.lower()), [])
+        self.assertEqual(re.findall(r'create function ([a-z_.]+)\(', body), ['quorum_private.session_heartbeat_before_status'])
+        self.assertIn('revoke all on function quorum_private.session_heartbeat_hello_before_split(', ' '.join(code.split()))
+        guide = (SKILL / 'references/server.md').read_text(encoding='utf-8')
+        self.assertIn(SPLIT, guide.split('## Hello sent and skipped split', 1)[1].split('\n## ', 1)[0])
 
 
 class MigrationOrderTests(unittest.TestCase):
@@ -175,7 +361,7 @@ class MigrationOrderTests(unittest.TestCase):
         ttl = next(name for name in names if name.endswith('_open_invite_ttl.sql'))
         self.assertGreater(ttl, '20261103180000_hello_roster_visibility.sql')
         # Only the reviewed role-assignment release (#105) follows it.
-        self.assertEqual(names[names.index(ttl) + 1:], [ROLES, STATUS, DEFAULT_ROLE, DEDUPE, AUTHORITY, UNRECEIPTED])
+        self.assertEqual(names[names.index(ttl) + 1:], [ROLES, STATUS, DEFAULT_ROLE, DEDUPE, AUTHORITY, UNRECEIPTED, SPLIT])
         body = (SKILL / 'supabase/migrations' / ttl).read_text(encoding='utf-8')
         pins = dict(re.findall(r"'([a-z_.]+\([a-z,]*\))','([0-9a-f]{64})'", body))
         self.assertEqual(pins, {'quorum_private.call_priority_core(text,jsonb,text)':
@@ -199,7 +385,7 @@ class MigrationOrderTests(unittest.TestCase):
 
     def test_role_assignment_follows_the_tail_pins_reviewed_bodies_and_grants_only_authenticated(self):
         names = [path.name for path in MIGRATIONS]
-        self.assertEqual(names[names.index(ROLES) + 1:], [STATUS, DEFAULT_ROLE, DEDUPE, AUTHORITY, UNRECEIPTED])
+        self.assertEqual(names[names.index(ROLES) + 1:], [STATUS, DEFAULT_ROLE, DEDUPE, AUTHORITY, UNRECEIPTED, SPLIT])
         self.assertGreater(ROLES, '20261103190000_open_invite_ttl.sql')
         body = (SKILL / 'supabase/migrations' / ROLES).read_text(encoding='utf-8')
         pins = dict(re.findall(r"'([a-z_.]+\([a-z,]*\))','([0-9a-f]{64})'", body))
@@ -253,7 +439,7 @@ class MigrationOrderTests(unittest.TestCase):
 
     def test_peer_status_follows_roles_pins_reviewed_bodies_and_grants_only_authenticated(self):
         names = [path.name for path in MIGRATIONS]
-        self.assertEqual(names[names.index(STATUS) + 1:], [DEFAULT_ROLE, DEDUPE, AUTHORITY, UNRECEIPTED])
+        self.assertEqual(names[names.index(STATUS) + 1:], [DEFAULT_ROLE, DEDUPE, AUTHORITY, UNRECEIPTED, SPLIT])
         body = (SKILL / 'supabase/migrations' / STATUS).read_text(encoding='utf-8')
         self.assertTrue(body.startswith('-- SOURCE ONLY.'))
         pins = dict(re.findall(r"'([a-z_.]+\([a-z,]*\))','([0-9a-f]{64})'", body))
@@ -308,7 +494,7 @@ class MigrationOrderTests(unittest.TestCase):
 
     def test_knowledge_default_role_follows_the_wiki_pins_every_scope_caller_and_grants_only_authenticated(self):
         names = [path.name for path in MIGRATIONS]
-        self.assertEqual(names[names.index(DEFAULT_ROLE) + 1:], [DEDUPE, AUTHORITY, UNRECEIPTED])
+        self.assertEqual(names[names.index(DEFAULT_ROLE) + 1:], [DEDUPE, AUTHORITY, UNRECEIPTED, SPLIT])
         self.assertGreater(DEFAULT_ROLE, '20261103075741_llm_wiki.sql')
         body = (SKILL / 'supabase/migrations' / DEFAULT_ROLE).read_text(encoding='utf-8')
         self.assertTrue(body.startswith('-- SOURCE ONLY.'))
@@ -373,7 +559,7 @@ class MigrationOrderTests(unittest.TestCase):
 
     def test_task_authority_bound_follows_dedupe_pins_the_chain_and_changes_only_the_bound(self):
         names = [path.name for path in MIGRATIONS]
-        self.assertEqual(names[names.index(AUTHORITY) + 1:], [UNRECEIPTED])
+        self.assertEqual(names[names.index(AUTHORITY) + 1:], [UNRECEIPTED, SPLIT])
         body = (SKILL / 'supabase/migrations' / AUTHORITY).read_text(encoding='utf-8')
         self.assertTrue(body.startswith('-- SOURCE ONLY.'))
         pins = dict(re.findall(r"'([a-z_.]+\([a-z,]*\))','([0-9a-f]{64})'", body))
@@ -418,7 +604,7 @@ class MigrationOrderTests(unittest.TestCase):
 
     def test_hello_dedupe_follows_status_pins_reviewed_bodies_and_grants_nothing(self):
         names = [path.name for path in MIGRATIONS]
-        self.assertEqual(names[names.index(DEDUPE) + 1:], [AUTHORITY, UNRECEIPTED])
+        self.assertEqual(names[names.index(DEDUPE) + 1:], [AUTHORITY, UNRECEIPTED, SPLIT])
         body = (SKILL / 'supabase/migrations' / DEDUPE).read_text(encoding='utf-8')
         self.assertTrue(body.startswith('-- SOURCE ONLY.'))
         pins = dict(re.findall(r"'([a-z_.]+\([a-z,]*\))','([0-9a-f]{64})'", body))
@@ -469,7 +655,7 @@ class MigrationOrderTests(unittest.TestCase):
 
     def test_message_unreceipted_is_read_only_pinned_and_grants_only_authenticated(self):
         names = [path.name for path in MIGRATIONS]
-        self.assertEqual(names[-1], UNRECEIPTED)
+        self.assertEqual(names[names.index(UNRECEIPTED) + 1:], [SPLIT])
         body = (SKILL / 'supabase/migrations' / UNRECEIPTED).read_text(encoding='utf-8')
         self.assertIn('SOURCE ONLY', body)
         self.assertIn('No required-release change', body)

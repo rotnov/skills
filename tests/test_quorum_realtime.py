@@ -165,6 +165,22 @@ class RealtimeTests(unittest.TestCase):
         self.assertEqual([x['payload'] for x in refreshes], [{'access_token': 'new-jwt'}])
         self.assertGreaterEqual(len([x for x in socket.frames if x['event'] == 'heartbeat']), 2)
 
+    def test_an_unavailable_subscription_still_announces_before_the_first_inbox_drain(self):
+        from quorum_realtime import RealtimeWait
+        class Keepalive:
+            ticks = 0
+            def tick(self, stopping=None): type(self).ticks += 1
+            def connected(self, stopping=None): raise AssertionError('no subscription was made')
+        def refuse(*_, **__): raise OSError('no route')
+        clock = Clock()
+        with ledger() as state:
+            wait = RealtimeWait(api(), {'agent_id': AGENT}, state, connect=refuse, clock=clock, sleep=clock.sleep,
+                                keepalive=Keepalive(), stop_aware=True)
+            wait.prepare(lambda: False)
+            self.assertEqual(state.setting('listener-wait')['mode'], 'polling_fallback')
+            self.assertEqual(Keepalive.ticks, 1, 'session start must not return with the Hello still pending')
+            wait.close()
+
     def test_missing_heartbeat_acknowledgement_enters_bounded_polling_fallback(self):
         from quorum_realtime import RealtimeWait
         clock = Clock()

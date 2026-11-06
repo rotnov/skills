@@ -250,7 +250,7 @@ class HelloReportTests(unittest.TestCase):
 
     @staticmethod
     def hello(peers, roles, available=None):
-        return {'peers':peers, 'roles':roles, 'available':len(roles) if available is None else available,
+        return {'peers':peers, 'skipped':0, 'roles':roles, 'available':len(roles) if available is None else available,
                 'available_roles':roles, 'roster_message_id':'00000000-0000-4000-8000-000000000001'}
 
     @isolated_profiles
@@ -294,6 +294,30 @@ class HelloReportTests(unittest.TestCase):
         self.assertIsNone(hello_result({'peers':True})['sent'])
         legacy = {'connection_id':'c', 'project_ref':'p', 'reused':False, 'kept':0, **hello_result(None)}
         self.assertIn('not reported by the server', hello_summary(legacy))
+
+    def test_sent_and_skipped_are_reported_apart_and_an_old_server_is_tolerated(self):
+        from quorum_presence import hello_result, hello_summary
+        def report(**hello):
+            record = {'connection_id':'c', 'project_ref':'p', 'reused':False, 'kept':0,
+                      **hello_result({**self.hello(3, ['a', 'b', 'c']), **hello})}
+            return record, hello_summary(record)
+        record, summary = report(skipped=2)
+        self.assertEqual((record['sent'], record['skipped']), (1, 2))
+        self.assertEqual(summary, 'Hello sent to 1 peer, 2 already greeted in p (a, b, c); roster: 3 available')
+        record, summary = report(skipped=3)
+        self.assertEqual((record['sent'], record['skipped']), (0, 3))
+        self.assertTrue(summary.startswith('Hello sent to 0 peers, 3 already greeted in p'), summary)
+        # An old server, an old row and a nonsensical split all leave the count marked as unsplit.
+        for hello in ({'skipped':None}, {'skipped':4}, {'skipped':True}, {'skipped':'1'}):
+            with self.subTest(hello=hello):
+                record, summary = report(**hello)
+                self.assertEqual((record['sent'], record['skipped']), (3, None))
+                self.assertTrue(summary.startswith('Hello reached 3 peers in p (a, b, c)'), summary)
+        old = self.hello(1, ['a'])
+        del old['skipped']
+        self.assertEqual(hello_result(old)['skipped'], None)
+        # A record saved before this release has no `skipped` key.
+        self.assertTrue(hello_summary({'project_ref':'p', 'sent':2}).startswith('Hello reached 2 peers'))
 
     @isolated_profiles
     def test_reused_tool_inbox_epoch_reports_that_no_new_hello_was_sent(self):
