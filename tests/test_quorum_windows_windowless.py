@@ -314,25 +314,31 @@ def detached_probe(root):
     kernel = ctypes.WinDLL('kernel32')
     kernel.GetConsoleWindow.restype = ctypes.c_void_p
     result = {'listener_console': kernel.GetConsoleWindow() or 0}
-    original = subprocess.run
+    launches = []
 
-    def execute(command, **kwargs):
-        # Preserve enqueue's launch kwargs, replacing only Codex with a
-        # synthetic console application. Never touch a real client chat.
-        if command[1:3] != ['queue', '--thread']: raise ValueError('unexpected_command')
-        command = [sys.executable, '-c', 'import ctypes; k=ctypes.WinDLL("kernel32"); '
-                   'k.GetConsoleWindow.restype=ctypes.c_void_p; print(k.GetConsoleWindow() or 0)']
-        completed = original(command, **kwargs)
-        if command[0] == sys.executable:
-            result['queue_console'] = int(completed.stdout)
-        return completed
+    class SyntheticCodex(subprocess.Popen):
+        """Every child of this process starts here, so the real launch flags reach the real OS call.
+
+        Preserve enqueue's launch kwargs, replacing only Codex with a synthetic
+        console application. Never touch a real client chat.
+        """
+        def __init__(self, command, **kwargs):
+            launches.append(command)
+            if command[1:3] != ['queue', '--thread']: raise ValueError('unexpected_command')
+            super().__init__([sys.executable, '-c', 'import ctypes; k=ctypes.WinDLL("kernel32"); '
+                              'k.GetConsoleWindow.restype=ctypes.c_void_p; print(k.GetConsoleWindow() or 0)'], **kwargs)
+
+        def communicate(self, *args, **kwargs):
+            stdout, stderr = super().communicate(*args, **kwargs)
+            result['queue_console'] = int(stdout)
+            return stdout, stderr
 
     target = root / 'synthetic-state'
     target.write_text('synthetic only')
-    with patch.object(subprocess, 'run', side_effect=execute) as launched:
+    with patch.object(subprocess, 'Popen', SyntheticCodex):
         # Private ACLs are set in-process: no child, so no console to allocate.
         quorum_os.protect(target)
-        result['acl_children'] = launched.call_count
+        result['acl_children'] = len(launches)
         with patch.object(quorum_session.shutil, 'which', return_value=sys.executable):
             quorum_session.enqueue({'session_ref': SID}, {'id': MID}, root)
     (root / 'result.json').write_text(json.dumps(result))
