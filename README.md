@@ -155,7 +155,9 @@ cross-client behavior.
 
 ## Development
 
-Install the pinned Python and locked development dependencies:
+Use uv exactly 0.11.7. `pyproject.toml` pins it through `required-version`, so any
+other version fails every `uv` command below, including the test command and the
+`pre-commit` hooks. Install the pinned Python and locked development dependencies:
 
 ```bash
 uv python install

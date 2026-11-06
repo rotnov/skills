@@ -9,6 +9,7 @@ import sys
 import time
 import uuid
 from quorum_api import QuorumError, rpc_missing
+from quorum_capabilities import GROK_LEADER_PLATFORMS
 from quorum_claude_pipe import DeliveryUnsent, run_child
 from quorum_listener import (Control, READY_SECONDS, START_LOCK, StartGuard, UPSERT, await_started, control_lock,
                              locked, ready, run_listener, spawn_background, stop_listener)
@@ -25,7 +26,7 @@ import quorum_notices
 SUPPORTED_TRANSPORTS = (
     {'client':'codex', 'requires':'Local Codex chat exporting CODEX_THREAD_ID, with the codex CLI on PATH for codex queue'},
     {'client':'claude', 'requires':'Local Claude Code chat exporting CLAUDE_CODE_SESSION_ID and its private messaging socket/token'},
-    {'client':'grok', 'requires':'Grok TUI on macOS started with --leader in this chat (GROK_SESSION_ID); '
+    {'client':'grok', 'requires':'Grok TUI on macOS or Windows started with --leader in this chat (GROK_SESSION_ID); '
                                  'hosted or cloud Grok has no native Quorum transport'})
 
 
@@ -319,7 +320,7 @@ def client_preflight():
     """Check this chat can carry a native listener before membership is consumed."""
     sid = current_session()
     engine = current_engine()
-    if engine == 'grok' and sys.platform not in ('darwin', 'win32'):
+    if engine == 'grok' and sys.platform not in GROK_LEADER_PLATFORMS:
         raise UnsupportedClient('grok_leader_platform_unsupported', engine)
     if engine == 'grok':
         # Verify this chat's private leader socket, registry and TUI process
@@ -345,32 +346,25 @@ def client_preflight():
     return engine
 
 
+def listener_route(record, liveness=None):
+    """The check before each inbox read: this chat's route, then the run's shared transport watch.
+
+    Heartbeats feed the same watch, so a TUI replaced by `--resume` ends the run on its usual
+    three-read rule. A delivery inside that window is refused by the helper's own binding check.
+    """
+    def check():
+        check_native_route(record)
+        if liveness: liveness()
+    return check
+
+
 def require_caller(session_id, engine=None):
     if current_session() != session_id or (engine and current_engine() != engine):
         raise ValueError('session_binding_denied')
 
 
-def check_grok_route(record, *, attempts=3):
-    """This run's leader binding still names the live TUI; a `--resume` or restore replaces it.
-
-    Only local files and process metadata are read. Those reads can fail briefly (a registry
-    mid-rewrite, a slow `ps`), so a failed read is retried; a binding that differs is final.
-    """
-    from quorum_grok_leader import GrokBuildChanged, local_binding
-    for attempt in range(attempts):
-        try: current = local_binding(record['session_ref'], record['cwd'])
-        except GrokBuildChanged: raise
-        except ValueError:
-            if attempt == attempts-1: raise
-            time.sleep(.1)
-            continue
-        if current != record.get('grok_transport'): raise ValueError('session_binding_denied')
-        return
-
-
 def check_native_route(record):
-    """Read only this chat's current binding, before selecting new work."""
-    if record.get('engine') == 'grok': return check_grok_route(record)
+    """Read only this Claude chat's current binding, before selecting new work."""
     if record.get('engine') != 'claude': return
     from quorum_claude_pipe import binding
     require_caller(record['session_ref'], 'claude')
@@ -384,6 +378,23 @@ def reception_notice(ledger, state):
     from quorum_resume import listener_loss, loss_notice
     loss = listener_loss(ledger)
     return {'listener_lost': loss_notice(loss, state)} if loss else {}
+
+
+def grok_job_notice(engine):
+    """A warning when a Windows Grok start runs inside a kill-on-close job; it cannot prove the listener dies.
+
+    Grok's ordinary tool call and its background shell task can look alike here, so this warns and never refuses.
+    """
+    if engine != 'grok' or sys.platform != 'win32': return {}
+    from quorum_grok_win import kill_on_close_job
+    # The listener is already running here: a failed advisory read must not turn this start into a failure.
+    try:
+        if not kill_on_close_job(): return {}
+    except Exception: return {}
+    return {'windows_job_warning':{'code':'grok_listener_in_kill_on_close_job', 'next_step':(
+        'This command runs inside a Windows job that kills its processes when it closes. If this was an ordinary '
+        'tool call, the listener ends when the call returns (listener_exited). Rerun it as one background shell '
+        'task that stays alive (references/grok.md), then check session status in a normal call.')}}
 
 
 PRIORITIES = ('normal', 'urgent')
@@ -1046,6 +1057,10 @@ def _dispatch(args, auth_ledger, register_agent):
             return {**inbox.rebind(api,ledger,record,getattr(args,'parent_thread_id',None)),'session_id':sid}
         # A tool binding's caller is its currently bound worker, which a recorded rebind may have moved.
         if args.action not in ('run',): require_caller(inbox.worker_session(record) if tool and record else sid,engine)
+        if engine == 'grok' and args.action in ('connect','start','recover'):
+            # Before any service call: no leader can make this chat work on this OS.
+            from quorum_grok_leader import require_platform
+            require_platform()
         # An existing binding keeps its transport; no implicit change or ownership transfer.
         if args.action=='connect' and record and bound!=requested:
             raise inbox.NativeInboxError('native_inbox_transport_conflict')
@@ -1266,14 +1281,15 @@ def _dispatch(args, auth_ledger, register_agent):
             from quorum_grok_leader import binding
             transport = binding(sid, record['cwd'])
             if args.action == 'run' and transport != record['grok_transport']:
-                raise ValueError('session_binding_denied')
+                from quorum_grok_leader import GrokBindingDenied
+                raise GrokBindingDenied('transport_changed')
         if args.action in ('start','recover','receive'):
             # Each reception entry states the opt-out again; omitting it restores quiet receipts.
             quorum_notices.set_visible(ledger, getattr(args, 'show_transport_notices', False) is True)
         if args.action in ('start','recover'):
             if tool: return {**inbox.arm(ledger,record,authorize=worker_guard),'session_id':sid}
             return {**start(auth_ledger.root,ledger,sid,api=api,endpoint=endpoint,grok_transport=transport,
-                            recovery=args.action=='recover'),'session_id':sid}
+                            recovery=args.action=='recover'),'session_id':sid,**grok_job_notice(engine)}
         if args.action=='receive': return inbox.receive(api,auth_ledger,ledger,record,args.wait_seconds,
                                                           authorize=worker_guard)
         if args.action in inbox.ACTIONS: return inbox.dispatch_action(api,ledger,record,args,authorize=worker_guard)
@@ -1345,13 +1361,18 @@ def _dispatch(args, auth_ledger, register_agent):
                 from quorum_resume import require_enabled
                 authorize = lambda:require_enabled(ledger, record)
             guard_options = {'authorize':authorize} if authorize is not None else {}
+            liveness = None
+            if engine == 'grok':
+                from quorum_grok_leader import TransportWatch
+                liveness = TransportWatch(record['grok_transport']).check
             def make():
                 return Relay(api,ledger,record,lambda message:enqueue({**record, 'delegation':(ledger.setting('session-agent') or {}).get('delegation')},
                                                                    message,auth_ledger.root),
-                             route_check=lambda:check_native_route(record), **guard_options)
+                             route_check=listener_route(record, liveness), **guard_options)
             # Native reception waits out typed service outages with this same Relay and ledger.
             return run_listener(ledger,make,args.run_id,stop_event=event,timeout=0,retry=True,
-                                waiter=RealtimeWait(api,record,ledger,keepalive=Presence(api,record,ledger,run_id=args.run_id),
+                                waiter=RealtimeWait(api,record,ledger,
+                                                    keepalive=Presence(api,record,ledger,run_id=args.run_id,liveness=liveness),
                                                     stop_aware=True, **guard_options))
         raise ValueError('unknown_operation')
     finally: ledger.db.close()

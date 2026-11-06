@@ -493,42 +493,79 @@ class ReceiptTests(Harness):
 class GrokRouteTests(Harness):
     TRANSPORT = {'leader_socket':'/fixture/leader.sock'}
 
-    def test_a_resumed_tui_stops_the_old_listener_before_inbox_or_intent(self):
-        from quorum_session import Relay, check_native_route
-        record, api = self.bind('grok'), Api(message())
-        relay = Relay(api, self.ledger, record, lambda _:self.fail('no write'),
-                      route_check=lambda:check_native_route(record))
-        with patch('quorum_grok_leader.local_binding', return_value={'leader_socket':'/fixture/resumed.sock'}):
-            with self.assertRaisesRegex(ValueError, '^session_binding_denied$'): relay.run_once()
+    def watched(self, reads, api):
+        from quorum_grok_leader import TransportWatch
+        from quorum_session import Relay, listener_route
+        record = self.bind('grok')
+        self.now, answers = [0], iter(reads)
+        watch = TransportWatch(record['grok_transport'], alive=lambda _:next(answers), clock=lambda:self.now[0])
+        self.delivered = []
+        return watch, Relay(api, self.ledger, record, lambda item:self.delivered.append(item['id']) or 'submitted',
+                            route_check=listener_route(record, watch.check))
+
+    def test_a_replaced_tui_ends_the_run_before_inbox_or_intent_once_the_rule_is_met(self):
+        api = Api()
+        _, relay = self.watched([False, False, False], api)
+        for _ in range(2):
+            self.assertEqual(relay.run_once(), 'idle')
+            self.now[0] += 15
+        api.messages, api.calls = [message()], []
+        with self.assertRaisesRegex(ValueError, '^grok_tui_gone$'): relay.run_once()
         self.assertNotIn('session_inbox', api.calls)
         self.assertIsNone(self.row())
 
-    def test_an_unchanged_binding_passes_and_a_passing_read_failure_is_retried(self):
-        from quorum_session import check_native_route
-        record = self.bind('grok')
-        with patch('quorum_grok_leader.local_binding', return_value=self.TRANSPORT) as bound:
-            check_native_route(record)
-        self.assertEqual(bound.call_count, 1)
-        flaky = [ValueError('grok_transport_unavailable'), self.TRANSPORT]
-        with patch('quorum_grok_leader.local_binding', side_effect=flaky), patch('quorum_session.time.sleep'):
-            check_native_route(record)
+    def test_one_failed_read_keeps_delivering_like_a_heartbeat(self):
+        _, relay = self.watched([False, True], Api(message()))
+        self.assertEqual(relay.run_once(), 'idle')
+        self.assertEqual(self.delivered, [MID])
 
-    def test_a_lasting_read_failure_stops_reception_and_a_changed_binding_is_final(self):
-        from quorum_session import check_native_route
-        record = self.bind('grok')
-        for code in ('grok_transport_unavailable', 'session_binding_denied'):
-            with self.subTest(code=code), patch('quorum_session.time.sleep'), \
-                 patch('quorum_grok_leader.local_binding', side_effect=ValueError(code)) as bound:
-                with self.assertRaisesRegex(ValueError, '^'+code+'$'): check_native_route(record)
-                self.assertEqual(bound.call_count, 3)
-        with patch('quorum_grok_leader.local_binding', return_value={'leader_socket':'/resumed'}) as bound:
-            with self.assertRaisesRegex(ValueError, '^session_binding_denied$'): check_native_route(record)
-        self.assertEqual(bound.call_count, 1)
+    def test_a_burst_of_failed_reads_is_not_a_restart_window(self):
+        _, relay = self.watched([False] * 5, Api())
+        for _ in range(5): self.assertEqual(relay.run_once(), 'idle')
 
-    def test_other_clients_are_not_probed_for_a_leader(self):
-        from quorum_session import check_native_route
-        with patch('quorum_grok_leader.local_binding', side_effect=AssertionError('probed')):
-            check_native_route(self.bind('codex'))
+    def test_heartbeats_and_inbox_reads_count_toward_one_rule(self):
+        watch, relay = self.watched([False, False, False], Api())
+        watch.check()
+        self.now[0] += 15
+        relay.reconcile()
+        self.now[0] += 15
+        with self.assertRaisesRegex(ValueError, '^grok_tui_gone$'): relay.run_once()
+
+    def test_a_delivery_inside_the_window_is_unsent_by_the_helper(self):
+        from quorum_grok_leader import TransportWatch
+        from quorum_session import Relay, enqueue, listener_route
+        record, api = self.bind('grok'), Api(message())
+        watch = TransportWatch(record['grok_transport'], alive=lambda _:False, clock=lambda:0)
+        relay = Relay(api, self.ledger, record, lambda item:enqueue(record, item, self.root),
+                      route_check=listener_route(record, watch.check))
+        with patch('quorum_claude_pipe.subprocess.Popen', return_value=Child(2)):
+            with self.assertRaisesRegex(ValueError, '^session_delivery_unsent$'): relay.run_once()
+        self.assertIsNone(self.row())
+        self.assertEqual(api.acks(), 0)
+
+    def test_the_run_shares_one_watch_between_heartbeats_and_inbox_reads(self):
+        record = {**self.bind('grok'), 'agent_id':OTHER}  # Realtime topics need a real agent UUID.
+        self.ledger.setting('session-agent', record)
+        captured = {}
+        def listener(_, make, run_id, **options):
+            captured.update(make=make, waiter=options['waiter'])
+        args = dict(run_id=SID, recovering=False)
+        with patch('quorum_grok_leader.binding', return_value=record['grok_transport']), \
+             patch('quorum_grok_leader.TransportWatch') as watch, \
+             patch('quorum_resume.startup_authority', return_value=lambda:None), \
+             patch('quorum_session.ReleaseGuard'), \
+             patch('quorum_session.run_listener', side_effect=listener):
+            self.dispatch(Api(), 'run', **args)
+            captured['make']().route_check()
+            captured['make']().route_check()
+        watch.assert_called_once_with(record['grok_transport'])
+        self.assertIs(captured['waiter'].keepalive.liveness, watch.return_value.check)
+        self.assertEqual(watch.return_value.check.call_count, 2)
+
+    def test_other_clients_have_no_transport_read(self):
+        from quorum_session import listener_route
+        with patch('quorum_grok_leader.transport_alive', side_effect=AssertionError('probed')):
+            listener_route(self.bind('codex'))()
 
     @isolated_profiles
     def test_an_attempt_left_behind_by_a_resume_has_a_recovery_path(self):

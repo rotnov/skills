@@ -20,6 +20,7 @@ BROKEN = (109, 232, 233)  # ERROR_BROKEN_PIPE, ERROR_NO_DATA, ERROR_PIPE_NOT_CON
 NO_DATA = 232  # A non-blocking write's "nothing accepted yet"; a real closure also fails PeekNamedPipe.
 PIPE_BUSY, PIPE_NOWAIT = 231, 1
 EPOCH = 116444736000000000  # FILETIME of 1970-01-01, in 100 ns units
+EXTENDED_LIMITS, KILL_ON_CLOSE = 9, 0x2000  # JobObjectExtendedLimitInformation, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
 
 
 def _api():
@@ -131,6 +132,33 @@ def process_identity(pid):
                 'executable': os.path.normcase(os.path.realpath(image.value)),
                 'argv': _command_line(api, process)}
     finally: kernel.CloseHandle(process)
+
+
+def kill_on_close_job():
+    """True when this process's job kills its members on close, False when not, None when unreadable.
+
+    Reads only this process's own job limits. Grok's background shell task may sit in such a job too, so this
+    can warn but never prove a listener will die.
+    """
+    import ctypes
+    from ctypes import wintypes as w
+    class Basic(ctypes.Structure):
+        _fields_ = [('process_time', ctypes.c_int64), ('job_time', ctypes.c_int64), ('flags', w.DWORD),
+                    ('minimum', ctypes.c_size_t), ('maximum', ctypes.c_size_t), ('processes', w.DWORD),
+                    ('affinity', ctypes.c_size_t), ('priority', w.DWORD), ('scheduling', w.DWORD)]
+    class Extended(ctypes.Structure):
+        _fields_ = [('basic', Basic), ('io', ctypes.c_uint64 * 6), ('memory', ctypes.c_size_t * 4)]
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    kernel.GetCurrentProcess.restype = w.HANDLE
+    kernel.IsProcessInJob.argtypes = (w.HANDLE, w.HANDLE, ctypes.POINTER(w.BOOL))
+    kernel.QueryInformationJobObject.argtypes = (w.HANDLE, ctypes.c_int, ctypes.c_void_p, w.DWORD, ctypes.c_void_p)
+    member = w.BOOL()
+    if not kernel.IsProcessInJob(kernel.GetCurrentProcess(), None, ctypes.byref(member)): return None
+    if not member.value: return False
+    info = Extended()
+    if not kernel.QueryInformationJobObject(None, EXTENDED_LIMITS, ctypes.byref(info), ctypes.sizeof(info), None):
+        return None
+    return bool(info.basic.flags & KILL_ON_CLOSE)
 
 
 class Busy(OSError):

@@ -25,7 +25,9 @@ substitute a headless handler. Do not spoof one client's environment as the othe
 Older existing backends without native-session RPCs need the owner-reviewed
 extension [session-transport.sql](session-transport.sql). Fresh servers installed
 from [server-bootstrap.sql](server-bootstrap.sql) already include these RPCs and
-do not need that extension reapplied. Only an administrator applies server SQL;
+do not need that extension reapplied. On a server that already has the Grok or
+priority migrations it refuses with `session_transport_superseded` and changes
+nothing. Only an administrator applies server SQL;
 installation, connection and reception never execute DDL or request service keys.
 It adds owner/session-scoped inbox reads, UI queue receipts and idempotent replies.
 These receipts include automatic peer answers without launching reply loops.
@@ -55,7 +57,9 @@ uv run --project <skill-dir> --frozen python <skill-dir>/scripts/quorum.py --sta
 ```
 
 `connect` registers only this session; `start` explicitly enables reception until
-stopped. Stopping does not remove messages already accepted by the chat queue.
+stopped. On Windows Grok, run `start` as one background shell task that stays alive,
+because an ordinary tool call kills the listener when it returns; see
+[Grok on Windows](grok.md#windows-1070-and-1077). Accepted Grok TUI builds: macOS 1.0.67, 1.0.70 and 1.0.77; Windows 1.0.70 and 1.0.77. Stopping does not remove messages already accepted by the chat queue.
 The native listener subscribes to its private Supabase Realtime channel before
 reading the durable inbox. A server signal wakes it immediately; a reconnect
 always triggers catch-up. It also checks every 60 seconds while connected and
@@ -129,10 +133,12 @@ unconfirmed child, and reception stays revoked; such a start fails with
 
 The listener checks its own current route before selecting another inbox message.
 A vanished socket stops reception with `claude_pipe_unavailable` before creating
-a delivery intent. A Grok listener likewise rechecks its leader binding before
-each inbox read, so a TUI replaced by `--resume` stops the old run with
-`session_binding_denied` before any intent. Any later failure follows the delivery
-rules under [Failure and recovery](#failure-and-recovery).
+a delivery intent. A Grok listener reads its bound TUI and leader before each inbox
+read as well as each heartbeat, so a TUI closed or replaced by `--resume` stops the
+old run under the [closed TUI rule](grok.md#closed-tui-or-leader). A delivery attempted
+before that rule ends the run is refused by the helper's own binding check, so it is
+unsent. Any later failure follows the delivery rules under
+[Failure and recovery](#failure-and-recovery).
 
 Socket/pipe writes have no synchronous UI acknowledgement. The relay sends one message
 and waits for **that same chat** to execute the envelope's `session received

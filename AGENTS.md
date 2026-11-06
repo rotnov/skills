@@ -101,7 +101,9 @@
 
 ## Validation
 
-Before committing:
+Before committing, use uv exactly 0.11.7: `pyproject.toml` pins it through
+`required-version`, and any other version fails every `uv` command below,
+including the `pre-commit` hooks.
 
 ```bash
 uv lock --check

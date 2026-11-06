@@ -253,6 +253,104 @@ class GrokTests(unittest.TestCase):
                 '_meta':{'promptId':'quorum:'+MID}})
 
     @isolated_profiles
+    def test_binding_denial_names_the_failed_check_and_no_path(self):
+        from quorum_grok_leader import GrokBindingDenied, binding, verify_process
+        base = {'pid_start':12345, 'uid':os.geteuid(), 'tty':True, 'executable':'/fixture/grok'}
+        with own_session() as (root, _, peer):
+            flags = ['/fixture/grok', '--leader', '--leader-socket', str(peer.path), '--session-id', SID]
+            cases = (({'executable':'/other/grok', 'argv':flags}, 'executable_mismatch'),
+                     ({'tty':False, 'argv':flags}, 'no_controlling_terminal'),
+                     ({'pid_start':1, 'argv':flags}, 'process_identity_mismatch'),
+                     ({'argv':flags[:-2]}, 'flag_mismatch'),
+                     ({'argv':[*flags, '--always-approve']}, 'flag_mismatch'))
+            for change, reason in cases:
+                with self.subTest(reason=reason), patch('quorum_grok_leader.process_identity',
+                                                        return_value={**base, **change}):
+                    with self.assertRaises(GrokBindingDenied) as caught: binding(SID, str(root))
+                    data = caught.exception.diagnostic()
+                    self.assertEqual((str(caught.exception), data['reason']), ('session_binding_denied', reason))
+                    self.assertFalse(data['path_has_whitespace'])
+                    self.assertNotIn(str(root), json.dumps(data))
+            with patch.dict(os.environ, {'GROK_SESSION_ID':MID}), self.assertRaises(GrokBindingDenied) as caught:
+                binding(SID, str(root))
+            self.assertEqual(caught.exception.reason, 'session_export_mismatch')
+            with patch('quorum_grok_leader.process_identity', side_effect=OSError), \
+                    self.assertRaises(GrokBindingDenied) as caught:
+                binding(SID, str(root))
+            self.assertEqual(caught.exception.reason, 'process_unavailable')
+            peer.resident = False
+            with self.assertRaises(GrokBindingDenied) as caught: binding(SID, str(root))
+            self.assertEqual(caught.exception.reason, 'session_metadata_mismatch')
+            # `ps` splits a spaced path, which is the case the boolean explains.
+            spaced = '/private/my dir/leader.sock'
+            identity = {**base, 'argv':['/fixture/grok', '--leader', '--leader-socket', *spaced.split(), '--session-id', SID]}
+            with patch('quorum_grok_leader.process_identity', return_value=identity), \
+                    self.assertRaises(GrokBindingDenied) as caught:
+                verify_process(1, 12345, spaced, SID, str(root))
+            data = caught.exception.diagnostic()
+            self.assertEqual((data['reason'], data['path_has_whitespace']), ('flag_mismatch', True))
+            self.assertNotIn('my dir', json.dumps(data))
+
+    @isolated_profiles
+    def test_cli_and_preflight_carry_the_typed_reason(self):
+        from quorum import main
+        from quorum_grok_leader import GrokBindingDenied
+        from quorum_session import client_preflight
+        output = io.StringIO()
+        with tempfile.TemporaryDirectory() as state, patch.dict(os.environ, {'GROK_SESSION_ID':SID}, clear=True), \
+                patch('quorum_session._dispatch', side_effect=GrokBindingDenied('executable_mismatch')), \
+                contextlib.redirect_stdout(output):
+            code = main(['--state', state, 'session', 'recover'])
+        result = json.loads(output.getvalue())
+        self.assertEqual((code, result['code'], result['data']['reason']),
+                         (3, 'session_binding_denied', 'executable_mismatch'))
+        # accept-id shares connect's code, reason and next step.
+        with patch.dict(os.environ, {'GROK_SESSION_ID':SID}, clear=True), patch('sys.platform', 'darwin'), \
+                patch('quorum_grok_leader.binding', side_effect=GrokBindingDenied('flag_mismatch')), \
+                self.assertRaises(GrokBindingDenied) as caught:
+            client_preflight()
+        self.assertEqual(caught.exception.diagnostic()['reason'], 'flag_mismatch')
+
+    def test_every_new_grok_code_is_in_the_safe_set(self):
+        from quorum_api import safe_code
+        from quorum_grok_leader import GrokBindingDenied, GrokPlatformUnsupported
+        for error in (GrokPlatformUnsupported(), GrokBindingDenied('flag_mismatch'), ValueError('grok_tui_gone')):
+            with self.subTest(code=str(error)):
+                self.assertEqual(safe_code(error), str(error))
+
+    def test_every_denial_reason_has_fixed_guidance(self):
+        from quorum_grok_leader import GrokBindingDenied
+        source = (SCRIPTS / 'quorum_grok_leader.py').read_text(encoding='utf-8')
+        import re
+        used = set(re.findall(r"GrokBindingDenied\('([a-z_]+)'", source))
+        self.assertTrue(used)
+        self.assertLessEqual(used, set(GrokBindingDenied.NEXT_STEPS))
+
+    def test_the_accepted_build_statement_is_the_same_everywhere(self):
+        """One sentence, derived from the accepted lists, in every page that states it."""
+        from quorum_grok_leader import VERSIONS, WINDOWS_VERSIONS
+        def spoken(versions): return ', '.join(versions[:-1]) + ' and ' + versions[-1]
+        statement = ('Accepted Grok TUI builds: macOS ' + spoken(VERSIONS) + '; Windows '
+                     + spoken(WINDOWS_VERSIONS) + '.')
+        skill = SCRIPTS.parent
+        for path in (skill / 'SKILL.md', skill / 'README.md', skill / 'references/sessions.md',
+                     skill / 'references/grok.md'):
+            with self.subTest(path=path.name):
+                self.assertIn(statement, ' '.join(path.read_text(encoding='utf-8').split()))
+
+    @isolated_profiles
+    def test_macos_accepts_the_qualified_177_handshake_but_not_an_unlisted_build(self):
+        """#139: the same handshake fields a live macOS 1.0.77 leader reported."""
+        from quorum_grok_leader import binding, submit
+        with own_session() as (root, _, peer):
+            peer.version = '1.0.77'
+            transport = binding(SID, str(root))
+            submit({'engine':'grok', 'session_ref':SID, 'cwd':str(root), 'grok_transport':transport}, MID, 'hello')
+            self.assertEqual(len(peer.prompts), 1)
+            peer.version = '1.0.78'
+            with self.assertRaisesRegex(ValueError, 'grok_transport_unavailable'): binding(SID, str(root))
+
+    @isolated_profiles
     def test_running_170_stays_bound_after_path_grok_self_updates(self):
         """#135: the updater repoints `grok` at 1.0.77 while this TUI keeps running 1.0.70."""
         from quorum_grok_leader import binding, submit
@@ -336,8 +434,8 @@ class GrokTests(unittest.TestCase):
         def missing(peer, home): os.environ['GROK_LEADER_SOCKET'] = str(home/'missing.sock')
         # Each keeps the code connect reports, and the invitation stays unused.
         for change, expected, reason in ((unsupported, 'grok_transport_unavailable', 'leader_unavailable'),
-                                         (foreign, 'session_binding_denied', 'session_unverified'),
-                                         (nonresident, 'session_binding_denied', 'session_unverified'),
+                                         (foreign, 'session_binding_denied', 'session_metadata_mismatch'),
+                                         (nonresident, 'session_binding_denied', 'session_metadata_mismatch'),
                                          (missing, 'grok_transport_unavailable', 'leader_socket_missing')):
             with self.subTest(change=change.__name__), own_session() as (root, home, peer):
                 change(peer, home)
@@ -657,10 +755,36 @@ class NativeProcessTests(unittest.TestCase):
 
     @isolated_profiles
     def test_unsupported_platform_is_explicit(self):
-        from quorum_grok_leader import local_binding
+        from quorum_grok_leader import GrokPlatformUnsupported, local_binding
         with patch.dict(os.environ, {'GROK_SESSION_ID':SID}, clear=True), patch('sys.platform', 'linux'):
-            with self.assertRaisesRegex(ValueError, 'grok_transport_unavailable'):
+            with self.assertRaisesRegex(ValueError, '^grok_leader_platform_unsupported$') as caught:
                 local_binding(SID, '/fixture')
+            data = caught.exception.diagnostic()
+        self.assertIsInstance(caught.exception, GrokPlatformUnsupported)
+        self.assertEqual(data['reason'], 'platform_unsupported')
+        self.assertEqual((data['platform'], data['supported_platforms']), ('linux', ['darwin', 'win32']))
+        self.assertIn('Nothing was registered', data['next_step'])
+
+    @isolated_profiles
+    def test_connect_start_and_recover_report_the_platform_before_any_service_call(self):
+        """#145: not the missing-socket code, and no login or service work first."""
+        from quorum import main
+        for action in (['connect', 'team', '--role', 'grok', '--project-ref', 'p'], ['start'], ['recover']):
+            output = io.StringIO()
+            with self.subTest(action=action[0]), tempfile.TemporaryDirectory() as state, \
+                    patch.dict(os.environ, {'GROK_SESSION_ID':SID, 'GROK_LEADER_SOCKET':'/private/secret.sock'},
+                               clear=True), \
+                    patch('sys.platform', 'linux'), \
+                    patch('quorum_live.api_for', side_effect=AssertionError('no service call')), \
+                    contextlib.redirect_stdout(output):
+                code = main(['--state', state, 'session', *action])
+                result = json.loads(output.getvalue())
+                self.assertEqual((code, result['code']), (3, 'grok_leader_platform_unsupported'))
+                self.assertEqual(result['data']['supported_platforms'], ['darwin', 'win32'])
+                self.assertEqual(result['data']['reason'], 'platform_unsupported')
+                self.assertTrue(result['data']['next_step'])
+                self.assertNotIn('secret', output.getvalue())
+                self.assertNotIn(SID, output.getvalue())
 
 
 if __name__ == '__main__': unittest.main()

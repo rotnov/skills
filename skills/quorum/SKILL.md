@@ -65,7 +65,8 @@ configuring credentials.
    [cloud wake limits](references/cloud-wake.md); a timeout alone does not prove suspension.
    Read sessions too before marking a message urgent: only a connected Codex chat can be steered; Claude Code reads accepted
    messages between tool calls; urgency grants no permission. For an existing Grok TUI, read
-   [Grok](references/grok.md) first; its TUI route is experimental on macOS and on Windows 1.0.70 and 1.0.77.
+   [Grok](references/grok.md) first; its TUI route is experimental. Accepted Grok TUI builds: macOS 1.0.67, 1.0.70 and 1.0.77; Windows 1.0.70 and 1.0.77.
+   On Windows, run `session start` as one background shell task that stays alive.
    For a Grok Bot personal chat on its Linux cloud computer, read
    [cloud Grok](references/grok-cloud.md) instead: prepare the owner's private
    webhook wake route before accepting, then use parent-bound `cloud` commands.
