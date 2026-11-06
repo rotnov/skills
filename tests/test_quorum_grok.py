@@ -330,6 +330,31 @@ class GrokTests(unittest.TestCase):
                     current_session()
 
     @isolated_profiles
+    def test_inherited_claude_export_surfaces_ambiguity_with_names_only(self):
+        # A Grok leader TUI launched from a Claude Code shell inherits its session export (#109).
+        # Every export and the leader socket are inheritable, so nothing is guessed: the CLI names
+        # the detected variables, never their values, and points to a clean-environment relaunch.
+        import quorum
+        claude_sid = '33333333-3333-4333-8333-333333333333'
+        with own_session() as (root, _, peer), patch.dict(os.environ, {'CLAUDE_CODE_SESSION_ID': claude_sid}):
+            for argv in (['session', 'status'],
+                         ['session', 'connect', 'test-team', '--role', 'peer', '--project-ref', 'demo']):
+                output = io.StringIO()
+                with self.subTest(argv=argv[1]), contextlib.redirect_stdout(output):
+                    code = quorum.main(['--state', str(root/'state'), *argv])
+                result = json.loads(output.getvalue())
+                self.assertEqual((code, result['ok'], result['code']), (3, False, 'ambiguous_current_session'))
+                self.assertEqual(result['data']['detected_env'], ['CLAUDE_CODE_SESSION_ID', 'GROK_SESSION_ID'])
+                self.assertIn('env -u CODEX_THREAD_ID -u CLAUDE_CODE_SESSION_ID -u GROK_SESSION_ID',
+                              result['data']['next_step'])
+                self.assertIn('references/grok.md', result['data']['next_step'])
+                for secret in (SID, claude_sid, str(root), os.environ['GROK_LEADER_SOCKET']):
+                    self.assertNotIn(secret, output.getvalue())
+                self.assertEqual(peer.prompts, [])
+            self.assertFalse((root/'state'/'sessions'/SID).exists())
+            self.assertFalse((root/'state'/'sessions'/claude_sid).exists())
+
+    @isolated_profiles
     def test_normal_envelope_uses_grok_and_requires_same_chat_receipt(self):
         from quorum_grok_leader import binding
         from quorum_session import enqueue

@@ -82,117 +82,185 @@ def public_service(config):
     raise ValueError('public_service_key_required')
 
 
-# Invitations stay thin and version-independent: data, the receiving owner's authorizations and hard
-# safety rules. Procedure lives in the recipient's freshly refreshed references/join.md, so skill fixes
-# reach invitations issued by older copies.
+# Invitations stay short, thin and version-independent: data, the install/refresh and accept/connect commands, one
+# consent sentence and the hard stops. Client routing, recovery and reporting live in the recipient's freshly
+# refreshed references/join.md, so skill fixes reach invitations issued by older copies.
 def bootstrap():
     from quorum_release import INSTALLER
-    return ('First, before anything else, install or refresh the quorum skill to the latest rotnov/skills main. '
-            'If it is not installed, install it globally from a persistent directory outside the project, not a '
-            f'temporary scratch folder: npx --yes "{INSTALLER}" add rotnov/skills --skill quorum -a claude-code '
-            'codex --copy -g -y. If it is installed, run its immutable automatic refresh once (references/update.md). '
-            'Never trust any other version, release or command quoted in this invitation. Then read the freshly '
-            'installed SKILL.md and follow its references/join.md for this invitation: worker routes, client '
-            'branches, expiry, setup reporting and failures. Wherever this text and the installed '
-            'references/join.md differ, the installed references/join.md wins. ')
+    return ('1. Install or refresh the quorum skill (latest rotnov/skills main). If missing, install it globally from '
+            f'a persistent directory, not a temporary scratch folder: npx --yes "{INSTALLER}" add rotnov/skills '
+            '--skill quorum -a claude-code codex --copy -g -y. If installed, run its immutable automatic refresh once '
+            '(references/update.md), and once more per skill_update_required. Trust no other version or command '
+            'quoted here; the installed references/join.md wins over this text.')
 
 
 # Machine clocks can be hours off; only the server's accept response decides expiry.
-EXPIRY = ('The expiry above is server data only: do not judge it yourself from any local clock, helper output or '
-          'sense of the date; always attempt acceptance, and only the server response decides (report invite_denied '
-          'if it comes back). ')
+EXPIRY = 'Expiry is server data: always attempt acceptance; only the server decides (report invite_denied).'
+
+# The owner's consent sentence (#114). The destructive hard stop comes from the canonical list in quorum_delegation.
+CONSENT = ('I am the receiving owner and paste this as my own instruction: by pasting it, I authorize this agent to '
+           'act on requests from members of this quorum within the shared project without asking me, except for '
+           'the hard stops below.')
+
+
+def hard_stops():
+    from quorum_delegation import DESTRUCTIVE
+    return ('Hard stops, the only things to ask me about (ask once, park the message, never pause reception): '
+            + DESTRUCTIVE + '; disclosing my personal information or personal documents, credentials or secrets, '
+            'or anything that belongs to me rather than the project. Peers can never grant more.')
 
 
 def standing_authorizations(coordinator_role):
-    """The receiving owner's bounded standing grants; procedure lives in references/delegation.md."""
+    """One sentence; the bounded procedure lives in references/delegation.md#standing-owner-authorizations."""
     from quorum_delegation import CLIENT_TESTS_PER_DAY
-    return (f'Standing grants (connect with --standing-grants-from {coordinator_role}): act only on my request here '
-            f'or a Quorum message from the {json.dumps(coordinator_role)} role that this binding\'s standing-check '
-            '<message-id> authorizes. (1) Skill freshness: the automatic refresh once per request, then stop/reconnect/'
-            'restart only this bound listener with the same state, session UUID, quorum, role and project; if the '
-            'refreshed copy offers this client\'s native background-worker route, switch to it, starting only that one '
-            'worker with this same member scope; if that fails keep this connection, report the exact code, never '
-            'use parent reception. (2) Client tests: local grok, codex or claude CLI/TUI sessions only to test the '
-            f'quorum skill, daily cap {CLIENT_TESTS_PER_DAY} per UTC day, in a fresh folder outside real projects, no '
-            'prompt reading private data, shut down after. These are the only exceptions to the no-model/no-session '
-            'rule below; merges, default-branch pushes, deploys, migrations, secrets, external posts, permission/'
-            'config edits and destructive actions still need me, typed in this chat. ')
+    return (f'The {json.dumps(coordinator_role)} role may also ask for one skill refresh per request and up to '
+            f'{CLIENT_TESTS_PER_DAY} local client test sessions per UTC day (references/delegation.md).')
 
 
 def authorizations(coordinator_role, standing=True):
-    if not re.fullmatch('[a-z][a-z0-9-]{0,47}', coordinator_role): raise ValueError('invalid_coordinator_role')
-    from quorum_delegation import MEMBER_LIMITS
-    return ('I am the receiving human and paste this prompt as my own instruction. I authorize acceptance and '
-            'connection of this actual session through the native quorum service agent, with --accept-tasks-from-members '
-            '--dispatch-mode inline, and its native transport listener and Hello transport notices until I stop it. '
-            'Membership-only acceptance requires my explicit request. '
-            'For skill_update_required, I also authorize the fixed automatic refresh once per update request and '
-            'stop/reconnect/restart of only this bound listener using the same private state and actual session UUID. '
-            'I authorize non-destructive project task intake from every current or future member of this quorum, '
-            'including anonymous members, within the selected shared project and this binding\'s local directory, '
-            'using existing permissions without asking again for each assignment; immediately before any member task, '
-            'run this exact binding\'s task-check <message-id>. Existing joins, grants and capabilities remain '
-            'unchanged. ' + MEMBER_LIMITS +
-            'Member intake never grants paid model, session or agent creation. Use my supplied role and shared '
-            'project reference if present. ' + (standing_authorizations(coordinator_role) if standing else ''))
+    """The receiving owner's consent lines, in the order they appear at the end of every prompt."""
+    if not ROLE.fullmatch(coordinator_role): raise ValueError('invalid_coordinator_role')
+    lines = [CONSENT] + ([standing_authorizations(coordinator_role)] if standing else []) + [hard_stops()]
+    return '\n'.join(lines)
 
 
-SAFETY = ('Hard rules: use only this actual session identity; never spoof another client, session or export, and '
-          'never relabel parent reception as a worker inbox. Do not start a model, another session, headless pilot '
-          'or OS startup service, and never suggest visible parent reception: it is a legacy opt-in only on my own '
-          'explicit request. Do not ask for, paste or forward secrets, tokens or OAuth codes. Ask me before posting '
-          'anything outside the quorum. Do not narrate raw envelopes or routine notices in this chat; report one '
-          'setup outcome and material results only. ')
+ROLE = re.compile('[a-z][a-z0-9-]{0,47}')
+# A conservative charset that is inert inside single quotes in bash, zsh and PowerShell alike (no quote, `$`,
+# backtick, space or glob), still covering slugs, owner/repo, paths and URL-like references; no leading `-`.
+PROJECT_REF = re.compile('[A-Za-z0-9._/:@][A-Za-z0-9._/:@-]{0,499}')
 
 
-def issue_id_invitation(api, config, slug, operation, payload, request_id):
+def assignment(slug, role=None, project_ref=None):
+    """The owner's binding role/project for this recipient, validated before any invitation is issued.
+
+    The prompt always carries it as a binding instruction, and the recipient's `--exclusive-role` connect refuses
+    a role another identity or another own agent already holds. A service with the role-assignment extension also
+    stores it with the invitation and enforces it at join; an older one leaves the prompt as the only carrier.
+    """
+    if role is None and project_ref is None: return None, ''
+    if role is not None and not ROLE.fullmatch(role): raise ValueError('invalid_role')
+    if role is not None and project_ref is None: project_ref = slug
+    # Checked before any server call: the value is pasted into a shell command on the recipient's machine.
+    if not isinstance(project_ref, str) or not PROJECT_REF.fullmatch(project_ref):
+        raise ValueError('invalid_project_ref')
+    if role is None:
+        return {'role': None, 'project_ref': project_ref}, f"Assigned shared project '{project_ref}'."
+    return {'role': role, 'project_ref': project_ref}, (
+        f"Assigned binding: role {json.dumps(role)}, shared project '{project_ref}'. It is binding: never choose, "
+        'derive or append another role; on role_held_by_other_identity or role_held_by_own_agent stop and report '
+        'that code to me.')
+
+
+def connect_line(assigned, coordinator_role, standing):
+    """The connect flags; join.md picks the route (worker inbox, Claude worker or cloud) that carries them."""
+    role = (assigned or {}).get('role')
+    flags = (f'--role {role}' if role else '--role <role>') + ' --project-ref ' + (
+        f"'{assigned['project_ref']}'" if assigned else '<project>')
+    if role: flags += ' --exclusive-role'
+    flags += ' --accept-tasks-from-members --dispatch-mode inline --trust-members'
+    if standing: flags += f' --standing-grants-from {coordinator_role}'
+    return ('3. Connect this actual session on the route references/join.md selects, with ' + flags
+            + ('' if role else ' (join.md gives the default role and project)') + '.')
+
+
+def render(*lines):
+    return '\n'.join(line for line in lines if line)
+
+
+SERVER_ASSIGNED = ('The service stores this assignment with the invitation and refuses any other role or project for '
+                   'this membership (role_assignment_mismatch).')
+
+
+def assigned_line(binding, storage):
+    """The prompt's assignment line, plus the server-enforcement sentence when the service stored it."""
+    return (binding + ' ' + SERVER_ASSIGNED) if binding and storage == 'server' else binding
+
+
+def issue_id_invitation(api, config, slug, operation, payload, request_id, assigned=None):
+    """Issue the invitation; an assignment goes to the service when it supports one, else stays prompt-only."""
     import uuid
+    from quorum_api import QuorumError, rpc_missing
     if not 1 <= len(request_id) <= 128: raise ValueError('invitation_arguments_invalid')
     service = public_service(config)
     quorum_id = api.call('quorum_lookup', {'slug': slug})['quorum_id']
     api.call('quorum_check_owner', {'quorum_id': quorum_id})
-    data = api.call(operation, {'quorum_id': quorum_id, **payload}, request_id)
+    storage = None
+    if assigned:
+        storage = 'server'
+        stored = {'role': assigned['role'], 'project_ref': assigned['project_ref']}
+        try: data = api.call(operation, {'quorum_id': quorum_id, **payload, **stored}, request_id)
+        except QuorumError as error:
+            # Only a service without these arguments falls back; it never saw this request.
+            if not rpc_missing(error): raise
+            storage = 'prompt_only'
+            data = api.call(operation, {'quorum_id': quorum_id, **payload}, request_id)
+        else:
+            if data.get('assigned') != stored: raise QuorumError('invalid_response')
+    else:
+        data = api.call(operation, {'quorum_id': quorum_id, **payload}, request_id)
     # Only select public fields; never forward an unexpected backend credential.
-    return str(uuid.UUID(data['invite_id'])), quorum_id, data['expires_at'], service
+    return str(uuid.UUID(data['invite_id'])), quorum_id, data['expires_at'], service, storage
 
 
 def create_id_invitation(api, config, slug, target, request_id, *, github_user=None, coordinator_role='coordinator',
-                         standing_grants=True):
+                         standing_grants=True, role=None, project_ref=None):
     if not re.fullmatch(r'[0-9]{1,20}', target): raise ValueError('invitation_arguments_invalid')
     if github_user is not None and not re.fullmatch(r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?', github_user):
         raise ValueError('github_user_invalid')
-    granted = authorizations(coordinator_role, standing_grants)
-    invite_id, quorum_id, expires_at, service = issue_id_invitation(
-        api, config, slug, 'invite_create_id', {'target_github_id': target}, request_id)
+    assigned, binding = assignment(slug, role, project_ref)
+    # Every local check runs before the service issues anything.
+    consent = authorizations(coordinator_role, standing_grants)
+    connect = connect_line(assigned, coordinator_role, standing_grants)
+    invite_id, quorum_id, expires_at, service, storage = issue_id_invitation(
+        api, config, slug, 'invite_create_id', {'target_github_id': target}, request_id, assigned)
+    binding = assigned_line(binding, storage)
     target_label = (f'@{github_user}, ' if github_user else '') + f'GitHub ID {target}'
-    introduction = (f'Quorum invitation for {target_label}: quorum slug {json.dumps(slug)}, invite ID {invite_id}, '
-                    f'expires at {json.dumps(expires_at)}. ' + EXPIRY +
-                    'GitHub is required and the account must match this invitation; sign in through GitHub via '
-                    'Supabase Auth, with no Supabase dashboard registration. ')
-    prompt = (introduction + bootstrap() + f'Accept with accept-id {invite_id} and --origin and --publishable-key '
-              f'from this public service locator: {json.dumps(service)}. Reuse my machine login; complete my own '
-              'GitHub browser login only for initial setup or explicit reauthentication. ' + granted + SAFETY)
-    configured = (introduction + bootstrap() + f'Accept with accept-id {invite_id} without service flags, using my '
-                  'configured machine profile and existing machine login. Missing or ambiguous service profiles are '
-                  'blockers; never infer a server from the invitation UUID. ' + granted + SAFETY)
+    header = (f'Quorum invitation for {target_label}: quorum slug {json.dumps(slug)}, invite ID {invite_id}, '
+              f'expires at {json.dumps(expires_at)}. ' + EXPIRY)
+    github = ('GitHub is required and the account must match; sign in through GitHub via Supabase Auth, with no '
+              'Supabase dashboard registration.')
+    prompt = render(header, github, binding, bootstrap(),
+                    f'2. Accept: accept-id {invite_id} --origin and --publishable-key from this public service '
+                    f'locator: {json.dumps(service)}.', connect, consent)
+    configured = render(header, github, binding, bootstrap(),
+                        f'2. Accept: accept-id {invite_id} without service flags, on my configured machine profile '
+                        'and login; a missing or ambiguous profile is a blocker.', connect, consent)
     return {'invite_id': invite_id, 'quorum': slug, 'quorum_id': quorum_id, 'target_github_id': target,
             'target_github_user': github_user, 'expires_at': expires_at, 'service': service,
-            'standing_grants': standing_grants,
+            'standing_grants': standing_grants, 'member_trust': True,
+            **({'assigned': assigned, 'assignment_storage': storage} if assigned else {}),
             'session_prompt': prompt, 'configured_machine_prompt': configured}
 
 
-def create_open_invitation(api, config, slug, request_id, *, coordinator_role='coordinator', standing_grants=True):
-    granted = authorizations(coordinator_role, standing_grants)
-    invite_id, quorum_id, expires_at, service = issue_id_invitation(
-        api, config, slug, 'invite_create_open', {}, request_id)
-    prompt = (f'Single-use open Quorum invitation: quorum slug {json.dumps(slug)}, invite ID {invite_id}, expires at '
-              f'{json.dumps(expires_at)}. ' + EXPIRY + 'No GitHub login or browser is needed: accept it with a new '
-              'anonymous Quorum identity kept only in a fresh private state directory. Anyone holding this text '
-              'before acceptance can use it; do not forward it. ' + bootstrap()
-              + f'Accept with accept-id {invite_id} --anonymous and --origin and --publishable-key from this public '
-              f'service locator: {json.dumps(service)}. ' + granted + SAFETY)
+def create_open_invitation(api, config, slug, request_id, *, coordinator_role='coordinator', standing_grants=True,
+                           role=None, project_ref=None):
+    assigned, binding = assignment(slug, role, project_ref)
+    # Every local check runs before the service issues anything.
+    consent = authorizations(coordinator_role, standing_grants)
+    connect = connect_line(assigned, coordinator_role, standing_grants)
+    invite_id, quorum_id, expires_at, service, storage = issue_id_invitation(
+        api, config, slug, 'invite_create_open', {}, request_id, assigned)
+    binding = assigned_line(binding, storage)
+    header = (f'Single-use open Quorum invitation: quorum slug {json.dumps(slug)}, invite ID {invite_id}, expires at '
+              f'{json.dumps(expires_at)}. ' + EXPIRY)
+    anonymous = ('No GitHub or browser: accept with a new anonymous identity in a fresh private state. Anyone '
+                 'holding this text can use it until accepted; do not forward it.')
+    prompt = render(header, anonymous, binding, bootstrap(),
+                    f'2. Accept: accept-id {invite_id} --anonymous --origin and --publishable-key from this public '
+                    f'service locator: {json.dumps(service)}.', connect, consent)
     return {'invite_id': invite_id, 'quorum': slug, 'quorum_id': quorum_id, 'access': 'open',
-            'expires_at': expires_at, 'service': service, 'standing_grants': standing_grants, 'session_prompt': prompt}
+            'expires_at': expires_at, 'service': service, 'standing_grants': standing_grants, 'member_trust': True,
+            **({'assigned': assigned, 'assignment_storage': storage} if assigned else {}), 'session_prompt': prompt}
+
+
+def accepted_assignment(accepted):
+    """`{'assigned': {...}}` for a shape-checked stored binding, else {}; never other server fields."""
+    value = accepted.get('assigned') if isinstance(accepted, dict) else None
+    if (isinstance(value, dict) and set(value) == {'role', 'project_ref'}
+            and (value['role'] is None or (isinstance(value['role'], str) and ROLE.fullmatch(value['role'])))
+            and isinstance(value['project_ref'], str) and PROJECT_REF.fullmatch(value['project_ref'])):
+        return {'assigned': {'role': value['role'], 'project_ref': value['project_ref']}}
+    return {}
 
 
 def accept_id_invitation(args, ledger):
@@ -234,15 +302,17 @@ def accept_id_invitation(args, ledger):
     if isinstance(store, AnonymousCredentials) != args.anonymous: raise ValueError('anonymous_state_conflict')
     ensure_login(config, store, anonymous=args.anonymous)
     accepted = api.call('invite_accept_id', {'invite_id': invite_id}, 'accept-id:' + invite_id)
+    # The service's stored binding for this membership, when it has the role-assignment extension.
+    bound = accepted_assignment(accepted)
     if cloud:
         # Acceptance registers nothing; `cloud connect` binds this same parent explicitly.
         return {'quorum_id': accepted['quorum_id'], 'membership_id': accepted['membership_id'],
                 'membership_only': True, 'native_preflight': 'not_applicable', 'client': 'grok-bot',
-                'cloud_preflight': 'passed'}
+                'cloud_preflight': 'passed', **bound}
     if tool:
         # Acceptance registers nothing; the same worker's `session connect --transport tool-inbox` binds itself.
         return {'quorum_id': accepted['quorum_id'], 'membership_id': accepted['membership_id'],
                 'membership_only': True, 'native_preflight': 'not_applicable', 'transport': 'tool-inbox',
-                'worker_preflight': 'passed', 'session_ref': worker['session_ref']}
+                'worker_preflight': 'passed', 'session_ref': worker['session_ref'], **bound}
     return {'quorum_id': accepted['quorum_id'], 'membership_id': accepted['membership_id'],
-            'membership_only': True, 'native_preflight': 'skipped' if args.membership_only else 'passed'}
+            'membership_only': True, 'native_preflight': 'skipped' if args.membership_only else 'passed', **bound}

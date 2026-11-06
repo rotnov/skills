@@ -43,7 +43,8 @@ def read_invitation(path):
     return data
 
 
-LIVE_COMMANDS = {'connect', 'pilot-init', 'pilot-worker', 'ping', 'thread', 'mcp', 'invite-file', 'listen', 'session', 'invite-id', 'accept-id', 'access', 'cloud', 'debug'}
+LIVE_COMMANDS = {'connect', 'pilot-init', 'pilot-worker', 'ping', 'thread', 'mcp', 'invite-file', 'listen', 'session', 'invite-id', 'accept-id', 'access', 'cloud', 'debug',
+                 'agents', 'agent-retire'}
 
 
 def add_commands(commands):
@@ -77,11 +78,25 @@ def add_commands(commands):
     target_id = invite_id.add_mutually_exclusive_group(required=True)
     target_id.add_argument('--github-user')
     target_id.add_argument('--github-id')
-    target_id.add_argument('--open', action='store_true', help='Single-use 15-minute invitation for an open quorum')
+    target_id.add_argument('--open', action='store_true',
+                           help='Single-use invitation for an open quorum; the server sets expires_at '
+                                '(60 minutes on current servers)')
+    invite_id.add_argument('--role', help="Recipient's assigned role, written into the prompt as a binding "
+                                          'instruction (exact role, no fallback, --exclusive-role connect)')
+    invite_id.add_argument('--project-ref', help="Recipient's shared project reference (default with --role: "
+                                                 'the quorum slug)')
     access = commands.add_parser('access', help='Owner: require GitHub or allow open invitations')
     access.add_argument('quorum')
     access.add_argument('mode', choices=('github', 'open'))
     invite_id.add_argument('--request-id', required=True)
+    agents = commands.add_parser('agents', help="Owner: list the quorum's agents (role, project, owner label, "
+                                                'last heartbeat, revoked); no tokens or session references')
+    agents.add_argument('quorum')
+    retire = commands.add_parser('agent-retire', help="Owner: retire any agent of the quorum like its owner's `leave`, "
+                                                      'keeping the membership')
+    retire.add_argument('quorum')
+    retire.add_argument('agent_id')
+    retire.add_argument('--request-id', help='Reuse after an uncertain response (default: derived from the agent ID)')
     invite = commands.add_parser('invite-file', help='Create an owner-only invitation file without printing its token')
     invite.add_argument('quorum')
     target = invite.add_mutually_exclusive_group(required=True)
@@ -160,18 +175,22 @@ def dispatch(args, ledger, register_agent):
         args.quorum = invite['quorum']
     else:
         api, config, store = api_for(ledger)
+    if args.command in ('agents', 'agent-retire'):
+        return owner_agents(api, ledger, args)
     if args.command == 'access':
         quorum_id = api.call('quorum_lookup', {'slug': args.quorum})['quorum_id']
         return api.call('quorum_set_access', {'quorum_id': quorum_id, 'access': args.mode}, 'access:' + quorum_id)
     if args.command == 'invite-id' and args.open:
         from quorum_invitations import create_open_invitation
         return create_open_invitation(api, config, args.quorum, args.request_id, coordinator_role=args.coordinator_role,
-                                      standing_grants=getattr(args, 'standing_grants', True))
+                                      standing_grants=getattr(args, 'standing_grants', True),
+                                      role=getattr(args, 'role', None), project_ref=getattr(args, 'project_ref', None))
     if args.command == 'invite-id':
         from quorum_invitations import create_id_invitation, github_id
         target = args.github_id or github_id(args.github_user)
         return create_id_invitation(api, config, args.quorum, target, args.request_id, github_user=args.github_user, coordinator_role=args.coordinator_role,
-                                    standing_grants=getattr(args, 'standing_grants', True))
+                                    standing_grants=getattr(args, 'standing_grants', True),
+                                    role=getattr(args, 'role', None), project_ref=getattr(args, 'project_ref', None))
     if args.command == 'invite-file':
         from quorum_invitations import create_invitation, github_id
         target = args.github_id or github_id(args.github_user)
@@ -236,6 +255,44 @@ def dispatch(args, ledger, register_agent):
                 time.sleep(min(10, max(0, deadline - time.monotonic())))
         return {'worker': 'idle_timeout', 'model_turns': 0}
     raise ValueError('unknown_operation')
+
+
+ROSTER_FIELDS = ('agent_id', 'role', 'project_ref', 'engine', 'owner_label', 'member_role', 'own', 'live', 'revoked',
+                 'last_seen')
+
+
+def owner_agents(api, ledger, args):
+    """Owner roster and owner retire; an older service without these RPCs reports owner_retire_unavailable."""
+    import uuid
+    from quorum_api import QuorumError, rpc_missing
+    quorum_id = api.call('quorum_lookup', {'slug': args.quorum})['quorum_id']
+    try:
+        if args.command == 'agents':
+            roster = api.call('quorum_agents', {'quorum_id': quorum_id})
+            if not isinstance(roster, list) or not all(isinstance(item, dict) for item in roster):
+                raise QuorumError('invalid_response')
+            # Only the documented fields; anything else a server might add stays out of the output.
+            return {'quorum_id': quorum_id, 'agents': [{key: item.get(key) for key in ROSTER_FIELDS} for item in roster]}
+        try: agent_id = str(uuid.UUID(args.agent_id))
+        except ValueError: raise ValueError('invalid_agent_id') from None
+        request_id = args.request_id or 'agent-retire:' + agent_id
+        if not 1 <= len(request_id) <= 128: raise ValueError('invalid_request_id')
+        result = api.call('agent_retire', {'quorum_id': quorum_id, 'agent_id': agent_id}, request_id)
+    except QuorumError as error:
+        if rpc_missing(error): raise QuorumError('owner_retire_unavailable') from None
+        # The owner check and an agent outside this quorum keep their own codes.
+        if str(error) == 'auth_required' and error.denial: raise QuorumError(error.denial) from None
+        raise
+    if not isinstance(result, dict) or result.get('retired') is not True: raise QuorumError('invalid_response')
+    # Retiring one of this state's own agents also releases its local binding, exactly like `leave`.
+    from quorum_claude_worker import record_retired
+    from quorum_session import retire_after_leave
+    record_retired(ledger, agent_id)
+    try: local = retire_after_leave(ledger.root, agent_id)
+    except (ValueError, OSError): local = None
+    value = {'quorum_id': quorum_id, 'agent_id': agent_id, 'retired': True,
+             'already_revoked': result.get('already_revoked') is True}
+    return {**value, 'local_binding': 'retired'} if local == 'retired' else value
 
 
 def prepare_worker(ledger, api, toolchain, timeout, approved):

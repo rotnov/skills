@@ -11,9 +11,14 @@ from quorum_release import read_release, runtime_evidence, source_identity
 from quorum_resume import binding as resume_binding
 from quorum_update import refresh as canonical_refresh, validate_source
 
-BLOCKERS = {'update_tool_missing', 'update_fetch_failed', 'update_invalid_copy', 'update_validation_failed',
+BLOCKERS = {'update_tool_missing', 'update_node_too_old', 'update_fetch_failed', 'update_invalid_copy', 'update_validation_failed',
             'update_cache_conflict', 'update_target_changed', 'update_in_progress', 'update_unsafe_cache',
             'python_provisioning_failed'}
+# The deployed blocked-evidence allowlist predates these local codes. Report the
+# closest accepted code; the local result keeps the precise one. A distinct
+# server code needs a reviewed migration.
+SERVER_BLOCKER = {'update_node_too_old': 'update_tool_missing',
+                  'python_provisioning_failed': 'update_tool_missing'}
 
 
 class UpdateFailure(QuorumError):
@@ -160,9 +165,10 @@ def apply_notice(api, ledger, record, notice_id, request_id, *, owner_refresh=Fa
                 if refreshed != target: raise ValueError('update_target_changed')
             except ValueError as error:
                 if str(error) in BLOCKERS:
+                    reported = SERVER_BLOCKER.get(str(error), str(error))
                     _call(api, 'session_update_report', {**_scope(record), 'notice_id':notice_id,
-                          'event':'blocked', 'evidence':{'code':str(error)}},
-                          'blocked:'+hashlib.sha256((notice_id+':'+str(error)).encode()).hexdigest(), authorize)
+                          'event':'blocked', 'evidence':{'code':reported}},
+                          'blocked:'+hashlib.sha256((notice_id+':'+reported).encode()).hexdigest(), authorize)
                 raise
             journal = {**journal, 'local':local, 'state':'refreshed'}
             ledger.setting(key, journal)
@@ -191,6 +197,39 @@ def report_runtime(api, ledger, record, notice_id, request_id, *, authorize=lamb
     return {'state':'active_reported', 'target':target, 'runtime':active}
 
 
+def with_restart_visibility(api, ledger, record, status, authorize):
+    """Join an operation page with current peer health to name `client_restarted_unrecovered`.
+
+    A server with the peer status extension decides that from each peer's run generation; otherwise the
+    client-side heuristic over this page's reports applies.
+
+    The report cache feeds later `session peers`. Peer health is best effort: if it is unavailable the
+    page is returned as the service sent it. No participant gains or loses any update state here.
+    """
+    from quorum_peer_wake import annotate, remember_reports
+    participants = status.get('participants')
+    if not isinstance(participants, list): return status
+    remember_reports(ledger, status)
+    try:
+        authorize()
+        peers = api.call('session_peers', {'agent_id':record['agent_id'], 'session_ref':record['session_ref']})
+        authorize()
+    except QuorumError:
+        return status
+    if not isinstance(peers, list): return status
+    reports = {item.get('agent_id'):item for item in participants if isinstance(item, dict)}
+    health = {peer.get('agent_id'):peer for peer in annotate([peer for peer in peers if isinstance(peer, dict)], reports)}
+    joined = []
+    for item in participants:
+        peer = health.get(item.get('agent_id')) if isinstance(item, dict) else None
+        if peer is None or 'availability' not in peer: joined.append(item)
+        else:
+            # A server with the peer status extension also reports the awaiting-owner count and a running hold.
+            fields = {key: peer[key] for key in ('awaiting_owner', 'reception_hold_until') if key in peer}
+            joined.append({**item, 'availability':peer['availability'], 'last_seen':peer.get('last_seen'), **fields})
+    return {**status, 'participants':joined}
+
+
 def add_commands(commands):
     parser = commands.add_parser('update', help='Explicit owner refresh and bounded quorum maintenance')
     parser.add_argument('quorum')
@@ -202,6 +241,9 @@ def add_commands(commands):
     parser.add_argument('--owner-refresh', action='store_true',
                         help='Receiving owner explicitly authorizes one canonical refresh for --apply-notice')
     parser.add_argument('--after-agent', help='Status pagination cursor returned by the server')
+    parser.add_argument('--worker-capability', type=Path,
+                        help='Claude worker capability file (adopt scope, or a create/accept scope with "update": true); '
+                             'identity comes from that worker binding')
 
 
 def dispatch(args, auth):
@@ -209,21 +251,29 @@ def dispatch(args, auth):
     from quorum_native_inbox import require_worker
     from quorum_session import current_session, require_caller
     from quorum_state import LocalLedger
-    sid = current_session()
-    with_ledger = LocalLedger(auth.root/'sessions'/sid)
+    context = getattr(args, 'worker_context', None)
+    worker_api = check_worker = None
+    if context is not None:
+        # An adopted Claude worker acts only as its own connected binding, under its capability.
+        from quorum_claude_worker import owner_binding
+        with_ledger, record, check_worker, worker_api = owner_binding(context, auth)
+    else:
+        sid = current_session()
+        with_ledger = LocalLedger(auth.root/'sessions'/sid)
     try:
         record = with_ledger.setting('session-agent')
         if not record or record.get('quorum') != args.quorum:
             raise ValueError('session_not_connected')
         saved = _binding(record)
         def authorize():
-            require_caller(sid, record['engine'])
+            if check_worker is not None: check_worker()
+            else: require_caller(sid, record['engine'])
             latest = with_ledger.setting('session-agent')
             def same_current():
                 return (isinstance(latest, dict) and _binding(latest) == saved
                         and str(Path.cwd().resolve()) == saved.get('cwd'))
             if not same_current(): raise ValueError('session_binding_denied')
-            if latest.get('transport') == 'tool-inbox':
+            if latest.get('transport') == 'tool-inbox' and check_worker is None:
                 require_worker(latest)
                 # Worker discovery can also block; do not dispatch using a
                 # binding or directory changed while proof was being checked.
@@ -232,13 +282,14 @@ def dispatch(args, auth):
         authorize()
         if args.owner_refresh and not args.apply_notice: raise ValueError('update_request_invalid')
         if not args.status: _request(args.request_id)
-        api, _, _ = api_for(auth)
+        api = worker_api if worker_api is not None else api_for(auth)[0]
         options = {'current':Path(__file__).resolve().parents[1],
                    'cache':Path.home()/'.local/share/quorum/skill-updates', 'authorize':authorize}
         if args.status:
             payload = {**_scope(record), 'operation_id':str(uuid.UUID(args.status))}
             if args.after_agent: payload['after_agent'] = str(uuid.UUID(args.after_agent))
-            return _call(api, 'session_update_status', payload, None, authorize)
+            return with_restart_visibility(api, with_ledger, record,
+                                           _call(api, 'session_update_status', payload, None, authorize), authorize)
         if args.apply_notice:
             return apply_notice(api, with_ledger, record, args.apply_notice, args.request_id,
                                 owner_refresh=args.owner_refresh, **options)

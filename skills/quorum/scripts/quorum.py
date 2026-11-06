@@ -9,18 +9,26 @@ import hashlib
 import subprocess
 
 sys.dont_write_bytecode = True
-from quorum_api import QuorumApi, ServiceConfig, QuorumError
+from quorum_api import QuorumApi, ServiceConfig, QuorumError, rpc_missing
 from quorum_auth import token_provider
 from quorum_state import LocalLedger
 from quorum_grok_leader import GrokBindingError
-from quorum_session import UnsupportedClient
+from quorum_session import AmbiguousSession, BindingError, RecipientUnresolved, RoleHeld, UnsupportedClient
 from quorum_grok_cloud import CloudError
 from quorum_native_inbox import NativeInboxError
 from quorum_debug import DebugError
 from quorum_knowledge import KnowledgeError
 
 
-def register_agent(api, ledger, slug, role, data, *, device_key="device", expected_quorum_id=None):
+def register_agent(api, ledger, slug, role, data, *, device_key="device", expected_quorum_id=None, supersede=False,
+                   keep_agent_id=None):
+    """Register (or reuse) this binding's agent.
+
+    `supersede` asks the service to retire this identity's own other holders of the role in the same transaction;
+    an older service without that argument raises its missing-RPC error so the caller can choose a fallback.
+    `keep_agent_id` names one own holder that may coexist (an adopting worker's parent); an older service has no
+    role exclusivity, so the plain join is retried there with the same request ID.
+    """
     required = {'engine', 'project_ref', 'session_ref', 'cwd'}
     if set(data) != required or data['engine'] not in ('claude', 'codex', 'grok') or not Path(data['cwd']).is_absolute():
         raise ValueError('invalid_registration')
@@ -43,13 +51,19 @@ def register_agent(api, ledger, slug, role, data, *, device_key="device", expect
         device = api.call('device_register', {'label': 'quorum-local'},
                           'device:' + hashlib.sha256((str(ledger.root) + ('' if device_key == 'device' else ':' + device_key)).encode()).hexdigest())
         ledger.setting(device_key, device)
-    result = api.call('agent_join', {'quorum_id': quorum, 'device_id': device['device_id'],
-                                     'role': role, **{key: data[key] for key in required - {'cwd'}}},
-                      'join:' + identity)
+    payload = {'quorum_id': quorum, 'device_id': device['device_id'], 'role': role,
+               **{key: data[key] for key in required - {'cwd'}}}
+    extras = {**({'supersede': True} if supersede else {}), **({'keep_agent_id': keep_agent_id} if keep_agent_id else {})}
+    try: result = api.call('agent_join', {**payload, **extras}, 'join:' + identity)
+    except QuorumError as error:
+        if not (extras and not supersede and rpc_missing(error)): raise
+        result = api.call('agent_join', payload, 'join:' + identity)
+    # Agents this join retired are reported once; they are not part of the stored binding.
+    superseded = result.pop('superseded', None) if isinstance(result, dict) else None
     value = {**result, 'quorum_id': quorum, 'device_id': device['device_id'], 'worker': 'offline'}
     ledger.setting('agent:' + identity, value)
     ledger.setting('registration:' + value['agent_id'], {**value, 'registration': data})
-    return value
+    return {**value, 'superseded': superseded} if superseded else value
 
 
 def main(argv=None):
@@ -69,9 +83,14 @@ def main(argv=None):
         sub.add_argument('--request-id', help='Reuse the same ID after an uncertain response')
         if name == 'create':
             sub.add_argument('--access', choices=('github', 'open'), default='github',
-                             help='open: also allow single-use 15-minute invitations without GitHub')
+                             help='open: also allow single-use invitations without GitHub (server-set expiry)')
             sub.add_argument('--worker-capability', type=Path,
                              help='Generated Claude worker capability file; slug, access and request ID come from its scope')
+    capabilities = commands.add_parser('capabilities', help='Offline route capability report; starts nothing')
+    from quorum_capabilities import ROUTES, REQUIREMENTS
+    capabilities.add_argument('--route', choices=ROUTES, help='Default: the current client\'s quiet worker route')
+    capabilities.add_argument('--require', choices=tuple(REQUIREMENTS),
+                              help='Fail with background_execution_unsupported unless the route supports it')
     from quorum_live import add_commands
     add_commands(commands)
     from quorum_updates import add_commands as add_update_commands
@@ -85,6 +104,15 @@ def main(argv=None):
         # This is only a route constraint; worker provenance/capabilities are still checked below.
         if getattr(args, 'require_worker_inbox', False) and getattr(args, 'transport', None) != 'tool-inbox':
             raise NativeInboxError('native_worker_required', 'parent_route_visible')
+        if args.command == 'capabilities':
+            # Offline and static: no state directory, login, network or process.
+            from quorum_capabilities import CapabilityUnsupported, check
+            try: value = check(args.route, args.require)
+            except CapabilityUnsupported as error:
+                print(json.dumps({'ok': False, 'code': error.code, 'data': error.data}))
+                return 4
+            print(json.dumps({'ok': True, 'code': 'ok', 'data': value}))
+            return 0
         if args.command == 'version':
             from quorum_release import installed_release
             print(json.dumps({'ok':True, 'code':'ok', 'data':installed_release()}))
@@ -93,7 +121,7 @@ def main(argv=None):
             import quorum_claude_worker as claude_worker
             # A Claude worker route validates its capability and arguments before the root ledger exists.
             if claude_worker.selected(args):
-                value = claude_worker.manage(args)
+                value = claude_worker.manage(args, register_agent)
                 if value is not None:
                     print(json.dumps({'ok': True, 'code': 'ok', 'data': value}))
                     return 0
@@ -178,6 +206,17 @@ def main(argv=None):
                     request_id = args.request_id or str(uuid.uuid4())
                     value = api.call(operations[args.command], data,
                                      None if args.command == 'context' else request_id)
+                    if args.command == 'leave':
+                        # A confirmed retirement can release an adopting Claude worker's claim.
+                        from quorum_claude_worker import record_retired
+                        record_retired(ledger, data.get('agent_id'))
+                        # Leaving this chat's own bound agent also retires its local binding, so the next
+                        # connect registers anew instead of reusing or conflicting with the revoked agent.
+                        # A local failure here never hides the confirmed leave: connect rechecks this marker.
+                        from quorum_session import retire_after_leave
+                        try: local = retire_after_leave(ledger.root, data.get('agent_id'))
+                        except (ValueError, OSError): local = None
+                        if local == 'retired' and isinstance(value, dict): value = {**value, 'local_binding': 'retired'}
                     if args.command == 'create' and args.access == 'open':
                         value.update(api.call('quorum_set_access', {'quorum_id': value['quorum_id'], 'access': 'open'},
                                               'access:' + value['quorum_id']))
@@ -191,7 +230,10 @@ def main(argv=None):
                  'engine_acceptance_pending': 4, 'service_profile_ambiguous': 4, 'machine_profile_unavailable': 4,
                  'auth_profile_conflict': 3, 'service_config_conflict': 4, 'service_unavailable': 5, 'service_error': 5,
                  'response_too_large': 5, 'invalid_response': 5, 'listener_start_failed': 5, 'listener_stop_failed': 5, 'listener_not_ready': 5,
-                 'anonymous_login_unavailable': 4, 'open_invite_required': 3}
+                 'anonymous_login_unavailable': 4, 'open_invite_required': 3, 'recipient_ambiguous_or_missing': 3,
+                 'role_held_by_own_agent': 3, 'role_held_by_other_identity': 3, 'role_assignment_mismatch': 3,
+                 'role_exclusivity_requires_read_committed': 5, 'owner_required': 3, 'agent_denied': 3,
+                 'owner_retire_unavailable': 4}
         codes.update({'update_extension_unavailable':4, 'runtime_source_unavailable':4})
         code = str(error) if str(error) in codes else 'operation_failed'
         from quorum_release import ReleaseMismatch
@@ -205,6 +247,22 @@ def main(argv=None):
         return 3
     except UnsupportedClient as error:
         print(json.dumps({'ok': False, 'code': 'unsupported_client', 'data': error.diagnostic()}))
+        return 3
+    except AmbiguousSession as error:
+        # Only the fixed names of the detected client variables; never their values.
+        print(json.dumps({'ok': False, 'code': error.code, 'data': error.diagnostic()}))
+        return 3
+    except BindingError as error:
+        # This chat's own role, quorum and agent with fixed guidance; never a path, token or server body.
+        print(json.dumps({'ok': False, 'code': error.code, 'data': error.diagnostic()}))
+        return 3
+    except RoleHeld as error:
+        # The caller's own role (and own other agent ID) with fixed guidance; never another identity's agent.
+        print(json.dumps({'ok': False, 'code': error.code, 'data': error.diagnostic()}))
+        return 3
+    except RecipientUnresolved as error:
+        # The caller's own role and fixed guidance only; never agent IDs or a server body.
+        print(json.dumps({'ok': False, 'code': error.code, 'data': error.diagnostic()}))
         return 3
     except CloudError as error:
         # Fixed cloud codes and reasons only; never a webhook target or peer text.
@@ -222,20 +280,26 @@ def main(argv=None):
         # Allow only fixed local codes; arbitrary exception text may contain secrets.
         safe = {'machine_profile_unavailable', 'service_profile_ambiguous', 'auth_profile_conflict',
                 'service_config_conflict', 'github_identity_required', 'auth_lock_timeout',
-                'browser_unavailable', 'login_timeout', 'anonymous_state_conflict'}
+                'browser_unavailable', 'login_timeout', 'anonymous_state_conflict', 'invalid_role', 'invalid_project_ref',
+                'invalid_agent_id', 'invalid_request_id'}
         if isinstance(error, ValueError):
             safe.update({'update_request_invalid', 'update_notice_denied', 'update_target_changed',
                          'update_fetch_failed', 'update_tool_missing', 'update_invalid_copy',
                          'update_validation_failed', 'update_cache_conflict', 'update_unsafe_cache',
-                         'update_in_progress', 'session_not_connected', 'python_provisioning_failed'})
+                         'update_in_progress', 'session_not_connected', 'python_provisioning_failed',
+                         'update_node_too_old'})
             safe.update({'grok_transport_unavailable', 'session_binding_denied', 'coordinator_changed',
                          'claude_pipe_unavailable', 'listener_stop_pending', 'session_delivery_unknown',
                          'session_delivery_unsent', 'session_reconcile_denied',
                          'session_recovery_denied', 'delegation_scope_changed', 'member_intake_requires_inline',
                          'private_acl_unavailable', 'private_acl_access_denied', 'unsafe_link', 'browser_unavailable', 'login_timeout',
-                         'worker_already_running', 'standing_grants_require_members', 'invalid_coordinator_role'})
+                         'worker_already_running', 'standing_grants_require_members', 'invalid_coordinator_role',
+                         'binding_conflict'})
         code = str(error) if str(error) in safe else 'operation_failed'
         data = error.diagnostic() if code == 'auth_profile_conflict' and hasattr(error, 'diagnostic') else {}
+        if code in ('update_node_too_old', 'python_provisioning_failed'):
+            from quorum_update import diagnostic as update_diagnostic
+            data = update_diagnostic(error, code)
         print(json.dumps({'ok': False, 'code': code, 'data': data}))
         return 3
     finally:

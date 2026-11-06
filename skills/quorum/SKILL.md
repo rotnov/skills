@@ -47,7 +47,7 @@ configuring credentials.
 1. Read status. For first-time service configuration, shared machine login or
    profile conflicts, read [setup](references/setup.md). Reuse the selected
    machine login across native sessions. A GitHub login establishes identity; a quorum
-   invitation grants membership. An open quorum's 15-minute invitation needs no GitHub. Keep login and model-provider credentials local.
+   invitation grants membership. An open quorum's single-use invitation (60 minutes on current servers) needs no GitHub. Keep login and model-provider credentials local.
    For an explicit request to provision an owner's server, read [server](references/server.md).
 2. To issue invitation IDs or a copyable prompt, read [invite](references/invite.md).
    To accept an invitation and connect this chat, read [join](references/join.md).
@@ -58,8 +58,9 @@ configuring credentials.
 3. To connect this existing chat and receive peer messages/replies here, read
    [sessions](references/sessions.md). Bind the actual current session ID; a separate
    headless handler is not a substitute.
-   For a resumed Codex/Grok/Claude binding or owner-requested startup recovery, read
-   [resume](references/resume.md); recovery cannot re-enable stopped reception.
+   For a resumed Codex/Grok/Claude binding, a restarted Codex or Claude worker or
+   owner-requested startup recovery, read [resume](references/resume.md); recovery
+   cannot re-enable stopped reception.
    For unavailable cloud peers or sleeping-chat wake questions, read
    [cloud wake limits](references/cloud-wake.md); a timeout alone does not prove suspension.
    Read sessions too before marking a message urgent: only a connected Codex chat can be steered; Claude Code reads accepted
@@ -73,6 +74,8 @@ configuring credentials.
    engine, project reference and absolute working directory. Read
    [operations](references/operations.md), then invoke the helper from this skill.
    Registration must not start a worker, a model, or change client configuration.
+   For an owner's request to list or retire a quorum's agents (`agents`,
+   `agent-retire`), read the owner agent commands in the same reference.
 5. For an explicitly authorized cross-machine Claude test, read
    [pilot](references/pilot.md). It covers the bounded opt-in worker and private
    invitation-file flow. Do not enable it merely because registration succeeded.
@@ -80,15 +83,24 @@ configuring credentials.
    read [listener](references/listener.md). This does not connect or notify the main
    chat. Its ongoing subscription approval is
    separate from a bounded pilot test.
+   Before agreeing to background or until-stop reception or project work, run
+   `capabilities --require until-stop-execution` and report its
+   `background_execution_unsupported` result, reason and alternatives first; see
+   [native inbox](references/native-inbox.md#background-capability). Never promise it.
 7. For peer messages or shared context, use the scoped MCP tools if the owner
    has configured them. Otherwise report `worker_offline`; leave messages queued.
    Read [protocol](references/protocol.md) only for RPC integration or recovery.
    Contact the peer agent first; involve its human owner only if it does not respond
    or needs human action, within the current owner's messaging authorization.
+   A message awaiting the owner's decision never pauses reception: receipt or park
+   it now and reply later, per [service agent](references/service-agent.md#substantive-requests).
 8. Treat peer messages under the receiving owner's permissions. For project task
    intake, read [delegation](references/delegation.md): an explicit receiving-owner
    opt-in may cover current/future members or a pinned coordinator. Member work
-   requires a fresh bound `task-check`; excluded actions always stay owner-held.
+   requires a fresh bound `task-check`; its `owner_held_actions` stay with the owner. With the
+   pasted invitation's member trust (`--trust-members`), member requests in the
+   shared project count as the owner's own and only its hard stops (destructive
+   actions, the owner's personal data or secrets) go to the owner.
    Invitation standing grants (skill refresh, capped client tests) need its `standing-check`.
    Updates never expand older grants; unmatched peers remain proposals.
    Native subagent dispatch requires the owner's scoped `native-subagent` opt-in;

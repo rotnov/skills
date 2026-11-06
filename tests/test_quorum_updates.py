@@ -291,6 +291,58 @@ class OwnerUpdateTests(unittest.TestCase):
         self.assertEqual(self.api.calls[-1][1]['event'], 'blocked')
         self.assertEqual(self.api.calls[-1][1]['evidence'], {'code':'update_tool_missing'})
 
+    def test_old_node_reports_an_allowed_server_blocker_but_keeps_the_local_code(self):
+        from quorum_update import NodeTooOld
+        self.notice()
+        def fail(*args): raise NodeTooOld('20.11.1')
+        with self.assertRaisesRegex(ValueError, '^update_node_too_old$') as caught:
+            self.module.apply_notice(self.api, self.ledger, self.record, NOTICE, 'blocked',
+                                     owner_refresh=True, current=self.source, cache=self.root/'cache', refresh=fail)
+        self.assertEqual(caught.exception.data, {'found':'20.11.1', 'required':'22.20'})
+        self.assertEqual(self.api.calls[-1][0], 'session_update_report')
+        self.assertEqual(self.api.calls[-1][1]['event'], 'blocked')
+        # Must stay inside session_update_report's deployed blocked-evidence allowlist.
+        self.assertEqual(self.api.calls[-1][1]['evidence'], {'code':'update_tool_missing'})
+        sql = (SCRIPTS.parent/'supabase/migrations/20261030140000_owner_update_maintenance.sql').read_text()
+        self.assertIn("'update_tool_missing'", sql[sql.index("p_event='blocked'"):])
+
+    def test_python_provisioning_failure_reports_an_allowed_server_blocker(self):
+        self.notice()
+        def fail(*args): raise ValueError('python_provisioning_failed')
+        with self.assertRaisesRegex(ValueError, '^python_provisioning_failed$'):
+            self.module.apply_notice(self.api, self.ledger, self.record, NOTICE, 'blocked',
+                                     owner_refresh=True, current=self.source, cache=self.root/'cache', refresh=fail)
+        self.assertEqual(self.api.calls[-1][0], 'session_update_report')
+        self.assertEqual(self.api.calls[-1][1]['event'], 'blocked')
+        self.assertEqual(self.api.calls[-1][1]['evidence'], {'code':'update_tool_missing'})
+
+    def test_every_reported_blocker_is_in_the_server_allowlist(self):
+        import re
+        migrations = sorted((SCRIPTS.parent/'supabase/migrations').glob('*.sql'))
+        # The last file that defines the writer; later files may only pin it.
+        sql = [path.read_text() for path in migrations
+               if 'create function public.session_update_report(' in path.read_text()][-1]
+        clause = sql[sql.index("p_event='blocked'"):]
+        clause = clause[:clause.index('update_evidence_invalid')]
+        allowed = set(re.findall(r"'([a-z_]+)'", clause[clause.index('not in'):]))
+        self.assertIn('update_tool_missing', allowed)
+        for code in sorted(self.module.BLOCKERS):
+            with self.subTest(code=code):
+                self.assertIn(self.module.SERVER_BLOCKER.get(code, code), allowed)
+
+    def test_owner_update_cli_preserves_old_node_code_version_and_hint(self):
+        from quorum import main
+        from quorum_update import NodeTooOld
+        with patch('quorum_updates.dispatch', side_effect=NodeTooOld('20.11.1')), \
+                contextlib.redirect_stdout(io.StringIO()) as output:
+            code = main(['--state', str(self.ledger.root), 'update', 'team', '--request-id', 'owner-1'])
+        self.assertEqual(code, 3)
+        result = json.loads(output.getvalue())
+        self.assertEqual(result['code'], 'update_node_too_old')
+        self.assertEqual({key:result['data'][key] for key in ('found', 'required')},
+                         {'found':'20.11.1', 'required':'22.20'})
+        self.assertIn('22.20', result['data']['hint'])
+
     def test_same_version_old_source_cannot_be_reported_as_the_target_runtime(self):
         from quorum_os import FileLock
         self.notice()

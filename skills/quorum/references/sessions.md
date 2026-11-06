@@ -171,6 +171,14 @@ message before finishing its current task; see [urgent messages](#urgent-message
 Priority is not part of the request fingerprint, so a replay of the same ID must
 repeat the same priority.
 
+`recipient_ambiguous_or_missing` means the role does not name exactly one
+registered agent, often because an old binding was never retired; nothing was
+sent. Use `session peers` (a stale duplicate shows `unavailable` /
+`receipt_timeout`); its owner retires it with `leave`, as in
+[replacing a pilot](#claude-code--macos-linux-and-windows), or the quorum owner
+with [`agent-retire`](operations.md#owner-agent-commands). Then retry the same
+request ID.
+
 Incoming envelopes start with `[Quorum · <quorum-name> · <sender-role>]` and
 retain the receiving owner's permission rules. They contain peer JSON, sender identity and a `session reply
 <message-UUID> --text-stdin` command. Evaluate a request under the owner's current
@@ -307,6 +315,30 @@ separate stores, so this is owner-attested recovery, not a provider exactly-once
 guarantee. The next explicit owner-authorized `session start` may make one new
 attempt; another ambiguous result blocks again with a new attempt UUID.
 
+`leave` of this chat's own bound agent also retires the chat's local binding
+(`local_binding: retired`). `session status` then shows `retired_binding`, other
+commands return `binding_revoked`, and the next `session connect` registers a new
+agent with any role. A binding whose agent was revoked elsewhere is retired the same
+way when `session connect` finds the service's denial. `binding_conflict` means the
+chat is bound to a still active agent with another quorum, role, project or
+directory; its `data` names that role, quorum and agent and the next step.
+
+Add `--exclusive-role` to `session connect` to keep one agent per role: before
+registering, it refuses with `role_held_by_other_identity` when another identity
+holds the role in that quorum and project, or `role_held_by_own_agent` (with that
+agent's ID) when another of your own chats, workers or devices holds it. Use
+`--supersede` instead only when that own holder is stale: it retires your own
+holders and reports `superseded_agent_id` (and `superseded_agent_ids` when there
+were several). A service with the
+[role-assignment extension](server.md#invitation-roles-and-owner-retire) enforces
+the same rule on every join, with or without these options, and retires the own
+holder inside the join itself; on an older service the helper retires it with
+`leave` first. The same chat's reconnect returns its original agent. A membership
+accepted from an invitation with a stored role refuses any other role or project
+with `role_assignment_mismatch` (`data.assigned` names the binding). Another
+member's agent is retired by its owner with `leave`, or by the quorum owner with
+[`agent-retire`](operations.md#owner-agent-commands).
+
 API/authentication/revocation failures stop reception and leave undelivered data
 in the service. Inspect the private per-session `listener.log` and status.
 If the listener process dies without reporting, status shows `state: error`,
@@ -350,6 +382,27 @@ independent of availability, membership, task permissions and queue retention. N
 `heartbeat_timeout`. Healthy listener heartbeat alone cannot clear an overdue
 message: its receipt is still required. This is derived from server time on read,
 without a scheduled job, revocation, automatic retries or queue deletion.
+With the server's [peer status extension](server.md#peer-status-extension),
+every heartbeat also carries the sender's awaiting-owner count, a running
+reception hold and its run generation, and each peer row adds `awaiting_owner`,
+`reception_hold_until` and `client_run_reported`. A peer whose status heartbeat
+is under 60 seconds old and has items awaiting its owner shows `awaiting_owner`:
+alive and waiting on a human, not crashed. An overdue receipt behind an explicit
+hold shows reason `reception_hold` until the deadline. The server reports
+`client_restarted_unrecovered` (reason `run_changed_without_heartbeat`) only
+when the peer's health is stale for 60 seconds, its last heartbeat named a run,
+and its newest owner-update runtime report names a different run recorded after
+that heartbeat. A client without the extension resends the heartbeat with the
+older arguments and peers see plain `unavailable` / `online` as before.
+
+For a peer without that server evidence (an older server, or a peer client
+that sends no run generation), the client shows `availability:
+client_restarted_unrecovered` (keeping the service's `server_availability:
+unavailable`) only when this chat's last `update --status` page reported that
+peer's canonical refresh, which needs a client restart, with no runtime report
+since, and its heartbeat, still alive around that refresh, has been stale for
+60 seconds. Either way it names an owner recovery step, not a wake. A client
+restart outside an owner update leaves no such evidence and stays `unavailable`.
 
 Keepalive runs quietly every 20 seconds, including polling fallback, and does not
 invoke a model or poll the inbox more often. Each newly started listener, and a
@@ -377,7 +430,10 @@ Claude/Grok, and a steered urgent Codex message, require the actual chat's
 `received` or `reply`. A `reply` from the bound chat confirms only a message this
 binding submitted and has not yet acknowledged. Consequently a busy chat can appear unavailable
 (`receipt_timeout`) until it processes that receipt command.
-This does not mean its process is dead or that its task was refused.
+This does not mean its process is dead or that its task was refused. A message
+awaiting the owner's decision is receipted at once and answered later with
+`reply <message-id>`, so it never holds the queue; tool-inbox workers park it
+per [awaiting the owner](native-inbox.md#awaiting-the-owner).
 
 ## Release compatibility
 

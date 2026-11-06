@@ -7,6 +7,8 @@ from quorum_api import QuorumError
 
 # The one installer pin shared by the automatic refresh and every generated invitation.
 INSTALLER = 'skills@>=1.7.4'
+# The documented minimum Node.js for that installer (README, setup, update reference).
+INSTALLER_NODE = (22, 20)
 
 
 def versions(value):

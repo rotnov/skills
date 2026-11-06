@@ -24,6 +24,10 @@ const wiki = '20261103075741_llm_wiki.sql';
 const hello = '20261103180000_hello_roster_visibility.sql';
 // Open invitations expire after 60 minutes through a row trigger, after the Hello wrapper.
 const ttl = '20261103190000_open_invite_ttl.sql';
+// Invitation role assignment, one live agent per identity/role/project and owner retire (#105).
+const roles = '20261105140000_role_assignment_and_owner_retire.sql';
+// Heartbeat peer status (awaiting owner, reception hold, run generation) and its peer view (#113, #104).
+const status = '20261105160000_peer_status_visibility.sql';
 // Installations that deployed native coordination before open access apply the
 // older-dated open access file late; the final session requirements must match.
 const late = name => name.endsWith('_open_access_quorums.sql');
@@ -34,6 +38,9 @@ const upgraded = [...fresh.filter(name => !late(name) && !opened(name)), ...fres
 const historical = {protocol_version: 1, skill_version: '0.2.0'};
 const current = JSON.parse(read(root + '/skills/quorum/assets/release.json'));
 const suite = name => read(root + '/tests/' + name);
+const ROLE_COMPATIBLE = ['quorum_invite_id_backend.sql', 'quorum_session_backend.sql', 'quorum_realtime_backend.sql',
+  'quorum_priority_backend.sql', 'quorum_priority_open_member_backend.sql', 'quorum_coordination_backend.sql',
+  'quorum_open_session_backend.sql', 'quorum_hello_backend.sql', 'quorum_open_invite_ttl_backend.sql'];
 
 async function database(order) {
   const db = new PGlite({extensions: {pgcrypto}});
@@ -207,7 +214,7 @@ try {
     await drifted(fn, 'reviewed_dispatcher_changed: ' + fn, [...fresh, priority], serialization, unserialized);
   }
   const portableTail = [priority, serialization, maintenance, memberAuthority];
-  const reviewedTail = [...portableTail, knowledge, wiki, hello, ttl];
+  const reviewedTail = [...portableTail, knowledge, wiki, hello, ttl, roles, status];
   if (JSON.stringify(all.filter(name => name >= priority)) !== JSON.stringify(reviewedTail)) {
     throw new Error('unreviewed migration after the close serialization');
   }
@@ -268,9 +275,80 @@ try {
       await ttlDb.close();
     }
   }
+  // Role assignment pins the maintenance-reviewed dispatcher and entry points; it refuses
+  // drift, reapplication or a server without the maintenance extension, changing nothing.
+  const noRoles = async (db, label) => {
+    const result = await db.query(`select to_regprocedure('quorum_private.call_role_core(text,jsonb,text)') f,
+      to_regprocedure('public.agent_retire(uuid,uuid,text)') r,
+      exists(select 1 from information_schema.columns where table_schema='quorum_private'
+       and table_name='memberships' and column_name='assigned_role') col`);
+    const row = result.rows[0];
+    if (row.f !== null || row.r !== null || row.col) throw new Error(label + ': partial role assignment apply');
+  };
+  const beforeRoles = [...fresh, ...portableTail, hello, ttl];
+  await gated([...beforeRoles, roles], read(migrations + roles), 'role_assignment_present', 'roles reapplied');
+  await gated([...fresh, priority, serialization, hello, ttl], read(migrations + roles),
+    'owner_update_maintenance_required', 'roles without maintenance', noRoles);
+  for (const fn of ['quorum_private.call(text,jsonb,text)', 'public.invite_create_id(uuid,text,text)',
+    'public.invite_create_open(uuid,text)', 'public.agent_join(uuid,uuid,text,text,text,text,text)',
+    'public.invite_accept_id(uuid,text)', 'public.resolve_role(uuid,text,text)', 'quorum_private.member(uuid,uuid)',
+    'quorum_private.verified_actor(uuid)', 'public.session_requirements()']) {
+    await drifted(fn, 'reviewed_dispatcher_changed: ' + fn, beforeRoles, roles, noRoles);
+  }
+  {
+    const rolesDb = await database([...beforeRoles, roles]);
+    try {
+      await release(rolesDb, current);
+      // Current clients' calls and every earlier contract keep working on the upgraded schema.
+      // Some suites pick existing fixture rows, so they run before the role suite adds an open quorum.
+      for (const name of ROLE_COMPATIBLE) await rolesDb.exec(suite(name));
+      await rolesDb.exec(suite('quorum_role_assignment_backend.sql'));
+    } finally {
+      await rolesDb.exec('rollback');
+      await rolesDb.close();
+    }
+  }
+  // Peer status pins the Hello heartbeat, the role-assignment dispatcher, the peer view and the
+  // runtime-report writer; it refuses drift, reapplication or a missing predecessor, changing nothing.
+  const noStatus = async (db, label) => {
+    const result = await db.query(`select to_regclass('quorum_private.session_status') t,
+      to_regprocedure('quorum_private.session_heartbeat_before_status(uuid,text,uuid,integer,text)') h,
+      to_regprocedure('quorum_private.session_peers_before_status(uuid,text)') p,
+      to_regprocedure('public.session_heartbeat(uuid,text,uuid,integer,text)') old`);
+    const row = result.rows[0];
+    if (row.t !== null || row.h !== null || row.p !== null || row.old === null) {
+      throw new Error(label + ': partial peer status apply');
+    }
+  };
+  const beforeStatus = [...beforeRoles, roles];
+  await gated([...beforeStatus, status], read(migrations + status), 'peer_status_present', 'status reapplied');
+  await gated(beforeRoles, read(migrations + status), 'role_assignment_required', 'status without roles', noStatus);
+  await gated([...fresh, ...portableTail, ttl, roles], read(migrations + status), 'hello_extension_required',
+    'status without hello', noStatus);
+  await gated([...fresh, priority, serialization, hello, ttl], read(migrations + status),
+    'owner_update_maintenance_required', 'status without maintenance', noStatus);
+  for (const fn of ['public.session_heartbeat(uuid,text,uuid,integer,text)',
+    'quorum_private.session_heartbeat_before_hello(uuid,text,uuid,integer,text)', 'quorum_private.call(text,jsonb,text)',
+    'public.session_peers(uuid,text)', 'quorum_private.native_session(uuid,text)',
+    'public.session_update_report(uuid,text,uuid,uuid,text,jsonb,text)', 'public.session_requirements()']) {
+    await drifted(fn, 'reviewed_dispatcher_changed: ' + fn, beforeStatus, status, noStatus);
+  }
+  {
+    const statusDb = await database([...beforeStatus, status]);
+    try {
+      await release(statusDb, current);
+      // Current clients' five-argument heartbeat and every earlier contract keep working.
+      for (const name of ROLE_COMPATIBLE) await statusDb.exec(suite(name));
+      await statusDb.exec(suite('quorum_role_assignment_backend.sql'));
+      await statusDb.exec(suite('quorum_peer_status_backend.sql'));
+    } finally {
+      await statusDb.exec('rollback');
+      await statusDb.close();
+    }
+  }
   if (!coordination(upgraded[3]) || !late(upgraded[4])) throw new Error('upgraded order is not coordination first');
   console.log('Invitation, session, Realtime, open-access, coordination, open-session, coordination-only refusal, '
-    + 'mandatory priority release, close serialization, member authority ACLs, open-member priority, Hello reporting/roster, 60-minute open invitations and pinned-chain drift regression '
+    + 'mandatory priority release, close serialization, member authority ACLs, open-member priority, Hello reporting/roster, 60-minute open invitations, invitation role assignment/owner retire, heartbeat peer status and pinned-chain drift regression '
     + '(fresh and coordination-first upgraded order): PASS (disposable PostgreSQL)');
 } catch (error) {
   console.error(error.message, error.where || '');

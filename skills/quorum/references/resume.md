@@ -2,9 +2,18 @@
 
 Read this only when an already connected **Codex, supported macOS Grok or
 Claude Code** conversation resumes or its listener stopped, or its owner requests
-automatic recovery for that binding. This page does not apply to cloud chats or
-native worker tool inboxes.
-For a native Claude chat, reconnecting first preserves the old endpoint until
+automatic recovery for that binding. This page does not apply to cloud chats.
+A Codex native worker tool inbox recovers with the
+[worker rebind](native-inbox.md#worker-rebind) in the same `session recover`
+command; the optional startup hook below only reminds its parent chat to run it.
+A Claude Code background worker (a `claude-worker:` binding from
+`session worker prepare`) does not survive a Claude Code restart. The resumed
+chat, with the same `CLAUDE_CODE_SESSION_ID`, runs `session worker rebind
+<slot-uuid>` and attests one new native worker. That keeps the agent, role,
+delegation, scope and queued deliveries, with no invitation and no second agent.
+See [rebind after a parent restart](claude-worker.md#rebind-after-a-parent-restart),
+which also lists the manual fallback for older installs and its leave order.
+`session recover` does not apply to that worker. For a native Claude chat, reconnecting first preserves the old endpoint until
 start or authorized recovery stops and rebinds its listener.
 See [Claude transport recovery](sessions.md#claude-code--macos-linux-and-windows)
 and [delivery reconciliation](sessions.md#failure-and-recovery) for definite
@@ -82,8 +91,26 @@ uv run --project '<skill-dir>' --frozen python '<skill-dir>/scripts/quorum_resum
 Use `--client grok` for Grok. Claude Code has no startup hook here; run the
 recovery command from the same Claude chat. Merge the handler into existing configuration;
 never replace unrelated hooks. Setup/configuration is a separate owner action,
-not part of connect, start, recover or skill installation. Keep the provider's
+not part of connect, start, recover or skill installation. Join may offer it
+once after a successful connect; it never installs it. Keep the provider's
 normal permissions and trust review; do not disable a policy to make it run.
+
+The helper prints the exact handler and changes nothing by default:
+
+```text
+uv run --project <skill-dir> --frozen python <skill-dir>/scripts/quorum_startup_hook.py --state <private-state> --client codex --project-dir <project>
+```
+
+Only after the owner explicitly consents in this conversation, add
+`--install --owner-authorized` (Codex only) to merge it into
+`<project>/.codex/hooks.json`; `--uninstall --owner-authorized` removes exactly
+that handler and nothing else. Both are idempotent, keep unrelated hooks and file
+permissions, refuse a linked or invalid file (`startup_hook_config_unsafe`,
+`startup_hook_config_invalid`) and a different Quorum handler
+(`startup_hook_conflict`), and never touch global configuration. Without
+`--owner-authorized` they return `owner_authorization_required`. After install
+the owner reviews and trusts the handler in Codex (`/hooks`). Grok is print-only
+(`startup_hook_install_unsupported`); Claude Code returns `startup_hook_unsupported`.
 
 - **Codex:** use the provider's [documented hooks](https://learn.chatgpt.com/docs/hooks)
   in the intended project `.codex/hooks.json` or another explicitly selected
@@ -101,7 +128,12 @@ normal permissions and trust review; do not disable a policy to make it run.
 The adapter reads only a bounded provider lifecycle payload, accepts **resume**
 events only, and fails closed for other clients, forks, new sessions, ambiguous
 exports or a different binding. Success is silent; a fixed failure notice asks
-for inspection from that same chat. No auth repair, secret copying, model turn,
+for inspection from that same chat. For a Codex parent whose enabled tool-inbox
+worker binding names this parent thread, the hook cannot rebind the worker (the
+worker must prove itself). It prints one fixed line per binding to stdout, which
+Codex adds as developer context, asking the chat to resume or spawn its `quorum`
+worker and have that worker run the [worker rebind](native-inbox.md#worker-rebind);
+stopped bindings get no line. No auth repair, secret copying, model turn,
 foreign-session operation or global configuration edit is performed.
 
 Source/fixture coverage proves the recovery and hook contracts, not that every

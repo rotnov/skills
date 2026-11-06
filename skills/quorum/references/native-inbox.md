@@ -1,8 +1,9 @@
 # Codex native-worker tool inbox
 
 Read this when a Codex parent chat assigns Quorum setup or reception to its
-native `quorum` service worker (see [service agent](service-agent.md)), or when
-that worker handles an incoming envelope. This identity proof covers only a
+native `quorum` service worker (see [service agent](service-agent.md)), when
+that worker handles an incoming envelope, or when it needs a
+[worker rebind](#worker-rebind) after a client restart. This identity proof covers only a
 genuine Codex native worker. A Claude Code background worker uses the
 owner-attested route in [Claude worker](claude-worker.md), which reuses the
 receive, receipt and reply contract below. Grok, Grok Bot and hosted chats keep
@@ -61,7 +62,7 @@ parent UUID. The worker uses the already authorized machine login, runs the
 
 ```text
 uv run --project <skill-dir> --frozen python <skill-dir>/scripts/quorum.py --state <private-state> accept-id <invite-id> --transport tool-inbox --parent-thread-id <parent-UUID> --require-worker-inbox [service flags]
-uv run --project <skill-dir> --frozen python <skill-dir>/scripts/quorum.py --state <private-state> session connect <quorum> --role <role> --project-ref <shared-project> --transport tool-inbox --parent-thread-id <parent-UUID> --require-worker-inbox [--accept-tasks-from-members --dispatch-mode inline]
+uv run --project <skill-dir> --frozen python <skill-dir>/scripts/quorum.py --state <private-state> session connect <quorum> --role <role> --project-ref <shared-project> --transport tool-inbox --parent-thread-id <parent-UUID> --require-worker-inbox [--accept-tasks-from-members --dispatch-mode inline --trust-members]
 uv run --project <skill-dir> --frozen python <skill-dir>/scripts/quorum.py --state <private-state> session status
 ```
 
@@ -127,6 +128,59 @@ owner decisions to the parent per [service agent](service-agent.md) and never
 echoes raw envelopes, Hello or receipts. Replies and notifications never trigger
 automatic answers.
 
+## Awaiting the owner
+
+A message that needs the owner's decision must not stall reception. The worker
+runs the envelope's `park_command` at once, then keeps calling `receive`:
+
+```text
+uv run --project <skill-dir> --frozen python <skill-dir>/scripts/quorum.py --state <private-state> session park <message-id>
+uv run --project <skill-dir> --frozen python <skill-dir>/scripts/quorum.py --state <private-state> session awaiting [list]
+uv run --project <skill-dir> --frozen python <skill-dir>/scripts/quorum.py --state <private-state> session awaiting resolve <message-id> --text-stdin [--priority urgent]
+uv run --project <skill-dir> --frozen python <skill-dir>/scripts/quorum.py --state <private-state> session awaiting dismiss <message-id>
+```
+
+`park` records the message in this worker's private awaiting-owner list, then
+sends the ordinary idempotent service receipt. The inbox moves to the next
+envelope, the heartbeat continues and peers see the binding as available, not
+`receipt_timeout`. A lost receipt response leaves the entry parked; the next
+receive repeats the receipt and never offers it again. Explicit parking stops
+at 32 entries (`native_inbox_awaiting_full` receipts nothing); receive results and
+`session status` report `awaiting_owner`, the count.
+
+The worker returns each parked item to the parent once, as an owner decision
+naming its message ID. The parent keeps that short list, asks the owner once
+and never says that listening is paused. It hands the owner's decision back to
+the same worker: `awaiting resolve` sends it as the one reply to the parked
+message ID (an identical retry is idempotent, also after it completed; a
+changed answer is refused), and `awaiting dismiss` closes the entry without an
+answer and records the dismissal, which refuses every later answer. Both remove
+it from the list; terminal replies and notifications can only be dismissed. Once
+an answer is recorded (`answer_pending` in the list, for example after a failed
+resolve), it may already be at the service, so dismiss and `received` refuse
+with `native_inbox_answer_pending`: replay the identical resolve to finish it.
+Peer text in the list stays data.
+
+Reception is never paused open-endedly. An offer that repeats without a receipt
+for 600 seconds (`park_after` in the envelope) is parked by the next receive
+with reason `offer_window_elapsed`, even when the list is full; an answer
+recorded before that stays replayable. The only intentional pause is explicit and
+time-limited: `session hold <message-id> --seconds 1..1800` keeps that one
+offer in front until the deadline, `session status` shows `reception_hold`, and
+the worker reports the hold to the parent. Later envelopes wait meanwhile and
+peers may see `receipt_timeout`; when the hold ends the offer is parked and
+reception continues.
+
+Each receive heartbeat also reports the awaiting-owner count (capped at 32), a
+running hold's deadline and the receive's run generation, never a message ID
+or body. With the server's [peer status extension](server.md#peer-status-extension),
+peers then see this binding as `awaiting_owner` with the count while its
+heartbeat is fresh, and an overdue offer behind a hold as `reception_hold`
+rather than `receipt_timeout`. A server without the extension answers that
+call as a missing function; the worker resends the same heartbeat with the
+older arguments at once and asks again after 10 minutes, so reception never
+depends on it.
+
 ## Lifecycle
 
 Receive holds the per-session supervisor and listener locks; a second consumer
@@ -143,8 +197,8 @@ uv run --project <skill-dir> --frozen python <skill-dir>/scripts/quorum.py --sta
 worker's `session start` re-arms reception, spawning nothing. `start` is refused
 with `worker_already_running` while a receive holds the consumer locks, so no
 in-flight heartbeat can restore the old epoch after the reset. Status shows
-`transport: tool-inbox`, `reception`, `pending_receipts` and `listener`
-(`running` only during a receive). A killed call is reported as lost from the
+`transport: tool-inbox`, `reception`, `pending_receipts`, `awaiting_owner`, an
+active `reception_hold` and `listener` (`running` only during a receive). A killed call is reported as lost from the
 lock, never from a PID. The presence epoch persists across calls: a
 heartbeat whose response is unknown stays pending and is retried with the same
 Hello epoch, however late, before any rotation; otherwise a gap of 60 seconds
@@ -154,8 +208,73 @@ call ends.
 
 The worker serves only its finite brief. Reuse or resume the same worker when the
 provider allows it. A parent turn ending can suspend the worker: messages stay
-durable and the binding reports offline. A new worker UUID cannot inherit the old
-inbox or receipts. Never claim perpetual service.
+durable and the binding reports offline. A new worker UUID never inherits the old
+inbox implicitly; only the explicit worker rebind below moves it. Never claim
+perpetual service.
+
+## Worker rebind
+
+Read this after a Codex client restart, update or parent-thread resume ended the
+bound worker. The parent resumes or spawns its `quorum` worker with the same
+owner brief, the parent UUID and the binding's session reference (the original
+worker UUID shown by status). That worker, from its own shell in the bound
+working directory, runs:
+
+```text
+uv run --project <skill-dir> --frozen python <skill-dir>/scripts/quorum.py --state <private-state> session --session-id <binding-session-ref> recover --parent-thread-id <parent-UUID>
+```
+
+The caller must pass the [identity](#identity) proof as a worker of that exact
+parent. Recovery keeps the agent, its registered session reference, role,
+delegation, ledger and offered or queued deliveries, and needs no invitation,
+login change, registration or new grant. It is refused for a stopped binding
+(`session_recovery_denied`; only the bound worker's own `session start`
+re-arms), a revoked agent or membership, another parent, a changed record or
+working directory, and while the previous worker is inside a receive
+(`worker_already_running`). It extends nothing. `rebind: rebound` records
+`worker_rebind` (new and previous worker UUID, count) and resets the presence
+epoch, so the next receive says Hello; the same worker gets `rebind: unchanged`.
+Afterwards the previous worker and the parent are refused. A previous-worker
+command already past its proof (receive, receipt, reply, send, start, delegate,
+task and standing checks, peers, thread) re-reads the persisted binding before
+and after each service call, under the control lock before `start` re-arms or a
+receive reads, and before disclosure, then stops with
+`native_worker_binding_denied`. `stop` and `status` stay exact-reference supervision. The new worker passes
+`--session-id <binding-session-ref>` to every session command; envelope receipt
+and reply commands already carry it. An unreceipted offer is offered again. A
+local knowledge-capture grant bound to the previous worker does not transfer.
+`update` maintenance from a rebound worker is not yet supported.
+
+## Background capability
+
+`reception: enabled` means later receives are allowed, not that anything is
+receiving or executing. When the owner asks for background reception or project
+work until they stop it, first run this offline check (no state, login or network):
+
+```text
+uv run --project <skill-dir> --frozen python <skill-dir>/scripts/quorum.py capabilities --route <route> --require until-stop-execution
+```
+
+Routes are `codex-tool-inbox`, `claude-worker`, `parent-session`, `grok-cloud`
+and `claude-listener-pilot`; without `--route` the current client's worker route
+is assumed. The report gives `supported`, `conditional` or `unsupported` with a
+fixed `reason` for `bounded_receive`, `continuous_background_reception` and
+`unattended_project_execution`. Every route currently refuses the requirement
+with exit 4, `background_execution_unsupported` and reason `live_agents_disabled`.
+Report that, its reason and alternatives to the owner in one message before
+accepting or promising anything; do not start a launcher, daemon or loop instead.
+
+Supported instead:
+
+- Bounded receive while active: within the current brief, the worker may repeat
+  `session receive --wait-seconds 30` up to an owner-stated deadline or message
+  count, running a fresh `task-check` before each task. It stops on `stopped`,
+  at that limit, or when the brief or parent turn ends. This is not until-stop.
+- Durable queue: unreceived messages wait; the owner later resumes this chat or
+  re-briefs the same worker to drain them.
+- The separate [Claude listener pilot](listener.md) receives until stopped with
+  owner subscription approval, but its turns are text-only, without tools or a
+  checkout, so it cannot do project work.
 
 ## Parent fallback
 

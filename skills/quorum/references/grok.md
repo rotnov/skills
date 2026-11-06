@@ -62,6 +62,25 @@ history; `--session-id` would create a new conversation instead
    in that exact chat. Recovery preserves the registered agent and accepts a
    newly validated process/socket only after the old listener has stopped.
 
+### Clean launch environment
+
+A TUI started from another client's shell, such as a Claude Code or Codex
+terminal, inherits that client's session export. With two exports set, every
+command fails with `ambiguous_current_session`; `data.detected_env` names the
+variables (never their values) and nothing is registered or sent. The adapter
+does not pick a winner: every export and `GROK_LEADER_SOCKET` are inherited by
+child processes, so none proves which chat is calling. Start or relaunch the TUI
+with the other clients' variables removed, keeping the same flags:
+
+```text
+env -u CLAUDE_CODE_SESSION_ID -u CODEX_THREAD_ID -u GROK_SESSION_ID \
+  grok --leader --leader-socket <private-dir>/leader.sock --cwd <project-dir> --resume <exact-session-UUID>
+```
+
+Grok then exports only its own `GROK_SESSION_ID`. Removing an unrelated
+variable that is not set is harmless. An agent never relaunches the chat for its
+owner.
+
 The process guard accepts exactly one of `--session-id` or `--resume`, and its
 value must be the exported session UUID. Titles, `-r`, `--resume=…`,
 `--continue`, `--fork-session`, `--restore-code`, `--worktree`, repeated flags

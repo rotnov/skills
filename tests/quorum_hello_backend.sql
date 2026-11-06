@@ -120,8 +120,8 @@ begin
  -- Nothing new is exposed to clients.
  if has_table_privilege('authenticated','quorum_private.session_hellos','SELECT')
     or has_function_privilege('authenticated','quorum_private.session_heartbeat_before_hello(uuid,text,uuid,integer,text)','EXECUTE')
-    or has_function_privilege('anon','public.session_heartbeat(uuid,text,uuid,integer,text)','EXECUTE')
-    or not has_function_privilege('authenticated','public.session_heartbeat(uuid,text,uuid,integer,text)','EXECUTE') then
+    or has_function_privilege('anon','public.session_heartbeat'::regproc::oid,'EXECUTE')
+    or not has_function_privilege('authenticated','public.session_heartbeat'::regproc::oid,'EXECUTE') then
   raise exception 'hello_privileges_wrong'; end if;
  if public.session_requirements()<>required then raise exception 'hello_changed_release'; end if;
 end $test$;

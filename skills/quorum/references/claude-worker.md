@@ -87,9 +87,36 @@ For joining, use `"mode": "accept"` with `"invite_id"` instead of `access`.
 For an open (anonymous) invitation, the accept scope also sets
 `"access": "open"`; omitted or `"github"` keeps the GitHub login. Prepare an
 open scope in a fresh private state (no GitHub `config.json` or credentials).
+To hand this chat's existing parent-route binding to a worker, see
+[adopting this chat's binding](#adopting-this-chats-binding).
 Optional keys: `coordinator_role`, `accept_tasks_from_members` (boolean; defaults
-to false and excludes `coordinator_role`), `dispatch_mode` (`native-subagent`
+to false and excludes `coordinator_role`), `standing_grants_from` (a role; needs
+`accept_tasks_from_members`), `trust_members` (boolean; needs
+`accept_tasks_from_members`), `dispatch_mode` (`native-subagent`
 needs a coordinator; member intake is inline), `operations` (a subset only) and the permission lifetime:
+
+- An invitation with member intake and standing grants (`--accept-tasks-from-members
+  --dispatch-mode inline` and `--standing-grants-from <role>`) maps to
+  `"accept_tasks_from_members": true, "standing_grants_from": "<role>"` with no
+  `coordinator_role`. A current invitation's `--trust-members` adds
+  `"trust_members": true` ([member trust](delegation.md#member-trust)). `coordinator_role` alone stays coordinator-only intake. A
+  binding persists one delegation policy, so it cannot be combined with member
+  intake.
+
+- `knowledge` (create or accept only): a nonempty subset of
+  `["search","read","propose"]` for a project wiki rule the owner wants this
+  member to follow. It adds the `knowledge` operation for exactly those commands;
+  anything else, including `verify` or `admin`, is `scope_invalid`. Omission keeps
+  the legacy scope with no knowledge. See
+  [Claude worker knowledge](knowledge.md#claude-worker-knowledge).
+
+- `update` (create or accept only): `true` adds the `update` operation, so the
+  worker runs `Q update <slug> --worker-capability <capability-file> ...` as its
+  own agent, only on this chat's explicit brief and never on a peer's request.
+  The server still decides owner-only operations (`owner_required`), and a
+  refresh still needs `--owner-refresh`. Omission or `false` keeps the legacy
+  scope. Adopt scopes already carry `update`; see
+  [rights by mode](#rights-by-mode).
 
 - `lifetime: "bounded"` is the default for finite QA: `ttl_seconds` 1..3600,
   default 900, measured from prepare.
@@ -105,7 +132,8 @@ Q session worker attest <slot-uuid> --native-handle <exact returned handle> [--s
 
 Prepare uses no profile, login or network and returns `slot_id`,
 `pending_expires_at` (prepare plus 120 seconds, or the earlier bounded
-deadline) and a `bootstrap_command`. Pending has no server, membership or
+deadline), a `bootstrap_command` and `connect_flags`, the exact intake flags the
+worker's `session connect` must pass for this scope. Pending has no server, membership or
 receive right. The parent then starts exactly one actual native background
 worker with the `quorum` brief and that command, and attests the handle from the
 tool's own receipt. Attestation is one-time: an identical retry is stable; a
@@ -137,9 +165,33 @@ Q session --worker-capability <capability-file> status
 Q session --worker-capability <capability-file> stop
 ```
 
+With a scope's `knowledge` key, the connected worker also runs the
+[knowledge](knowledge.md#claude-worker-knowledge) `search`, `read` and
+`write` (propose) commands with `--worker-capability <capability-file>` appended;
+with `"update": true` it also runs `update`.
+
+### Rights by mode
+
+| Scope | knowledge | update |
+| --- | --- | --- |
+| create, accept | only with the `knowledge` key: `search`, `read`, `write` as `propose` | only with `"update": true` |
+| adopt | every command, `--owner-action` where required | always |
+
+The difference is intentional. An adopt worker takes over this chat's own
+owner-connected binding, so it keeps the owner maintenance that binding had. A
+create or accept worker is its own member binding: its knowledge is the member
+subset (verification, administration, audit, catalog, sources, index and
+capture stay with an owner binding), and `update` is an explicit opt-in. Either
+way the server's ACL and owner checks decide every call. An accept worker
+prepared without these keys gains them with the owner's
+[rebind](#rebind-after-a-parent-restart) opt-in, without a new invitation.
+
 Every argument must equal the approved scope, including `--access open`,
-`--accept-tasks-from`, `--accept-tasks-from-members` and `--dispatch-mode` when
-the scope sets them. `--anonymous` is accepted only with an open accept scope,
+`--accept-tasks-from`, `--accept-tasks-from-members`, `--trust-members` and
+`--dispatch-mode` when the scope sets them. `--exclusive-role` works as on the parent route (see
+[sessions](sessions.md)); an adopt scope's parent agent is not a conflict.
+`--supersede` is refused with `supersede_not_in_scope`: no worker scope may
+retire another agent, so the owner runs `leave` first. `--anonymous` is accepted only with an open accept scope,
 which in turn refuses a GitHub accept; it needs the explicit pinned public
 service and keeps the new anonymous login in that state's
 `anonymous-credentials/`, as the ordinary open join does. A state already used
@@ -147,8 +199,12 @@ for GitHub is refused with `anonymous_state_conflict`. Member intake requires `a
 the original owner scope and the matching connect flag. Before member task work,
 the same worker runs `session --worker-capability <capability-file> task-check
 <message-id>`; an earlier envelope or status is insufficient. Legacy capabilities
-cannot add member scope or run member checks. All owner-held exclusions in
-[delegation](delegation.md) still apply; a stopped/expired capability denies a
+cannot add member scope or run member checks. A scope with `standing_grants_from`
+also needs the matching connect `--standing-grants-from <role>`. Its connect
+stores the same member grant that `session connect` writes, and it adds
+`standing-check`; see [standing owner authorizations](delegation.md#standing-owner-authorizations). The owner-held set in
+[delegation](delegation.md) still applies (the hard stops under member trust,
+otherwise the member exclusions); a stopped/expired capability denies a
 check even when its read-only RPC is in flight. Create
 JSON may hold only the approved `slug` and `role`; the stable request ID comes
 from the slot. Before any profile or token, the state's public service config
@@ -163,8 +219,160 @@ Receive, receipt and reply follow [native inbox](native-inbox.md#receive-receipt
 unchanged, using the envelope's own `receipt_command` and `reply_command`. The
 capability is rechecked before each service operation, after each blocking
 return and before disclosure. A worker receipt means the worker consumed the
-message, never that the parent chat saw it. Grants are only those resolved for
+message, never that the parent chat saw it. Messages that need the owner's
+decision follow [awaiting the owner](native-inbox.md#awaiting-the-owner) with
+`session --worker-capability <capability-file> park|hold|awaiting ...`; `park`,
+`hold`, `awaiting list` and `awaiting dismiss` use the scope's `received`
+operation and `awaiting resolve` its `reply` operation, so no scope changes. Grants are only those resolved for
 this scope at connect; nothing is inherited from the parent.
+
+## Adopting this chat's binding
+
+A chat that already joined with `session connect` (parent route) can move its
+routine reception to one worker with `"mode": "adopt"` and neither `access` nor
+`invite_id`; `quorum_slug`, `role`, `project_ref` and `cwd` must equal that
+binding. There is no invitation and no new identity: the worker uses the same
+state, login and membership, and registers its own tool-inbox session under
+the same role (never this chat's session ID). Its operations are connect,
+receive, receipt, reply, task-check, status, stop, `knowledge` and `update`;
+never create or accept. Prefer `"lifetime": "until-owner-stop"` so owner
+maintenance stays available.
+
+1. In this chat run `Q session stop` and confirm `Q session status` shows the
+   listener offline.
+2. Prepare the adopt scope in this chat with this same `--state`. Prepare reads
+   this chat's own binding: its quorum ID becomes the worker's pinned target and
+   the result's `adopt.agent_id` names this chat's agent. It refuses with reason
+   `parent_binding_missing` (no such binding for this chat in this state),
+   `target_mismatch` or `scope_mismatch` (another quorum, role, project or
+   directory), `service_mismatch`, `actor_claimed` (another adopting worker is
+   still live) or `parent_binding_running` (reception still on). The worker's
+   first connect checks the parent binding again. If the scope names no intake
+   key (`coordinator_role`, `accept_tasks_from_members`, `standing_grants_from`,
+   `trust_members`, `dispatch_mode`), it takes this chat's recorded intake
+   policy, such as `--accept-tasks-from-members` with its standing grants and
+   member trust. The worker's connect then stores the same kind of grant for its
+   own agent (nothing is copied), so its first envelope carries that delegation.
+   Pass the result's `connect_flags` to the worker's connect; a connect without
+   them is refused with `scope_mismatch`. Explicit intake keys are kept as given.
+3. Attest the worker and let it connect and `receive` as above. Its join names
+   `adopt.agent_id` as the one own agent allowed to share the role meanwhile; a
+   service with the role-assignment extension refuses any other own holder with
+   `role_held_by_own_agent`.
+4. Once the worker has received and receipted an envelope, retire this chat's
+   agent so the role names one live agent: `Q leave --request-id <stable-ID>
+   --json-stdin` with `{"agent_id":"<adopt.agent_id>"}`. Until then role sends
+   fail with `recipient_ambiguous_or_missing` and send nothing; retry them with
+   the same request ID. `session peers` then lists only the worker for the role.
+
+Do not restart this chat's reception for that quorum afterwards. Invitations
+(`invite-id`) still run in this chat: they use the login, not an agent. Owner
+operations bound to an agent move to the worker, because the retired agent is
+refused: the worker runs `Q knowledge <action> --json-stdin --worker-capability
+<capability-file>` (with `--owner-action` where required) and `Q update <slug>
+--worker-capability <capability-file> ...` only on this chat's explicit brief,
+never on a peer's request. The scope pins the quorum; a stopped or expired
+capability refuses them.
+
+To replace an adopting worker that ever connected, first retire its own agent;
+stop or expiry alone leaves it registered under the role. Until then a new adopt
+prepare refuses with reason `previous_worker_agent_active`, naming the slot and
+agent. In this chat run `Q session worker stop <slot-uuid> --leave` (adopt
+slots only; it stops the slot and runs `agent_leave` for that worker's agent),
+or the existing `leave` for that `agent_id`. Only a confirmed leave releases the
+claim. If a leave's answer was lost, `Q session worker verify-retired <slot-uuid>`
+(and `stop --leave` itself) confirms it with an authenticated read of the pinned
+quorum and role. Errors or unclear answers keep the claim. If the worker's
+registration answer was lost, prepare refuses with
+`previous_worker_registration_unresolved`; `stop --leave` and `verify-retired`
+first replay that registration with its stable request ID to learn the agent,
+then retire it. A request that never arrived registers the agent then, and
+`stop --leave` retires it. Expiry never leaves on its own. A worker that never connected releases
+its claim once it is stopped or expired.
+
+## Rebind after a parent restart
+
+When Claude Code restarts and the chat resumes with the same
+`CLAUDE_CODE_SESSION_ID`, its background worker is gone, but the slot and its
+agent remain. Do not prepare a new accept or adopt scope, and do not ask for a
+new invitation. In the resumed chat, from the scope's project directory, run:
+
+```text
+Q session worker rebind <slot-uuid>
+```
+
+Use any slot of that worker; the command follows earlier rebinds to the current
+one. It makes one authenticated `agent_status` read and returns a pending
+successor `slot_id`, its `bootstrap_command`, `connect_flags` and `rebind` (the
+previous slot, the unchanged `session_ref` and `agent_id`). Then start one native
+worker and attest its handle as in [owner-parent setup](#owner-parent-setup).
+The new handle may equal the old one. The new worker runs `await-binding` and
+then `receive` directly: the binding is already connected, and a `connect` with
+the `connect_flags` is optional.
+
+What stays: the agent and its session reference, role, project, quorum,
+membership, delegation (including member trust and standing grants), scope
+(including `knowledge`), the actor ledger with offered, parked and queued
+deliveries, and the permission deadline, which is never extended. Nothing is
+registered, accepted or invited, and no second agent appears, so role sends never
+become `recipient_ambiguous_or_missing`. The old worker keeps serving until the
+attestation. The attestation then hands over in one locked step: the old slot
+turns terminal with reason `rebound` and `rebound_to` the successor. Every later
+or in-flight command of the old handle is refused with
+`native_worker_slot_terminal` reason `rebound`, because each command rechecks
+its slot and the persisted actor binding before each service call and before
+disclosure. The new worker's first receive says Hello with a fresh presence
+epoch.
+
+The rebind is refused with:
+
+- `session_mismatch` for another chat (session ID);
+- `native_worker_slot_terminal` for a stopped or expired slot;
+- `reception_stopped` when the binding's reception is disabled;
+- `agent_revoked` when the agent or membership was revoked at the service;
+- `target_pending` when the worker never connected;
+- `slot_pending` when the slot is not attested;
+- `rebind_pending` when another successor is still pending. Each binding
+  reserves one pending successor. Repeating the same rebind, for example after
+  a lost answer, returns that same successor. A different request, such as one
+  adding opt-ins, is refused until the successor is attested or expires, and an
+  expired successor is replaced.
+
+Attest refuses `worker_already_running` while the old worker is inside a
+receive. Nothing changes; retry when that call has returned.
+
+For a create or accept scope only, the owner may add the member opt-ins in
+the same step: `--knowledge search|read|propose` (repeatable) and
+`--update-maintenance`. Nothing else in the scope can change.
+
+An interrupted attestation is completed by repeating the same attest. If its
+successor expires first, run `rebind` again on the old slot. Stopping a
+superseded slot never touches its successor; `stop --leave` on it is refused, so
+retire the agent through the current slot. Stopping an unfinished successor
+stops the agent's reception.
+
+### Fallback for installs without rebind
+
+An older installed skill has no `session worker rebind`. Prefer the
+[automatic refresh](update.md). If refreshing is impossible, this manual
+sequence recovers without a new invitation. Role sends are ambiguous from step 1
+until step 4, so keep that window short:
+
+1. In the resumed chat, with the same state, run `Q session connect <slug>
+   --role <role> --project-ref <project>`, adding the old scope's intake flags
+   (for example `--accept-tasks-from-members --dispatch-mode inline`). Do not run
+   `session start`.
+2. Prepare an `adopt` scope with the same quorum, role, project and directory,
+   then attest, `await-binding`, connect (with the result's `connect_flags`) and
+   `receive` in the new worker.
+3. Run `Q session worker stop <old-slot-uuid>`, then `leave` with the old
+   worker's agent ID.
+4. After the new worker has receipted its first envelope, `leave` with this
+   chat's own agent ID (`adopt.agent_id`). Its result shows
+   `local_binding: retired`.
+
+Never leave this chat's agent before the new worker receives, and never leave
+the new worker's agent.
 
 ## Supervision and stop
 
@@ -179,8 +387,12 @@ receive, receipt or reply. Stop, permission expiry and pending timeout are
 terminal: the next operation fails with `native_worker_slot_terminal`,
 unresolved offers stay unacknowledged, and there is no start, no renewal and
 no regrant. Status is the last observed run, offer or offline state, not provider
-liveness. A new native handle needs a new slot and cannot inherit this actor's
-inbox or grants; the same handle cannot be bound again.
+liveness. Its `session` part (worker capability status and the parent's
+`session worker status <slot-uuid>`) carries the same `pending_receipts`,
+`awaiting_owner` and active `reception_hold` as a Codex worker's status, never
+a message body. A new native handle gets this actor's binding only through
+[rebind](#rebind-after-a-parent-restart). Otherwise a new handle needs a new slot
+and inherits nothing, and a bound handle cannot be bound to another slot.
 
 ## Parent fallback
 

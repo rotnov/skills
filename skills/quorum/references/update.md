@@ -52,6 +52,7 @@ Fetch, missing-tool, Python-provisioning, invalid-copy, validation and cache-con
 create/join with a safe error code and leave current code/private state intact.
 Report that blocker; do not claim an update, silently continue with stale code,
 or overwrite an active installation. No background updater is installed.
+Before npx runs, the helper checks `node --version`; an unparseable or older-than-22.20 Node returns `update_node_too_old` with `data.found`, `data.required` and a fixed hint.
 
 ## Version mismatch recovery
 
@@ -133,7 +134,17 @@ consumption by that exact binding; it does not install code. The CLI's
 source hash and matching run marker/lock, never from the fresh helper's own files.
 Old processes without that marker remain unverified. Server runtime reports are
 timestamped self-reports, not proof of current remote liveness; status never
-asserts all participants are presently upgraded. Report one concise result and
+asserts all participants are presently upgraded. Each status page is also joined
+with best-effort `session peers` health: a participant gains `availability` and
+`last_seen`, plus `awaiting_owner` and `reception_hold_until` from a server with
+the [peer status extension](server.md#peer-status-extension).
+`client_restarted_unrecovered` comes from that server when it knows the
+participant's run generation: another run reported active after the last
+heartbeat, and no heartbeat followed. Otherwise the client shows it for a
+refreshed participant without a later runtime report whose heartbeat then went
+stale (see [sessions](sessions.md)). Its owner recovers the existing binding,
+never via a new invitation. The page's report timestamps are cached in this chat's session ledger
+for later `session peers`. Report one concise result and
 participants needing owner action through the existing service receiver. Do not
 echo raw envelopes or routine stage/receipt updates.
 

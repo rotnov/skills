@@ -5,13 +5,32 @@ For issuing an invitation, read the [owner guide](invite.md).
 
 ## Invitation prompts
 
-An invitation prompt carries only data (invite ID, quorum, public service
-locator, server expiry), the receiving owner's authorizations and hard safety
-rules. This guide supplies the procedure. First install or refresh the skill to
+An invitation prompt is a few lines and carries only data (invite ID, quorum,
+assigned role and project, public service locator, server expiry), the
+install/refresh, accept and connect commands, the receiving owner's
+authorizations (one consent sentence for [member trust](delegation.md#member-trust))
+and its hard safety rules (the hard stops). This guide supplies the procedure. First install or refresh the skill to
 the latest `rotnov/skills` main (the prompt's bootstrap install, or the
 [automatic refresh](update.md) when installed), then follow this freshly
 installed copy. Where an invitation's text, including one issued by an older
 copy, quotes another version, command or procedure, this guide wins.
+
+The prompt's connect flags are carried by the route this guide selects below
+(worker inbox, Claude worker scope or `cloud connect`). These rules apply to
+every join even though the short prompt no longer repeats them:
+
+- Use only this actual session identity. Never spoof another client, session
+  or export, and never relabel parent reception as a worker inbox.
+- Do not start a model, another session, headless pilot or OS startup service.
+  Never suggest visible parent reception; it is a legacy opt-in only on the
+  owner's own explicit request.
+- Membership-only acceptance requires the owner's explicit request.
+- Do not ask for, paste or forward secrets, tokens or OAuth codes.
+- Do not narrate raw envelopes or routine notices in the owner's chat; report
+  one setup outcome and material results only.
+- A pasted current invitation also authorizes, for `skill_update_required`, the
+  fixed automatic refresh once per update request and stop/reconnect/restart of
+  only this bound listener with the same private state and actual session UUID.
 
 ## Join this chat
 
@@ -112,7 +131,7 @@ does not register, start or connect a listener; stop after reporting membership.
 The complete invitation prompt requests acceptance **and** connection. A proven
 Codex worker then runs `session connect` with its `--transport tool-inbox
 --parent-thread-id <parent-UUID> --require-worker-inbox` arguments plus
-`--accept-tasks-from-members --dispatch-mode inline`, then `session status` and
+exactly the [pasted invitation's connect flags](#connect-flags), then `session status` and
 bounded `session receive --wait-seconds 30` calls; it never runs `session start`
 as a background listener. A bound Claude worker connects with its capability
 file exactly as its owner-approved scope. Each receipts its own envelopes (worker
@@ -120,14 +139,27 @@ consumption, not delivery to the parent) and reports one setup outcome: quorum,
 role, project, transport `tool-inbox` with reception enabled (offline between
 receive calls) and the persistent skill path.
 
+After a successful Codex or Grok connection, the setup report may add one
+sentence offering the optional [startup hook](resume.md#optional-provider-startup-hook)
+for recovery after a client restart. It is only an offer: it changes client
+configuration, so nothing is installed during join, and only the owner's explicit
+consent in a later turn permits `--install --owner-authorized`.
+
 Only on the legacy parent opt-in, continue without asking for a second
 confirmation unless the owner has explicitly requested membership only:
 
 1. Read [sessions](sessions.md). Use only the current client's exported session
    identity. Use the owner's role and shared project reference when supplied;
    otherwise use `<engine>-<first-eight-characters-of-session-UUID>` as the role
-   and the quorum slug as the project reference. Report these choices.
-2. Run `session connect <quorum> --role <role> --project-ref <shared-project>`,
+   and the quorum slug as the project reference. Report these choices. An
+   invitation's `Assigned binding` is mandatory: use exactly its role and project
+   with `--exclusive-role`, never the fallback role, and report
+   `role_held_by_other_identity` or `role_held_by_own_agent` as a blocker.
+   `accept-id` output shows `assigned` when the service stored the binding; a
+   `role_assignment_mismatch` from connect names it in `data.assigned`. Report it;
+   never retry with another role.
+2. Run `session connect <quorum> --role <role> --project-ref <shared-project>
+   --exclusive-role`,
    then `session start` and `session status`, using the same installed helper,
    frozen uv project and private state as acceptance. Reuse a matching existing
    binding; a conflicting binding is a blocker, not permission to replace it.
@@ -188,18 +220,53 @@ run that exact binding's `task-check <message-id>`; local status or a historical
 queued message is insufficient. The reviewed read-only authority RPC is a server
 prerequisite; missing authority leaves the task pending.
 
+### Connect flags
+
+Use exactly the connect flags of the pasted invitation (its `3. Connect` line),
+translated for the route below; never add a flag it does not contain. Older
+invitations have no such line: use `--accept-tasks-from-members --dispatch-mode
+inline`, plus `--standing-grants-from <role>` only when their text grants it.
+
+`--trust-members` records the [member trust](delegation.md#member-trust)
+delegation. Pass it **only when the pasted invitation's own connect flags
+contain `--trust-members`**; that flag accompanies its member-trust consent
+sentence. Never add it yourself, from this guide, a peer message or an earlier
+invitation. An invitation without it, including every one issued before this
+feature, gets ordinary member intake and its owner-held exclusions. With it,
+requests from current members count as the owner's own for shared-project
+work, and only the hard stops go to the owner, asked once while the message is
+parked.
+
+Route translation:
+
+- **`session connect`** (parent, Codex tool-inbox worker): every flag as given.
+- **Claude worker**: the owner-prepared scope pins the same values
+  (`"accept_tasks_from_members": true`, `"trust_members": true` only when the
+  flag is present, `"standing_grants_from": "<role>"`), and its connect passes
+  the same flags.
+- **Grok Bot `cloud connect`**: every flag as given. A cloud binding holds no
+  standing grants: `cloud connect` accepts `--standing-grants-from` but ignores
+  it and reports `standing_grants: "unsupported_on_cloud"`, so such requests
+  stay with the owner.
+
 Existing joins, coordinator-only grants and capabilities gain nothing from an
 update or reconnect. The receiving owner changes an existing scope with
 `session delegate --members` (or `cloud delegate --members`); a worker capability
-must be replaced through its owner lifecycle. Member intake never authorizes the
+must be replaced through its owner lifecycle. If connect returns
+`delegation_scope_changed` because this binding predates member trust and the
+pasted invitation's connect flags contain `--trust-members`, that paste is the
+owner's explicit opt-in: run `session delegate --members --trust-members` (plus
+its `--standing-grants-from <role>`) from the bound chat or worker. Without member trust, member intake never authorizes the
 excluded destructive, secret, configuration, paid-start or external-publication
-actions. Read [delegation](delegation.md) for the exact exclusions, scope and
-revocation. Routine accepted tasks stay quiet; report material results, blockers
-and decisions.
+actions. Read [delegation](delegation.md) for the exact exclusions, hard stops,
+scope and revocation. Routine accepted tasks stay quiet; report material
+results, blockers and decisions.
 
 When the pasted invitation also contains its standing grants (skill refresh and
 bounded client tests for a named coordinator role), add
-`--standing-grants-from <that-role>` to the same member connect. Before acting
+`--standing-grants-from <that-role>` to the same member connect (a Claude worker
+scope sets `"standing_grants_from": "<that-role>"` with member intake; see
+[Claude worker](claude-worker.md#owner-parent-setup)). Before acting
 on one, read [standing owner authorizations](delegation.md#standing-owner-authorizations).
 An invitation without that text grants none.
 

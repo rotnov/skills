@@ -154,6 +154,82 @@ only that expiry; it pins the reviewed open-access core, refuses drift or
 reapplication, and leaves GitHub invitations, existing rows, acceptance and
 grants unchanged.
 
+## Invitation roles and owner retire
+
+After reviewing the source and obtaining administrator deployment authorization,
+apply
+[`20261105140000_role_assignment_and_owner_retire.sql`](../supabase/migrations/20261105140000_role_assignment_and_owner_retire.sql)
+in one transaction after `20261103190000_open_invite_ttl.sql`. It refuses to run
+without `20261030140000_owner_update_maintenance.sql`, whose dispatcher pin it
+wraps. It pins the reviewed dispatcher, the invitation, acceptance and join entry
+points, role resolution, membership and release bodies, and refuses drift or
+reapplication before any change. It does not change the required release.
+
+- `invite_create_id` and `invite_create_open` accept an optional role and
+  project reference. Acceptance records them on the membership, and `agent_join`
+  from that membership refuses any other role or project with
+  `role_assignment_mismatch`. Unassigned invitations behave as before.
+- `agent_join` refuses a role and project held by another identity's live agent
+  (`role_held_by_other_identity`) or by the caller's own live agent on another
+  device or session (`role_held_by_own_agent`). `p_supersede` retires the
+  caller's own holders in the same transaction; `p_keep_agent_id` lets one named
+  own agent coexist, as an adopting Claude worker's parent does. A same-session
+  reconnect and an idempotent retry return the original agent. Joins require
+  PostgreSQL `READ COMMITTED` (`role_exclusivity_requires_read_committed`).
+  Accepting any invitation that reactivates a revoked membership first retires
+  all of that membership's old agents, like `agent_leave`: they are stale and
+  must not reappear next to a holder that claimed their role meanwhile.
+- `agent_retire` lets the quorum owner revoke one agent of the quorum, exactly
+  like `agent_leave`, keeping the membership; `quorum_agents` is the owner's
+  roster of agent IDs, roles, projects, engines, owner labels, last heartbeat and
+  revocation, without tokens, devices or session references.
+
+Existing entry points gain only trailing defaulted arguments, so current clients
+keep calling them unchanged. Clients that predate the adopt `p_keep_agent_id`
+argument cannot start an adopting Claude worker while its parent agent is live;
+they report `role_held_by_own_agent` until refreshed. Refresh PostgREST's schema
+cache after applying. To roll back before any assignment or supersession is
+recorded, restore the previous entry points and dispatcher from the reviewed
+sources in one transaction; afterwards, keep the columns and table and only
+restore the functions.
+
+## Peer status extension
+
+After reviewing the source and obtaining administrator deployment authorization,
+apply
+[`20261105160000_peer_status_visibility.sql`](../supabase/migrations/20261105160000_peer_status_visibility.sql)
+in one transaction after `20261105140000_role_assignment_and_owner_retire.sql`.
+It refuses to run without the Hello reporting, owner-maintenance and role
+assignment extensions. It pins the Hello heartbeat and its core, the dispatcher,
+the peer view, the binding check, the runtime-report writer and the release,
+and refuses drift or reapplication before any change. It does not change the
+required release, Hello recipients or task authority.
+
+- `session_heartbeat` takes four optional trailing arguments: the awaiting-owner
+  count (0..32, otherwise `invalid_peer_status` before anything is written), a
+  reception hold deadline (kept only while in the future, clamped to 30 minutes
+  from now), a client run generation UUID and that run's start (clamped to now).
+  Each accepted heartbeat overwrites one private `session_status` row for its
+  agent, so it always describes the latest heartbeat. Current clients keep
+  calling with five arguments and get the same response; they store NULLs.
+- `session_peers` adds `awaiting_owner` and `reception_hold_until` (both only
+  from a status heartbeat under 60 seconds old) and `client_run_reported`. A live
+  peer with a count above zero shows availability `awaiting_owner`. An overdue
+  receipt behind a running hold keeps `unavailable` with reason `reception_hold`.
+  A peer shows `client_restarted_unrecovered` (reason
+  `run_changed_without_heartbeat`) only when its health is at least 60 seconds
+  stale, its last heartbeat named a run, and its newest owner-update runtime
+  report names a different run recorded after that heartbeat. Peers never see a
+  run ID, a message ID or a body.
+
+The previous heartbeat and peer view stay as private functions. Refresh
+PostgREST's schema cache after applying. To roll back, in one transaction drop
+the new `session_heartbeat` and `session_peers`, move
+`quorum_private.session_heartbeat_before_status` and
+`quorum_private.session_peers_before_status` back to `public` under their old
+names, grant both to `authenticated` again and drop `session_status`. Clients
+then fall back to five-argument heartbeats on their own.
+
 ## Hello reporting extension
 
 After reviewing the source and obtaining administrator deployment authorization,

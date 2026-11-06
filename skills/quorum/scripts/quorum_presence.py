@@ -1,17 +1,42 @@
 """Quiet native-listener heartbeat, independent of task acceptance or model turns."""
+from datetime import datetime, timezone
 import time
 import uuid
-from quorum_api import QuorumError, is_transient_service
+from quorum_api import QuorumError, is_transient_service, rpc_missing
 from quorum_release import ReleaseGuard
 
 # Peers derive `heartbeat_timeout` after this gap; only then were we really offline.
 HEALTH_WINDOW = 60
+# The peer status extension (#113) takes these; a server without it is asked again after this delay.
+STATUS_KEY = 'peer-status-support'
+STATUS_RETRY = 600
+AWAITING_LIMIT = 32
+HOLD_LIMIT = 1800
+
+
+def _iso(moment):
+    return datetime.fromtimestamp(moment, timezone.utc).isoformat(timespec='seconds')
+
+
+def peer_status_fields(awaiting, hold_until, run_id, started_at, *, now):
+    """Bounded heartbeat status arguments; never a message ID or body. Invalid parts are left out."""
+    fields = {'awaiting_owner': min(max(awaiting, 0), AWAITING_LIMIT) if type(awaiting) is int else 0}
+    if type(hold_until) in (int, float) and now < hold_until:
+        fields['reception_hold_until'] = _iso(min(hold_until, now + HOLD_LIMIT))
+    try: fields['client_run_id'] = str(uuid.UUID(run_id))
+    except (TypeError, ValueError, AttributeError): pass
+    if type(started_at) in (int, float): fields['runtime_started_at'] = _iso(min(started_at, now))
+    return fields
 
 
 class Presence:
-    def __init__(self, api, record, ledger, *, clock=time.monotonic, persist_epoch=False, wall=None):
+    def __init__(self, api, record, ledger, *, clock=time.monotonic, persist_epoch=False, wall=None, run_id=None,
+                 status=None):
         self.api, self.record, self.ledger, self.clock = api, record, ledger, clock
         self.wall = wall or (lambda: time.time())
+        # Peer-visible status: this run's generation and start, plus an optional callable returning
+        # (awaiting-owner count, explicit hold deadline or None) from this binding's private ledger.
+        self.run_id, self.status, self.started_at = run_id, status, self.wall()
         self.connection_id = str(uuid.uuid4())
         self.next_tick = 0
         self.online_at = None  # Last acknowledged heartbeat of the current epoch.
@@ -66,8 +91,10 @@ class Presence:
             versions = self.release.check()
             # An unsent heartbeat leaves any pending epoch intent to be retried with the same epoch.
             if stopping and stopping(): return
-            result = self.api.call('session_heartbeat', {'agent_id':self.record['agent_id'],
-                          'session_ref':self.record['session_ref'], 'connection_id':self.connection_id, **versions})
+            payload = {'agent_id':self.record['agent_id'], 'session_ref':self.record['session_ref'],
+                       'connection_id':self.connection_id, **versions}
+            result = self._send(payload, stopping)
+            if result is None: return
             if isinstance(result, dict) and result.get('code') == 'skill_update_required':
                 self.release.accept(result.get('required'))
                 raise QuorumError('skill_update_required')
@@ -84,6 +111,34 @@ class Presence:
             self._epoch(False)
         self.ledger.setting('presence', {'state':'online', 'last_heartbeat_at':self.online_at[1]})
         self._hello(result if isinstance(result, dict) else {})
+
+    def _status_supported(self):
+        saved = self.ledger.setting(STATUS_KEY)
+        if not isinstance(saved, dict) or type(saved.get('unsupported_at')) not in (int, float): return True
+        return not 0 <= self.wall() - saved['unsupported_at'] < STATUS_RETRY
+
+    def _send(self, payload, stopping):
+        """The heartbeat with peer status where the server takes it; otherwise the reviewed five arguments.
+
+        Only PostgREST's missing-function answer falls back: nothing ran, so the same connection is resent
+        at once. Any other failure is the heartbeat's own. None means a stop was observed before resending.
+        """
+        if not self._status_supported():
+            return self.api.call('session_heartbeat', payload)
+        now = self.wall()
+        awaiting, hold_until = self.status() if self.status else (0, None)
+        extended = {**payload, **peer_status_fields(awaiting, hold_until, self.run_id, self.started_at, now=now)}
+        try:
+            result = self.api.call('session_heartbeat', extended)
+        except QuorumError as error:
+            if not rpc_missing(error): raise
+            self.ledger.setting(STATUS_KEY, {'unsupported_at': now})
+            if stopping and stopping(): return None
+            return self.api.call('session_heartbeat', payload)
+        # An expired "unsupported" marker is cleared once the server takes the status.
+        if self.ledger.setting(STATUS_KEY) not in (None, {'supported': True}):
+            self.ledger.setting(STATUS_KEY, {'supported': True})
+        return result
 
     def _hello(self, result):
         """Persist what this connection's Hello reached, writing only when the outcome changes."""

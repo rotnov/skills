@@ -63,17 +63,11 @@ class InviteWordingTests(unittest.TestCase):
         github, prompts = self.issue()
         self.assertTrue(github['standing_grants'])
         for prompt in prompts:
-            for required in ('--standing-grants-from lead', 'the "lead" role', 'standing-check <message-id>',
-                             'automatic refresh once per request', 'stop/reconnect/restart only this bound listener',
-                             'same state, session UUID, quorum, role and project', 'native background-worker route',
-                             'starting only that one worker with this same member scope',
-                             'report the exact code, never use parent reception', 'only to test the quorum skill',
-                             'daily cap 3 per UTC day', 'outside real projects', 'no prompt reading private data',
-                             'shut down after', 'merges, default-branch pushes, deploys, migrations, secrets',
-                             'still need me, typed in this chat',
-                             # The member grant and hard rules are unchanged.
-                             '--accept-tasks-from-members --dispatch-mode inline', 'task-check <message-id>',
-                             'Do not start a model, another session, headless pilot or OS startup service'):
+            for required in ('--standing-grants-from lead', 'The "lead" role may also ask for',
+                             'one skill refresh per request', 'up to 3 local client test sessions per UTC day',
+                             'references/delegation.md',
+                             # The member grant and the hard stops still bound everything else.
+                             '--accept-tasks-from-members --dispatch-mode inline', 'Hard stops'):
                 self.assertIn(required, prompt)
             for procedure in ('session connect', 'session start', 'native-inbox.md', 'claude-worker.md'):
                 self.assertNotIn(procedure, prompt)
@@ -84,10 +78,10 @@ class InviteWordingTests(unittest.TestCase):
         self.assertFalse(github['standing_grants'])
         for prompt in prompts:
             for absent in ('Standing grants', '--standing-grants-from', 'standing-check', 'daily cap',
-                           'background-worker route'):
+                           'background-worker route', 'may also ask for', 'client test'):
                 self.assertNotIn(absent, prompt)
             self.assertIn('--accept-tasks-from-members --dispatch-mode inline', prompt)
-            self.assertLess(len(prompt), 4500)
+            self.assertLess(len(prompt), 2300)
 
     def test_invite_id_flag_defaults_to_granted(self):
         import argparse
