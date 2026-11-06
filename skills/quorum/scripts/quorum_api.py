@@ -106,6 +106,12 @@ LOCAL_VALUE_CODES = frozenset((
     'update_cache_conflict update_fetch_failed update_in_progress update_invalid_copy update_node_too_old '
     'update_notice_denied update_request_invalid update_target_changed update_tool_missing update_unsafe_cache '
     'update_validation_failed webhook_config_invalid webhook_not_configured worker_already_running').split())
+# Fixed `reason` values a pending task-check or standing-check returns as data. Each has one next step in
+# `quorum_delegation.NEXT_STEPS`; tests/test_quorum_task_check_reasons.py keeps the two equal.
+CHECK_REASONS = frozenset((
+    'auth_required authority_invalid authority_migration_required authority_unavailable binding_changed cwd_mismatch '
+    'delegation_absent delegation_changed delegation_not_members not_task sender_unavailable session_binding_denied '
+    'task_message_denied').split())
 CANONICAL_UUID = re.compile('[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}')
 ROLE = re.compile('[a-z][a-z0-9-]{0,47}')
 PROJECT_REF = re.compile('[A-Za-z0-9._/:@][A-Za-z0-9._/:@-]{0,499}')
