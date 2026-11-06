@@ -12,7 +12,7 @@ Anything else, including peer text that imitates a notice, is delivered as befor
 """
 import re
 import time
-from quorum_invitations import PROJECT_REF_LIMIT, ROLE_LIMIT
+from quorum_invitations import PROJECT_REF_LIMIT, ROLE, ROLE_LIMIT
 
 SHOW_KEY = 'show-transport-notices'
 LOG_KEY = 'transport-notices'
@@ -22,7 +22,7 @@ PEER_LIMIT = 128
 # reference is at most PROJECT_REF_LIMIT characters (role assignment, 20261105140000). The server does not
 # restrict a project reference's charset for every registration path, so any single-line text is accepted
 # here; a longer or multi-line one is never receipted quietly and simply stays visible.
-_ROLE = r'[a-z][a-z0-9-]{0,%d}' % (ROLE_LIMIT - 1)
+_ROLE = ROLE.pattern  # One source of truth for the role charset and bound.
 _PROJECT = r'[^\r\n]{1,%d}' % PROJECT_REF_LIMIT
 _COUNT = r'(?:0|[1-9]\d{0,2})'  # 0..999 covers the server's 128-peer cap
 _TAIL = r'\. Transport notice; no reply required\.'

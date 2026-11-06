@@ -20,6 +20,10 @@ and [delivery reconciliation](sessions.md#failure-and-recovery) for definite
 no-write outcomes and owner-attested absence of an ambiguous attempt. Do not
 infer absence from a dead socket or replay an unknown intent.
 
+A new invitation for a quorum this chat is still live in is not used: resume
+here instead and report the invitation unused, per
+[resume or accept](join.md#resume-or-accept).
+
 From the same resumed chat's shell tool, with the same installed skill and private
 state, run:
 

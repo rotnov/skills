@@ -245,6 +245,7 @@ class RebindTests(Bound):
 
     @isolated_profiles
     def test_an_attest_interrupted_before_activation_is_completed_by_its_retry(self):
+        import quorum_claude_worker as worker
         from quorum_state import LocalLedger
         api = OwnerApi(inbox=[message(M1)])
         old, old_cap = self.members(api, lifetime='until-owner-stop')
@@ -271,7 +272,9 @@ class RebindTests(Bound):
         self.assertEqual(self.setting(successor)['state'], 'active')
         self.as_worker(successor, self.capability(successor))
         self.assertEqual(self.offer(api)['message']['id'], M1)
-        # Another actor's handle still cannot take that alias.
+        # Another actor's handle still cannot take that alias. That actor is this chat's second worker in the
+        # same quorum, so the first is stopped before its accept is prepared (#130 resume rule).
+        with claude(): worker.stop_slot(self.root, successor)
         api2 = OwnerApi()
         other, _ = self.bound(api2, self.accept_scope(lifetime='until-owner-stop'), handle='agent_08 quorum')
         third = self.rebind(api2, other)[1]['data']['slot_id']

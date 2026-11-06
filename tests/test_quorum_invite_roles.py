@@ -268,7 +268,8 @@ class InvitationRoleTests(unittest.TestCase):
     def test_unsafe_slug_is_never_defaulted_into_the_command(self):
         from quorum_invitations import create_id_invitation
         api = self.Api()
-        with self.assertRaisesRegex(ValueError, 'invalid_project_ref'):
+        # The slug itself is refused first: it is also rendered into `accept-id --quorum`.
+        with self.assertRaisesRegex(ValueError, 'invalid_quorum'):
             create_id_invitation(api, self.config(), 'te$(id)', '123', 'r', role='jekman')
         self.assertEqual(api.calls, [])
 

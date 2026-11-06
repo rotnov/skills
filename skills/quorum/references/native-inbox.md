@@ -98,6 +98,11 @@ release check and its heartbeat, and immediately before output: a stop seen
 there sends no further service operation, returns `stopped`, discloses nothing
 and keeps any already committed offer for later recovery.
 
+Each result also says what to do next: `continue: true` with `next_step`
+`receive` after an empty wait (`timeout`) or `handle_then_receive` after an
+offer, plus the exact `receive_command`; `stopped` gives `continue: false`,
+`next_step: report_stop` and `stop_reason: owner_stop`.
+
 The offer is committed locally before output. Output is not a receipt: until the
 worker runs the envelope's `receipt_command` (or answers with `reply_command`,
 text on stdin), every later receive repeats the same offer, even after a lost
@@ -128,6 +133,21 @@ owner decisions to the parent per [service agent](service-agent.md) and never
 echoes raw envelopes, Hello or receipts. Replies and notifications never trigger
 automatic answers. `receive` receipts server Hello and roster
 [transport notices](sessions.md#transport-notices) itself and returns the next message.
+
+### Receive loop
+
+The worker keeps calling `receive` through empty waits. Any number of
+`timeout` results in a row is not a reason to stop. It stops only:
+
+- at the owner brief's limit: its deadline (`brief_deadline`) or message count
+  (`brief_count`);
+- on `state: stopped`, an owner stop (`owner_stop`);
+- on a fatal error, a command that fails with a fixed code (`fatal:<code>`, for
+  example `fatal:native_worker_slot_terminal`).
+
+When it stops, it reports that one stop reason to the parent; the parent
+relays it to the owner only when it matters. A finite brief always names its
+limit; without one, the worker keeps receiving while the parent turn lasts.
 
 ## Awaiting the owner
 
@@ -267,10 +287,11 @@ accepting or promising anything; do not start a launcher, daemon or loop instead
 
 Supported instead:
 
-- Bounded receive while active: within the current brief, the worker may repeat
-  `session receive --wait-seconds 30` up to an owner-stated deadline or message
-  count, running a fresh `task-check` before each task. It stops on `stopped`,
-  at that limit, or when the brief or parent turn ends. This is not until-stop.
+- Bounded receive while active: within the current brief, the worker repeats
+  `session receive --wait-seconds 30` through empty waits up to an
+  owner-stated deadline or message count, running a fresh `task-check` before
+  each task. It stops only as the [receive loop](#receive-loop) says, or when
+  the parent turn ends. This is not until-stop.
 - Durable queue: unreceived messages wait; the owner later resumes this chat or
   re-briefs the same worker to drain them.
 - The separate [Claude listener pilot](listener.md) receives until stopped with

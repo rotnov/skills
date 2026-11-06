@@ -341,7 +341,8 @@ class SlotTests(Harness):
         self.assertEqual(code, 0, text)
         for value in (result, cli['data']):
             self.assertEqual(set(value), {'slot_id', 'state', 'lifetime', 'pending_expires_at',
-                                          'permission_expires_at', 'bootstrap_command', 'connect_flags'})
+                                          'permission_expires_at', 'bootstrap_command', 'connect_flags',
+                                          'worker_brief'})
             self.assertEqual(value['connect_flags'], ['--dispatch-mode', 'inline'])
             self.assertEqual((value['state'], value['lifetime']), ('pending', 'bounded'))
             self.assertEqual((value['pending_expires_at'], value['permission_expires_at']), (T0 + 120, T0 + 900))
@@ -2012,6 +2013,9 @@ class MemberKnowledgeTests(Bound):
         self.assertNotIn('knowledge', self.setting(self.slot)['scope'])
         self.refused(api, 'search', {'space_id': self.SPACE, 'query': 'deploy'})
         self.refused(api, 'write', self.write(), '--request-id', 'propose-1')
+        # A second worker of this chat in the same quorum needs the first one stopped (#130 resume rule).
+        import quorum_claude_worker as worker
+        with claude(): worker.stop_slot(self.root, self.slot)
         api = OwnerApi()
         self.bound(api, self.accept_scope(knowledge=['search']), handle='agent_02 quorum')
         self.refused(api, 'read', {'space_id': self.SPACE, 'entry_id': self.ENTRY})
@@ -2914,7 +2918,8 @@ class FinalWaveTests(Bound):
         import quorum_claude_worker as worker
         api = Api()
         self.bound(api)
-        pending = self.prepare(self.accept_scope())['slot_id']
+        # Another quorum: this chat's live binding in the same quorum resumes instead of preparing (#130).
+        pending = self.prepare(self.accept_scope(quorum_slug='other-team'))['slot_id']
         slot_lock = self.root / 'claude-workers' / self.slot / 'slot.lock'
         index_lock = self.root / 'claude-workers' / 'index.lock'
         self.assertTrue(slot_lock.exists() and index_lock.exists())

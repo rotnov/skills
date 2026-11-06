@@ -16,6 +16,7 @@ from quorum_grok_leader import GrokBindingError
 from quorum_session import AmbiguousSession, BindingError, RecipientUnresolved, RoleHeld, UnsupportedClient
 from quorum_grok_cloud import CloudError
 from quorum_native_inbox import NativeInboxError
+from quorum_resume import BindingExists
 from quorum_debug import DebugError
 from quorum_knowledge import KnowledgeError
 
@@ -271,6 +272,10 @@ def main(argv=None):
         # Fixed cloud codes and reasons only; never a webhook target or peer text.
         print(json.dumps({'ok': False, 'code': error.code, 'data': error.diagnostic()}))
         return 3
+    except BindingExists as error:
+        # This chat's own quorum, role, IDs and a fixed resume command; the invitation was not used.
+        print(json.dumps({'ok': False, 'code': error.code, 'data': error.diagnostic()}))
+        return 3
     except NativeInboxError as error:
         # Fixed worker codes and reasons only; never a rollout path, transcript or peer text.
         print(json.dumps({'ok': False, 'code': error.code, 'data': error.diagnostic()}))
@@ -284,7 +289,7 @@ def main(argv=None):
         safe = {'machine_profile_unavailable', 'service_profile_ambiguous', 'auth_profile_conflict',
                 'service_config_conflict', 'github_identity_required', 'auth_lock_timeout',
                 'browser_unavailable', 'login_timeout', 'anonymous_state_conflict', 'invalid_role', 'invalid_project_ref',
-                'invalid_agent_id', 'invalid_request_id'}
+                'invalid_agent_id', 'invalid_request_id', 'invalid_quorum'}
         if isinstance(error, ValueError):
             safe.update({'update_request_invalid', 'update_notice_denied', 'update_target_changed',
                          'update_fetch_failed', 'update_tool_missing', 'update_invalid_copy',

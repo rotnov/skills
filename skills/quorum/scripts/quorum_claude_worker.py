@@ -740,6 +740,13 @@ def _session_status(root, record):
             **awaiting}
 
 
+def _brief():
+    """The receive-loop part of the `quorum` worker brief the parent passes on with `bootstrap_command` (#127)."""
+    from quorum_native_inbox import RECEIVE_LOOP
+    return ('Run bootstrap_command first, then this worker\'s own capability commands per '
+            'references/claude-worker.md. ' + RECEIVE_LOOP)
+
+
 def _bootstrap(root, slot_id):
     return [sys.executable, str(Path(__file__).with_name('quorum.py')), '--state', str(root),
             'session', 'worker', 'await-binding', slot_id, '--wait-seconds', str(AWAIT_DEFAULT)]
@@ -753,6 +760,10 @@ def prepare(state_root, scope):
     root = _state_root(state_root)
     raw, scope = scope, normalize_scope(scope)
     if scope['cwd'] != str(Path.cwd().resolve()): raise _denied('cwd_mismatch')
+    if scope['mode'] == 'accept':
+        # A chat already bound in this quorum resumes (#130); its invitation is never prepared for use.
+        from quorum_resume import refuse_if_bound
+        refuse_if_bound(root, scope['quorum_slug'], sid=sid)
     target = {}
     if scope['mode'] == 'adopt':
         # The target comes from this chat's own existing binding in this state, never from the input.
@@ -780,7 +791,7 @@ def prepare(state_root, scope):
         _write_slot(root, sid, scope, slot_id, target, prepared, pending, permission)
     result = {'slot_id': slot_id, 'state': 'pending', 'lifetime': scope['lifetime'], 'pending_expires_at': pending,
               'permission_expires_at': permission, 'bootstrap_command': _bootstrap(root, slot_id),
-              'connect_flags': connect_flags(scope)}
+              'connect_flags': connect_flags(scope), 'worker_brief': _brief()}
     if adopt: result['adopt'] = dict(scope['adopt'])
     return result
 
@@ -1186,6 +1197,30 @@ def _rebind_scope(scope, knowledge, update):
     return result
 
 
+def rebindable(root, record, sid):
+    """Every local check `rebind` makes before it asks the service, read-only.
+
+    Returns the source slot a rebind of `record` continues from and its connected agent record, or raises the
+    refusal that rebind would. `rebind` and the join's resume check (`live_slots`, #130) share it, so a join
+    counts exactly the slots a rebind can recover. Only the service's own agent check is not local.
+    """
+    if record.get('provider_session_id') != sid: raise _denied('session_mismatch')
+    source = _rebind_source(root, record)
+    if source.get('provider_session_id') != sid: raise _denied('session_mismatch')
+    if source['scope']['cwd'] != str(Path.cwd().resolve()): raise _denied('cwd_mismatch')
+    agent = _connected(root, source)
+    permission = source['permission_expires_at']
+    if permission is not None and now() >= permission: raise _terminal('permission_expired')
+    return source, agent
+
+
+def hand_over_pending(root, record, sid):
+    """An attest that superseded its predecessor but has not activated this pending successor yet: an identical
+    attest retry still completes the hand-over (rebind meanwhile says `rebind_pending`). Read-only."""
+    return (record.get('provider_session_id') == sid and _effective(record)[0] == 'pending'
+            and _limbo(root, record))
+
+
 def rebind(state_root, slot_id, *, knowledge=(), update=False):
     """Owner-parent: a pending successor slot that hands this connected worker binding to a new native handle.
 
@@ -1202,13 +1237,8 @@ def rebind(state_root, slot_id, *, knowledge=(), update=False):
     knowledge = list(knowledge or ())
     check_root(root)
     _recover(root, slot_id)
-    named = _view(root, slot_id)
-    if named.get('provider_session_id') != sid: raise _denied('session_mismatch')
-    source = _rebind_source(root, named)
-    if source.get('provider_session_id') != sid: raise _denied('session_mismatch')
-    if source['scope']['cwd'] != str(Path.cwd().resolve()): raise _denied('cwd_mismatch')
+    source, agent = rebindable(root, _view(root, slot_id), sid)
     scope = _rebind_scope(source['scope'], knowledge, update)
-    agent = _connected(root, source)
     # The agent must still be live at the service: rebind never revives a revoked agent or membership.
     with _owner_api(root, source) as (_, api):
         try: api.call('agent_status', {'agent_id': agent['agent_id']})
@@ -1241,6 +1271,84 @@ def rebind(state_root, slot_id, *, knowledge=(), update=False):
     return _rebind_result(root, _view(root, successor))
 
 
+# Bounds of the join's resume lookup (#130); exceeding one fails closed (`binding_scan_incomplete`).
+INDEX_SCAN_LIMIT, SESSION_ACTOR_LIMIT = 65536, 256
+
+
+def _session_slots(root, sid):
+    """Slot IDs the root actor index names for this exact SID, plus each one's rebind neighbours.
+
+    A direct lookup instead of a directory scan: every attested slot is claimed in the index, and a rebind
+    attest moves the claim to its successor. The predecessor (`rebind.previous_slot_id`) and an unfinished
+    successor (`rebound_to`) cover an attest interrupted before or after that move. Raises
+    `binding_scan_incomplete` when a bound is hit or the index cannot be read, and an unsafe path keeps its
+    `native_worker_unavailable` refusal: never "no binding".
+    """
+    from quorum_resume import BindingScanIncomplete
+    # A state root that does not exist yet holds no binding; any other unreadable root fails closed.
+    if not os.path.lexists(root): return []
+    try:
+        with _directory(root) as directory:
+            rows = None if directory is None else _read_db(
+                directory, root / 'ledger.sqlite',
+                lambda db: db.execute("select data from settings where key like ? limit ?",
+                                      (INDEX + '%', INDEX_SCAN_LIMIT + 1)).fetchall(), ledger='state')
+    # An unsafe root or ledger keeps its fixed refusal (native_worker_unavailable); both fail closed.
+    except (OSError, sqlite3.Error): raise BindingScanIncomplete('index_unreadable') from None
+    rows = rows or []
+    if len(rows) > INDEX_SCAN_LIMIT: raise BindingScanIncomplete('index_limit')
+    claimed = []
+    for (data,) in rows:
+        try: value = json.loads(data)
+        except ValueError: continue
+        if isinstance(value, dict) and value.get('provider_session_id') == sid and CANONICAL.fullmatch(
+                str(value.get('slot_id'))):
+            claimed.append(value['slot_id'])
+    claimed = list(dict.fromkeys(claimed))
+    if len(claimed) > SESSION_ACTOR_LIMIT: raise BindingScanIncomplete('session_limit')
+    slots = []
+    for slot_id in claimed:
+        slots.append(slot_id)
+        try: record = _view(root, slot_id)
+        except NativeInboxError: continue
+        for neighbour in ((record.get('rebind') or {}).get('previous_slot_id'), record.get('rebound_to')):
+            if isinstance(neighbour, str) and CANONICAL.fullmatch(neighbour): slots.append(neighbour)
+    return list(dict.fromkeys(slots))
+
+
+def live_slots(state_root, sid, quorum_slug):
+    """Read-only (#130): this chat's worker bindings for `quorum_slug` that a resume can still recover.
+
+    Exactly the slots `rebindable` accepts (the same predicate `rebind` uses), named by the source slot a
+    rebind continues from: an active slot whose native worker ended with a parent restart, or a predecessor
+    superseded by an interrupted hand-over whose successor lapsed. A hand-over an attest retry can still
+    finish counts too, as `hand_over_pending`. Candidates come from this SID's index claims only, so other
+    chats' or quorums' slots never crowd them out. Nothing is created, recovered or asked of the service.
+    """
+    root = _state_root(state_root)
+    found, seen = [], set()
+    for name in _session_slots(root, sid):
+        try:
+            record = _view(root, name)
+            if record.get('provider_session_id') != sid or record['scope'].get('quorum_slug') != quorum_slug:
+                continue
+            if hand_over_pending(root, record, sid):
+                item = {'slot_id': name, 'role': record['scope'].get('role'), 'agent_id': record['rebind'].get(
+                    'agent_id'), 'state': 'hand_over_pending'}
+                key = record['rebind'].get('session_ref')
+            else:
+                source, agent = rebindable(root, record, sid)
+                item = {'slot_id': source['slot_id'], 'role': source['scope'].get('role'),
+                        'agent_id': agent.get('agent_id'), 'state': 'rebindable'}
+                key = source['binding']['session_ref']
+        except (NativeInboxError, KeyError, TypeError, ValueError, OSError): continue
+        # One entry per actor: a predecessor and the active successor it leads to name the same source.
+        if key in seen: continue
+        seen.add(key)
+        found.append(item)
+    return found
+
+
 # One reserved pending successor per actor: `claude-worker-rebinding:<session_ref>` -> its slot and source.
 REBINDING = 'claude-worker-rebinding:'
 
@@ -1266,7 +1374,7 @@ def _rebind_result(root, record):
             'permission_expires_at': record['permission_expires_at'],
             'bootstrap_command': _bootstrap(root, record['slot_id']),
             'rebind': {key: marker[key] for key in ('previous_slot_id', 'session_ref', 'agent_id', 'count')},
-            'connect_flags': connect_flags(record['scope'])}
+            'connect_flags': connect_flags(record['scope']), 'worker_brief': _brief()}
 
 
 @contextmanager
@@ -1510,7 +1618,8 @@ def _check_arguments(record, operation, arguments):
         require(get('quorum') == scope['quorum_slug'] and get('access') == scope['access']
                 and get('role') in (None, scope['role']))
     elif operation == 'accept':
-        require(get('invite_id') == scope['invite_id'] and bool(get('anonymous')) == _anonymous(scope))
+        require(get('invite_id') == scope['invite_id'] and bool(get('anonymous')) == _anonymous(scope)
+                and get('quorum') in (None, scope['quorum_slug']))
         if get('origin'): require(_same_service(scope, get('origin'), get('publishable_key')))
     elif operation == 'connect':
         require(get('quorum') == scope['quorum_slug'] and get('role') == scope['role']
@@ -1743,7 +1852,8 @@ def preflight(args):
         try: invite = str(uuid.UUID(args.invite_id))
         except (ValueError, TypeError, AttributeError): raise _denied('scope_mismatch') from None
         arguments = {'invite_id': invite, **{name: getattr(args, name, None) for name in (
-            'transport', 'parent_thread_id', 'membership_only', 'client', 'anonymous', 'origin', 'publishable_key')}}
+            'transport', 'parent_thread_id', 'membership_only', 'client', 'anonymous', 'origin', 'publishable_key',
+            'quorum')}}
     elif args.command in ('knowledge', 'update'):
         operation = args.command
         arguments = ({'quorum': args.quorum} if operation == 'update' else
