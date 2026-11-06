@@ -18,6 +18,7 @@ from quorum_api import QuorumError, guarded_call
 from quorum_os import FileLock
 from quorum_presence import Presence, hello_once
 from quorum_realtime import RealtimeWait
+import quorum_notices
 from quorum_release import ReleaseGuard, installed_release
 
 TRANSPORT = 'tool-inbox'
@@ -41,6 +42,15 @@ AWAITING_LIMIT = 32
 # explicitly for one offer, up to HOLD_LIMIT. Reception is therefore never paused open-endedly.
 OFFER_WINDOW, HOLD_LIMIT = 600, 1800
 LOCAL_STATES = ('offered', 'parked', 'acked')
+# The worker's receive-loop contract (#127). A model-driven worker repeats `receive` through empty waits;
+# only its owner brief's limit, an owner stop or a fatal error ends the loop, and it reports which one.
+STOP_REASONS = ('brief_deadline', 'brief_count', 'owner_stop', 'fatal:<code>')
+RECEIVE_LOOP = ('Keep calling session receive through empty waits: a timeout (continue true) is not a reason to '
+                'stop, however many arrive in a row. Stop only at the owner brief\'s limit (its deadline or message '
+                'count), on state stopped (owner stop) or on a fatal error, then report the stop reason to the '
+                'parent as one of brief_deadline, brief_count, owner_stop or fatal:<code>.')
+# offer() result for a server transport notice it receipted itself; never disclosed.
+NOTICE = object()
 # Patchable wall clock for parked/hold timestamps (persisted across calls, unlike the monotonic budget).
 wall = time.time
 
@@ -691,7 +701,15 @@ def notice(record, message, priority):
             'keeps it in the private awaiting-owner list and keeps reception running; return the decision to the '
             'parent once, and later answer it with session awaiting resolve. Never stop receiving or report '
             'listening as paused while a decision is pending. Only this worker may run these commands. Then call '
-            'session receive again within your brief.')
+            'session receive again within your brief. ' + RECEIVE_LOOP)
+
+
+def loop_fields(auth_ledger, record, state, wait_seconds):
+    """Machine-readable next step for a model-driven worker: continue after an offer or an empty wait."""
+    if state == 'stopped':
+        return {'continue': False, 'next_step': 'report_stop', 'stop_reason': 'owner_stop'}
+    return {'continue': True, 'next_step': 'handle_then_receive' if state == 'offered' else 'receive',
+            'receive_command': command(auth_ledger, record, 'receive', '--wait-seconds', str(wait_seconds))}
 
 
 def _scope(record):
@@ -773,6 +791,13 @@ def offer(api, auth_ledger, ledger, record, stopping=lambda: False):
     message_id, delivery = found
     message = delivery['message']
     priority = message_priority(message)
+    transport = quorum_notices.quiet(ledger, message, record['agent_id']) if delivery.get('state') == 'offered' else None
+    if transport:
+        # A server Hello/roster transport notice: this worker receipts it itself, with no envelope or model turn.
+        acknowledge(api, ledger, record, message_id)
+        quorum_notices.record(ledger, message, transport, 'claude-worker' if record.get('engine') == 'claude'
+                              else 'tool-inbox')
+        return NOTICE
     # Delegation is re-read at output time; a queued offer may predate a revocation.
     current = {**record, 'delegation': (ledger.setting('session-agent') or {}).get('delegation')}
     return {'type': 'quorum.peer_message', 'state': 'offered', 'message_id': message_id, 'priority': priority,
@@ -806,7 +831,8 @@ def receive(api, auth_ledger, ledger, record, wait_seconds, *, waiter=None, pres
         # A bounded worker reports its connection's Hello outcome once, never per call.
         return {'state': state, 'message': None, 'run_id': run_id, 'session_ref': record['session_ref'],
                 'transport': TRANSPORT, 'wait_seconds': wait_seconds,
-                'awaiting_owner': _count(ledger, record, 'parked'), **hello_once(ledger)}
+                'awaiting_owner': _count(ledger, record, 'parked'), **hello_once(ledger),
+                **loop_fields(auth_ledger, record, state, wait_seconds)}
     with LocalSupervisorLock(ledger.root), FileLock(ledger.root / 'listener.lock'):
         with control_lock(ledger):
             # A rebind completed before these locks were taken excludes this caller before any read.
@@ -834,11 +860,13 @@ def receive(api, auth_ledger, ledger, record, wait_seconds, *, waiter=None, pres
                 envelope = offer(api, auth_ledger, ledger, record, stopping)
                 # A stop observed after the reads discloses nothing; a committed offer stays for recovery.
                 if stopping(): break
+                # A quietly receipted transport notice: read the next message at once, without idling.
+                if envelope is NOTICE: continue
                 if envelope is not None:
                     if authorize is not None: api.check()
                     handled = 1
                     disclosed = {**envelope, 'run_id': run_id, 'session_ref': record['session_ref'],
-                                 **hello_once(ledger)}
+                                 **hello_once(ledger), **loop_fields(auth_ledger, record, 'offered', wait_seconds)}
                     break
                 if not waiter or idle_left <= 0: return result('timeout', run_id)
                 control.update(run_id, 'waiting', 0, timeout=wait_seconds)

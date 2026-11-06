@@ -230,6 +230,34 @@ the new `session_heartbeat` and `session_peers`, move
 names, grant both to `authenticated` again and drop `session_status`. Clients
 then fall back to five-argument heartbeats on their own.
 
+## Reconnect Hello dedupe
+
+After reviewing the source and obtaining administrator deployment authorization,
+apply
+[`20261106120000_hello_reconnect_dedupe.sql`](../supabase/migrations/20261106120000_hello_reconnect_dedupe.sql)
+in one transaction after `20261105160000_peer_status_visibility.sql`. It refuses
+to run without the peer status and Hello reporting extensions. It pins the
+peer-status heartbeat, the Hello wrapper and core it replaces, the dispatcher,
+the binding check, the receipt writer and the release, and refuses drift or
+reapplication before any change. It does not change the required release, the
+heartbeat response, table access or task authority.
+
+A new listener connection still sends a Hello to each same-project peer, except
+to a peer that already got a Hello from the same sender within the last 30
+minutes of the sender's unbroken presence. The first connection, and a
+reconnect after the sender's health was at least 60 seconds stale, announce to
+every peer. A skipped peer still counts in the `hello` result and the roster.
+An agent seen only before this release announces once more, then is deduplicated.
+Clients need no change; current clients also receipt transport notices quietly.
+
+The previous Hello wrapper and core stay as private functions. To roll back, in
+one transaction drop the new `session_heartbeat_before_status` and
+`session_heartbeat_before_hello`, rename
+`session_heartbeat_hello_before_dedupe` and
+`session_heartbeat_core_before_dedupe` back to those names, drop the
+`session_health_streak` trigger and function, and drop `session_streaks` and
+`session_hello_sent`.
+
 ## Hello reporting extension
 
 After reviewing the source and obtaining administrator deployment authorization,
@@ -279,3 +307,35 @@ These tests use the local immutable image with `--pull never --network none`, no
 ports and a uniquely named disposable container that is removed after the run.
 Auth fixtures and vectors are synthetic; no cloud configuration is read. The
 PGlite legacy backend suite does not substitute for actual pgvector tests.
+
+## Knowledge member default role
+
+Optional, for servers that deployed project knowledge and the retained-source
+wiki. After reviewing the source and obtaining administrator deployment
+authorization, apply
+[`20261106100000_knowledge_member_default_role.sql`](../supabase/migrations/20261106100000_knowledge_member_default_role.sql)
+in one transaction after `20261103075741_llm_wiki.sql`. It refuses to run
+without both (`knowledge_wiki_required`), pins the scope check, the
+administration entry point, the binding check, the request-journal helpers
+and every caller of the scope check, and refuses drift or reapplication
+before any change. It does not change the required release, quorum
+permissions or existing grants.
+
+- `knowledge_admin` gains the owner operation `default_role` (`space_id`,
+  `permission`: `reader`, `writer` or `none`). One private
+  `knowledge_member_defaults` row per space holds it; `none` removes it.
+- The scope check uses that default only when the caller has no explicit
+  grant, and only after the reviewed checks admitted the caller: a live agent,
+  device and non-revoked membership of a quorum attached to the space for the
+  agent's project. Owner-only operations stay with the owner.
+
+The previous scope check and administration body stay as private functions.
+Refresh PostgREST's schema cache after applying. To roll back, in one
+transaction drop the new `quorum_private.knowledge_scope` and
+`public.knowledge_admin`, rename `knowledge_scope_before_default_role` back to
+`knowledge_scope`, move `knowledge_admin_before_default_role` back to `public`
+as `knowledge_admin`, grant it to `authenticated` again and drop
+`knowledge_member_defaults`. Explicit grants are unaffected. The pgvector
+PostgreSQL suite `test_quorum_knowledge_default_role_backend.py` (same image and
+`QUORUM_KNOWLEDGE_DOCKER=1` as above) covers the guards, the contract and the
+default-change races.

@@ -54,6 +54,9 @@ device before updating private health. New connection UUIDs create idempotent He
 notices for same-project native peers; ordinary heartbeat retries create no notice.
 The optional Hello reporting extension returns the recipient count and bounded roles
 for that connection, and sends the newcomer one idempotent roster notification.
+The optional reconnect dedupe skips a Hello to a peer already greeted within 30 minutes
+of the sender's unbroken presence. Clients receipt both notice kinds themselves
+([transport notices](sessions.md#transport-notices)).
 `session_peers` derives availability from server time and private receipt/heartbeat
 records. `session_ack` also refreshes health as positive delivery evidence. These
 RPCs expose no table access or coordinator authorization. Delegation is the receiving

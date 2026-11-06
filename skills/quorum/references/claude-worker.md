@@ -186,7 +186,8 @@ way the server's ACL and owner checks decide every call. An accept worker
 prepared without these keys gains them with the owner's
 [rebind](#rebind-after-a-parent-restart) opt-in, without a new invitation.
 
-Every argument must equal the approved scope, including `--access open`,
+Every argument must equal the approved scope, including an `accept-id --quorum`
+(the scope's `quorum_slug`), `--access open`,
 `--accept-tasks-from`, `--accept-tasks-from-members`, `--trust-members` and
 `--dispatch-mode` when the scope sets them. `--exclusive-role` works as on the parent route (see
 [sessions](sessions.md)); an adopt scope's parent agent is not a conflict.
@@ -217,6 +218,12 @@ a stop lands may still complete remotely; status reports it as
 
 Receive, receipt and reply follow [native inbox](native-inbox.md#receive-receipt-and-reply)
 unchanged, using the envelope's own `receipt_command` and `reply_command`. The
+worker follows the same [receive loop](native-inbox.md#receive-loop): it keeps
+calling `receive` through empty waits (`continue: true`) and stops only at the
+brief's limit, on an owner stop or a fatal error, reporting `brief_deadline`,
+`brief_count`, `owner_stop` or `fatal:<code>` to the parent. Prepare and rebind
+return that contract as `worker_brief`; the parent passes it to the worker with
+the `bootstrap_command` and its own limit. The
 capability is rechecked before each service operation, after each blocking
 return and before disclosure. A worker receipt means the worker consumed the
 message, never that the parent chat saw it. Messages that need the owner's

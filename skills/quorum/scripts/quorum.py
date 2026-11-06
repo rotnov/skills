@@ -16,6 +16,7 @@ from quorum_grok_leader import GrokBindingError
 from quorum_session import AmbiguousSession, BindingError, RecipientUnresolved, RoleHeld, UnsupportedClient
 from quorum_grok_cloud import CloudError
 from quorum_native_inbox import NativeInboxError
+from quorum_resume import BindingExists
 from quorum_debug import DebugError
 from quorum_knowledge import KnowledgeError
 
@@ -73,7 +74,7 @@ def main(argv=None):
     config = commands.add_parser('configure')
     config.add_argument('--origin', required=True)
     config.add_argument('--publishable-key', required=True)
-    for name in ('status', 'login', 'logout', 'worker', 'doctor', 'version'):
+    for name in ('status', 'login', 'logout', 'worker', 'version'):
         commands.add_parser(name)
     for name in ('create', 'invite', 'accept', 'join', 'leave', 'send', 'context', 'work'):
         sub = commands.add_parser(name)
@@ -91,6 +92,10 @@ def main(argv=None):
     capabilities.add_argument('--route', choices=ROUTES, help='Default: the current client\'s quiet worker route')
     capabilities.add_argument('--require', choices=tuple(REQUIREMENTS),
                               help='Fail with background_execution_unsupported unless the route supports it')
+    doctor = commands.add_parser('doctor', help='Check this participant\'s actual route; the ACP gate is informational')
+    from quorum_doctor import DOCTOR_ROUTES
+    doctor.add_argument('--route', choices=DOCTOR_ROUTES,
+                        help='Default: the current client\'s quiet worker route; acp-worker checks the gated default worker')
     from quorum_live import add_commands
     add_commands(commands)
     from quorum_updates import add_commands as add_update_commands
@@ -117,6 +122,13 @@ def main(argv=None):
             from quorum_release import installed_release
             print(json.dumps({'ok':True, 'code':'ok', 'data':installed_release()}))
             return 0
+        if args.command == 'doctor':
+            # The participant's actual route decides health; the default ACP worker gate stays reported.
+            # Before the ledger exists: doctor reads state read-only and offline, and never creates it.
+            from quorum_doctor import diagnose
+            ok, code, exit_code, value = diagnose(args.state.expanduser().absolute(), args.route)
+            print(json.dumps({'ok': ok, 'code': code, 'data': value}))
+            return exit_code
         if getattr(args, 'worker_capability', None) is not None or args.command == 'session':
             import quorum_claude_worker as claude_worker
             # A Claude worker route validates its capability and arguments before the root ledger exists.
@@ -169,14 +181,6 @@ def main(argv=None):
             from quorum_profiles import resolve_profile
             value = create_worker(args, args.worker_context, resolve_profile,
                                   lambda config, store: QuorumApi(config, token_provider(config, store)))
-        elif args.command == 'doctor':
-            from quorum_acp import validate_manifest
-            manifest = json.loads((Path(__file__).resolve().parents[1] / 'assets/engines.lock.json').read_text())
-            try:
-                validate_manifest(manifest)
-            except ValueError:
-                raise QuorumError('engine_acceptance_pending') from None
-            raise QuorumError('live_agents_disabled')
         else:
             from quorum_profiles import resolve_profile, ensure_login, auth_lock
             # Only explicit login may refresh an older state's own token family.
@@ -268,6 +272,10 @@ def main(argv=None):
         # Fixed cloud codes and reasons only; never a webhook target or peer text.
         print(json.dumps({'ok': False, 'code': error.code, 'data': error.diagnostic()}))
         return 3
+    except BindingExists as error:
+        # This chat's own quorum, role, IDs and a fixed resume command; the invitation was not used.
+        print(json.dumps({'ok': False, 'code': error.code, 'data': error.diagnostic()}))
+        return 3
     except NativeInboxError as error:
         # Fixed worker codes and reasons only; never a rollout path, transcript or peer text.
         print(json.dumps({'ok': False, 'code': error.code, 'data': error.diagnostic()}))
@@ -281,7 +289,7 @@ def main(argv=None):
         safe = {'machine_profile_unavailable', 'service_profile_ambiguous', 'auth_profile_conflict',
                 'service_config_conflict', 'github_identity_required', 'auth_lock_timeout',
                 'browser_unavailable', 'login_timeout', 'anonymous_state_conflict', 'invalid_role', 'invalid_project_ref',
-                'invalid_agent_id', 'invalid_request_id'}
+                'invalid_agent_id', 'invalid_request_id', 'invalid_quorum'}
         if isinstance(error, ValueError):
             safe.update({'update_request_invalid', 'update_notice_denied', 'update_target_changed',
                          'update_fetch_failed', 'update_tool_missing', 'update_invalid_copy',

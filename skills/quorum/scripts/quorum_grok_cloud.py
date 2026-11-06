@@ -15,6 +15,7 @@ from quorum_api import QuorumError
 from quorum_delegation import (grant, held_status, instruction, member_grant, member_trust, opening, task_check,
                                save_grant_binding, trusted)
 from quorum_release import ReleaseGuard, ReleaseMismatch, diagnostic
+import quorum_notices
 
 # Grok Bot exports these names in the personal chat; their services are never opened.
 HOST_MARKERS = ('CURSOR_AGENT', 'SAND_AGENT_STORE_RPC_SERVICE')
@@ -24,6 +25,8 @@ NATIVE_EXPORTS = ('CODEX_THREAD_ID', 'CLAUDE_CODE_SESSION_ID', 'CLAUDE_CODE_HOST
                   'GROK_LEADER_SOCKET')
 CANONICAL = re.compile(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}')
 SESSION_PREFIX = 'grok-bot:'
+# Transport notices receipted quietly in one receive before it returns no envelope.
+NOTICE_LIMIT = 64
 TRANSPORT = 'grok-bot-webhook'
 ROLE = re.compile('[a-z][a-z0-9-]{0,47}')
 # Peer data shown to the parent; nothing else from the service crosses the tool output.
@@ -130,8 +133,11 @@ def add_commands(commands):
     thread = actions.add_parser('thread')
     thread.add_argument('conversation_id', type=lambda x: str(uuid.UUID(x)))
     thread.add_argument('--after-sequence', type=sequence, default=0)
-    for name in ('start', 'status', 'stop', 'receive'):
+    for name in ('start', 'status', 'stop'):
         actions.add_parser(name)
+    actions.add_parser('receive').add_argument(
+        '--show-transport-notices', action='store_true',
+        help='Debugging opt-out for this receive: deliver server Hello/roster transport notices as envelopes')
     run = actions.add_parser('run')
     run.add_argument('--run-id', required=True, type=lambda x: str(uuid.UUID(x)))
     received = actions.add_parser('received')
@@ -206,13 +212,16 @@ def _dispatch(args, auth_ledger, register_agent):
             return task_check(api, record, args.message_id, lambda: ledger.setting('cloud-agent'))
         if args.action == 'peers':
             from quorum_peer_wake import with_wake_diagnostics
-            return with_wake_diagnostics(api.call('session_peers', scope))
+            return quorum_notices.annotate(with_wake_diagnostics(api.call('session_peers', scope)), ledger)
         if args.action == 'thread':
             return api.call('conversation_read', {'quorum_id': record['quorum_id'], 'agent_id': record['agent_id'],
                             'conversation_id': args.conversation_id, 'after_sequence': args.after_sequence})
         if args.action == 'start': return {**start(auth_ledger, ledger, api), 'conversation_id': conversation}
         if args.action == 'run': return run(args, api, ledger, record)
-        if args.action == 'receive': return receive(auth_ledger, ledger, record, messages)
+        if args.action == 'receive':
+            # The owner's debugging opt-out is stated per receive; omitting it receipts transport notices quietly.
+            quorum_notices.set_visible(ledger, getattr(args, 'show_transport_notices', False) is True)
+            return receive(auth_ledger, ledger, record, messages, api, scope)
         if args.action == 'received': return confirm(api, ledger, record, scope, args.message_id)
         if args.action in ('reply', 'send'): return answer(args, api, ledger, record, scope)
         raise ValueError('unknown_operation')
@@ -345,8 +354,62 @@ def pending_offer(ledger, record):
     return None
 
 
-def receive(auth_ledger, ledger, record, messages):
-    """`messages` is the authoritative owned inbox read the caller already made for this binding."""
+def receive(auth_ledger, ledger, record, messages, api=None, scope=None):
+    """`messages` is the authoritative owned inbox read the caller already made for this binding.
+
+    With `api` and `scope`, a server Hello/roster transport notice at the head is receipted here and the
+    inbox is read again, so the parent never sees it as an envelope (bounded per call).
+    """
+    for _ in range(NOTICE_LIMIT):
+        result = _receive_one(auth_ledger, ledger, record, messages, quiet=api is not None)
+        if not isinstance(result, tuple): return result
+        message_id, delivery, kind = result
+        _receipt_notice(api, ledger, scope, message_id, delivery, kind, 'grok-cloud')
+        messages = api.call('session_inbox', scope)
+        if not isinstance(messages, list): raise QuorumError('invalid_response')
+    return {'message': None, 'pending': len(messages)}
+
+
+def _receipt_notice(api, ledger, scope, message_id, delivery, kind, route):
+    """Receipt one transport notice; True when it was new here, False for an idempotent repeat."""
+    if delivery.get('state') == 'acked':
+        # Already receipted locally but still listed: repeat the idempotent, session-scoped ACK only.
+        api.call('session_ack', {**scope, 'message_id': message_id})
+        return False
+    acknowledge(api, ledger, scope, message_id, delivery)
+    quorum_notices.record(ledger, delivery.get('message') or {}, kind, route)
+    return True
+
+
+def auto_receipt(api, ledger, record, scope, head):
+    """The cloud relay's receipt of one quiet transport notice at the inbox head.
+
+    'notice' when newly receipted, 'repeat' for one already receipted here, None for anything else.
+    """
+    kind = quorum_notices.quiet(ledger, head, record['agent_id'])
+    if not kind: return None
+    message_id = str(uuid.UUID(head['id']))
+    _offer(ledger, record, message_id, head)
+    delivery = ledger.setting('delivery:' + message_id)
+    if (not isinstance(delivery, dict) or delivery.get('agent_id') != record['agent_id']
+            or delivery.get('session_ref') != record['session_ref'] or delivery.get('state') not in ('offered', 'acked')):
+        raise ValueError('session_delivery_unknown')
+    return 'notice' if _receipt_notice(api, ledger, scope, message_id, delivery, kind, 'grok-cloud-relay') \
+        else 'repeat'
+
+
+def _offer(ledger, record, message_id, head):
+    # Offered locally before the tool result; this is not a receipt and never an ACK. Only peer
+    # envelope data is cached. Insert-only: an acked delivery is never downgraded to offered.
+    with ledger.db:
+        ledger.db.execute('insert or ignore into settings values (?,?)', ('delivery:' + message_id, json.dumps({
+            'state': 'offered', 'agent_id': record['agent_id'], 'session_ref': record['session_ref'],
+            'quorum_id': record['quorum_id'], 'reply_to': bool(head.get('reply_to')),
+            'notification': bool(head.get('notification')),
+            'message': {key: head[key] for key in MESSAGE_FIELDS if key in head}})))
+
+
+def _receive_one(auth_ledger, ledger, record, messages, *, quiet):
     from quorum_session import message_priority
     # An unreceived offer repeats until this parent's explicit receipt, even after a lost
     # tool output or ACK response, and even when a newer urgent message now leads the inbox.
@@ -359,18 +422,15 @@ def receive(auth_ledger, ledger, record, messages):
             raise ValueError('session_binding_denied')
         message_priority(head)
         message_id = str(uuid.UUID(head['id']))
-        # Offered locally before the tool result; this is not a receipt and never an ACK. Only peer
-        # envelope data is cached. Insert-only: an acked delivery is never downgraded to offered.
-        with ledger.db:
-            ledger.db.execute('insert or ignore into settings values (?,?)', ('delivery:' + message_id, json.dumps({
-                'state': 'offered', 'agent_id': record['agent_id'], 'session_ref': record['session_ref'],
-                'quorum_id': record['quorum_id'], 'reply_to': bool(head.get('reply_to')),
-                'notification': bool(head.get('notification')),
-                'message': {key: head[key] for key in MESSAGE_FIELDS if key in head}})))
+        _offer(ledger, record, message_id, head)
         found = message_id, ledger.setting('delivery:' + message_id)
     message_id, delivery = found
     message = delivery.get('message') or {}
     priority = message_priority(message)
+    if quiet and delivery.get('state') in ('offered', 'acked'):
+        kind = quorum_notices.quiet(ledger, message, record['agent_id'])
+        # A server transport notice: the caller receipts it and reads the inbox again.
+        if kind: return message_id, delivery, kind
     return {'type': 'quorum.peer_message', 'message_id': message_id, 'state': delivery['state'], 'priority': priority,
             'pending': max(len(messages), 1), 'quorum': record['quorum'], 'role': record['role'],
             'project_ref': record['project_ref'], 'notice': notice(record, message, priority),
@@ -452,6 +512,7 @@ def status(ledger, record, conversation):
             'connected': record is not None, 'session_ref': SESSION_PREFIX + conversation, 'transport': TRANSPORT,
             'webhook_configured': configured, 'wakes': {state: counts.get(state, 0) for state in (*states, 'other')},
             'pending_receipts': deliveries.count('offered'),
+            'transport_notices': quorum_notices.summary(ledger),
             'delegation': record.get('delegation') if record else None,
             'owner_held_actions': held_status(record), 'release': diagnostic(ledger)}
 

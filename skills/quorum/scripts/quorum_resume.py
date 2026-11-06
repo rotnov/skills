@@ -105,23 +105,38 @@ def hook_environment(event, client, environment):
     return {**environment, variable:sid}
 
 
-WORKER_SCAN_LIMIT = 256
+# Session ledgers read per Codex worker lookup. No parent-to-worker index exists, so candidates are filtered
+# by name and file first; more remaining ledgers than this fail closed in the resume check.
+WORKER_SCAN_LIMIT = 4096
 WORKER_NOTICE_LIMIT = 4
 
 
-def worker_bindings(state, parent):
-    """Enabled Codex tool-inbox bindings whose worker belongs to this parent; read-only, bounded, no ledger created."""
+def worker_bindings(state, parent, *, strict=False):
+    """Enabled Codex tool-inbox bindings whose worker belongs to this parent; read-only, bounded, no ledger created.
+
+    `strict` (the join's resume check) raises `binding_scan_incomplete` instead of reading only part of the
+    candidates; the startup notice stays best-effort.
+    """
     import json
     import sqlite3
     root = Path(state) / 'sessions'
-    try: names = sorted(os.listdir(root))[:WORKER_SCAN_LIMIT]
-    except OSError: return []
-    found = []
-    for name in names:
+    try: names = os.listdir(root)
+    except FileNotFoundError: return []
+    except OSError:
+        if strict: raise BindingScanIncomplete('sessions_unreadable') from None
+        return []
+    candidates = []
+    for name in sorted(names):
         try: canonical = str(uuid.UUID(name))
         except ValueError: continue
         path = root / name / 'ledger.sqlite'
         if canonical != name or canonical == parent or path.is_symlink() or not path.is_file(): continue
+        candidates.append((name, path))
+    if len(candidates) > WORKER_SCAN_LIMIT:
+        if strict: raise BindingScanIncomplete('worker_limit')
+        candidates = candidates[:WORKER_SCAN_LIMIT]
+    found = []
+    for name, path in candidates:
         try:
             connection = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=1)
             try:
@@ -135,7 +150,7 @@ def worker_bindings(state, parent):
         if (isinstance(binding, dict) and record.get('transport') == 'tool-inbox' and record.get('session_ref') == name
                 and binding.get('parent_thread_id') == parent and isinstance(control, dict)
                 and control.get('enabled') is True):
-            found.append({key: record.get(key) for key in ('session_ref', 'role', 'quorum')})
+            found.append({key: record.get(key) for key in ('session_ref', 'role', 'quorum', 'cwd')})
     return found
 
 
@@ -159,6 +174,152 @@ def worker_notices(state, parent):
 def json_text(value):
     import json
     return json.dumps(value)
+
+
+# --- Re-accept versus resume (#130) ------------------------------------------------------------------
+
+class BindingExists(ValueError):
+    """This chat already has a live binding in the invitation's quorum: resume it, the invitation stays unused."""
+    code = 'binding_exists_resume'
+
+    def __init__(self, found):
+        super().__init__(self.code)
+        self.found = found
+
+    def diagnostic(self):
+        # IDs, fixed labels and a command only; never a token, path secret or peer text.
+        return {**self.found, 'invitation': 'unused',
+                'guidance': 'This chat already has a live binding in this quorum. Resume it with next_step; the '
+                            'invitation was not used and stays valid until it expires, so its owner may revoke '
+                            'or reuse it.'}
+
+
+class BindingScanIncomplete(BindingExists):
+    """The resume check could not see every candidate binding: refuse acceptance rather than assume none."""
+    code = 'binding_scan_incomplete'
+
+    def __init__(self, reason):
+        ValueError.__init__(self, self.code)
+        self.found = {'reason': reason}
+
+    def diagnostic(self):
+        # A fixed reason only; never a path, ID list or count.
+        return {**self.found, 'invitation': 'unused',
+                'guidance': 'Not every local binding of this chat could be checked, so the invitation was not '
+                            'used. Inspect session status (or session worker status) and stop or clean up '
+                            'unused bindings in this state, then retry.'}
+
+
+def _read_rows(path, keys):
+    """Read-only settings of an existing ledger; None when absent, linked or unreadable. Never creates one."""
+    import json
+    import sqlite3
+    if path.is_symlink() or not path.is_file(): return None
+    try:
+        connection = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=1)
+        try:
+            marks = ','.join('?' * len(keys))
+            rows = connection.execute(f'select key,data from settings where key in ({marks})', keys).fetchall()
+        finally: connection.close()
+        return {key: json.loads(data) for key, data in rows}
+    except (sqlite3.Error, ValueError, TypeError): return None
+
+
+def _quorum_command(state, *action):
+    import sys
+    return [sys.executable, str(Path(__file__).with_name('quorum.py')), '--state', str(state), 'session', *action]
+
+
+def live_binding(state, quorum, *, sid=None, parent=None, cloud=None):
+    """This chat's resumable binding in `quorum`, read-only, before any login or invitation use; None when absent.
+
+    A binding counts exactly when its route's own recovery accepts it locally (only the service's agent check
+    is not local), so an acceptance never consumes an invitation that a resume could have avoided:
+
+    - parent route (Codex, Grok, Claude native listener): `session recover` — enabled reception, a recoverable
+      engine and, for this chat's own binding, this working directory;
+    - Codex tool-inbox worker: `session --session-id <ref> recover --parent-thread-id <parent>` — enabled worker
+      reception, that parent and this working directory;
+    - Claude worker slot: `session worker rebind` — `quorum_claude_worker.rebindable`, the predicate rebind
+      itself uses, plus a hand-over an interrupted attest can still finish;
+    - Grok cloud parent: `cloud start` — this conversation's verified cloud binding.
+
+    `sid` is this chat's own session ID; `parent` is the Codex parent thread of a tool-inbox worker (which has
+    no session ID of its own), whose own parent binding counts too; `cloud` is a verified cloud conversation.
+    """
+    from quorum_session import RECOVERABLE
+    state = Path(os.path.abspath(state))
+    cwd = str(Path.cwd().resolve())
+    # Only canonical UUIDs name a ledger directory; anything else is never a path component.
+    sid, parent, cloud = (item if _canonical(item) else None for item in (sid, parent, cloud))
+    for owner in dict.fromkeys(item for item in (sid, parent) if item):
+        rows = _read_rows(state / 'sessions' / owner / 'ledger.sqlite', ('session-agent', 'session-reception'))
+        record = (rows or {}).get('session-agent')
+        if (not isinstance(record, dict) or record.get('session_ref') != owner or record.get('quorum') != quorum
+                or record.get('transport', 'native') == 'tool-inbox' or record.get('engine') not in RECOVERABLE
+                # `session recover` runs in the bound directory; a worker cannot see its parent chat's.
+                or (owner == sid and record.get('cwd') != cwd)):
+            continue
+        try: require_enabled_rows(rows, record)
+        except ValueError: continue
+        found = {'quorum': quorum, 'route': 'parent', 'role': record.get('role'),
+                 'agent_id': record.get('agent_id'), 'next_step': _quorum_command(state, 'recover')}
+        # A worker cannot recover its parent's listener; the parent chat runs `session recover` itself.
+        if owner != sid: found.update(session_ref=owner, run_in='parent_chat')
+        return found
+    for owner in dict.fromkeys(item for item in (parent, sid) if item):
+        for item in worker_bindings(state, owner, strict=True):
+            if item.get('quorum') == quorum and item.get('cwd') == cwd:
+                return {'quorum': quorum, 'route': 'codex-worker', 'role': item.get('role'),
+                        'session_ref': item['session_ref'],
+                        'next_step': _quorum_command(state, '--session-id', item['session_ref'], 'recover',
+                                                     '--parent-thread-id', owner)}
+    if sid is not None and os.environ.get('CLAUDE_CODE_SESSION_ID') == sid:
+        from quorum_claude_worker import live_slots
+        for item in live_slots(state, sid, quorum):
+            found = {'quorum': quorum, 'route': 'claude-worker', 'role': item['role'], 'slot_id': item['slot_id'],
+                     'agent_id': item['agent_id'], 'state': item['state']}
+            if item['state'] == 'hand_over_pending':
+                # Repeat the interrupted attest with the same handle; once it expires, rebind the old slot.
+                found['next_step'] = _quorum_command(state, 'worker', 'attest', item['slot_id'],
+                                                     '--native-handle', '<same-native-handle>')
+            else: found['next_step'] = _quorum_command(state, 'worker', 'rebind', item['slot_id'])
+            return found
+    if cloud is not None:
+        import sys
+        from quorum_grok_cloud import CloudError, verify_record
+        rows = _read_rows(state / 'cloud' / cloud / 'ledger.sqlite', ('cloud-agent',))
+        record = (rows or {}).get('cloud-agent')
+        try:
+            if isinstance(record, dict) and record.get('quorum') == quorum:
+                verify_record(record, cloud)
+                return {'quorum': quorum, 'route': 'grok-cloud', 'role': record.get('role'),
+                        'agent_id': record.get('agent_id'), 'next_step': [
+                            sys.executable, str(Path(__file__).with_name('quorum.py')), '--state', str(state),
+                            'cloud', 'start']}
+        except CloudError: pass
+    return None
+
+
+def _canonical(value):
+    try: return isinstance(value, str) and str(uuid.UUID(value)) == value
+    except ValueError: return False
+
+
+def require_enabled_rows(rows, record):
+    """`require_enabled` over rows already read read-only."""
+    grant = rows.get('session-reception') or {}
+    expires = grant.get('expires_at') if isinstance(grant, dict) else None
+    valid_expiry = (expires is None or (type(expires) in (int, float) and math.isfinite(expires)
+                                        and expires > time.time()))
+    if (not isinstance(grant, dict) or grant.get('enabled') is not True or grant.get('binding') != binding(record)
+            or not valid_expiry):
+        raise ValueError('session_recovery_denied')
+
+
+def refuse_if_bound(state, quorum, *, sid=None, parent=None, cloud=None):
+    found = live_binding(state, quorum, sid=sid, parent=parent, cloud=cloud)
+    if found is not None: raise BindingExists(found)
 
 
 def main(argv=None):

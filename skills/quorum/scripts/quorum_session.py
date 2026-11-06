@@ -17,6 +17,7 @@ from quorum_delegation import (grant, held_status, instruction, member_grant, me
                                save_grant_binding, standing_check, standing_grants, standing_status,
                                STANDING_ACTIONS)
 from quorum_release import ReleaseGuard, ReleaseMismatch, diagnostic
+import quorum_notices
 
 
 SUPPORTED_TRANSPORTS = (
@@ -488,6 +489,18 @@ class Relay:
         key = 'delivery:' + str(uuid.UUID(message['id']))
         previous = self.ledger.setting(key)
         if previous and previous['state'] == 'intent': raise ValueError('session_delivery_unknown')
+        transport = quorum_notices.quiet(self.ledger, message, self.record['agent_id'])
+        if transport:
+            # A server Hello/roster transport notice: receipt it here, with no chat envelope or model turn.
+            self.release.check()
+            self.authorize()
+            self.api.call('session_ack', {**self.scope(), 'message_id':message['id']})
+            if key in self.awaiting: self.awaiting.remove(key)
+            # One already receipted here but still listed only repeats the idempotent ACK, then waits.
+            if previous and previous['state'] == 'acked': return 'idle'
+            self.ledger.setting(key, {'state':'acked'})
+            quorum_notices.record(self.ledger, message, transport, 'parent')
+            return 'notice'
         if not previous:
             self.release.check()
             self.authorize()
@@ -631,14 +644,16 @@ def add_commands(commands):
     thread.add_argument('conversation_id', type=lambda x: str(uuid.UUID(x)))
     thread.add_argument('--after-sequence', type=sequence, default=0,
                         help='Page after this sequence; the service returns at most 16 messages')
-    actions.add_parser('start')
+    show_transport_notices(actions.add_parser('start'))
     recover_parser = actions.add_parser('recover', help='Recover previously enabled reception in this same Codex, Grok or '
                                         'Claude Code conversation, or rebind a Codex tool-inbox worker of the same parent')
     recover_parser.add_argument('--parent-thread-id', type=lambda x: str(uuid.UUID(x)),
                                 help='Tool-inbox worker rebind only: the bound parent thread UUID; a relationship, not authority')
+    show_transport_notices(recover_parser)
     actions.add_parser('status')
     receive = actions.add_parser('receive', help='Tool-inbox worker: one bounded foreground receive in its own tool result')
     receive.add_argument('--wait-seconds', type=int, choices=range(0, 61), default=30, metavar='0..60')
+    show_transport_notices(receive)
     actions.add_parser('stop')
     from quorum_native_inbox import add_commands as add_awaiting_commands
     add_awaiting_commands(actions)
@@ -663,6 +678,12 @@ def add_commands(commands):
                           help='Owner attests the original queue/held messages lack this attempt and its old receiver/helper cannot deliver')
     recover.add_argument('--attempt-id', type=lambda value:str(uuid.UUID(value)),
                          help='Required with --confirmed-absent: exact unknown attempt UUID from the private ledger')
+
+
+def show_transport_notices(parser):
+    parser.add_argument('--show-transport-notices', action='store_true',
+                        help='Debugging opt-out for this reception: deliver server Hello/roster transport notices '
+                             'as envelopes instead of receipting them quietly')
 
 
 def add_transport_arguments(parser):
@@ -894,6 +915,7 @@ def _dispatch(args, auth_ledger, register_agent):
         ledger.setting('listener-mode','codex_tool_inbox' if tool else 'native_'+engine+'_session')
         if args.action=='status':
             if tool: return {**inbox.status(ledger,record),'session_id':sid,
+                             'transport_notices':quorum_notices.summary(ledger),
                              'delegation':record.get('delegation'),'owner_held_actions':held_status(record),
                              'standing_grants':standing_status(record,ledger),'release':diagnostic(ledger)}
             deliveries = [(key,json.loads(raw)) for key,raw in
@@ -902,6 +924,7 @@ def _dispatch(args, auth_ledger, register_agent):
             unknown = [{'message_id':key[len('delivery:'):], 'attempt_id':value.get('attempt_id')}
                        for key,value in deliveries if value['state']=='intent']
             return {**Control(ledger).status(),'session_id':sid,'pending_receipts':pending,
+                    'transport_notices':quorum_notices.summary(ledger),
                     'unknown_attempts':unknown,
                     **({'retired_binding':retired_summary(ledger)} if not record and retired_summary(ledger) else {}),
                     'delegation':record.get('delegation') if record else None,
@@ -1121,8 +1144,9 @@ def _dispatch(args, auth_ledger, register_agent):
         if args.action == 'peers':
             from quorum_peer_wake import REPORTS_KEY, with_wake_diagnostics
             # This chat's last cached owner-update reports can explain an unavailable peer; never authority.
-            return with_wake_diagnostics(api.call('session_peers', {'agent_id':record['agent_id'], 'session_ref':sid}),
-                                         ledger.setting(REPORTS_KEY))
+            return quorum_notices.annotate(
+                with_wake_diagnostics(api.call('session_peers', {'agent_id':record['agent_id'], 'session_ref':sid}),
+                                      ledger.setting(REPORTS_KEY)), ledger)
         if args.action == 'thread':
             # Only this native binding's agent; the backend checks conversation membership.
             return api.call('conversation_read', {'quorum_id':record['quorum_id'], 'agent_id':record['agent_id'],
@@ -1139,6 +1163,9 @@ def _dispatch(args, auth_ledger, register_agent):
             transport = binding(sid, record['cwd'])
             if args.action == 'run' and transport != record['grok_transport']:
                 raise ValueError('session_binding_denied')
+        if args.action in ('start','recover','receive'):
+            # Each reception entry states the opt-out again; omitting it restores quiet receipts.
+            quorum_notices.set_visible(ledger, getattr(args, 'show_transport_notices', False) is True)
         if args.action in ('start','recover'):
             if tool: return {**inbox.arm(ledger,record,authorize=worker_guard),'session_id':sid}
             return {**start(auth_ledger.root,ledger,sid,api=api,endpoint=endpoint,grok_transport=transport,

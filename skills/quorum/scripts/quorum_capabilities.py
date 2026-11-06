@@ -60,8 +60,9 @@ ROUTES = tuple(_ROUTES)
 # Supported, bounded alternatives the agent offers instead of promising until-stop operation.
 ALTERNATIVES = (
     {'route': 'bounded-receive-while-active',
-     'summary': 'Repeat bounded session receive calls while this chat or worker brief is active, within an '
-                'owner-stated deadline or message count; stop on state stopped or when the brief ends.'},
+     'summary': 'Repeat bounded session receive calls through empty waits while this chat or worker brief is '
+                'active, up to an owner-stated deadline or message count; stop only at that limit, on state '
+                'stopped or a fatal error, and report the stop reason.'},
     {'route': 'durable-queue-resume',
      'summary': 'Messages stay durable while nobody receives; the owner resumes this chat or re-briefs the same '
                 'worker later to drain them with fresh task-checks.'},
