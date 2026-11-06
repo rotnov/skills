@@ -382,7 +382,7 @@ class BareReconcileTests(Harness):
         api = Api(message())
         self.assertEqual(self.dispatch(api, 'reconcile', confirmed_queued=True, confirmed_absent=False),
                          {'confirmed_queued':True})
-        self.assertEqual((self.row(), api.acks()), ({'state':'acked'}, 1))
+        self.assertEqual((self.row(), api.acks()), ({'state':'acked', 'attempt_id':ATTEMPT}, 1))
 
 
 class ReceiptTests(Harness):
@@ -801,7 +801,7 @@ class PointerDeliveryTests(Harness):
 
     def test_a_default_state_path_leaves_argv_and_a_custom_one_stays(self):
         _, custom = self.delivered(message())
-        self.assertEqual(custom[0][-1].count('"--state"'), 2)
+        self.assertEqual(custom[0][-1].count('"--state"'), 3)
         self.forget()
         _, default = self.delivered(message(), patches=[
             patch('quorum_session.default_state_root', return_value=self.root)])
@@ -862,7 +862,7 @@ class UnreadPointerTests(Harness):
              patch('quorum_session.shutil.which', return_value='/synthetic/codex'):
             self.assertEqual(relay.run_once(), 'idle')
             self.assertEqual(self.read(api)['body'], 'peer text')
-            self.assertEqual((self.row(), api.acks()), ({'state':'acked'}, 1))
+            self.assertEqual((self.row()['state'], api.acks()), ('acked', 1))
             self.assertEqual(relay.run_once(), 'delivered')
             self.assertEqual(relay.run_once(), 'idle')
         self.assertEqual(self.row(OTHER)['state'], 'submitted')
@@ -883,7 +883,7 @@ class UnreadPointerTests(Harness):
         self.assertEqual((self.row(), api.acks()), (row, 0))
         api.missing = False
         self.read(api)
-        self.assertEqual((self.row(), api.acks()), ({'state':'acked'}, 1))
+        self.assertEqual((self.row()['state'], api.acks()), ('acked', 1))
 
     def test_a_failed_ack_upload_still_returns_the_body_and_the_listener_finishes_it(self):
         from quorum_api import QuorumError
@@ -895,10 +895,10 @@ class UnreadPointerTests(Harness):
             return original(operation, payload, request_id)
         api.call = outage
         self.assertEqual(self.read(api)['body'], 'peer text')
-        self.assertEqual(self.row(), {'state':'queued'})
+        self.assertEqual(self.row()['state'], 'queued')
         api.call = original
         self.assertEqual(self.accepted(api), ('delivered', []))
-        self.assertEqual((self.row(), api.acks()), ({'state':'acked'}, 1))
+        self.assertEqual((self.row()['state'], api.acks()), ('acked', 1))
 
     def test_a_crash_inside_the_read_keeps_the_proof_and_never_replays(self):
         api = Reader(message())
@@ -910,7 +910,7 @@ class UnreadPointerTests(Harness):
         api.call = die
         with self.assertRaises(Crash): self.read(api)
         api.call = original
-        self.assertEqual(self.row(), {'state':'queued'})
+        self.assertEqual(self.row()['state'], 'queued')
         self.assertEqual(self.accepted(api), ('delivered', []))
 
     def test_a_listener_crash_after_acceptance_neither_replays_nor_acknowledges(self):
@@ -942,7 +942,7 @@ class UnreadPointerTests(Harness):
                 api = Reader(message())
                 self.accepted(api)
                 self.dispatch(api, action, **extra)
-                self.assertEqual((self.row(), api.acks()), ({'state':'acked'}, 1))
+                self.assertEqual((self.row()['state'], api.acks()), ('acked', 1))
 
     def test_an_urgent_message_passes_an_unread_head(self):
         api = Reader(message(URGENT, priority='urgent'), message())
@@ -994,7 +994,7 @@ class UnreadPointerTests(Harness):
         self.assertEqual(self.row(), row)
         self.read(api)
         with self.assertRaisesRegex(ValueError, '^session_reconcile_denied$'): self.absent(api, row['attempt_id'])
-        self.assertEqual(self.row(), {'state':'acked'})
+        self.assertEqual(self.row()['state'], 'acked')
 
 
 class Response(io.BytesIO):

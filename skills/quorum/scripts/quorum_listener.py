@@ -173,6 +173,7 @@ class Control:
             result.update(wait_mode=waiting['mode'] if active else 'stopped',
                           poll_seconds=waiting['poll_seconds'] if active else 0,
                           notification_signals=waiting.get('signals', 0))
+            if waiting.get('status_signals'): result['status_signals'] = waiting['status_signals']
             for key in ('last_signal_at', 'last_connected_at', 'last_fallback_at', 'last_wake'):
                 if key in waiting: result[key] = waiting[key]
             if waiting.get('code'): result['notification_code'] = waiting['code']

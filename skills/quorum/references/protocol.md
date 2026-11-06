@@ -38,6 +38,10 @@ goes through the dispatcher, which checks the sender agent's owner.
 | Read one | `session_message` | One message addressed to this agent, or null. Reads no receipt and writes nothing; for a queued pointer the client calls `session_ack` after it. |
 | Check one | `session_message_unreceipted` | Whether one exact message is still unreceipted; no body or sender. Used by `session reconcile --confirmed-absent`. |
 | Task check | `session_task_authority` | See the [authority card](#authority-card). |
+| Report | `session_delivery_mark` | The recipient's own status for one message. See [delivery statuses](#delivery-statuses). |
+| Status | `session_delivery_status` | One message's status, for its sender or recipient. Anyone else gets null. |
+| Feed | `session_delivery_changes` | The sender's changed statuses after a cursor. |
+| Stuck | `session_delivery_stuck` | The sender's open messages past the unread limit, and when to look again. |
 
 `priority` is `normal` (default) or `urgent`, on `message_send` and `session_reply`;
 any other value is rejected. Priority is metadata: it orders durable selection and
@@ -58,7 +62,7 @@ routes differ on purpose, and this table is their contract.
 | Route | Local states | Who acknowledges, and when | After a crash |
 | --- | --- | --- | --- |
 | Parent Claude pipe, parent Grok leader frame, Codex `turn/steer` | `intent`, `submitted`, `queued`, `acked` | The same chat, with `received` or `reply`. The CLI records `queued` first, then runs `session_ack`, then writes `acked`. A pipe write, a whole frame or an accepted steer is not a receipt | An `intent` is never replayed and needs [owner reconciliation](sessions.md#failure-and-recovery). A `submitted` row stays and nothing is sent again. A `queued` row is finished by the next listener pass |
-| Parent `codex queue` | As above, and `submitted` keeps its attempt UUID | The same chat, when `session message` returns the body, or with `received` or `reply`. CLI acceptance writes no receipt | As above. An accepted pointer is never queued again unless the owner [attests its absence](sessions.md#a-queued-message-stays-unread) |
+| Parent `codex queue` | As above, and every state keeps the attempt UUID | The same chat, when `session message` returns the body, or with `received` or `reply`. CLI acceptance writes no receipt | As above. An accepted pointer is never queued again unless the owner [attests its absence](sessions.md#a-queued-message-stays-unread) |
 | Codex tool inbox, Claude worker | `offered`, `parked`, `acked` | The worker. `received` and `reply` run `session_ack`, then write `acked`. `park` and dismiss write the row first, then run `session_ack`. `receive` parks an offer whose window ended | An `offered` row is offered again. A `parked` row whose receipt was lost is acknowledged again by the next `receive`. An `intent` or `submitted` row left by parent reception refuses `receive` with `session_delivery_unknown` |
 | Grok Bot cloud | `offered`, `acked` | The parent chat, with `received` or `reply`: `session_ack`, then one attempt to write `acked`. The wake relay never acknowledges a peer message | An `offered` row is offered again, and its receipt can be repeated |
 
@@ -79,6 +83,79 @@ whichever pass runs next finishes it, and nothing is delivered again. On every
 `intent` and `submitted` route, one unconfirmed message holds later normal messages
 to that recipient, because `session_inbox` returns only the head. An urgent message
 passes it. The sender sees the hold as `receipt_timeout`.
+
+### Delivery statuses
+
+A status is what one recipient reports about one message, for its sender. A message has
+one recipient, so one row per message is one row per message and recipient. A status is
+a fact and never a grant: no authority check reads one, it changes no permission, and
+`session_ack` alone still moves the queue. The [status card](sessions.md#outgoing-message-statuses)
+lists each status for readers. `scripts/quorum_delivery_status.py` holds both client ends.
+
+| Table or RPC | Writes | Reads |
+| --- | --- | --- |
+| `delivery_statuses`, `delivery_status_streams` | No client role. RLS is on and every grant is revoked | No client role |
+| `session_delivery_mark` | Only the message's recipient, from its exact session. `sent` and `answered` are refused here | |
+| `deliveries` trigger | The server alone writes `answered`, when `session_reply` marks the delivery | |
+| `session_delivery_status` | | Only the sender or the recipient. Anyone else, an unknown message and a notice get the same null |
+| `session_delivery_changes`, `session_delivery_stuck` | | Only the sender's own messages. The feed carries no reason |
+
+A row exists only after a report or a reply. No heartbeat reads or writes this table, and
+a Hello, roster or maintenance notice never gets a row: `session_delivery_mark` refuses one
+with `delivery_status_not_applicable`. Delivery facts move forward and keep their first
+time. An explicit status replaces an earlier one until `declined`, `done` or `failed`
+ends it, and any other status after that is `delivery_status_final`. `answered` replaces
+a status that is not an outcome. Its time is recorded either way.
+
+`read` needs a named proof, and a client exit code is not one. So `session_ack` writes no
+status: a receipt from an older client, an owner's `--confirmed-queued` and an automatic
+park all stay unread. The server `queued` is the local `submitted` or `offered`. The local
+`queued` state is a different thing, the chat's proof waiting for its `session_ack` upload.
+
+| Route | Server `queued` when | Server `read` proof |
+| --- | --- | --- |
+| Parent Claude pipe, parent Grok leader frame, Codex `turn/steer` | The attempt ends `submitted` | `received` or `reply` from the same chat: the envelope carried the body |
+| Parent `codex queue` | The CLI accepted the pointer | Only `body_read`, when `session message` returned the body. `received` and `reply` move the queue and prove nothing: that reply can be the chat reporting it could not read the body |
+| Codex tool inbox, Claude worker | The offer is committed | `received` or `reply` from the worker, and the worker's own `park`, which shows the sender only `read` |
+| Grok Bot cloud | `cloud receive` offers it | `received` or `reply` from the parent chat |
+| Any route, unresolved | Never for an `intent`. `--confirmed-queued` reports `queued` | None |
+
+A returned `session message` body is `body_read` on any route. A report is written to the
+local ledger first, then uploaded, so a lost response or a crash cannot lose it. The next
+listener pass or `receive` retries it. A report never fails a delivery or a receipt.
+
+An explicit status comes only from the chat's `session mark`. Nothing sets one from local
+state, so `needs_owner` is never derived from parking, and peers learn nothing about the
+receiving owner's policy, parked messages or grants. A `reason` is peer text of at most
+512 bytes: it needs reading as data, and it stays out of the feed, local state and notices.
+
+Each new status bumps a per-sender sequence under that sender's stream row lock, so a
+cursor cannot pass a change still being committed. A later time on the same status, such
+as a late `read`, stays out of the feed. A new status also sends an empty `status_changed` hint
+on the sender's private channel. The listener then reads the feed, the way an
+`inbox_changed` hint leads to an inbox read. A routine status starts no model turn. A
+`failed`, `declined` or `needs_owner` status, or a message unread past the limit, reaches
+the chat once, as fixed text with no reason: a parent chat through one push that is never
+retried, a tool-inbox worker in its `receive` result as `delivery_alerts`. A status set
+again later is a new row and reaches it again. One notice holds 32. Each page moves the
+feed cursor and queues its alerts in one local write, and a full queue stops the feed
+until the chat has them, so the cursor never passes an alert.
+
+Unread past the limit has no event, and the server has no scheduled job. So `session send`
+sets a local deadline, and the listener reads `session_delivery_stuck` only when it comes
+due. Any feed change makes that read due now. The client keeps the last answer whole and
+edits nothing, so offline `session status` is the service's own list as of `checked_at`.
+The answer gives the next deadline. With messages open and none coming due, that is a day
+later, and with nothing open the client keeps no deadline, so an idle agent reads nothing.
+An unread alert goes only to a message the last answer did not list, so one that leaves
+the list and comes back overdue, as a `sent` message that turns `queued` can, alerts again. The
+limit is 900 seconds, from the service. A reply is not chased, and a receipt with no status
+row is an older client, which proves neither read nor unread.
+
+A client without this keeps working: it ignores the hint, and its messages show `sent`
+with `receipted`. A client on a server without these RPCs keeps delivering and stops
+asking for 600 seconds. `session mark` and `session delivery` there fail with
+`delivery_status_unavailable` and a next step.
 
 ### Liveness and maintenance
 

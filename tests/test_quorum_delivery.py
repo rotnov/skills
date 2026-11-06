@@ -193,7 +193,7 @@ class PushTests(LedgerCase):
     def test_proof_moves_only_a_submitted_row(self):
         self.put({'state': 'submitted', 'attempt_id': ATTEMPT})
         self.rows.prove(MID)
-        self.assertEqual(self.rows.get(MID), {'state': 'queued'})
+        self.assertEqual(self.rows.get(MID), {'state': 'queued', 'attempt_id': ATTEMPT})
         self.put({'state': 'intent', 'attempt_id': ATTEMPT})
         self.rows.prove(MID)
         self.assertEqual(self.rows.get(MID)['state'], 'intent')
@@ -215,7 +215,8 @@ class PushTests(LedgerCase):
         self.put({'state': 'intent', 'attempt_id': ATTEMPT})
         seen = []
         self.rows.attest_queued(Api(lambda: seen.append(self.rows.get(MID))), SCOPE, MID)
-        self.assertEqual((seen, self.rows.get(MID)), ([{'state': 'queued'}], {'state': 'acked'}))
+        self.assertEqual((seen, self.rows.get(MID)), ([{'state': 'queued', 'attempt_id': ATTEMPT}],
+                                                      {'state': 'acked', 'attempt_id': ATTEMPT}))
 
     def test_settled_returns_a_stuck_intent_once_no_listener_is_live(self):
         self.put({'state': 'intent'})

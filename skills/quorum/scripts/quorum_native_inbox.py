@@ -15,6 +15,7 @@ import time
 import uuid
 from quorum_api import QuorumError, guarded_call
 from quorum_delivery import Deliveries, PULL_STATES, server_ack
+from quorum_delivery_status import MARK_HINT, Reports, StatusWatch, reportable
 from quorum_listener import control_lock
 from quorum_os import FileLock
 from quorum_presence import Presence, hello_once
@@ -71,7 +72,8 @@ class NativeInboxError(ValueError):
                         'invalid_message', 'invalid_priority', 'worker_already_running'}
     # Service reads: having completed one changes nothing at the service.
     READS = {'session_requirements', 'session_inbox', 'quorum_lookup', 'resolve_role', 'agent_status',
-             'session_peers', 'conversation_read', 'session_message', 'session_task_authority'}
+             'session_peers', 'conversation_read', 'session_message', 'session_task_authority',
+             'session_delivery_status', 'session_delivery_changes', 'session_delivery_stuck'}
 
     # A request already dispatched: its effect is known (`accepted`, `completed`) or `uncertain`.
     EFFECTS = {'accepted', 'completed', 'uncertain'}
@@ -610,8 +612,10 @@ def notice(record, message, priority):
             'stdin. If the answer needs the owner\'s decision, run the park command now: it receipts the message, '
             'keeps it in the private awaiting-owner list and keeps reception running; return the decision to the '
             'parent once, and later answer it with session awaiting resolve. Never stop receiving or report '
-            'listening as paused while a decision is pending. Only this worker may run these commands. Then call '
-            'session receive again within your brief. ' + RECEIVE_LOOP)
+            'listening as paused while a decision is pending. ' + MARK_HINT
+            + 'Parking stays private, so needs_owner goes to the sender only if you set it. '
+            'Only this worker may run these commands. Then call session receive again within your brief. '
+            + RECEIVE_LOOP)
 
 
 def loop_fields(auth_ledger, record, state, wait_seconds):
@@ -673,6 +677,7 @@ def offer(api, auth_ledger, ledger, record, stopping=lambda: False):
             messages = api.call('session_inbox', _scope(record))
             if not isinstance(messages, list): raise QuorumError('invalid_response')
             if stopping(): return None
+    fresh = False
     if found is None:
         if not messages: return None
         # The durable inbox order already places an urgent message first.
@@ -681,6 +686,7 @@ def offer(api, auth_ledger, ledger, record, stopping=lambda: False):
             raise ValueError('session_binding_denied')
         message_priority(head)
         message_id = str(uuid.UUID(head['id']))
+        fresh = deliveries.get(message_id) is None
         deliveries.offer(message_id, record, head, MESSAGE_FIELDS, offered_at=wall())
         delivery = deliveries.get(message_id)
         if delivery.get('state') != 'offered' or not _owned(record, delivery):
@@ -702,6 +708,8 @@ def offer(api, auth_ledger, ledger, record, stopping=lambda: False):
                               else 'tool-inbox')
         acknowledge(api, ledger, record, message_id)
         return NOTICE
+    # Handed to this worker's next tool result; only the worker's own `received` or `reply` proves it read.
+    if fresh and reportable(delivery): Reports(ledger).report(api, _scope(record), message_id, 'queued')
     # Delegation is re-read at output time; a queued offer may predate a revocation.
     current = {**record, 'delegation': (ledger.setting('session-agent') or {}).get('delegation')}
     return {'type': 'quorum.peer_message', 'state': 'offered', 'message_id': message_id, 'priority': priority,
@@ -711,6 +719,7 @@ def offer(api, auth_ledger, ledger, record, stopping=lambda: False):
             'receipt_command': command(auth_ledger, record, 'received', message_id),
             'reply_command': command(auth_ledger, record, 'reply', message_id, '--text-stdin'),
             'park_command': command(auth_ledger, record, 'park', message_id),
+            'mark_command': command(auth_ledger, record, 'mark', message_id, '<status>'),
             'park_after': int(_window_end(delivery)) if _window_end(delivery) else None,
             'awaiting_owner': _count(ledger, record, 'parked'),
             'message': message}
@@ -731,11 +740,16 @@ def receive(api, auth_ledger, ledger, record, wait_seconds, *, waiter=None, pres
         api.check()
     clock = clock or time.monotonic
     control = Control(ledger)
+    # A bounded call is reconnected often, so it catches up on a timer. Alerts travel in its own result.
+    watch = StatusWatch(api, ledger, record, catch_up=False)
+    def alerts():
+        pending = watch.take()
+        return {'delivery_alerts': pending} if pending else {}
     def result(state, run_id):
         # A bounded worker reports its connection's Hello outcome once, never per call.
         return {'state': state, 'message': None, 'run_id': run_id, 'session_ref': record['session_ref'],
                 'transport': TRANSPORT, 'wait_seconds': wait_seconds,
-                'awaiting_owner': _count(ledger, record, 'parked'), **hello_once(ledger),
+                'awaiting_owner': _count(ledger, record, 'parked'), **hello_once(ledger), **alerts(),
                 **loop_fields(auth_ledger, record, state, wait_seconds)}
     with LocalSupervisorLock(ledger.root), FileLock(ledger.root / 'listener.lock'):
         with control_lock(ledger):
@@ -749,7 +763,7 @@ def receive(api, auth_ledger, ledger, record, wait_seconds, *, waiter=None, pres
         presence = presence or Presence(api, record, ledger, persist_epoch=True, run_id=run_id,
                                         status=lambda: peer_status(ledger, record))
         if waiter is None and wait_seconds:
-            waiter = RealtimeWait(api, record, ledger, keepalive=presence, stop_aware=True)
+            waiter = RealtimeWait(api, record, ledger, keepalive=presence, stop_aware=True, watch=watch)
         final, code, handled, disclosed = 'stopped', None, 0, None
         try:
             # Subscribe before the initial authoritative read so a message arriving in between still wakes us.
@@ -761,6 +775,8 @@ def receive(api, auth_ledger, ledger, record, wait_seconds, *, waiter=None, pres
                 control.update(run_id, 'checking', 0, timeout=wait_seconds)
                 if waiter: waiter.pulse(stopping)
                 if stopping(): break
+                watch.tick()
+                if stopping(): break
                 envelope = offer(api, auth_ledger, ledger, record, stopping)
                 # A stop observed after the reads discloses nothing; a committed offer stays for recovery.
                 if stopping(): break
@@ -770,7 +786,8 @@ def receive(api, auth_ledger, ledger, record, wait_seconds, *, waiter=None, pres
                     if authorize is not None: api.check()
                     handled = 1
                     disclosed = {**envelope, 'run_id': run_id, 'session_ref': record['session_ref'],
-                                 **hello_once(ledger), **loop_fields(auth_ledger, record, 'offered', wait_seconds)}
+                                 **hello_once(ledger), **alerts(),
+                                 **loop_fields(auth_ledger, record, 'offered', wait_seconds)}
                     break
                 if not waiter or idle_left <= 0: return result('timeout', run_id)
                 control.update(run_id, 'waiting', 0, timeout=wait_seconds)
@@ -808,11 +825,14 @@ def acknowledge(api, ledger, record, message_id):
 def confirm(api, ledger, record, message_id, *, authorize=None):
     if authorize is not None: api = _guarded(api, authorize)
     _authoritative(api, ledger, record)
+    delivery = offered(ledger, record, message_id)
+    reports = Reports(ledger)
+    # The offer carried the body, and this chat's own command proves it reached the chat.
+    if reportable(delivery): reports.note(message_id, 'read', proof='received')
     # A receipt of a parked entry closes it like a dismissal, with the same pending-answer rule.
-    if offered(ledger, record, message_id).get('state') == 'parked':
-        _close_parked(api, ledger, record, message_id)
-        return {'received': True, 'state': 'acked', 'message_id': message_id}
-    acknowledge(api, ledger, record, message_id)
+    if delivery.get('state') == 'parked': _close_parked(api, ledger, record, message_id)
+    else: acknowledge(api, ledger, record, message_id)
+    reports.flush(api, _scope(record))
     return {'received': True, 'state': 'acked', 'message_id': message_id}
 
 
@@ -840,7 +860,10 @@ def reply(api, ledger, record, message_id, body, priority, *, authorize=None):
         deliveries.swap(message_id, raw, {**delivery, 'reply_digest': digest})
     else: raise NativeInboxError('native_inbox_reply_loop_denied')
     result = api.call('session_reply', {**_scope(record), 'message_id': message_id, 'body': body, 'priority': priority})
+    reports = Reports(ledger)
+    if reportable(delivery): reports.note(message_id, 'read', proof='reply')
     acknowledge(api, ledger, record, message_id)
+    reports.flush(api, _scope(record))
     return {key: result[key] for key in ('reply_message_id', 'conversation_id') if key in result} | {
         'received': True, 'message_id': message_id}
 
@@ -904,8 +927,11 @@ def park(api, ledger, record, message_id, *, authorize=None):
     """Receipt one offered message now and keep it awaiting the owner's decision; reception continues."""
     if authorize is not None: api = _guarded(api, authorize)
     _authoritative(api, ledger, record)
-    offered(ledger, record, message_id)
+    delivery = offered(ledger, record, message_id)
     _park(api, ledger, record, message_id, 'owner_decision')
+    # This chat chose to park, so it has the body. An automatic park proves nothing and reports nothing.
+    # Parking itself stays private: the sender sees `read`, and `needs_owner` only if the chat sets it.
+    if reportable(delivery): Reports(ledger).report(api, _scope(record), message_id, 'read', proof='received')
     return {'parked': True, 'state': 'parked', 'message_id': message_id,
             'awaiting_owner': _count(ledger, record, 'parked')}
 
@@ -1018,6 +1044,7 @@ def add_commands(actions):
 
 def scope_operation(args):
     """The existing worker-capability operation each action needs: no new scope or permission."""
+    if args.action == 'mark': return 'received'
     if args.action == 'awaiting' and getattr(args, 'awaiting_action', None) == 'resolve': return 'reply'
     return 'received'
 

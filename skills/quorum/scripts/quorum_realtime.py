@@ -33,8 +33,10 @@ class RealtimeWait:
     No message body or delivery acknowledgement is carried by this transport.
     """
     def __init__(self, api, record, ledger, *, connect=None, clock=time.monotonic,
-                 sleep=time.sleep, keepalive=None, stop_aware=False, authorize=None):
+                 sleep=time.sleep, keepalive=None, stop_aware=False, authorize=None, watch=None):
         self.api, self.ledger, self.clock, self.sleep = api, ledger, clock, sleep
+        # Optional sender side: `status_changed` hints on this channel. Without it they are ignored.
+        self.watch = watch
         self.authorize = authorize or (lambda:None)
         self.keepalive = keepalive
         # Opt-in: pass `stopping` into keepalive calls (the legacy listener keeps calling them bare).
@@ -97,6 +99,7 @@ class RealtimeWait:
         self.backoff = min(self.backoff * 2, 60)
         self._status(mode='polling_fallback', poll_seconds=10,
                      code='realtime_unavailable', last_fallback_at=time.time())
+        if self.watch: self.watch.fallback()
 
     def _join(self, stopping):
         # Suppress dependency debug frames/handshake logging, which contain JWTs
@@ -125,6 +128,7 @@ class RealtimeWait:
                 self.backoff = 10
                 self._status(mode='realtime', poll_seconds=60, code=None,
                              last_connected_at=time.time(), last_wake='subscribed')
+                if self.watch: self.watch.connected()
                 self._keep('connected', stopping)
                 return
         raise ValueError('realtime_unavailable')
@@ -204,6 +208,10 @@ class RealtimeWait:
                     self._status(signals=self.diagnostics['signals'] + 1,
                                  last_signal_at=time.time(), last_wake='signal')
                     return
+                if event == 'broadcast' and frame['payload'].get('event') == 'status_changed' and self.watch:
+                    # Never an inbox pass or a model turn: this wait goes on.
+                    self._status(status_signals=self.diagnostics.get('status_signals', 0) + 1)
+                    self._busy(self.watch.signal)
             if not stopping(): self._status(last_wake='safety_poll')
         except Exception as error:
             if error_class(error) in TERMINAL and isinstance(error, ValueError):

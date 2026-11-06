@@ -224,6 +224,7 @@ class PriorityTests(unittest.TestCase):
                     unreceipted normal head, exactly as the migration orders it."""
                     def call(self, operation, payload):
                         if operation == 'session_requirements': return {'protocol_version':2, 'skill_version':'0.3.0'}
+                        if operation == 'session_delivery_mark': return {}
                         if operation != 'session_inbox':
                             acked.append(payload['message_id'])
                             return {'queued': True}

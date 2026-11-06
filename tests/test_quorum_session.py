@@ -128,6 +128,7 @@ class SessionTests(unittest.TestCase):
                     def call(self,operation,payload):
                         if operation == 'session_requirements': return {'protocol_version':2, 'skill_version':'0.3.0'}
                         if operation=='session_inbox': return [message]
+                        if operation=='session_delivery_mark': return {}
                         if self.fail:
                             self.fail=False
                             raise ValueError('service_unavailable')

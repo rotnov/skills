@@ -13,7 +13,7 @@ OPERATIONS = frozenset(('quorum_create invite_create invite_accept device_regist
     'invite_create_id invite_accept_id invite_revoke_id invite_create_open quorum_set_access '
     'session_heartbeat session_peers session_requirements session_task_authority '
     'session_update_request session_update_status session_update_report session_message_unreceipted '
-    'session_message '
+    'session_message session_delivery_mark session_delivery_status session_delivery_changes session_delivery_stuck '
     'knowledge_admin knowledge_write knowledge_search knowledge_read knowledge_index '
     'knowledge_source_write knowledge_source_read knowledge_catalog agent_retire quorum_agents').split())
 
@@ -38,7 +38,8 @@ SERVER_ERRORS = {
     **_names(400, 3, (
         'active_attempt_requires_reconciliation already_assigned assignment_closed assignment_missing '
         'binding_conflict cannot_revoke_owner capacity_full completion_unconfirmed connection_id_required '
-        'dependency_not_accepted idempotency_conflict invalid_access invalid_attempt_transition '
+        'delivery_status_final delivery_status_not_applicable dependency_not_accepted idempotency_conflict '
+        'invalid_access invalid_attempt_transition invalid_delivery_status '
         'invalid_dependencies invalid_message invalid_payload invalid_peer_status invalid_priority '
         'invalid_project_ref invalid_reply invalid_role invalid_target_github_id invalid_work_transition '
         'knowledge_entry_inactive knowledge_entry_unavailable knowledge_idempotency_conflict '
@@ -84,7 +85,7 @@ LOCAL_VALUE_CODES = frozenset((
     'github_user_invalid grok_leader_platform_unsupported grok_transport_unavailable grok_tui_gone hash_mismatch '
     'invalid_argument invalid_arguments '
     'invalid_binding invalid_capability_ttl invalid_coordinator_role invalid_credential_profile '
-    'invalid_dispatch_mode invalid_invitation invalid_message invalid_notification invalid_oauth_callback '
+    'invalid_delivery_status invalid_dispatch_mode invalid_invitation invalid_message invalid_notification invalid_oauth_callback '
     'invalid_operation invalid_priority invalid_profile_registry invalid_registration invalid_release_manifest '
     'invalid_requirement invalid_response invalid_route invalid_scratch_directory invalid_sequence '
     'invalid_service_origin invalid_session invalid_session_ref invalid_session_selector invalid_skill_name '

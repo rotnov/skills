@@ -140,6 +140,8 @@ response. The offer is sticky: a newer urgent message at the head of the inbox
 is not offered until the current one is receipted; this route has no park.
 `cloud received` and `cloud reply` require
 a message actually offered to this parent; they cannot acknowledge a wake hint.
+An offer reports `queued` to the sender and either command reports `read`. This route has
+no `session mark`, status feed or alerts ([outgoing statuses](sessions.md#outgoing-message-statuses)).
 `cloud receive` and the relay receipt server Hello and roster
 [transport notices](sessions.md#transport-notices) themselves; such a notice never wakes the parent.
 Do not infer task acceptance from a transport receipt. Normal/urgent ordering

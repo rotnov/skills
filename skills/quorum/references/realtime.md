@@ -26,6 +26,10 @@ an empty `inbox_changed` signal, in the same transaction. Message text and IDs
 stay in the private inbox. If broadcasting fails, the durable transaction succeeds
 and periodic inbox catch-up recovers it. Realtime may need a connected client to
 create today's message partition; an empty server does not lose durable messages.
+With the [delivery statuses](server.md#delivery-statuses) a status change also sends
+an empty `status_changed` signal to the message's sender on the same topic. It leads
+to one read of the sender's status feed, not an inbox read, and starts no model turn.
+Its loss is recovered on the next reconnect or the next due check of an open message.
 
 After deployment verify an actual end-user private subscription, denial for a
 different owner and a real signal. Then verify that the exact receiving client

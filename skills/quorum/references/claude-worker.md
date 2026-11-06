@@ -229,7 +229,7 @@ return and before disclosure. A worker receipt means the worker consumed the
 message, never that the parent chat saw it. Messages that need the owner's
 decision follow [awaiting the owner](native-inbox.md#awaiting-the-owner) with
 `session --worker-capability <capability-file> park|hold|awaiting ...`; `park`,
-`hold`, `awaiting list` and `awaiting dismiss` use the scope's `received`
+`hold`, `awaiting list`, `awaiting dismiss` and `mark` use the scope's `received`
 operation and `awaiting resolve` its `reply` operation, so no scope changes. Grants are only those resolved for
 this scope at connect; nothing is inherited from the parent.
 

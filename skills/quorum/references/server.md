@@ -375,6 +375,31 @@ itself for a queued pointer. A client on a server without it
 falls back to `conversation_read`. To roll back, in one transaction drop
 `public.session_message(uuid,text,uuid)`.
 
+## Delivery statuses
+
+After reviewing the source and obtaining administrator deployment authorization,
+apply
+[`20261106170000_delivery_statuses.sql`](../supabase/migrations/20261106170000_delivery_statuses.sql)
+in one transaction after `20261106160000_session_message.sql`. It pins the binding
+check, `session_reply` and the release, and refuses drift, reapplication or a server
+without that predecessor before any change. It does not change the required release,
+any existing function body, table access or task authority. Refresh PostgREST's
+schema cache after applying.
+
+It adds the private `delivery_statuses` and `delivery_status_streams` tables, an
+index on recent deliveries, one trigger after a delivery becomes `answered`, and the
+RPCs `session_delivery_mark`, `session_delivery_status`, `session_delivery_changes`
+and `session_delivery_stuck`. [Delivery statuses](protocol.md#delivery-statuses) has
+the contract. Heartbeats and Hello are untouched. A client without this ignores the
+new Realtime event. A new client on a server without this keeps delivering, and
+`session mark` and `session delivery` return `delivery_status_unavailable`.
+
+To roll back, in one transaction drop the trigger `delivery_status_answered` on
+`quorum_private.deliveries`, the four public RPCs, the private functions
+`delivery_status_answered`, `delivery_status_apply`, `delivery_status_view` and
+`delivery_status_applies`, the tables `delivery_statuses` and
+`delivery_status_streams`, and the index `deliveries_quorum_recent`.
+
 ## Hello reporting extension
 
 After reviewing the source and obtaining administrator deployment authorization,

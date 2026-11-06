@@ -35,6 +35,11 @@ def server_ack(api, scope, message_id):
     api.call('session_ack', {**scope, 'message_id': message_id})
 
 
+def moved(row, state):
+    """`row` in its next parent state. An attempt UUID stays: it says the envelope may not have carried the body."""
+    return {'state': state, **({'attempt_id': row['attempt_id']} if row and 'attempt_id' in row else {})}
+
+
 class Deliveries:
     """The delivery rows of one chat's private ledger."""
 
@@ -162,10 +167,10 @@ class Deliveries:
         raw = self.raw(message_id)
         if not raw or json.loads(raw)['state'] != 'submitted': return
         # A compare-and-set: an attempt that replaced this row is not what the chat confirmed.
-        self.swap(message_id, raw, {'state': 'queued'})
+        self.swap(message_id, raw, moved(json.loads(raw), 'queued'))
 
     def mark_acked(self, message_id):
-        self.ledger.setting(PREFIX + message_id, {'state': 'acked'})
+        self.ledger.setting(PREFIX + message_id, moved(self.get(message_id), 'acked'))
 
     def confirm(self, api, scope, message_id):
         """Record the chat's own proof of receipt for a submitted or queued row, then acknowledge it."""
@@ -175,7 +180,7 @@ class Deliveries:
 
     def attest_queued(self, api, scope, message_id):
         """The owner's attestation: the only path that may acknowledge an unresolved attempt."""
-        self.ledger.setting(PREFIX + message_id, {'state': 'queued'})
+        self.ledger.setting(PREFIX + message_id, moved(self.get(message_id), 'queued'))
         server_ack(api, scope, message_id)
         self.mark_acked(message_id)
 
