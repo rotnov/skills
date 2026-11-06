@@ -9,8 +9,10 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import time
 from types import SimpleNamespace
 import unittest
+from datetime import datetime, timezone
 from unittest.mock import patch
 
 from quorum_test_support import isolated_profiles
@@ -23,8 +25,9 @@ SCRIPTS = SKILL / 'scripts'
 sys.path.insert(0, str(SCRIPTS))
 from quorum_api import QuorumError
 from quorum_delivery import Deliveries
-from quorum_delivery_status import (ALERTS_KEY, CHECK_KEY, CURSOR_KEY, Reports, STATUSES, StatusWatch, STUCK_KEY,
-                                    SUPPORT_RETRY, note_sent, outgoing_summary, statuses_supported)
+from quorum_delivery_status import (ALERT_LIMIT, ALERTS_KEY, CHECK_KEY, CURSOR_KEY, PAGE_LIMIT, Reports, STATUSES,
+                                    StatusWatch, STUCK_KEY, SUPPORT_KEY, SUPPORT_RETRY, note_sent, outgoing_summary,
+                                    statuses_supported)
 from quorum_release import installed_release
 from quorum_state import LocalLedger
 
@@ -64,6 +67,14 @@ class Service:
 def row(status, seq=1, message_id=MID, **extra):
     return {'seq': seq, 'message_id': message_id, 'recipient_id': 'b', 'recipient_role': 'doer', 'status': status,
             'status_at': '2026-11-06T12:00:00+00:00', **extra}
+
+
+def at(seconds):
+    return datetime.fromtimestamp(seconds, timezone.utc).isoformat()
+
+
+def feed(*rows, cursor=None, more=False):
+    return {'rows': list(rows), 'cursor': cursor or rows[-1]['seq'], 'more': more}
 
 
 class LedgerCase(unittest.TestCase):
@@ -139,7 +150,7 @@ class WatchTests(LedgerCase):
         watch.signal()
         self.assertEqual(api.calls, [('session_delivery_changes', {**SCOPE, 'after': 0})])
         self.assertEqual(self.pushed, [])
-        self.assertEqual(self.ledger.setting(CURSOR_KEY), {'agent_id': 'a', 'seq': 3})
+        self.assertEqual(self.ledger.setting(CURSOR_KEY), {'agent_id': 'a', 'seq': 3, 'more': False})
 
     def test_each_material_status_reaches_the_chat_once_with_no_reason(self):
         for status in ('failed', 'declined', 'needs_owner'):
@@ -285,7 +296,7 @@ class WatchTests(LedgerCase):
     def test_a_change_updates_the_cached_stuck_list(self):
         self.ledger.setting(STUCK_KEY, {'rows': [dict(row('queued'), unread=True), dict(row('sent', 2, OTHER), unread=True)],
                                         'total': 2, 'checked_at': 1})
-        api = Service([{'rows': [row('read', 3), row('in_progress', 4, OTHER)], 'cursor': 4, 'more': False}])
+        api = Service([feed(row('read', 3), row('in_progress', 4, OTHER, status_at=at(50)))])
         self.watch(api).signal()
         saved = self.ledger.setting(STUCK_KEY)
         self.assertEqual([(item['message_id'], item['status'], item['unread']) for item in saved['rows']],
@@ -321,6 +332,147 @@ class WatchTests(LedgerCase):
         self.ledger.setting(CHECK_KEY, {'due': 1100.0})
         self.watch(Service([{'rows': [row('in_progress')], 'cursor': 1, 'more': False}])).signal()
         self.assertEqual(self.ledger.setting(CHECK_KEY), {'due': 1100.0})
+
+    def changes(self, api):
+        return sum(operation == 'session_delivery_changes' for operation, _ in api.calls)
+
+    def exhausted(self):
+        pages = [feed(row('read', seq), more=True) for seq in range(1, PAGE_LIMIT + 1)]
+        return Service([*pages, feed(row('failed', PAGE_LIMIT + 1, OTHER))])
+
+    def test_a_catch_up_past_its_page_budget_resumes_on_the_next_pass(self):
+        api = self.exhausted()
+        watch = self.watch(api)
+        watch.signal()
+        self.assertEqual((self.changes(api), self.pushed), (PAGE_LIMIT, []))
+        self.assertEqual(self.ledger.setting(CURSOR_KEY)['seq'], PAGE_LIMIT)
+        watch.tick()
+        self.assertEqual([item['status'] for batch in self.pushed for item in batch], ['failed'])
+        self.assertEqual(api.calls[-1][1]['after'], PAGE_LIMIT)
+        calls = self.changes(api)
+        watch.tick()
+        self.assertEqual(self.changes(api), calls)
+
+    def test_a_pull_route_finishes_a_catch_up_with_no_check_left(self):
+        api = self.exhausted()
+        self.ledger.setting(CHECK_KEY, {'due': None})
+        self.watch(api, catch_up=False).tick()
+        self.assertEqual(self.changes(api), PAGE_LIMIT)
+        with self.ledger.db: self.ledger.db.execute('delete from settings where key=?', (CHECK_KEY,))
+        watch = self.watch(api, catch_up=False, notify=None)
+        watch.tick()
+        self.assertEqual([item['status'] for item in watch.take()], ['failed'])
+
+    def cached(self, *rows, **extra):
+        self.ledger.setting(STUCK_KEY, {'rows': [dict(item, unread=item['status'] in ('sent', 'queued')) for item in rows],
+                                        'total': len(rows), 'checked_at': 1, **extra})
+
+    def test_a_new_timed_status_leaves_the_stuck_list_until_it_is_overdue(self):
+        self.cached(row('queued', status_at=at(1)))
+        for status in ('in_progress', 'needs_owner'):
+            with self.subTest(status=status):
+                self.cached(row('queued', status_at=at(1)))
+                self.watch(Service([feed(row(status, 2, status_at=at(990)))])).signal()
+                self.assertEqual(outgoing_summary(self.ledger)['stuck'], [])
+                self.assertEqual(outgoing_summary(self.ledger)['stuck_total'], 0)
+
+    def test_an_overdue_timed_status_stays_with_its_own_time(self):
+        self.cached(row('queued', status_at=at(1)))
+        self.watch(Service([feed(row('in_progress', 2, status_at=at(50)))])).signal()
+        kept = outgoing_summary(self.ledger)['stuck']
+        self.assertEqual([(item['status'], item['status_at'], item['unread']) for item in kept],
+                         [('in_progress', at(50), False)])
+
+    def test_the_services_limit_decides_what_is_overdue(self):
+        self.cached(row('queued', status_at=at(1)), limit_seconds=100)
+        self.watch(Service([feed(row('in_progress', 2, status_at=at(800)))])).signal()
+        self.assertEqual(outgoing_summary(self.ledger)['stuck_total'], 1)
+        note_sent(self.ledger, wall=lambda: 1000.0)
+        self.assertEqual(self.ledger.setting(CHECK_KEY), {'due': 900.0})
+
+    def test_a_check_keeps_the_services_limit(self):
+        api = Service(stuck={'open': 1, 'stuck_total': 0, 'stuck': [], 'next_check_seconds': 9, 'limit_seconds': 100})
+        watch = self.watch(api)
+        self.ledger.setting(CHECK_KEY, {'due': 1.0})
+        watch.tick()
+        with self.ledger.db: self.ledger.db.execute('delete from settings where key=?', (CHECK_KEY,))
+        note_sent(self.ledger, wall=lambda: 1000.0)
+        self.assertEqual(self.ledger.setting(CHECK_KEY), {'due': 1100.0})
+
+    def test_a_timed_status_seen_late_is_checked_at_its_own_deadline(self):
+        self.watch(Service([feed(row('in_progress', status_at=at(50)))])).signal()
+        self.assertEqual(self.ledger.setting(CHECK_KEY), {'due': 950.0})
+
+    def test_a_timed_status_ahead_of_this_clock_waits_one_limit(self):
+        self.watch(Service([feed(row('in_progress', status_at=at(5000)))])).signal()
+        self.assertEqual(self.ledger.setting(CHECK_KEY), {'due': 1900.0})
+
+    def test_a_change_to_a_stuck_message_past_the_cached_rows_refreshes_them(self):
+        self.ledger.setting(STUCK_KEY, {'rows': [dict(row('queued', status_at=at(1)), unread=True)], 'total': 40, 'checked_at': 1})
+        api = Service([feed(row('done', 2, OTHER))], stuck={'open': 39, 'stuck_total': 39, 'next_check_seconds': None,
+                                                            'stuck': [row('queued', status_at=at(1))]})
+        watch = self.watch(api)
+        watch.signal()
+        watch.tick()
+        self.assertIn('session_delivery_stuck', api.ops())
+        self.assertEqual(outgoing_summary(self.ledger)['stuck_total'], 39)
+
+    def test_a_stuck_list_with_nothing_else_due_is_refreshed_daily(self):
+        stuck = {'open': 1, 'stuck_total': 1, 'next_check_seconds': None, 'stuck': [row('queued', unread=True)]}
+        watch = self.watch(Service(stuck=stuck))
+        self.ledger.setting(CHECK_KEY, {'due': 1.0})
+        watch.tick()
+        self.assertEqual(self.ledger.setting(CHECK_KEY), {'due': self.now + 86400})
+        watch.api.stuck = {'open': 1, 'stuck_total': 0, 'next_check_seconds': None, 'stuck': []}
+        self.now += 86401
+        watch.tick()
+        self.assertEqual(self.ledger.setting(CHECK_KEY), {'due': None})
+
+    def test_an_unusable_check_changes_no_local_state(self):
+        self.cached(row('queued', status_at=at(1)))
+        before = self.ledger.setting(STUCK_KEY)
+        watch = self.watch(Service(stuck={'stuck': []}))
+        self.ledger.setting(CHECK_KEY, {'due': 1.0})
+        watch.tick()
+        self.assertEqual((self.ledger.setting(STUCK_KEY), self.ledger.setting(CHECK_KEY)), (before, {'due': 1.0}))
+
+    def test_a_send_during_an_old_server_keeps_its_deadline_for_the_upgrade(self):
+        self.ledger.setting(SUPPORT_KEY, {'unsupported_at': time.time()})
+        note_sent(self.ledger, wall=lambda: 1000.0)
+        self.assertEqual(self.ledger.setting(CHECK_KEY), {'due': 1900.0})
+
+    def test_the_same_material_status_set_again_is_a_new_fact(self):
+        first, again = row('needs_owner', 1, status_at=at(10)), row('needs_owner', 3, status_at=at(20))
+        watch = self.watch(Service([feed(first), feed(first), feed(again)]))
+        for _ in range(3): watch.signal()
+        self.assertEqual([len(batch) for batch in self.pushed], [1, 1])
+
+    def test_more_alerts_than_one_notice_are_all_shown_in_turn(self):
+        rows = [row('failed', seq, f'{seq:08x}-1111-4111-8111-111111111111') for seq in range(1, ALERT_LIMIT + 9)]
+        watch = self.watch(Service([feed(*rows)]))
+        watch.signal()
+        self.assertEqual([len(batch) for batch in self.pushed], [ALERT_LIMIT])
+        watch.tick()
+        self.assertEqual([len(batch) for batch in self.pushed], [ALERT_LIMIT, 8])
+        shown = [item['message_id'] for batch in self.pushed for item in batch]
+        self.assertEqual(shown, [item['message_id'] for item in rows])
+
+    def test_an_alert_kept_before_a_failed_read_is_shown_by_the_next_pass(self):
+        api = Service([feed(row('failed'), more=True)])
+        watch = self.watch(api)
+        real = api.call
+        def down(operation, payload, request_id=None):
+            if operation == 'session_delivery_changes' and payload['after']: raise OSError('offline')
+            return real(operation, payload, request_id)
+        api.call = down
+        watch.signal()
+        self.assertEqual(self.pushed, [])
+        watch.tick()
+        self.assertEqual(len(self.pushed), 1)
+
+    def test_a_broken_ledger_read_during_a_tick_never_reaches_reception(self):
+        watch = self.watch(Service())
+        with patch.object(watch, '_pending', side_effect=OSError('locked')): watch.tick()
 
     def test_a_pull_route_takes_alerts_once_in_its_own_result(self):
         watch = self.watch(Service([{'rows': [row('failed')], 'cursor': 1, 'more': False}]), notify=None)

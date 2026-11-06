@@ -8,6 +8,7 @@ on one. `session_ack` still alone moves the queue.
 import json
 import re
 import time
+from datetime import datetime
 
 from quorum_api import CANONICAL_UUID, ROLE, rpc_missing, server_refused
 
@@ -36,6 +37,8 @@ STUCK_KEY = 'delivery-stuck'
 ALERTS_KEY = 'delivery-alerts'
 # Used only until the service states its own limit in a check.
 FIRST_CHECK_SECONDS = 900
+# A stuck list with no deadline left still ages: its messages can settle unseen or leave the service's window.
+STUCK_REFRESH_SECONDS = 86400
 # How often a pull route catches up, and a parent without Realtime reads the feed, while messages are open.
 PULL_DRAIN_SECONDS, POLL_DRAIN_SECONDS = 300, 60
 PAGE_LIMIT, ALERT_LIMIT, SEEN_LIMIT = 16, 32, 512
@@ -107,13 +110,31 @@ def reportable(delivery):
     return not delivery.get('notification') and not (isinstance(message, dict) and message.get('maintenance'))
 
 
-def note_sent(ledger, *, wall=time.time):
-    """This chat has an open outgoing message, so its reception should check on it once it is due."""
-    if not statuses_supported(ledger): return
-    due = wall() + FIRST_CHECK_SECONDS
+def stuck_limit(ledger):
+    saved = ledger.setting(STUCK_KEY)
+    limit = saved.get('limit_seconds') if isinstance(saved, dict) else None
+    return limit if type(limit) is int and limit > 0 else FIRST_CHECK_SECONDS
+
+
+def arm_check(ledger, due):
+    """Check by `due`. An earlier deadline stands: the service's answer to it chooses the next one."""
     saved = ledger.setting(CHECK_KEY)
     if isinstance(saved, dict) and type(saved.get('due')) in (int, float): due = min(due, saved['due'])
     ledger.setting(CHECK_KEY, {'due': due})
+
+
+def note_sent(ledger, *, wall=time.time):
+    """This chat has an open outgoing message, so its reception should check on it once it is due.
+
+    Kept on a server without the RPCs too: the message still needs its check after an upgrade.
+    """
+    arm_check(ledger, wall() + stuck_limit(ledger))
+
+
+def timestamp(moment):
+    """Seconds for one service time, or None. Local clocks only ever choose when to ask the service."""
+    try: return datetime.fromisoformat(moment).timestamp()
+    except (TypeError, ValueError): return None
 
 
 def status_row(value):
@@ -139,7 +160,9 @@ def stuck_rows(page):
 def save_stuck(ledger, page, *, wall=time.time):
     rows = stuck_rows(page)
     total = page.get('stuck_total') if isinstance(page, dict) else None
-    saved = {'rows': rows, 'total': total if type(total) is int and total >= 0 else len(rows), 'checked_at': int(wall())}
+    limit = page.get('limit_seconds') if isinstance(page, dict) else None
+    saved = {'rows': rows, 'total': total if type(total) is int and total >= 0 else len(rows), 'checked_at': int(wall()),
+             'limit_seconds': limit if type(limit) is int and limit > 0 else stuck_limit(ledger)}
     ledger.setting(STUCK_KEY, saved)
     return saved
 
@@ -189,6 +212,8 @@ class StatusWatch:
     def tick(self):
         self.reports.flush(self.api, self.scope)
         self._guarded(self._pass)
+        # A failed read, or more alerts than one notice holds, can leave some kept and not shown.
+        self._guarded(self._deliver)
 
     def take(self):
         """Alerts not shown yet, for a route whose own tool result reaches the chat."""
@@ -206,7 +231,10 @@ class StatusWatch:
         now = self.wall()
         drained = self.ledger.setting(DRAINED_KEY)
         since = now - drained if type(drained) in (int, float) else float('inf')
-        if (self.stale and (self.catch_up or (check and since >= PULL_DRAIN_SECONDS))) or (
+        saved = self.ledger.setting(CURSOR_KEY)
+        # A catch-up past its page budget finishes first, on any route and with no check left.
+        behind = isinstance(saved, dict) and saved.get('agent_id') == self.scope['agent_id'] and saved.get('more') is True
+        if behind or (self.stale and (self.catch_up or (check and since >= PULL_DRAIN_SECONDS))) or (
                 self.polling and check and since >= POLL_DRAIN_SECONDS):
             self._drain()
         if check and type(check.get('due')) in (int, float) and now >= check['due']: self._check(raw[0])
@@ -215,26 +243,26 @@ class StatusWatch:
         saved = self.ledger.setting(CURSOR_KEY)
         same = isinstance(saved, dict) and saved.get('agent_id') == self.scope['agent_id']
         cursor = saved['seq'] if same and type(saved.get('seq')) is int else 0
+        more = False
         for _ in range(PAGE_LIMIT):
             page = self.api.call('session_delivery_changes', {**self.scope, 'after': cursor})
             if not isinstance(page, dict) or not isinstance(page.get('rows'), list): return
             rows = [row for row in map(status_row, page['rows']) if row]
             self._follow(rows)
-            # A timed status starts its own window, which an earlier check could not have scheduled.
-            if any(row['status'] in STUCK_STATUSES for row in rows): note_sent(self.ledger, wall=self.wall)
             for row in rows:
                 if row['status'] in MATERIAL: self._alert(row, row['status'])
             if type(page.get('cursor')) is int and page['cursor'] >= cursor: cursor = page['cursor']
+            more = page.get('more') is True
             # Saved after the alerts are kept: a crash between them repeats a row, and each alert is once only.
-            self.ledger.setting(CURSOR_KEY, {'agent_id': self.scope['agent_id'], 'seq': cursor})
-            if page.get('more') is not True: break
-        self.stale = False
-        self.ledger.setting(DRAINED_KEY, self.wall())
+            self.ledger.setting(CURSOR_KEY, {'agent_id': self.scope['agent_id'], 'seq': cursor, 'more': more})
+            if not more: break
+        self.stale = more
+        if not more: self.ledger.setting(DRAINED_KEY, self.wall())
         self._deliver()
 
     def _check(self, raw):
         page = self.api.call('session_delivery_stuck', self.scope)
-        if not isinstance(page, dict): return
+        if not isinstance(page, dict) or type(page.get('open')) is not int: return
         saved = save_stuck(self.ledger, page, wall=self.wall)
         for row in saved['rows']:
             if row['unread']: self._alert(row, UNREAD)
@@ -245,22 +273,37 @@ class StatusWatch:
                 self.ledger.db.execute('delete from settings where key=? and data=?', (CHECK_KEY, raw))
                 return
             seconds = page.get('next_check_seconds')
-            value = {'due': self.wall() + seconds if type(seconds) is int and seconds >= 0 else None}
+            if not (type(seconds) is int and seconds >= 0): seconds = STUCK_REFRESH_SECONDS if saved['total'] else None
+            value = {'due': None if seconds is None else self.wall() + seconds}
             self.ledger.db.execute('update settings set data=? where key=? and data=?',
                                    (json.dumps(value), CHECK_KEY, raw))
 
     def _follow(self, rows):
-        """Keep the cached stuck list true between checks: a changed message shows its new status or leaves."""
+        """Keep local state true between checks, as `session_delivery_stuck` would answer now.
+
+        A changed message stays listed only if its own status is overdue, since a new status starts a new
+        window. That window needs a deadline, which no earlier check could have set. A list cut short by
+        the service cannot be followed here, so a change sends it back to the service.
+        """
+        now, limit = self.wall(), stuck_limit(self.ledger)
+        windows = []
+        for row in rows:
+            if row['status'] not in STUCK_STATUSES: continue
+            started = timestamp(row['status_at'])
+            windows.append(now + limit if started is None else min(started, now) + limit)
+        if windows: arm_check(self.ledger, min(windows))
         saved = self.ledger.setting(STUCK_KEY)
-        if not isinstance(saved, dict) or not saved.get('rows'): return
-        changed = {row['message_id']: row['status'] for row in rows}
-        kept = []
-        for row in saved['rows']:
-            status = changed.get(row['message_id'], row['status'])
-            if status in STUCK_STATUSES: kept.append({**row, 'status': status, 'unread': status in UNREAD_STATUSES})
-        if kept != saved['rows']:
-            self.ledger.setting(STUCK_KEY, {**saved, 'rows': kept,
-                                            'total': max(0, saved.get('total', 0) - len(saved['rows']) + len(kept))})
+        if not isinstance(saved, dict) or not rows: return
+        changed = {row['message_id']: row for row in rows}
+        cached, kept = saved.get('rows', []), []
+        for item in cached:
+            row = changed.get(item['message_id'])
+            if row is None: kept.append(item)
+            elif row['status'] in STUCK_STATUSES and (timestamp(row['status_at']) or now) + limit <= now:
+                kept.append({**item, **row, 'unread': row['status'] in UNREAD_STATUSES})
+        total = max(0, saved.get('total', 0) - len(cached) + len(kept))
+        if kept != cached: self.ledger.setting(STUCK_KEY, {**saved, 'rows': kept, 'total': total})
+        if total > len(kept): arm_check(self.ledger, now)
 
     def _alerts(self):
         saved = self.ledger.setting(ALERTS_KEY)
@@ -269,19 +312,27 @@ class StatusWatch:
 
     def _alert(self, row, status):
         saved = self._alerts()
-        key = row['message_id'] + ':' + status
+        # A status set again later is a new fact; a row read twice is not. Unread stays once per message.
+        key = ':'.join((row['message_id'], status, '' if status == UNREAD else row['status_at'] or ''))
         if key in saved['seen']: return
         saved['seen'] = [*saved['seen'], key][-SEEN_LIMIT:]
-        saved['recent'] = [*saved['recent'], {'message_id': row['message_id'], 'recipient_role': row['recipient_role'],
-                                              'status': status, 'noted_at': int(self.wall()), 'shown': False}][-ALERT_LIMIT:]
+        recent = [*saved['recent'], {'message_id': row['message_id'], 'recipient_role': row['recipient_role'],
+                                     'status': status, 'noted_at': int(self.wall()), 'shown': False}]
+        # Only what the chat has seen makes room.
+        spare = len(recent) - ALERT_LIMIT
+        kept = []
+        for item in recent:
+            if spare > 0 and item.get('shown'): spare -= 1
+            else: kept.append(item)
+        saved['recent'] = kept[-SEEN_LIMIT:]
         self.ledger.setting(ALERTS_KEY, saved)
 
     def _pending(self):
-        """Marked shown before anything is pushed: an uncertain attempt is never repeated."""
+        """The oldest notice's worth, marked shown before it is pushed: an uncertain attempt is never repeated."""
         saved = self._alerts()
-        pending = [item for item in saved['recent'] if not item.get('shown')]
+        pending = [item for item in saved['recent'] if not item.get('shown')][:ALERT_LIMIT]
         if not pending: return []
-        saved['recent'] = [{**item, 'shown': True} for item in saved['recent']]
+        for item in pending: item['shown'] = True
         self.ledger.setting(ALERTS_KEY, saved)
         return [{key: item[key] for key in ('message_id', 'recipient_role', 'status')} for item in pending]
 

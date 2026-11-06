@@ -135,12 +135,18 @@ on the sender's private channel. The listener then reads the feed, the way an
 `inbox_changed` hint leads to an inbox read. A routine status starts no model turn. A
 `failed`, `declined` or `needs_owner` status, or a message unread past the limit, reaches
 the chat once, as fixed text with no reason: a parent chat through one push that is never
-retried, a tool-inbox worker in its `receive` result as `delivery_alerts`.
+retried, a tool-inbox worker in its `receive` result as `delivery_alerts`. A status set
+again later is a new fact and reaches it again. One notice holds 32, and the rest follow
+on later passes. A catch-up reads 16 pages at a time, saves its place and resumes on the
+next pass, on any route.
 
 Unread past the limit has no event, and the server has no scheduled job. So `session send`
 sets a local deadline, and the listener reads `session_delivery_stuck` only when it comes
 due. The answer gives the next deadline, or none, so an idle agent reads nothing. A feed
-change to a status with a time limit sets a deadline again, because it starts a new window. The
+change to a status with a time limit sets a deadline at the end of that new window. Such a
+change also takes the message off the cached stuck list until it is overdue again, so offline
+`session status` agrees with the service. A list longer than its 32 cached rows goes back
+to the service on any change, and a list with no deadline left is refreshed once a day. The
 limit is 900 seconds, from the service. A reply is not chased, and a receipt with no status
 row is an older client, which proves neither read nor unread.
 
