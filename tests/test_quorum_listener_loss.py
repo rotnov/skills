@@ -95,6 +95,24 @@ class ListenerLossTests(unittest.TestCase):
                                  self.transport if watched else None)
 
     @isolated_profiles
+    def test_a_listener_ended_by_a_gone_tui_recovers_through_the_start_guard(self):
+        """#140 with #151: this stop is the run's own, so it leaves no stop intent to refuse the recovery."""
+        from quorum_listener import STOP_INTENT
+        from quorum_resume import listener_loss
+        self.record()
+        self.dispatch('start')
+        lost = self.restore_kills_listener()
+        intent = self.ledger.setting(STOP_INTENT)
+        self.ledger.setting('listener', {**self.ledger.setting('listener'), 'state':'error', 'code':'grok_tui_gone'})
+        self.assertEqual(self.dispatch('status')['code'], 'grok_tui_gone')
+        self.assertIn('--resume', self.dispatch('status')['listener_lost']['next_step'])
+        self.assertEqual(self.ledger.setting(STOP_INTENT), intent)
+        recovered = self.dispatch('recover')
+        self.assertNotEqual(recovered['run_id'], lost)
+        self.assertEqual(recovered['listener'], 'running')
+        self.assertIsNone(listener_loss(self.ledger))
+
+    @isolated_profiles
     def test_live_listener_is_not_reported_lost(self):
         from quorum_resume import listener_loss
         self.record()

@@ -359,7 +359,10 @@ def grok_job_notice(engine):
     """
     if engine != 'grok' or sys.platform != 'win32': return {}
     from quorum_grok_win import kill_on_close_job
-    if not kill_on_close_job(): return {}
+    # The listener is already running here: a failed advisory read must not turn this start into a failure.
+    try:
+        if not kill_on_close_job(): return {}
+    except Exception: return {}
     return {'windows_job_warning':{'code':'grok_listener_in_kill_on_close_job', 'next_step':(
         'This command runs inside a Windows job that kills its processes when it closes. If this was an ordinary '
         'tool call, the listener ends when the call returns (listener_exited). Rerun it as one background shell '

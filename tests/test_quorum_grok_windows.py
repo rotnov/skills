@@ -104,6 +104,12 @@ class WindowsJobNoticeTests(unittest.TestCase):
             with self.subTest(job=job):
                 self.assertEqual(self.notice('grok', 'win32', job)[0], {})
 
+    def test_a_failed_job_read_never_fails_a_started_listener(self):
+        from quorum_session import grok_job_notice
+        with patch('quorum_session.sys.platform', 'win32'), \
+             patch('quorum_grok_win.kill_on_close_job', side_effect=OSError('job_unreadable')):
+            self.assertEqual(grok_job_notice('grok'), {})
+
     def test_other_clients_and_platforms_read_no_job(self):
         for engine, platform in (('codex', 'win32'), ('claude', 'win32'), ('grok', 'darwin')):
             with self.subTest(engine=engine, platform=platform):

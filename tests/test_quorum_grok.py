@@ -311,6 +311,13 @@ class GrokTests(unittest.TestCase):
             client_preflight()
         self.assertEqual(caught.exception.diagnostic()['reason'], 'flag_mismatch')
 
+    def test_every_new_grok_code_is_in_the_safe_set(self):
+        from quorum_api import safe_code
+        from quorum_grok_leader import GrokBindingDenied, GrokPlatformUnsupported
+        for error in (GrokPlatformUnsupported(), GrokBindingDenied('flag_mismatch'), ValueError('grok_tui_gone')):
+            with self.subTest(code=str(error)):
+                self.assertEqual(safe_code(error), str(error))
+
     def test_every_denial_reason_has_fixed_guidance(self):
         from quorum_grok_leader import GrokBindingDenied
         source = (SCRIPTS / 'quorum_grok_leader.py').read_text(encoding='utf-8')
