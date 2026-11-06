@@ -301,7 +301,8 @@ def main(argv=None):
                          'update_in_progress', 'session_not_connected', 'python_provisioning_failed',
                          'update_node_too_old'})
             safe.update({'grok_transport_unavailable', 'session_binding_denied', 'coordinator_changed',
-                         'claude_pipe_unavailable', 'listener_stop_pending', 'session_delivery_unknown',
+                         'claude_pipe_unavailable', 'listener_stop_pending', 'listener_start_stopped',
+                         'session_delivery_unknown',
                          'session_delivery_unsent', 'session_reconcile_denied',
                          'session_recovery_denied', 'delegation_scope_changed', 'member_intake_requires_inline',
                          'private_acl_unavailable', 'private_acl_access_denied', 'unsafe_link', 'browser_unavailable', 'login_timeout',
