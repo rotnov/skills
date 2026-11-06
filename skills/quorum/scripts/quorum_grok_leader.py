@@ -2,7 +2,9 @@
 
 Protocol1: four-byte big-endian JSON, Register then session-scoped ACP. Verified
 with installed Grok1.0.67/1.0.70 and xai-org/grok-build. Queue admission is not UI receipt.
+Windows (1.0.70 and 1.0.77, experimental) uses the named-pipe leader in quorum_grok_win.
 """
+from datetime import datetime, timedelta, timezone
 import json
 import ctypes
 import shutil
@@ -24,6 +26,12 @@ class GrokBindingError(ValueError):
         self.reason = reason
 
     def diagnostic(self):
+        if self.reason == 'leader_socket_missing' and sys.platform == 'win32':
+            return {'reason': 'leader_socket_missing', 'next_step':
+                    'No leader pipe is available for this chat. On Windows, Grok exports no leader '
+                    'endpoint unless it was started with --leader-socket <path>. Keep the chat open; '
+                    'its owner may later exit it and relaunch the same session with --leader '
+                    '--leader-socket <path> --resume as described in references/grok.md.'}
         if self.reason == 'leader_socket_missing':
             return {'reason': 'leader_socket_missing', 'next_step':
                     'No leader socket is available for this chat. An already-running standalone '
@@ -34,6 +42,9 @@ class GrokBindingError(ValueError):
 
 def process_identity(pid):
     """macOS proc_info.h ABI; do not inspect process environment or credentials."""
+    if sys.platform == 'win32':
+        from quorum_grok_win import process_identity as windows
+        return windows(pid)
     if sys.platform != 'darwin': raise OSError('unsupported_platform')
     class BsdInfo(ctypes.Structure):
         _fields_ = [(name, ctypes.c_uint32) for name in (
@@ -59,13 +70,27 @@ def process_identity(pid):
             'argv':result.stdout.strip().split()}
 
 
+def own_uid():
+    if sys.platform == 'win32':
+        from quorum_grok_win import own_sid
+        return own_sid()
+    return os.geteuid()
+
+
+def image(path):
+    resolved = str(Path(path).resolve())
+    return os.path.normcase(resolved) if sys.platform == 'win32' else resolved
+
+
 def verify_process(pid, start, endpoint, sid, cwd):
     try:
         current = process_identity(pid)
         installed = shutil.which('grok')
+        # Windows has no controlling-terminal flag; its leader pipe is bound to this TUI instead.
         if (not installed or not isinstance(start, int) or isinstance(start, bool)
-                or current['pid_start'] != start or current['uid'] != os.geteuid()
-                or not current['tty'] or current['executable'] != str(Path(installed).resolve())):
+                or current['pid_start'] != start or current['uid'] != own_uid()
+                or (sys.platform != 'win32' and not current['tty'])
+                or current['executable'] != image(installed)):
             raise ValueError
         args = iter(current['argv'][1:])
         flags = {}
@@ -85,9 +110,75 @@ def verify_process(pid, start, endpoint, sid, cwd):
         raise ValueError('session_binding_denied') from None
 
 
+def own_entry(entries, session_id, cwd):
+    if not isinstance(entries, list): raise ValueError('session_binding_denied')
+    own = [entry for entry in entries if isinstance(entry, dict)
+           and entry.get('session_id') == session_id]
+    if len(own) != 1: raise ValueError('session_binding_denied')
+    entry = own[0]
+    pid = entry.get('pid')
+    if (not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0
+            or str(Path(entry.get('cwd', '')).resolve()) != str(Path(cwd).resolve())):
+        raise ValueError('session_binding_denied')
+    return entry
+
+
+def opened_at(entry):
+    """Row creation in Unix microseconds; 1.0.70/1.0.77 on Windows record no process birth."""
+    try:
+        value = datetime.fromisoformat(entry['opened_at'].replace('Z', '+00:00'))
+        if value.tzinfo is None: raise ValueError
+    except (KeyError, AttributeError, TypeError, ValueError):
+        raise ValueError('session_binding_denied') from None
+    return (value - datetime(1970, 1, 1, tzinfo=timezone.utc)) // timedelta(microseconds=1)
+
+
+def windows_binding(session_id, cwd):
+    """Win32 form of local_binding: the export, own row, live TUI and its own leader pipe."""
+    import quorum_grok_win as windows
+    from quorum_winproof import Unsafe, verify
+    endpoint = os.environ.get('GROK_LEADER_SOCKET')
+    if not endpoint: raise GrokBindingError('leader_socket_missing')
+    home = Path(os.environ.get('GROK_HOME') or Path.home()/'.grok')
+    try:
+        fd = os.open(home/'active_sessions.json', os.O_RDONLY | getattr(os, 'O_BINARY', 0))
+        try:
+            verify(fd, 'file', 'codex')  # Owned by this user; nobody else may write it.
+            raw = os.read(fd, 1048577)
+        finally: os.close(fd)
+        if len(raw) > 1048576: raise ValueError
+        entries = json.loads(raw)
+    except (OSError, ValueError, TypeError, Unsafe):
+        raise ValueError('grok_transport_unavailable') from None
+    installed = shutil.which('grok')
+    if not isinstance(entries, list) or not installed: raise ValueError('session_binding_denied')
+    # A killed TUI leaves its row behind, so a --resume relaunch shares its session ID with
+    # stale rows. Count only rows of a live TUI born no later than the row (a reused PID is newer).
+    live = []
+    for row in entries:
+        if not isinstance(row, dict) or row.get('session_id') != session_id: continue
+        try:
+            entry = own_entry([row], session_id, cwd)
+            tui = {**windows.process_identity(entry['pid']), 'pid': entry['pid']}
+            if tui['pid_start'] <= opened_at(entry): live.append(tui)
+        except (OSError, ValueError): continue
+    if len(live) != 1: raise ValueError('session_binding_denied')
+    tui, cwd = live[0], str(Path(cwd).resolve())
+    pid = tui['pid']
+    verify_process(pid, tui['pid_start'], endpoint, session_id, cwd)
+    leader = windows.discover(tui, image(installed))
+    if leader is None: raise GrokBindingError('leader_socket_missing')
+    return {'leader_socket': endpoint, 'leader_pipe': leader[0], 'leader_pid': leader[1],
+            'leader_start': leader[2], 'tui_pid': pid, 'tui_start': tui['pid_start'], 'cwd': cwd}
+
+
 def local_binding(session_id, cwd):
     if os.environ.get('GROK_SESSION_ID') != session_id:
         raise ValueError('session_binding_denied')
+    if sys.platform == 'win32':
+        try: return windows_binding(session_id, cwd)
+        except ValueError: raise  # Fixed codes, including GrokBindingError.
+        except Exception: raise ValueError('session_binding_denied') from None
     if sys.platform != 'darwin' or not hasattr(socket, 'AF_UNIX'):
         raise ValueError('grok_transport_unavailable')
     home = Path(os.environ.get('GROK_HOME') or Path.home()/'.grok')
@@ -115,32 +206,30 @@ def local_binding(session_id, cwd):
         entries = json.loads(path.read_text())
     except (OSError, ValueError, TypeError):
         raise ValueError('grok_transport_unavailable') from None
-    if not isinstance(entries, list): raise ValueError('session_binding_denied')
-    own = [entry for entry in entries if isinstance(entry, dict)
-           and entry.get('session_id') == session_id]
-    if len(own) != 1: raise ValueError('session_binding_denied')
-    entry = own[0]
-    pid = entry.get('pid')
-    if (not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0
-            or str(Path(entry.get('cwd', '')).resolve()) != str(Path(cwd).resolve())):
-        raise ValueError('session_binding_denied')
+    entry = own_entry(entries, session_id, cwd)
+    pid = entry['pid']
     verify_process(pid, entry.get('pid_start'), endpoint, session_id, str(Path(cwd).resolve()))
     return {'leader_socket': endpoint, 'tui_pid': pid, 'tui_start': entry.get('pid_start'),
             'cwd': str(Path(cwd).resolve())}
 
 
 class Leader:
-    def __init__(self, endpoint):
-        self.socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    def __init__(self, endpoint, server=None):
+        if server is None: self.socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        else:
+            from quorum_grok_win import Pipe
+            self.socket = Pipe(*server)  # (leader pid, birth) the opened handle must match.
         self.socket.settimeout(3)
         self.ref = 0
         try:
             self.socket.connect(endpoint)
             self.send({'type':'register', 'client_type':'quorum', 'mode':'stdio', 'capabilities':{}})
             registered = self.receive(time.monotonic()+5)
+            # Only 1.0.70 and 1.0.77 have been qualified on the Windows named-pipe leader.
+            versions = ('1.0.67', '1.0.70') if server is None else ('1.0.70', '1.0.77')
             if (registered.get('type') != 'registered'
                     or registered.get('leader_protocol_version') != 1
-                    or registered.get('leader_binary_version') not in ('1.0.67', '1.0.70')
+                    or registered.get('leader_binary_version') not in versions
                     or not isinstance(registered.get('ready'), bool)):
                 raise ValueError('grok_transport_unavailable')
             if not registered.get('ready', True):
@@ -223,10 +312,16 @@ class Leader:
         self.socket.close()
 
 
+def connect(transport):
+    if 'leader_pipe' in transport:
+        return Leader(transport['leader_pipe'], (transport['leader_pid'], transport['leader_start']))
+    return Leader(transport['leader_socket'])
+
+
 def binding(session_id, cwd):
     result = local_binding(session_id, cwd)
     try:
-        leader = Leader(result['leader_socket'])
+        leader = connect(result)
         try: leader.verify(session_id, result['cwd'])
         finally: leader.close()
     except ValueError: raise
@@ -241,7 +336,8 @@ def submit(record, message_id, content):
     payload = json.dumps({'record':record, 'message_id':message_id, 'content':content}, ensure_ascii=False)
     try:
         result = subprocess.run([sys.executable, str(Path(__file__).resolve())], input=payload,
-            text=True, encoding='utf-8', capture_output=True, timeout=20)
+            text=True, encoding='utf-8', capture_output=True, timeout=20,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
     except (OSError, subprocess.TimeoutExpired): raise ValueError('session_delivery_unknown') from None
     if result.returncode: raise ValueError('session_delivery_unknown')
 
@@ -255,7 +351,7 @@ def main():
         sid = str(uuid.UUID(record['session_ref']))
         transport = local_binding(sid, record['cwd'])
         if transport != record['grok_transport']: raise ValueError('session_binding_denied')
-        leader = Leader(transport['leader_socket'])
+        leader = connect(transport)
         try:
             leader.verify(sid, transport['cwd'])
             if local_binding(sid, record['cwd']) != transport: raise ValueError('session_binding_denied')

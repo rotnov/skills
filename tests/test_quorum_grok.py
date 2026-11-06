@@ -594,7 +594,7 @@ class NativeProcessTests(unittest.TestCase):
     @isolated_profiles
     def test_unsupported_platform_is_explicit(self):
         from quorum_grok_leader import local_binding
-        with patch.dict(os.environ, {'GROK_SESSION_ID':SID}, clear=True), patch('sys.platform', 'win32'):
+        with patch.dict(os.environ, {'GROK_SESSION_ID':SID}, clear=True), patch('sys.platform', 'linux'):
             with self.assertRaisesRegex(ValueError, 'grok_transport_unavailable'):
                 local_binding(SID, '/fixture')
 
