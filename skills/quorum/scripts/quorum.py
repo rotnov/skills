@@ -13,7 +13,7 @@ from quorum_api import QuorumApi, ServiceConfig, QuorumError, SERVER_ERRORS, rpc
 from quorum_auth import token_provider
 from quorum_state import LocalLedger, default_state_root
 from quorum_grok_leader import GrokBindingError, GrokBuildChanged, GrokRefused
-from quorum_session import (AmbiguousSession, BindingError, ReconcileEvidenceRequired, RecipientUnresolved, RoleHeld,
+from quorum_session import (AmbiguousSession, BindingError, MessageUnavailable, ReconcileEvidenceRequired, RecipientUnresolved, RoleHeld,
                             UnsupportedClient)
 from quorum_grok_cloud import CloudError
 from quorum_native_inbox import NativeInboxError
@@ -272,6 +272,10 @@ def main(argv=None):
         # Fixed guidance only; nothing was changed or acknowledged.
         print(json.dumps({'ok': False, 'code': error.code, 'data': error.diagnostic()}))
         return 3
+    except MessageUnavailable as error:
+        # A fixed reason and fixed guidance only; never a body or a server message.
+        print(json.dumps({'ok': False, 'code': error.code, 'data': error.diagnostic()}))
+        return 5
     except RoleHeld as error:
         # The caller's own role (and own other agent ID) with fixed guidance; never another identity's agent.
         print(json.dumps({'ok': False, 'code': error.code, 'data': error.diagnostic()}))

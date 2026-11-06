@@ -209,8 +209,8 @@ uv run --project <skill-dir> --frozen python <skill-dir>/scripts/quorum.py --sta
 It returns at most 16 messages after sequence `N` (default 0); pass the last
 returned `sequence` to read the next page. It never uses a pilot agent, and the
 service refuses conversations this agent is not part of. An envelope queued through
-`codex queue` carries this command for its own body; see
-[Failure and recovery](#failure-and-recovery). If a client cuts the output short,
+`codex queue` carries a `session message` command for its own body instead; see
+[Failure and recovery](#failure-and-recovery). If a client cuts either output short,
 write it to a private temporary file and read that in parts.
 
 ## Urgent messages
@@ -365,12 +365,25 @@ attempt; another ambiguous result blocks again with a new attempt UUID.
 `codex queue` takes its text only as `--message`, with no stdin or file form
 (Codex CLI 0.162.1), so what it queues is on that short-lived child's argv. The
 relay therefore queues a pointer on every platform: the envelope's rules, the
-message's fields other than `body`, and the receipt, read and reply commands, with
-the [`session thread`](#send-and-answer-here) read positioned on that message. The
-body never reaches argv, and it stays on the service, readable before and after its
-receipt. The relay's own acknowledgement is unchanged; the chat's `session received`
-repeats it harmlessly. A `turn/steer` frame and the Claude and Grok routes do not use
-argv and still carry the body.
+message's fields other than `body`, and the receipt, `session message` and reply
+commands. The body never reaches argv, and it stays on the service, readable before
+and after its receipt. The relay's own acknowledgement is unchanged; the chat's
+`session received` repeats it harmlessly. A `turn/steer` frame and the Claude and Grok
+routes do not use argv and still carry the body.
+
+`session message <message-UUID> --conversation-id <UUID> --sequence <N>` returns that
+one message through the reviewed
+[single-message read](server.md#single-message-read), so it always fits the
+262,144-byte response limit. It returns only a message addressed to this bound
+session's agent. On a server without that read it falls back to `conversation_read`.
+
+The relay acknowledges once `codex queue` succeeds, before the chat reads the body, so
+a failed read is not delivered again. The chat retries once. If the read still fails,
+it does not guess at the content: it reports the message ID and error here and, unless
+the message is a terminal reply or notification, tells the sender through the reply
+command so that they can resend it. `service_unavailable` is an outage, so the same
+command works later. `session_message_unavailable` carries a `reason` and `next_step`:
+`not_found`, or `server_update_required` when an older server's page is over the limit.
 
 The `--state` path leaves argv when it is the default,
 `~/.local/share/quorum`. A custom path stays, as do the Python, helper and bound

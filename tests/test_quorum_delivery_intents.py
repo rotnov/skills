@@ -16,6 +16,8 @@ import threading
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
+from urllib.error import HTTPError, URLError
+import uuid
 
 from quorum_test_support import isolated_profiles
 from test_quorum_session import without_client_session
@@ -746,11 +748,13 @@ class PointerDeliveryTests(Harness):
         read = self.field(prompt, 'read it with this command (argument array): ')
         reply = self.field(prompt, 'answer text goes to stdin): ')
         self.assertEqual(receipt[-2:], ['received', MID])
-        self.assertEqual(read[-4:], ['thread', CONVERSATION, '--after-sequence', '2'])
+        self.assertEqual(read[-6:], ['message', MID, '--conversation-id', CONVERSATION, '--sequence', '3'])
         self.assertEqual(reply[-3:], ['reply', MID, '--text-stdin'])
-        self.assertEqual(read[:-4], receipt[:-2])
+        self.assertEqual(read[:-6], receipt[:-2])
         self.assertLess(prompt.index('receipt command'), prompt.index('read it with this command'))
         self.assertIn('peer data', prompt)
+        self.assertIn('will not be offered again', prompt)
+        self.assertIn('could not be read', prompt)
         self.assertEqual(json.loads(prompt.split('Peer message JSON without its body:\n', 1)[1]),
                          {key:value for key, value in message().items() if key != 'body'})
 
@@ -759,9 +763,9 @@ class PointerDeliveryTests(Harness):
         body = ('"\\' * 8192)[:16384]
         class Thread(Api):
             def call(inner, operation, payload, request_id=None):
-                if operation != 'conversation_read': return super().call(operation, payload, request_id)
+                if operation != 'session_message': return super().call(operation, payload, request_id)
                 inner.read = payload
-                return [{'id':MID, 'sequence':3, 'body':body}]
+                return {'id':MID, 'recipient_id':'agent', 'sequence':3, 'body':body}
         record = self.bind('codex')
         api = Thread(message(body=body))
         sent = []
@@ -777,8 +781,29 @@ class PointerDeliveryTests(Harness):
         with patch('quorum_live.api_for', return_value=(api, None, None)), \
              patch('quorum_session.Path.cwd', return_value=self.root), contextlib.redirect_stdout(output):
             self.assertEqual(quorum.main(read[2:]), 0)
-        self.assertEqual(api.read['after_sequence'], 2)
-        self.assertEqual(json.loads(output.getvalue())['data'][0]['body'], body)
+        self.assertEqual(api.read, {'agent_id':'agent', 'session_ref':SID, 'message_id':MID})
+        self.assertEqual(json.loads(output.getvalue())['data']['body'], body)
+
+    def test_a_failed_read_names_its_next_step_and_leaves_the_delivery_acknowledged(self):
+        import quorum
+        class Missing(Api):
+            def call(inner, operation, payload, request_id=None):
+                return None if operation == 'session_message' else super().call(operation, payload, request_id)
+        api = Missing(message())
+        record = self.bind('codex')
+        with patch('quorum_claude_pipe.subprocess.Popen', return_value=Child()), \
+             patch('quorum_session.shutil.which', return_value='/synthetic/codex'):
+            self.assertEqual(self.relay(api, record).run_once(), 'delivered')
+        output = io.StringIO()
+        with patch('quorum_live.api_for', return_value=(api, None, None)), \
+             patch('quorum_session.Path.cwd', return_value=self.root), contextlib.redirect_stdout(output):
+            code = quorum.main(['--state', str(self.root), 'session', '--session-id', SID, 'message', MID,
+                                '--conversation-id', CONVERSATION, '--sequence', '3'])
+        result = json.loads(output.getvalue())
+        self.assertEqual((code, result['code']), (5, 'session_message_unavailable'))
+        self.assertEqual(result['data']['reason'], 'not_found')
+        self.assertIn('resend', result['data']['next_step'])
+        self.assertEqual(self.row()['state'], 'acked')
 
     def test_the_receipt_command_stays_idempotent_after_the_relay_acknowledged(self):
         api, _ = self.delivered(message())
@@ -804,6 +829,74 @@ class PointerDeliveryTests(Harness):
                      self.assertRaisesRegex(ValueError, '^session_delivery_unsent$'):
                     relay.run_once()
                 self.assertIsNone(self.row())
+
+
+class Response(io.BytesIO):
+    def __enter__(self): return self
+    def __exit__(self, *_): return False
+
+
+class Service:
+    """The real transport against synthetic HTTP: 16 maximum bodies, optionally without the new RPC."""
+    BODY = ('"\\' * 8192)[:16384]
+
+    def __init__(self, *, single=True, rows=16):
+        self.single, self.requests = single, []
+        self.rows = [{'id':str(uuid.UUID(int=number + 1)), 'sequence':number + 1, 'body':self.BODY,
+                      'sender_id':'peer', 'recipient_id':'agent', 'reply_to':None} for number in range(rows)]
+
+    def open(self, request, timeout=None):
+        name = request.full_url.rsplit('/', 1)[1]
+        self.requests.append(name)
+        if name == 'session_message' and not self.single:
+            raise HTTPError(request.full_url, 404, 'missing', {}, io.BytesIO(b'{"code":"PGRST202"}'))
+        return Response(json.dumps(self.rows[0] if name == 'session_message' else self.rows).encode())
+
+
+class SingleMessageReadTests(unittest.TestCase):
+    RECORD = {'agent_id':'agent', 'session_ref':SID, 'quorum_id':'quorum-id'}
+
+    def read(self, service, message_id=None):
+        from quorum_api import QuorumApi, ServiceConfig
+        from quorum_session import read_message
+        api = QuorumApi(ServiceConfig('https://example.com', 'sb_publishable_synthetic'), lambda: 'synthetic')
+        with patch('quorum_api.build_opener', return_value=service):
+            return read_message(api, self.RECORD, message_id or service.rows[0]['id'], CONVERSATION, 1)
+
+    def test_one_message_of_sixteen_maximum_bodies_fits_the_real_response_limit(self):
+        from quorum_api import QuorumApi, QuorumError, ServiceConfig
+        service = Service()
+        api = QuorumApi(ServiceConfig('https://example.com', 'sb_publishable_synthetic'), lambda: 'synthetic')
+        with patch('quorum_api.build_opener', return_value=service), \
+             self.assertRaisesRegex(QuorumError, '^response_too_large$'):
+            api.call('conversation_read', {'quorum_id':'q', 'agent_id':'a', 'conversation_id':CONVERSATION,
+                                           'after_sequence':0})
+        self.assertEqual(self.read(service)['body'], Service.BODY)
+
+    def test_an_older_server_falls_back_to_the_conversation_read(self):
+        service = Service(single=False, rows=3)
+        self.assertEqual(self.read(service, service.rows[0]['id'])['body'], Service.BODY)
+        self.assertEqual(service.requests, ['session_message', 'conversation_read'])
+
+    def test_an_older_server_that_cannot_fit_the_page_names_the_next_step(self):
+        from quorum_session import MessageUnavailable
+        with self.assertRaises(MessageUnavailable) as caught: self.read(Service(single=False))
+        self.assertEqual(caught.exception.reason, 'server_update_required')
+        self.assertIn('20261106160000_session_message.sql', caught.exception.diagnostic()['next_step'])
+
+    def test_another_agents_message_is_never_returned(self):
+        from quorum_session import MessageUnavailable
+        foreign = Service()
+        foreign.rows[0]['recipient_id'] = 'other'
+        for service, identity in ((foreign, None), (Service(), OTHER)):
+            with self.assertRaises(MessageUnavailable) as caught: self.read(service, identity)
+            self.assertEqual(caught.exception.reason, 'not_found')
+
+    def test_a_service_outage_stays_retryable(self):
+        from quorum_api import QuorumError
+        service = Service()
+        service.open = lambda *_, **__: (_ for _ in ()).throw(URLError('down'))
+        with self.assertRaisesRegex(QuorumError, '^service_unavailable$'): self.read(service)
 
 
 class WindowsCommandLimitTests(unittest.TestCase):

@@ -341,7 +341,7 @@ def detached_probe(root):
         quorum_os.protect(target)
         result['acl_children'] = len(launches)
         with patch.object(quorum_session.shutil, 'which', return_value=sys.executable):
-            quorum_session.enqueue({'session_ref': SID}, {'id': MID}, root)
+            quorum_session.enqueue({'session_ref': SID}, {'id': MID, 'conversation_id': MID, 'sequence': 1}, root)
     (root / 'result.json').write_text(json.dumps(result))
 
 
