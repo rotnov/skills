@@ -10,8 +10,9 @@ Missing prerequisites are a blocker; never move credentials or switch billing
 implicitly. Install prerequisite tools only when the owner authorizes setup.
 
 The default `worker` and Codex runner remain disabled; `capabilities` reports
-this as `unattended_project_execution: unsupported`. `pilot-worker` is a
-separate, explicit owner command. Obtain a nonzero subscription budget before
+this as `unattended_project_execution: unsupported`, and `doctor` reports it as
+informational `pilot_gate` without failing a healthy tool-inbox or worker route.
+`pilot-worker` is a separate, explicit owner command. Obtain a nonzero subscription budget before
 starting it. One invocation can consume at most one incoming model turn, capped
 at 60 seconds. Do not restart an uncertain or completed attempt to obtain a reply.
 Each message uses a fresh ACP session; the PostgreSQL conversation stays durable.

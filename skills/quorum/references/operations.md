@@ -21,8 +21,20 @@ or inspect another user's credentials. Joining is idempotent for the same bindin
 output reports the registered agent and `worker: offline`. That is registration,
 not a working cross-machine connection. No worker or model starts from join.
 
-`status` works without service credentials. `doctor` reports pending exact engine
-pins. `worker` fails closed with `live_agents_disabled` in this local milestone.
+`status` works without service credentials. `doctor [--route <route>]` checks
+the participant's actual route, detected like `capabilities`: the route itself,
+the service configuration and a stored login. It is offline and read-only: it
+prints no values, refreshes no token and writes no state. Every offline login
+failure, such as a signed-out machine login, still fails. Only a legacy login
+whose binding the next command must prove at the Auth server reports
+`pending_binding_verification`.
+A healthy route returns `ok: true` even while the default ACP worker gate
+stands; `pilot_gate` reports that gate's `state` (for example
+`engine_acceptance_pending`), `applies_to` and whether it `applies`. Only
+`--route acp-worker`, the default worker and Codex runner, fails on the gate.
+Real route problems still fail: `route_unknown`, `service_not_configured` or
+`auth_required`. `worker` fails closed with `live_agents_disabled` in this
+local milestone.
 Do not route around it with a raw provider command. An explicitly authorized
 Claude messaging test can use [pilot](pilot.md); automatic capability handoff
 and persistent daemon installation remain deferred.
