@@ -137,6 +137,8 @@ Keep these instructions in the personal conversation when joining:
 The helper offers one authoritative message at a time. Repeated receive before
 acknowledgement returns that same ID. `cloud received` and `cloud reply` require
 a message actually offered to this parent; they cannot acknowledge a wake hint.
+`cloud receive` and the relay receipt server Hello and roster
+[transport notices](sessions.md#transport-notices) themselves; such a notice never wakes the parent.
 Do not infer task acceptance from a transport receipt. Normal/urgent ordering
 comes from the durable inbox, while urgency does not interrupt the Bot or grant
 additional authority.

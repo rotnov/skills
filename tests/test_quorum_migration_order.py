@@ -28,6 +28,7 @@ SERIALIZATION_PINS = {
 ROLES = '20261105140000_role_assignment_and_owner_retire.sql'
 STATUS = '20261105160000_peer_status_visibility.sql'
 DEFAULT_ROLE = '20261106100000_knowledge_member_default_role.sql'
+DEDUPE = '20261106120000_hello_reconnect_dedupe.sql'
 # prosrc hashes after the reviewed tail through 190000; tests/quorum-backend recomputes them by drift injection.
 ROLE_PINS = {
     'quorum_private.call(text,jsonb,text)': 'ca718afbcda8682ade19ea6b246ccc2f1bfd5523eb7d1076cf4e9583e24f3ab7',
@@ -172,7 +173,7 @@ class MigrationOrderTests(unittest.TestCase):
         ttl = next(name for name in names if name.endswith('_open_invite_ttl.sql'))
         self.assertGreater(ttl, '20261103180000_hello_roster_visibility.sql')
         # Only the reviewed role-assignment release (#105) follows it.
-        self.assertEqual(names[names.index(ttl) + 1:], [ROLES, STATUS, DEFAULT_ROLE])
+        self.assertEqual(names[names.index(ttl) + 1:], [ROLES, STATUS, DEFAULT_ROLE, DEDUPE])
         body = (SKILL / 'supabase/migrations' / ttl).read_text(encoding='utf-8')
         pins = dict(re.findall(r"'([a-z_.]+\([a-z,]*\))','([0-9a-f]{64})'", body))
         self.assertEqual(pins, {'quorum_private.call_priority_core(text,jsonb,text)':
@@ -196,7 +197,7 @@ class MigrationOrderTests(unittest.TestCase):
 
     def test_role_assignment_follows_the_tail_pins_reviewed_bodies_and_grants_only_authenticated(self):
         names = [path.name for path in MIGRATIONS]
-        self.assertEqual(names[names.index(ROLES) + 1:], [STATUS, DEFAULT_ROLE])
+        self.assertEqual(names[names.index(ROLES) + 1:], [STATUS, DEFAULT_ROLE, DEDUPE])
         self.assertGreater(ROLES, '20261103190000_open_invite_ttl.sql')
         body = (SKILL / 'supabase/migrations' / ROLES).read_text(encoding='utf-8')
         pins = dict(re.findall(r"'([a-z_.]+\([a-z,]*\))','([0-9a-f]{64})'", body))
@@ -250,7 +251,7 @@ class MigrationOrderTests(unittest.TestCase):
 
     def test_peer_status_follows_roles_pins_reviewed_bodies_and_grants_only_authenticated(self):
         names = [path.name for path in MIGRATIONS]
-        self.assertEqual(names[names.index(STATUS) + 1:], [DEFAULT_ROLE])
+        self.assertEqual(names[names.index(STATUS) + 1:], [DEFAULT_ROLE, DEDUPE])
         body = (SKILL / 'supabase/migrations' / STATUS).read_text(encoding='utf-8')
         self.assertTrue(body.startswith('-- SOURCE ONLY.'))
         pins = dict(re.findall(r"'([a-z_.]+\([a-z,]*\))','([0-9a-f]{64})'", body))
@@ -305,7 +306,7 @@ class MigrationOrderTests(unittest.TestCase):
 
     def test_knowledge_default_role_follows_the_wiki_pins_every_scope_caller_and_grants_only_authenticated(self):
         names = [path.name for path in MIGRATIONS]
-        self.assertEqual(names[-1], DEFAULT_ROLE)
+        self.assertEqual(names[names.index(DEFAULT_ROLE) + 1:], [DEDUPE])
         self.assertGreater(DEFAULT_ROLE, '20261103075741_llm_wiki.sql')
         body = (SKILL / 'supabase/migrations' / DEFAULT_ROLE).read_text(encoding='utf-8')
         self.assertTrue(body.startswith('-- SOURCE ONLY.'))
@@ -366,6 +367,58 @@ class MigrationOrderTests(unittest.TestCase):
         section = guide.split('## Knowledge member default role', 1)[1].split('\n## ', 1)[0]
         self.assertIn(DEFAULT_ROLE, section)
         self.assertIn('after `20261103075741_llm_wiki.sql`', section)
+
+
+    def test_hello_dedupe_follows_status_pins_reviewed_bodies_and_grants_nothing(self):
+        names = [path.name for path in MIGRATIONS]
+        self.assertEqual(names[-1], DEDUPE)
+        body = (SKILL / 'supabase/migrations' / DEDUPE).read_text(encoding='utf-8')
+        self.assertTrue(body.startswith('-- SOURCE ONLY.'))
+        pins = dict(re.findall(r"'([a-z_.]+\([a-z,]*\))','([0-9a-f]{64})'", body))
+        status = (SKILL / 'supabase/migrations' / STATUS).read_text(encoding='utf-8')
+        status_pins = dict(re.findall(r"'([a-z_.]+\([a-z,]*\))','([0-9a-f]{64})'", status))
+        core = 'quorum_private.session_heartbeat_before_hello(uuid,text,uuid,integer,text)'
+        self.assertEqual(set(pins), {'public.session_heartbeat(uuid,text,uuid,integer,text,integer,timestamptz,uuid,timestamptz)',
+                                     'quorum_private.session_heartbeat_before_status(uuid,text,uuid,integer,text)', core,
+                                     'quorum_private.call(text,jsonb,text)', 'quorum_private.native_session(uuid,text)',
+                                     'public.session_ack(uuid,text,uuid)', 'public.session_requirements()'})
+        # The moved Hello wrapper, its core, the dispatcher and the binding check are the bodies 160000 pinned.
+        self.assertEqual(pins['quorum_private.session_heartbeat_before_status(uuid,text,uuid,integer,text)'],
+                         status_pins['public.session_heartbeat(uuid,text,uuid,integer,text)'])
+        for name in (core, 'quorum_private.call(text,jsonb,text)', 'quorum_private.native_session(uuid,text)',
+                     'public.session_requirements()'):
+            self.assertEqual(pins[name], status_pins[name], name)
+        guard = body.split('end $migration$;', 1)[0]
+        for code in ('hello_dedupe_present', 'peer_status_required', 'hello_extension_required'):
+            self.assertIn(f"raise exception '{code}'", guard)
+        self.assertIn("raise exception 'reviewed_dispatcher_changed: %',f;", guard)
+        for change in ('alter ', 'create ', 'drop ', 'insert ', 'update ', 'grant '):
+            self.assertNotIn(change, guard.split('begin', 1)[1].lower())
+        created = re.findall(r'create function ([a-z_.]+)\(', body)
+        self.assertEqual(created, ['quorum_private.session_health_streak', 'quorum_private.session_heartbeat_before_hello',
+                                   'quorum_private.session_heartbeat_before_status'])
+        for chunk in body.split('create function ')[1:]:
+            header = chunk.split(' as $', 1)[0]
+            self.assertIn('security definer set search_path=pg_catalog', ' '.join(header.split()), header[:60])
+        lowered = ' '.join(body.lower().split())
+        for fn in ('session_heartbeat_core_before_dedupe(uuid,text,uuid,integer,text)',
+                   'session_heartbeat_hello_before_dedupe(uuid,text,uuid,integer,text)',
+                   'session_heartbeat_before_hello(uuid,text,uuid,integer,text)',
+                   'session_heartbeat_before_status(uuid,text,uuid,integer,text)', 'session_health_streak()'):
+            self.assertIn(f'revoke all on function quorum_private.{fn} from public,anon,authenticated,service_role;', lowered)
+        for table in ('session_streaks', 'session_hello_sent'):
+            self.assertIn(f'revoke all on quorum_private.{table} from public,anon,authenticated,service_role;', lowered)
+        code = ' '.join(line.split('--', 1)[0] for line in body.lower().splitlines())
+        self.assertNotRegex(code, r'\bgrant\b')
+        self.assertNotRegex(code, r'(create|alter|drop) (or replace )?function public\.')
+        self.assertIn("interval '30 minutes'", body)
+        self.assertIn("interval '60 seconds'", body)
+        # The internal skip list never reaches a client.
+        self.assertIn("result:=result-'hello_skipped';", body)
+        guide = (SKILL / 'references/server.md').read_text(encoding='utf-8')
+        section = guide.split('## Reconnect Hello dedupe', 1)[1].split('\n## ', 1)[0]
+        self.assertIn(DEDUPE, section)
+        self.assertIn('after `20261105160000_peer_status_visibility.sql`', section)
 
 
 if __name__ == '__main__':

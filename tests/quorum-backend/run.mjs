@@ -31,6 +31,8 @@ const status = '20261105160000_peer_status_visibility.sql';
 // Space default member role for project knowledge (#128). It needs pgvector knowledge and the wiki,
 // so its guards, contract and races run in the pgvector PostgreSQL 17 suite, not PGlite.
 const defaultRole = '20261106100000_knowledge_member_default_role.sql';
+// Per-recipient Hello dedupe on listener reconnects inside a presence streak (#126).
+const dedupe = '20261106120000_hello_reconnect_dedupe.sql';
 // Installations that deployed native coordination before open access apply the
 // older-dated open access file late; the final session requirements must match.
 const late = name => name.endsWith('_open_access_quorums.sql');
@@ -217,7 +219,7 @@ try {
     await drifted(fn, 'reviewed_dispatcher_changed: ' + fn, [...fresh, priority], serialization, unserialized);
   }
   const portableTail = [priority, serialization, maintenance, memberAuthority];
-  const reviewedTail = [...portableTail, knowledge, wiki, hello, ttl, roles, status, defaultRole];
+  const reviewedTail = [...portableTail, knowledge, wiki, hello, ttl, roles, status, defaultRole, dedupe];
   if (JSON.stringify(all.filter(name => name >= priority)) !== JSON.stringify(reviewedTail)) {
     throw new Error('unreviewed migration after the close serialization');
   }
@@ -349,6 +351,46 @@ try {
       await statusDb.close();
     }
   }
+  // Hello dedupe pins the peer-status heartbeat, the Hello wrapper and core it replaces, the dispatcher,
+  // the binding check, the receipt writer and the release; it refuses drift, reapplication or a
+  // missing predecessor, changing nothing.
+  const noDedupe = async (db, label) => {
+    const result = await db.query(`select to_regclass('quorum_private.session_streaks') s,
+      to_regclass('quorum_private.session_hello_sent') h,
+      to_regprocedure('quorum_private.session_heartbeat_core_before_dedupe(uuid,text,uuid,integer,text)') c,
+      to_regprocedure('quorum_private.session_heartbeat_hello_before_dedupe(uuid,text,uuid,integer,text)') w,
+      to_regprocedure('quorum_private.session_health_streak()') t,
+      to_regprocedure('quorum_private.session_heartbeat_before_hello(uuid,text,uuid,integer,text)') core`);
+    const row = result.rows[0];
+    if (row.s !== null || row.h !== null || row.c !== null || row.w !== null || row.t !== null) {
+      throw new Error(label + ': partial dedupe apply');
+    }
+    // The reviewed core keeps its name; the Hello wrapper keeps its name wherever peer status moved it.
+    if (row.core === null) throw new Error(label + ': reviewed heartbeat moved');
+  };
+  const beforeDedupe = [...beforeStatus, status];
+  await gated([...beforeDedupe, dedupe], read(migrations + dedupe), 'hello_dedupe_present', 'dedupe reapplied');
+  await gated(beforeStatus, read(migrations + dedupe), 'peer_status_required', 'dedupe without status', noDedupe);
+  for (const fn of ['public.session_heartbeat(uuid,text,uuid,integer,text,integer,timestamptz,uuid,timestamptz)',
+    'quorum_private.session_heartbeat_before_status(uuid,text,uuid,integer,text)',
+    'quorum_private.session_heartbeat_before_hello(uuid,text,uuid,integer,text)', 'quorum_private.call(text,jsonb,text)',
+    'quorum_private.native_session(uuid,text)', 'public.session_ack(uuid,text,uuid)', 'public.session_requirements()']) {
+    await drifted(fn, 'reviewed_dispatcher_changed: ' + fn, beforeDedupe, dedupe, noDedupe);
+  }
+  {
+    const dedupeDb = await database([...beforeDedupe, dedupe]);
+    try {
+      await release(dedupeDb, current);
+      // Every earlier contract, including the Hello and peer-status suites, keeps working.
+      for (const name of ROLE_COMPATIBLE) await dedupeDb.exec(suite(name));
+      await dedupeDb.exec(suite('quorum_role_assignment_backend.sql'));
+      await dedupeDb.exec(suite('quorum_peer_status_backend.sql'));
+      await dedupeDb.exec(suite('quorum_hello_dedupe_backend.sql'));
+    } finally {
+      await dedupeDb.exec('rollback');
+      await dedupeDb.close();
+    }
+  }
   // A server without project knowledge refuses the default-role migration before any change.
   await gated([...beforeStatus, status], read(migrations + defaultRole), 'knowledge_wiki_required',
     'default role without knowledge', async (db, label) => {
@@ -360,7 +402,7 @@ try {
     });
   if (!coordination(upgraded[3]) || !late(upgraded[4])) throw new Error('upgraded order is not coordination first');
   console.log('Invitation, session, Realtime, open-access, coordination, open-session, coordination-only refusal, '
-    + 'mandatory priority release, close serialization, member authority ACLs, open-member priority, Hello reporting/roster, 60-minute open invitations, invitation role assignment/owner retire, heartbeat peer status, knowledge default-role prerequisite and pinned-chain drift regression '
+    + 'mandatory priority release, close serialization, member authority ACLs, open-member priority, Hello reporting/roster, 60-minute open invitations, invitation role assignment/owner retire, heartbeat peer status, knowledge default-role prerequisite, reconnect Hello dedupe and pinned-chain drift regression '
     + '(fresh and coordination-first upgraded order): PASS (disposable PostgreSQL)');
 } catch (error) {
   console.error(error.message, error.where || '');
