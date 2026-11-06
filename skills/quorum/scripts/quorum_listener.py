@@ -196,6 +196,10 @@ def run_listener(ledger, make_worker, run_id, *, sleep=time.sleep, stop_event=No
                     if outcome == 'unknown':
                         control.update(run_id, 'unknown', handled, timeout=timeout, code='uncertain_attempt')
                         break
+                    if outcome == 'notice':
+                        # A transport notice was receipted quietly: read the next message without waiting.
+                        control.update(run_id, 'checking', handled, timeout=timeout)
+                        continue
                     if outcome in ('answered', 'delivered'):
                         handled += 1
                         control.update(run_id, 'waiting', handled, timeout=timeout)

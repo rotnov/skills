@@ -126,7 +126,8 @@ sends receipts and replies only with its own commands; the parent acquires no
 authority from it. The worker returns material results, actionable failures and
 owner decisions to the parent per [service agent](service-agent.md) and never
 echoes raw envelopes, Hello or receipts. Replies and notifications never trigger
-automatic answers.
+automatic answers. `receive` receipts server Hello and roster
+[transport notices](sessions.md#transport-notices) itself and returns the next message.
 
 ## Awaiting the owner
 

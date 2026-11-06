@@ -18,6 +18,7 @@ from quorum_api import QuorumError, guarded_call
 from quorum_os import FileLock
 from quorum_presence import Presence, hello_once
 from quorum_realtime import RealtimeWait
+import quorum_notices
 from quorum_release import ReleaseGuard, installed_release
 
 TRANSPORT = 'tool-inbox'
@@ -41,6 +42,8 @@ AWAITING_LIMIT = 32
 # explicitly for one offer, up to HOLD_LIMIT. Reception is therefore never paused open-endedly.
 OFFER_WINDOW, HOLD_LIMIT = 600, 1800
 LOCAL_STATES = ('offered', 'parked', 'acked')
+# offer() result for a server transport notice it receipted itself; never disclosed.
+NOTICE = object()
 # Patchable wall clock for parked/hold timestamps (persisted across calls, unlike the monotonic budget).
 wall = time.time
 
@@ -773,6 +776,13 @@ def offer(api, auth_ledger, ledger, record, stopping=lambda: False):
     message_id, delivery = found
     message = delivery['message']
     priority = message_priority(message)
+    transport = quorum_notices.quiet(ledger, message, record['agent_id']) if delivery.get('state') == 'offered' else None
+    if transport:
+        # A server Hello/roster transport notice: this worker receipts it itself, with no envelope or model turn.
+        acknowledge(api, ledger, record, message_id)
+        quorum_notices.record(ledger, message, transport, 'claude-worker' if record.get('engine') == 'claude'
+                              else 'tool-inbox')
+        return NOTICE
     # Delegation is re-read at output time; a queued offer may predate a revocation.
     current = {**record, 'delegation': (ledger.setting('session-agent') or {}).get('delegation')}
     return {'type': 'quorum.peer_message', 'state': 'offered', 'message_id': message_id, 'priority': priority,
@@ -834,6 +844,8 @@ def receive(api, auth_ledger, ledger, record, wait_seconds, *, waiter=None, pres
                 envelope = offer(api, auth_ledger, ledger, record, stopping)
                 # A stop observed after the reads discloses nothing; a committed offer stays for recovery.
                 if stopping(): break
+                # A quietly receipted transport notice: read the next message at once, without idling.
+                if envelope is NOTICE: continue
                 if envelope is not None:
                     if authorize is not None: api.check()
                     handled = 1

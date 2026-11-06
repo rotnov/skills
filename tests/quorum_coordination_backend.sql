@@ -50,7 +50,13 @@ begin
  perform public.session_ack(target,sid,(sent->>'message_id')::uuid);
  if not exists(select 1 from jsonb_array_elements(public.session_peers(target,sid)) x where x->>'agent_id'=target::text and x->>'availability'='online' and x->>'update_required'='false') then raise exception 'fresh_receipt_ignored_as_health'; end if;
  -- A genuine new listener connection says Hello even while health is fresh;
- -- it is a notification, never a task or an automatic reply chain.
+ -- it is a notification, never a task or an automatic reply chain. Where the
+ -- reconnect dedupe (#126) is applied, the earlier Hellos must first be older
+ -- than its 30-minute window; this one transaction cannot let time pass.
+ if to_regclass('quorum_private.session_hello_sent') is not null then
+  execute 'update quorum_private.session_hello_sent set sent_at=now()-interval ''31 minutes'' where sender_id=$1'
+   using target;
+ end if;
  epoch:=gen_random_uuid();
  perform public.session_heartbeat(target,sid,epoch,p,v);
  perform public.session_heartbeat(target,sid,epoch,p,v);

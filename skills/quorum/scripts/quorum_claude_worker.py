@@ -713,7 +713,8 @@ def _session_status(root, record):
     with _components(root, names, ACTOR_KINDS[:2]) as fds:
         if fds is None: return None
         rows = _read_db(fds[-1], root.joinpath(*names, 'ledger.sqlite'), lambda db: db.execute(
-            "select key,data from settings where key in ('listener', 'hello', ?) or key like 'delivery:%' order by rowid",
+            "select key,data from settings where key in ('listener', 'hello', 'transport-notices', "
+            "'show-transport-notices', ?) or key like 'delivery:%' order by rowid",
             (CONTROL,)).fetchall(),
                         ledger='actor')
         if rows is None: return None
@@ -732,6 +733,10 @@ def _session_status(root, record):
                                     if key.startswith('delivery:')),
             # The last connection's Hello outcome; a summary string only, never a message body.
             'hello': (settings.get('hello') or {}).get('summary') if isinstance(settings.get('hello'), dict) else None,
+            # Hello/roster transport notices this worker receipted quietly (#126); counts only.
+            'transport_notices': {'shown': settings.get('show-transport-notices') is True,
+                                  'auto_receipted': int((settings.get('transport-notices') or {}).get('auto_receipted', 0))
+                                  if isinstance(settings.get('transport-notices'), dict) else 0},
             **awaiting}
 
 
@@ -1944,6 +1949,9 @@ def _session_action(args, auth_ledger, register_agent, context, ledger, record, 
     if not record: raise ValueError('session_not_connected')
     # The shared delivery code reuses this tracker, so every dispatched operation stays known.
     if action == 'receive':
+        import quorum_notices
+        # The owner's debugging opt-out is stated per receive; omitting it receipts transport notices quietly.
+        quorum_notices.set_visible(ledger, getattr(args, 'show_transport_notices', False) is True)
         return inbox.receive(guarded, auth_ledger, ledger, record, args.wait_seconds, authorize=check)
     if action == 'standing-check':
         current = lambda: ledger.setting('session-agent')
