@@ -94,6 +94,11 @@ def bootstrap():
             'quoted here; the installed references/join.md wins over this text.')
 
 
+# Re-accept versus resume (#130): one decision rule; `accept-id --quorum` enforces it before using the invitation.
+RESUME_RULE = ('If this chat already has a live binding in this quorum, resume it (join.md) and tell me this '
+               'invitation is unused; otherwise accept.')
+
+
 # Machine clocks can be hours off; only the server's accept response decides expiry.
 EXPIRY = 'Expiry is server data: always attempt acceptance; only the server decides (report invite_denied).'
 
@@ -220,11 +225,12 @@ def create_id_invitation(api, config, slug, target, request_id, *, github_user=N
     github = ('GitHub is required and the account must match; sign in through GitHub via Supabase Auth, with no '
               'Supabase dashboard registration.')
     prompt = render(header, github, binding, bootstrap(),
-                    f'2. Accept: accept-id {invite_id} --origin and --publishable-key from this public service '
-                    f'locator: {json.dumps(service)}.', connect, consent)
+                    f'2. Accept: accept-id {invite_id} --quorum {slug} --origin and --publishable-key from this '
+                    f'public service locator: {json.dumps(service)}. ' + RESUME_RULE, connect, consent)
     configured = render(header, github, binding, bootstrap(),
-                        f'2. Accept: accept-id {invite_id} without service flags, on my configured machine profile '
-                        'and login; a missing or ambiguous profile is a blocker.', connect, consent)
+                        f'2. Accept: accept-id {invite_id} --quorum {slug} without service flags, on my configured '
+                        'machine profile and login; a missing or ambiguous profile is a blocker. ' + RESUME_RULE,
+                        connect, consent)
     return {'invite_id': invite_id, 'quorum': slug, 'quorum_id': quorum_id, 'target_github_id': target,
             'target_github_user': github_user, 'expires_at': expires_at, 'service': service,
             'standing_grants': standing_grants, 'member_trust': True,
@@ -246,8 +252,9 @@ def create_open_invitation(api, config, slug, request_id, *, coordinator_role='c
     anonymous = ('No GitHub or browser: accept with a new anonymous identity in a fresh private state. Anyone '
                  'holding this text can use it until accepted; do not forward it.')
     prompt = render(header, anonymous, binding, bootstrap(),
-                    f'2. Accept: accept-id {invite_id} --anonymous --origin and --publishable-key from this public '
-                    f'service locator: {json.dumps(service)}.', connect, consent)
+                    f'2. Accept: accept-id {invite_id} --anonymous --quorum {slug} --origin and --publishable-key '
+                    f'from this public service locator: {json.dumps(service)}. ' + RESUME_RULE,
+                    connect, consent)
     return {'invite_id': invite_id, 'quorum': slug, 'quorum_id': quorum_id, 'access': 'open',
             'expires_at': expires_at, 'service': service, 'standing_grants': standing_grants, 'member_trust': True,
             **({'assigned': assigned, 'assignment_storage': storage} if assigned else {}), 'session_prompt': prompt}
@@ -261,6 +268,13 @@ def accepted_assignment(accepted):
             and isinstance(value['project_ref'], str) and PROJECT_REF.fullmatch(value['project_ref'])):
         return {'assigned': {'role': value['role'], 'project_ref': value['project_ref']}}
     return {}
+
+
+def _own_session():
+    """This chat's own canonical session ID, or None when it exports none (membership-only, cloud)."""
+    from quorum_session import current_session
+    try: return current_session()
+    except ValueError: return None
 
 
 def accept_id_invitation(args, ledger):
@@ -290,6 +304,14 @@ def accept_id_invitation(args, ledger):
         if args.membership_only: raise CloudError('cloud_client_conflict')
         # The actual parent chat and its private webhook target, before any profile, login or invitation use.
         preflight(ledger)
+    quorum = getattr(args, 'quorum', None)
+    if quorum is not None:
+        # Re-accept versus resume (#130): a chat already bound in this quorum resumes that binding, before any
+        # profile, login or invitation use, so the single-use invitation stays unused.
+        if not ROLE.fullmatch(quorum): raise ValueError('invalid_quorum')
+        from quorum_resume import refuse_if_bound
+        refuse_if_bound(ledger.root, quorum, sid=None if tool else _own_session(),
+                        parent=args.parent_thread_id if tool else None)
     config, _ = resolve_profile(ledger.root, explicit, anonymous=args.anonymous)
     public_service(config)
     # Joining needs this chat's native listener; never consume the invitation without one.

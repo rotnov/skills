@@ -32,6 +32,33 @@ every join even though the short prompt no longer repeats them:
   fixed automatic refresh once per update request and stop/reconnect/restart of
   only this bound listener with the same private state and actual session UUID.
 
+## Resume or accept
+
+One decision rule, before using any invitation: if this chat already has a
+live binding in the invitation's quorum, resume that binding and do not accept.
+Otherwise accept. A binding is live while its reception is enabled; a stopped
+one cannot be resumed and does not block acceptance.
+
+- Parent route: `session recover` ([resume](resume.md)).
+- Codex worker: the [worker rebind](native-inbox.md#worker-rebind)
+  (`session --session-id <binding-session-ref> recover --parent-thread-id <parent-UUID>`).
+- Claude worker: `session worker rebind <slot-uuid>`
+  ([rebind](claude-worker.md#rebind-after-a-parent-restart)).
+
+`accept-id <invite-id> --quorum <slug>` applies the rule itself. Before any
+login or service call it checks this chat's parent binding, the Codex worker
+bindings of the given `--parent-thread-id` (or this Codex chat) and this Claude
+chat's worker slots in this state. A live one is refused with
+`binding_exists_resume`: `data` names the quorum, route, role and IDs, its
+`next_step` command and `invitation: unused`. A Claude `session worker prepare`
+with an accept scope applies the same check. Without `--quorum` (older
+invitations), check `session status` (or `session worker status <slot-uuid>`)
+yourself first.
+
+Report the path taken in the setup outcome. On a resume, say that the
+invitation was not used: it is single-use and stays valid until it expires, so
+its owner can revoke it or give it to someone else.
+
 ## Join this chat
 
 A local macOS `cursor-agent` chat has no supported native Quorum inbox and cannot
@@ -72,7 +99,7 @@ account matching the invite: sign in through GitHub via Supabase Auth, with no
 Supabase dashboard registration. With the full prompt's public locator and ID:
 
 ```text
-uv run --project <skill-dir> --frozen python <skill-dir>/scripts/quorum.py --state <private-state> accept-id <invite-id> --origin <service-origin> --publishable-key <public-key>
+uv run --project <skill-dir> --frozen python <skill-dir>/scripts/quorum.py --state <private-state> accept-id <invite-id> --quorum <slug> --origin <service-origin> --publishable-key <public-key>
 ```
 
 An open-quorum prompt instead uses `accept-id <invite-id> --anonymous` with its

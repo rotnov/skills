@@ -161,6 +161,94 @@ def json_text(value):
     return json.dumps(value)
 
 
+# --- Re-accept versus resume (#130) ------------------------------------------------------------------
+
+class BindingExists(ValueError):
+    """This chat already has a live binding in the invitation's quorum: resume it, the invitation stays unused."""
+    code = 'binding_exists_resume'
+
+    def __init__(self, found):
+        super().__init__(self.code)
+        self.found = found
+
+    def diagnostic(self):
+        # IDs, fixed labels and a command only; never a token, path secret or peer text.
+        return {**self.found, 'invitation': 'unused',
+                'guidance': 'This chat already has a live binding in this quorum. Resume it with next_step; the '
+                            'invitation was not used and stays valid until it expires, so its owner may revoke '
+                            'or reuse it.'}
+
+
+def _read_rows(path, keys):
+    """Read-only settings of an existing ledger; None when absent, linked or unreadable. Never creates one."""
+    import json
+    import sqlite3
+    if path.is_symlink() or not path.is_file(): return None
+    try:
+        connection = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=1)
+        try:
+            marks = ','.join('?' * len(keys))
+            rows = connection.execute(f'select key,data from settings where key in ({marks})', keys).fetchall()
+        finally: connection.close()
+        return {key: json.loads(data) for key, data in rows}
+    except (sqlite3.Error, ValueError, TypeError): return None
+
+
+def _quorum_command(state, *action):
+    import sys
+    return [sys.executable, str(Path(__file__).with_name('quorum.py')), '--state', str(state), 'session', *action]
+
+
+def live_binding(state, quorum, *, sid=None, parent=None):
+    """This chat's live binding in `quorum`, read-only, before any login or invitation use; None when absent.
+
+    `sid` is this chat's own session ID (parent route and Claude worker slots); `parent` is the Codex parent
+    thread a tool-inbox worker belongs to. Only enabled reception counts as live: a stopped binding cannot be
+    resumed (`session_recovery_denied`), so it never blocks an acceptance.
+    """
+    state = Path(os.path.abspath(state))
+    if sid is not None:
+        rows = _read_rows(state / 'sessions' / sid / 'ledger.sqlite', ('session-agent', 'session-reception'))
+        record = (rows or {}).get('session-agent')
+        if (isinstance(record, dict) and record.get('session_ref') == sid and record.get('quorum') == quorum
+                and record.get('transport', 'native') != 'tool-inbox'):
+            try:
+                require_enabled_rows(rows, record)
+                return {'quorum': quorum, 'route': 'parent', 'role': record.get('role'),
+                        'agent_id': record.get('agent_id'), 'next_step': _quorum_command(state, 'recover')}
+            except ValueError: pass
+    for owner in dict.fromkeys(item for item in (parent, sid) if item):
+        for item in worker_bindings(state, owner):
+            if item.get('quorum') == quorum:
+                return {'quorum': quorum, 'route': 'codex-worker', 'role': item.get('role'),
+                        'session_ref': item['session_ref'],
+                        'next_step': _quorum_command(state, '--session-id', item['session_ref'], 'recover',
+                                                     '--parent-thread-id', owner)}
+    if sid is not None and os.environ.get('CLAUDE_CODE_SESSION_ID') == sid:
+        from quorum_claude_worker import live_slots
+        for item in live_slots(state, sid, quorum):
+            return {'quorum': quorum, 'route': 'claude-worker', 'role': item['role'], 'slot_id': item['slot_id'],
+                    'agent_id': item['agent_id'],
+                    'next_step': _quorum_command(state, 'worker', 'rebind', item['slot_id'])}
+    return None
+
+
+def require_enabled_rows(rows, record):
+    """`require_enabled` over rows already read read-only."""
+    grant = rows.get('session-reception') or {}
+    expires = grant.get('expires_at') if isinstance(grant, dict) else None
+    valid_expiry = (expires is None or (type(expires) in (int, float) and math.isfinite(expires)
+                                        and expires > time.time()))
+    if (not isinstance(grant, dict) or grant.get('enabled') is not True or grant.get('binding') != binding(record)
+            or not valid_expiry):
+        raise ValueError('session_recovery_denied')
+
+
+def refuse_if_bound(state, quorum, *, sid=None, parent=None):
+    found = live_binding(state, quorum, sid=sid, parent=parent)
+    if found is not None: raise BindingExists(found)
+
+
 def main(argv=None):
     """Optional owner-installed startup hook; bounded input and fixed failure diagnostics only."""
     import argparse

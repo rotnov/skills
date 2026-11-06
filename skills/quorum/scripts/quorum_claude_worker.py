@@ -735,6 +735,13 @@ def _session_status(root, record):
             **awaiting}
 
 
+def _brief():
+    """The receive-loop part of the `quorum` worker brief the parent passes on with `bootstrap_command` (#127)."""
+    from quorum_native_inbox import RECEIVE_LOOP
+    return ('Run bootstrap_command first, then this worker\'s own capability commands per '
+            'references/claude-worker.md. ' + RECEIVE_LOOP)
+
+
 def _bootstrap(root, slot_id):
     return [sys.executable, str(Path(__file__).with_name('quorum.py')), '--state', str(root),
             'session', 'worker', 'await-binding', slot_id, '--wait-seconds', str(AWAIT_DEFAULT)]
@@ -748,6 +755,10 @@ def prepare(state_root, scope):
     root = _state_root(state_root)
     raw, scope = scope, normalize_scope(scope)
     if scope['cwd'] != str(Path.cwd().resolve()): raise _denied('cwd_mismatch')
+    if scope['mode'] == 'accept':
+        # A chat already bound in this quorum resumes (#130); its invitation is never prepared for use.
+        from quorum_resume import refuse_if_bound
+        refuse_if_bound(root, scope['quorum_slug'], sid=sid)
     target = {}
     if scope['mode'] == 'adopt':
         # The target comes from this chat's own existing binding in this state, never from the input.
@@ -775,7 +786,7 @@ def prepare(state_root, scope):
         _write_slot(root, sid, scope, slot_id, target, prepared, pending, permission)
     result = {'slot_id': slot_id, 'state': 'pending', 'lifetime': scope['lifetime'], 'pending_expires_at': pending,
               'permission_expires_at': permission, 'bootstrap_command': _bootstrap(root, slot_id),
-              'connect_flags': connect_flags(scope)}
+              'connect_flags': connect_flags(scope), 'worker_brief': _brief()}
     if adopt: result['adopt'] = dict(scope['adopt'])
     return result
 
@@ -1236,6 +1247,32 @@ def rebind(state_root, slot_id, *, knowledge=(), update=False):
     return _rebind_result(root, _view(root, successor))
 
 
+SLOT_SCAN_LIMIT = 256
+
+
+def live_slots(state_root, sid, quorum_slug):
+    """Read-only (#130): this chat's connected worker slots for `quorum_slug` whose reception is still enabled.
+
+    An active slot whose native worker ended with a parent restart still counts: it resumes with `rebind`.
+    Unreadable, unsafe, pending, terminal or stopped slots never count. Bounded; nothing is created or recovered.
+    """
+    root = _state_root(state_root)
+    try: names = sorted(os.listdir(root / 'claude-workers'))[:SLOT_SCAN_LIMIT]
+    except OSError: return []
+    found = []
+    for name in names:
+        if not CANONICAL.fullmatch(name): continue
+        try:
+            record = _view(root, name)
+            if (record.get('provider_session_id') != sid or record['scope'].get('quorum_slug') != quorum_slug
+                    or not record.get('binding') or _effective(record)[0] != 'active'):
+                continue
+            agent = _connected(root, record)
+        except (NativeInboxError, KeyError, TypeError, ValueError, OSError): continue
+        found.append({'slot_id': name, 'role': record['scope'].get('role'), 'agent_id': agent.get('agent_id')})
+    return found
+
+
 # One reserved pending successor per actor: `claude-worker-rebinding:<session_ref>` -> its slot and source.
 REBINDING = 'claude-worker-rebinding:'
 
@@ -1261,7 +1298,7 @@ def _rebind_result(root, record):
             'permission_expires_at': record['permission_expires_at'],
             'bootstrap_command': _bootstrap(root, record['slot_id']),
             'rebind': {key: marker[key] for key in ('previous_slot_id', 'session_ref', 'agent_id', 'count')},
-            'connect_flags': connect_flags(record['scope'])}
+            'connect_flags': connect_flags(record['scope']), 'worker_brief': _brief()}
 
 
 @contextmanager
@@ -1505,7 +1542,8 @@ def _check_arguments(record, operation, arguments):
         require(get('quorum') == scope['quorum_slug'] and get('access') == scope['access']
                 and get('role') in (None, scope['role']))
     elif operation == 'accept':
-        require(get('invite_id') == scope['invite_id'] and bool(get('anonymous')) == _anonymous(scope))
+        require(get('invite_id') == scope['invite_id'] and bool(get('anonymous')) == _anonymous(scope)
+                and get('quorum') in (None, scope['quorum_slug']))
         if get('origin'): require(_same_service(scope, get('origin'), get('publishable_key')))
     elif operation == 'connect':
         require(get('quorum') == scope['quorum_slug'] and get('role') == scope['role']
@@ -1738,7 +1776,8 @@ def preflight(args):
         try: invite = str(uuid.UUID(args.invite_id))
         except (ValueError, TypeError, AttributeError): raise _denied('scope_mismatch') from None
         arguments = {'invite_id': invite, **{name: getattr(args, name, None) for name in (
-            'transport', 'parent_thread_id', 'membership_only', 'client', 'anonymous', 'origin', 'publishable_key')}}
+            'transport', 'parent_thread_id', 'membership_only', 'client', 'anonymous', 'origin', 'publishable_key',
+            'quorum')}}
     elif args.command in ('knowledge', 'update'):
         operation = args.command
         arguments = ({'quorum': args.quorum} if operation == 'update' else

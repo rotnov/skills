@@ -18,7 +18,11 @@ assign it the creation, invitation and setup mechanics of the owner's request.
 Keep reusing the same worker in this chat for later bounded Quorum mechanics.
 Do not start a worker per Hello, roster, receipt, heartbeat, reconnect notice or
 reply, and never run it as a polling loop or daemon; it works only on a bounded brief
-from the parent.
+from the parent. A reception brief names its limit (a deadline or message count).
+Within it the worker keeps receiving through empty waits and stops only at that
+limit, on an owner stop or a fatal error, then reports `brief_deadline`,
+`brief_count`, `owner_stop` or `fatal:<code>` (see the
+[receive loop](native-inbox.md#receive-loop)).
 
 The worker may use the owner's already authorized login and service context to
 run the automatic refresh, `status`, `version`, `create` and `invite-id`, read
