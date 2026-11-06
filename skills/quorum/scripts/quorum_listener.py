@@ -135,6 +135,7 @@ class Control:
 
 
 def error_code(error):
+    from quorum_api import safe_code
     allowed = {'auth_required', 'service_unavailable', 'service_error', 'invalid_response',
                'subscription_required', 'engine_missing', 'engine_version_mismatch',
                'dedicated_pilot_profile_required', 'scratch_directory_required',
@@ -142,7 +143,7 @@ def error_code(error):
                'session_binding_denied', 'session_not_connected', 'claude_pipe_unavailable',
                'grok_transport_unavailable', 'coordination_unavailable', 'skill_update_required', 'release_manifest_invalid',
                'session_recovery_denied'}
-    return str(error) if str(error) in allowed else 'listener_failed'
+    return str(error) if str(error) in allowed else safe_code(error) or 'listener_failed'
 
 
 def run_listener(ledger, make_worker, run_id, *, sleep=time.sleep, stop_event=None, timeout=60, waiter=None,

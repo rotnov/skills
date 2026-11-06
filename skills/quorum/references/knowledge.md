@@ -30,9 +30,11 @@ Mutations require a stable request ID. After a lost response repeat identical
 arguments and the same ID: receipts describe the original mutation, while a new
 search/read describes current state. Changed replay bytes conflict. The helper
 never retries or substitutes an approximate roster/context store. A missing RPC
-or rejected backend operation reports `knowledge_backend_unavailable_or_rejected`;
-check the owner's deployment/access instead of bypassing it. Transport and
-credential errors keep their existing bounded codes, without response bodies.
+or unnamed backend failure reports `knowledge_backend_unavailable_or_rejected`;
+check the owner's deployment/access instead of bypassing it. A named server
+refusal keeps its own fixed code, such as `knowledge_denied` or
+`knowledge_stale_revision`. Transport and credential errors keep their existing
+bounded codes, without response bodies.
 
 ## Claude worker knowledge
 
@@ -100,8 +102,8 @@ space for that agent's project. An explicit grant always wins, including a lower
 `reader` grant; revoked members and agents never get it; owner-only operations
 stay with the owner; `none` removes it. With open access this includes anonymous
 joiners, so pick `reader` or `writer` only for content they may see. A server
-without the migration answers `knowledge_backend_unavailable_or_rejected`; grant
-individually there.
+without the migration answers `knowledge_invalid_operation`; grant individually
+there.
 
 ## Proposals and decisions
 

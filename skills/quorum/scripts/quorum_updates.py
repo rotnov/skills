@@ -5,7 +5,7 @@ from pathlib import Path
 import re
 import uuid
 
-from quorum_api import QuorumError, guarded_call
+from quorum_api import QuorumError, guarded_call, server_refused
 from quorum_os import FileLock
 from quorum_release import read_release, runtime_evidence, source_identity
 from quorum_resume import binding as resume_binding
@@ -54,9 +54,12 @@ def _call(api, operation, payload, request_id, authorize):
                               before_request=authorize, on_dispatch=lambda:None)
     except QuorumError as error:
         # Missing RPCs and an incompatible implementation are never a reason to
-        # silently approximate the all-quorum set with session_peers.
+        # silently approximate the all-quorum set with session_peers. A reviewed
+        # refusal such as skill_update_required is not `service_error` and keeps its name.
         if str(error) == 'service_error' and not error.transient:
             raise QuorumError('update_extension_unavailable') from None
+        # A request ID already bound to another target or report: update.md's blocker, never an approximation.
+        if str(error) == 'idempotency_conflict': raise QuorumError('update_target_changed') from None
         raise
     authorize()
     if not isinstance(result, dict): raise QuorumError('invalid_response')
@@ -106,9 +109,10 @@ def owner_update(api, ledger, record, request_id, *, current, cache,
         try:
             fanout = _call(api, 'session_update_request', payload, request_id, authorize)
         except QuorumError as error:
+            refused = str(error) in ('update_extension_unavailable', 'update_target_changed') or server_refused(error)
             raise UpdateFailure(error, {'target':journal['target'], 'local':journal['local'],
                                 'request_id':request_id, 'runtime':runtime_evidence(ledger),
-                                'fanout_state':'unavailable' if str(error)=='update_extension_unavailable' else 'unknown'}) from None
+                                'fanout_state':'unavailable' if refused else 'unknown'}) from None
         try:
             operation_id = str(uuid.UUID(fanout['operation_id']))
             counts = {key:fanout[key] for key in ('queued', 'existing')}
@@ -192,8 +196,10 @@ def report_runtime(api, ledger, record, notice_id, request_id, *, authorize=lamb
     active = runtime_evidence(ledger)
     if not active['verified'] or active['source'] != target:
         return {'state':'runtime_unverified', 'target':target, 'runtime':active}
+    # The run is part of the identity: a restarted listener's report is a new fact, not a conflicting replay.
     _call(api, 'session_update_report', {**_scope(record), 'notice_id':notice_id, 'event':'active',
-          'evidence':{**target, 'run_id':active['run_id']}}, 'runtime:'+hashlib.sha256(request_id.encode()).hexdigest(), authorize)
+          'evidence':{**target, 'run_id':active['run_id']}},
+          'runtime:'+hashlib.sha256((request_id+':'+active['run_id']).encode()).hexdigest(), authorize)
     return {'state':'active_reported', 'target':target, 'runtime':active}
 
 

@@ -258,15 +258,33 @@ one transaction drop the new `session_heartbeat_before_status` and
 `session_health_streak` trigger and function, and drop `session_streaks` and
 `session_hello_sent`.
 
+## Task authority project bound
+
+After reviewing the source and obtaining administrator deployment authorization,
+apply
+[`20261106130000_task_authority_project_bound.sql`](../supabase/migrations/20261106130000_task_authority_project_bound.sql)
+in one transaction after `20261106120000_hello_reconnect_dedupe.sql`. It raises
+the `session_task_authority` project-ref bound from 256 to the 500 octets join
+admits; before it, an agent with a longer ref gets `session_binding_denied` there.
+It pins the reviewed body, the binding check and the release, and refuses drift,
+reapplication or a server without the Hello dedupe release before any change. It
+does not change the required release, the response, table access or any grant.
+
+The reviewed body stays private as
+`quorum_private.session_task_authority_before_project_bound`. To roll back, in one
+transaction drop the new `public.session_task_authority`, move that function back
+to `public` under its old name and grant it to `authenticated` again.
+
 ## Exact unreceipted lookup
 
 After reviewing the source and obtaining administrator deployment authorization,
 apply
 [`20261106140000_session_message_unreceipted.sql`](../supabase/migrations/20261106140000_session_message_unreceipted.sql)
-in one transaction after `20261106120000_hello_reconnect_dedupe.sql`. It pins the
-reviewed inbox predicate, the binding check and the release, and refuses drift or
-reapplication before any change. It does not change the required release, table
-access or task authority.
+in one transaction after `20261106130000_task_authority_project_bound.sql`. It pins
+the reviewed inbox predicate, the binding check, the project-bound task authority and
+the release, and refuses drift, reapplication or a server without that predecessor
+before any change. It does not change the required release, table access or task
+authority.
 
 `session_message_unreceipted` tells the caller's own native session whether one
 exact message is still unreceipted, so `session reconcile --confirmed-absent`

@@ -33,6 +33,8 @@ const status = '20261105160000_peer_status_visibility.sql';
 const defaultRole = '20261106100000_knowledge_member_default_role.sql';
 // Per-recipient Hello dedupe on listener reconnects inside a presence streak (#126).
 const dedupe = '20261106120000_hello_reconnect_dedupe.sql';
+// Task authority admits every project ref join admits (#143).
+const authorityBound = '20261106130000_task_authority_project_bound.sql';
 // Exact unreceipted lookup behind owner-attested confirmed absence (#142).
 const unreceipted = '20261106140000_session_message_unreceipted.sql';
 // Installations that deployed native coordination before open access apply the
@@ -221,7 +223,8 @@ try {
     await drifted(fn, 'reviewed_dispatcher_changed: ' + fn, [...fresh, priority], serialization, unserialized);
   }
   const portableTail = [priority, serialization, maintenance, memberAuthority];
-  const reviewedTail = [...portableTail, knowledge, wiki, hello, ttl, roles, status, defaultRole, dedupe, unreceipted];
+  const reviewedTail = [...portableTail, knowledge, wiki, hello, ttl, roles, status, defaultRole, dedupe, authorityBound,
+    unreceipted];
   if (JSON.stringify(all.filter(name => name >= priority)) !== JSON.stringify(reviewedTail)) {
     throw new Error('unreviewed migration after the close serialization');
   }
@@ -393,17 +396,49 @@ try {
       await dedupeDb.close();
     }
   }
-  // The exact lookup pins the inbox predicate it copies, the binding check and the release;
-  // it refuses drift or reapplication, changing nothing.
+  // The task authority bound pins the reviewed body, the binding check and the release; it refuses
+  // drift, reapplication or a server without the Hello dedupe release, changing nothing.
+  const noBound = async (db, label) => {
+    const result = await db.query(`select
+      to_regprocedure('quorum_private.session_task_authority_before_project_bound(uuid,text,uuid)') moved,
+      to_regprocedure('public.session_task_authority(uuid,text,uuid)') current`);
+    const row = result.rows[0];
+    if (row.moved !== null || row.current === null) throw new Error(label + ': partial task authority apply');
+  };
+  const beforeBound = [...beforeDedupe, dedupe];
+  await gated([...beforeBound, authorityBound], read(migrations + authorityBound), 'task_authority_bound_present',
+    'task authority bound reapplied');
+  await gated(beforeDedupe, read(migrations + authorityBound), 'hello_dedupe_required', 'task authority without dedupe',
+    noBound);
+  for (const fn of ['public.session_task_authority(uuid,text,uuid)', 'quorum_private.native_session(uuid,text)',
+    'public.session_requirements()']) {
+    await drifted(fn, 'reviewed_dispatcher_changed: ' + fn, beforeBound, authorityBound, noBound);
+  }
+  {
+    const boundDb = await database([...beforeBound, authorityBound]);
+    try {
+      await release(boundDb, current);
+      for (const name of ROLE_COMPATIBLE) await boundDb.exec(suite(name));
+      await boundDb.exec(suite('quorum_task_authority_backend.sql'));
+    } finally {
+      await boundDb.exec('rollback');
+      await boundDb.close();
+      }
+    }
+  // The exact lookup pins the inbox predicate it copies, the binding check, the project-bound task
+  // authority and the release; it refuses drift, reapplication or a missing predecessor, changing nothing.
   const noLookup = async (db, label) => {
     const result = await db.query(`select to_regprocedure('public.session_message_unreceipted(uuid,text,uuid)') f`);
     if (result.rows[0].f !== null) throw new Error(label + ': partial lookup apply');
   };
-  const beforeLookup = [...beforeDedupe, dedupe];
+  const beforeLookup = [...beforeBound, authorityBound];
   await gated([...beforeLookup, unreceipted], read(migrations + unreceipted), 'message_unreceipted_present',
     'lookup reapplied');
+  await gated(beforeBound, read(migrations + unreceipted), 'task_authority_bound_required',
+    'lookup without the task authority bound', noLookup);
   for (const fn of ['quorum_private.session_inbox_before_updates(uuid,text)',
-    'quorum_private.native_session(uuid,text)', 'public.session_requirements()']) {
+    'quorum_private.native_session(uuid,text)', 'public.session_task_authority(uuid,text,uuid)',
+    'public.session_requirements()']) {
     await drifted(fn, 'reviewed_dispatcher_changed: ' + fn, beforeLookup, unreceipted, noLookup);
   }
   {
@@ -427,7 +462,7 @@ try {
     });
   if (!coordination(upgraded[3]) || !late(upgraded[4])) throw new Error('upgraded order is not coordination first');
   console.log('Invitation, session, Realtime, open-access, coordination, open-session, coordination-only refusal, '
-    + 'mandatory priority release, close serialization, member authority ACLs, open-member priority, Hello reporting/roster, 60-minute open invitations, invitation role assignment/owner retire, heartbeat peer status, knowledge default-role prerequisite, reconnect Hello dedupe and pinned-chain drift regression '
+    + 'mandatory priority release, close serialization, member authority ACLs, open-member priority, Hello reporting/roster, 60-minute open invitations, invitation role assignment/owner retire, heartbeat peer status, knowledge default-role prerequisite, reconnect Hello dedupe, task authority project bound and pinned-chain drift regression '
     + '(fresh and coordination-first upgraded order): PASS (disposable PostgreSQL)');
 } catch (error) {
   console.error(error.message, error.where || '');

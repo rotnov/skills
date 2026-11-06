@@ -9,10 +9,10 @@ import hashlib
 import subprocess
 
 sys.dont_write_bytecode = True
-from quorum_api import QuorumApi, ServiceConfig, QuorumError, rpc_missing
+from quorum_api import QuorumApi, ServiceConfig, QuorumError, SERVER_ERRORS, rpc_missing, safe_code
 from quorum_auth import token_provider
 from quorum_state import LocalLedger
-from quorum_grok_leader import GrokBindingError, GrokBuildChanged
+from quorum_grok_leader import GrokBindingError, GrokBuildChanged, GrokRefused
 from quorum_session import (AmbiguousSession, BindingError, ReconcileEvidenceRequired, RecipientUnresolved, RoleHeld,
                             UnsupportedClient)
 from quorum_grok_cloud import CloudError
@@ -231,15 +231,14 @@ def main(argv=None):
         print(json.dumps({'ok': False, 'code': error.code, 'data': {}}))
         return 3
     except QuorumError as error:
-        codes = {'skill_update_required': 4, 'release_manifest_invalid': 4, 'auth_required': 3, 'service_not_configured': 4, 'live_agents_disabled': 4,
+        codes = {'release_manifest_invalid': 4, 'service_not_configured': 4, 'live_agents_disabled': 4,
                  'engine_acceptance_pending': 4, 'service_profile_ambiguous': 4, 'machine_profile_unavailable': 4,
                  'auth_profile_conflict': 3, 'service_config_conflict': 4, 'service_unavailable': 5, 'service_error': 5,
                  'response_too_large': 5, 'invalid_response': 5, 'listener_start_failed': 5, 'listener_stop_failed': 5, 'listener_not_ready': 5,
-                 'anonymous_login_unavailable': 4, 'open_invite_required': 3, 'recipient_ambiguous_or_missing': 3,
-                 'role_held_by_own_agent': 3, 'role_held_by_other_identity': 3, 'role_assignment_mismatch': 3,
-                 'role_exclusivity_requires_read_committed': 5, 'owner_required': 3, 'agent_denied': 3,
-                 'owner_retire_unavailable': 4}
+                 'anonymous_login_unavailable': 4, 'open_invite_required': 3, 'owner_required': 3, 'agent_denied': 3,
+                 'owner_retire_unavailable': 4, 'coordination_unavailable': 4, 'update_target_changed': 3}
         codes.update({'update_extension_unavailable':4, 'runtime_source_unavailable':4})
+        codes.update({code: exit_code for _, code, exit_code in SERVER_ERRORS.values()})
         code = str(error) if str(error) in codes else 'operation_failed'
         from quorum_release import ReleaseMismatch
         from quorum_updates import UpdateFailure
@@ -249,6 +248,10 @@ def main(argv=None):
         return codes.get(code, 3)
     except GrokBindingError as error:
         print(json.dumps({'ok': False, 'code': 'grok_transport_unavailable', 'data': error.diagnostic()}))
+        return 3
+    except GrokRefused as error:
+        # A fixed code, reason and next step; never a path, session ID or leader text.
+        print(json.dumps({'ok': False, 'code': error.code, 'data': error.diagnostic()}))
         return 3
     except GrokBuildChanged as error:
         # Two fixed-format build versions and a relaunch step; never a path or process argument.
@@ -294,25 +297,8 @@ def main(argv=None):
         print(json.dumps({'ok': False, 'code': error.code, 'data': error.data}))
         return 3
     except (ValueError, OSError, KeyError, TypeError, subprocess.SubprocessError) as error:
-        # Allow only fixed local codes; arbitrary exception text may contain secrets.
-        safe = {'machine_profile_unavailable', 'service_profile_ambiguous', 'auth_profile_conflict',
-                'service_config_conflict', 'github_identity_required', 'auth_lock_timeout',
-                'browser_unavailable', 'login_timeout', 'anonymous_state_conflict', 'invalid_role', 'invalid_project_ref',
-                'invalid_agent_id', 'invalid_request_id', 'invalid_quorum'}
-        if isinstance(error, ValueError):
-            safe.update({'update_request_invalid', 'update_notice_denied', 'update_target_changed',
-                         'update_fetch_failed', 'update_tool_missing', 'update_invalid_copy',
-                         'update_validation_failed', 'update_cache_conflict', 'update_unsafe_cache',
-                         'update_in_progress', 'session_not_connected', 'python_provisioning_failed',
-                         'update_node_too_old'})
-            safe.update({'grok_transport_unavailable', 'session_binding_denied', 'coordinator_changed',
-                         'claude_pipe_unavailable', 'listener_stop_pending', 'session_delivery_unknown',
-                         'session_delivery_unsent', 'session_reconcile_denied',
-                         'session_recovery_denied', 'delegation_scope_changed', 'member_intake_requires_inline',
-                         'private_acl_unavailable', 'private_acl_access_denied', 'unsafe_link', 'browser_unavailable', 'login_timeout',
-                         'worker_already_running', 'standing_grants_require_members', 'invalid_coordinator_role',
-                         'binding_conflict'})
-        code = str(error) if str(error) in safe else 'operation_failed'
+        # Allow only fixed codes; arbitrary exception text may contain secrets.
+        code = safe_code(error) or 'operation_failed'
         data = error.diagnostic() if code == 'auth_profile_conflict' and hasattr(error, 'diagnostic') else {}
         if code in ('update_node_too_old', 'python_provisioning_failed'):
             from quorum_update import diagnostic as update_diagnostic

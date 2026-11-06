@@ -328,7 +328,11 @@ def client_preflight():
         from quorum_grok_leader import GrokBuildChanged, binding
         try: binding(sid, str(Path.cwd().resolve()))
         except GrokBuildChanged: raise  # Actionable as is: the owner relaunches to finish the update.
-        except (ValueError, OSError, KeyError, TypeError, subprocess.SubprocessError):
+        except ValueError as error:
+            # Connect's own fixed failures keep its reason and next step; this runs before login or acceptance.
+            if str(error) in ('grok_transport_unavailable', 'session_binding_denied'): raise
+            raise UnsupportedClient('grok_leader_unavailable', engine) from None
+        except (OSError, KeyError, TypeError, subprocess.SubprocessError):
             raise UnsupportedClient('grok_leader_unavailable', engine) from None
     if engine == 'codex' and not shutil.which('codex'):
         raise UnsupportedClient('codex_cli_missing', engine)

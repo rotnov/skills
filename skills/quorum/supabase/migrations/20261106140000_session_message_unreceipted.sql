@@ -1,5 +1,5 @@
 -- SOURCE ONLY. Reviewed administrator deployment in one transaction, after
--- 20261106120000_hello_reconnect_dedupe.sql.
+-- 20261106130000_task_authority_project_bound.sql.
 -- No required-release change, table grant, policy, task authority or model launch. (#142)
 --
 -- `session reconcile --confirmed-absent` must learn whether one exact message is
@@ -19,11 +19,15 @@ declare f text; actual text; reviewed constant jsonb:=jsonb_build_object(
  'quorum_private.session_inbox_before_updates(uuid,text)','93b2f7f232bc3b318114192dac7a597bf8ab700cd0a4158daf081f94337f3e79',
  -- The binding check the new function relies on.
  'quorum_private.native_session(uuid,text)','60778eaf4fde7ce50980d5bf328f21c85d9db23f0947ed1554e0052a8654615c',
+ -- The task authority this release runs beside: the project-bound body (20261106130000).
+ 'public.session_task_authority(uuid,text,uuid)','5d0c0bdfdff7083906dad012f02ee4ef36f672f6e2c3fc822cea452115f2965b',
  -- The mandatory 0.3.0/2 release (170000); unchanged here.
  'public.session_requirements()','6e9752bcaedbbdfc4b2b8197cb44598306ee8d79044d654836017aab86031eef');
 begin
  if to_regprocedure('public.session_message_unreceipted(uuid,text,uuid)') is not null then
   raise exception 'message_unreceipted_present'; end if;
+ if to_regprocedure('quorum_private.session_task_authority_before_project_bound(uuid,text,uuid)') is null then
+  raise exception 'task_authority_bound_required'; end if;
  for f in select jsonb_object_keys(reviewed) loop
   select encode(sha256(convert_to(prosrc,'UTF8')),'hex') into actual from pg_proc where oid=to_regprocedure(f);
   if actual is distinct from reviewed->>f then raise exception 'reviewed_dispatcher_changed: %',f; end if;
