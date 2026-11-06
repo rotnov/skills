@@ -10,6 +10,7 @@ import time
 import uuid
 from quorum_api import QuorumError, rpc_missing
 from quorum_capabilities import GROK_LEADER_PLATFORMS
+from quorum_claude_pipe import DeliveryUnsent, run_child
 from quorum_listener import (Control, READY_SECONDS, START_LOCK, StartGuard, UPSERT, await_started, control_lock,
                              locked, ready, run_listener, spawn_background, stop_listener)
 from quorum_os import FileLock
@@ -89,6 +90,21 @@ class BindingError(ValueError):
 
     def diagnostic(self):
         return {**self.binding, 'next_step': self.NEXT_STEPS[self.code]}
+
+
+class ReconcileEvidenceRequired(ValueError):
+    """A `session reconcile` must state which attestation the owner makes; only fixed guidance crosses."""
+    code = 'session_reconcile_denied'
+
+    def __init__(self):
+        super().__init__(self.code)
+
+    def diagnostic(self):
+        return {'next_step': (
+            'Nothing was changed or acknowledged. State exactly one attestation after checking the actual chat: '
+            '--confirmed-queued when the message is present there, or --confirmed-absent --attempt-id <UUID> '
+            'when it is not and its old receiver and helper cannot deliver it. `session status` lists the '
+            'unknown attempts; see references/sessions.md.')}
 
 
 class RoleHeld(ValueError):
@@ -330,6 +346,18 @@ def client_preflight():
     return engine
 
 
+def listener_route(record, liveness=None):
+    """The check before each inbox read: this chat's route, then the run's shared transport watch.
+
+    Heartbeats feed the same watch, so a TUI replaced by `--resume` ends the run on its usual
+    three-read rule. A delivery inside that window is refused by the helper's own binding check.
+    """
+    def check():
+        check_native_route(record)
+        if liveness: liveness()
+    return check
+
+
 def require_caller(session_id, engine=None):
     if current_session() != session_id or (engine and current_engine() != engine):
         raise ValueError('session_binding_denied')
@@ -380,6 +408,24 @@ def message_priority(message):
     if value is None: value = 'normal'  # An omitted field is an ordinary message.
     if value not in PRIORITIES: raise ValueError('invalid_priority')
     return value
+
+
+# CreateProcess takes 32767 UTF-16 units including the terminator; cmd.exe, which runs a
+# batch shim such as npm's codex.cmd, takes 8191 and adds its own `/c` wrapper.
+WINDOWS_COMMAND_LIMIT = 32766
+BATCH_COMMAND_LIMIT = 8100
+
+
+def fits_windows_command(command):
+    """True when this argv still fits one Windows command line after list2cmdline quoting."""
+    limit = BATCH_COMMAND_LIMIT if command[0].lower().endswith(('.cmd', '.bat')) else WINDOWS_COMMAND_LIMIT
+    return len(subprocess.list2cmdline(command).encode('utf-16-le')) // 2 <= limit
+
+
+def unsent_on_failure(step):
+    """Run a step that precedes any payload write; its failure proves this attempt wrote nothing."""
+    try: return step()
+    except Exception: raise DeliveryUnsent() from None
 
 
 def enqueue(record, message, auth_state):
@@ -439,28 +485,24 @@ def enqueue(record, message, auth_state):
         return prompt
     if engine == 'grok':
         from quorum_grok_leader import submit
-        require_caller(record['session_ref'], 'grok')
+        unsent_on_failure(lambda: require_caller(record['session_ref'], 'grok'))
         # Grok has no steering route: urgency changes the wording, not the path.
-        submit(record, message['id'], prompt_for('piped'))
+        submit(record, message['id'], unsent_on_failure(lambda: prompt_for('piped')))
         return 'submitted'
     if engine == 'claude':
-        from quorum_claude_pipe import DeliveryUnsent, submit
-        try:
-            # These guards and frame construction perform no payload I/O. A
-            # rejection here proves this attempt never invoked the helper.
-            check_native_route(record)
-            prompt = prompt_for('piped')
-        except ValueError:
-            raise DeliveryUnsent() from None
+        from quorum_claude_pipe import submit
+        # These guards and frame construction perform no payload I/O.
+        unsent_on_failure(lambda: check_native_route(record))
+        prompt = unsent_on_failure(lambda: prompt_for('piped'))
         # Claude reads accepted inbox messages between tool calls of an active
         # turn for every priority; it is not turn-ID steering.
         submit(record['session_ref'], message['id'], prompt)
         return 'submitted'
     executable = shutil.which('codex')
-    if not executable: raise ValueError('engine_missing')
+    if not executable: raise DeliveryUnsent()
     if priority == 'urgent':
         from quorum_codex_steer import SteerUnavailable, submit as steer
-        require_caller(record['session_ref'], 'codex')
+        unsent_on_failure(lambda: require_caller(record['session_ref'], 'codex'))
         try:
             if steer(record, message['id'], lambda: prompt_for('steered')) == 'submitted':
                 return 'submitted'
@@ -470,11 +512,24 @@ def enqueue(record, message, auth_state):
                   file=sys.stderr, flush=True)
         # Both a rejection and an unavailable route prove that nothing reached
         # the chat, so this message is queued exactly once below instead.
-    result = subprocess.run([executable, 'queue', '--thread', record['session_ref'],
-                             '--message', prompt_for('queued')],
-                            stdin=subprocess.DEVNULL, capture_output=True, timeout=30,
-                            creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
-    if result.returncode: raise ValueError('session_queue_failed')
+    # `codex queue` accepts its text only as --message: it has no stdin or file form, so the prompt,
+    # including the reply command's --state path, stays on this child's argv. Prompts stay well under
+    # POSIX limits, and E2BIG would surface as a spawn failure; Windows quoting can outgrow its limit.
+    command_line = [executable, 'queue', '--thread', record['session_ref'], '--message',
+                    unsent_on_failure(lambda: prompt_for('queued'))]
+    if os.name == 'nt' and not fits_windows_command(command_line): raise DeliveryUnsent()
+    if run_child(command_line, timeout=30).returncode: raise ValueError('session_queue_failed')
+
+
+def head_intent(ledger, messages):
+    """True when the service's current head is itself this ledger's unresolved attempt.
+
+    Only that head blocks: a stuck attempt further back must not hold up a newer
+    urgent message, and it blocks again once it is the head.
+    """
+    if not isinstance(messages, list) or not messages: return False
+    delivery = ledger.setting('delivery:' + str(uuid.UUID(messages[0]['id'])))
+    return bool(delivery) and delivery['state'] == 'intent'
 
 
 class Relay:
@@ -491,14 +546,12 @@ class Relay:
     def reconcile(self):
         self.release.check()
         self.authorize()
-        for key, raw in self.ledger.db.execute("select key,data from settings where key like 'delivery:%'"):
-            if json.loads(raw)['state'] == 'intent': raise ValueError('session_delivery_unknown')
         self.route_check()
-        self.api.call('session_inbox', self.scope())
+        messages = self.api.call('session_inbox', self.scope())
         self.authorize()
+        if head_intent(self.ledger, messages): raise ValueError('session_delivery_unknown')
 
     def run_once(self):
-        from quorum_claude_pipe import DeliveryUnsent
         self.release.check()
         self.authorize()
         # The chat's `received`/`reply` acknowledges submitted messages itself,
@@ -556,8 +609,8 @@ class Relay:
             # Claude's pipe has no synchronous delivery acknowledgement. Only
             # the receiving chat's `received`/`reply` command can confirm it.
             state={'state':'submitted' if result == 'submitted' else 'queued'}
-            # The chat may confirm receipt on another SQLite connection while
-            # the I/O helper is returning. Preserve that commit atomically.
+            # A receipt waits for this transition, but stay a compare-and-set
+            # so a later attempt or an owner's reconciliation is never replaced.
             with self.ledger.db:
                 self.ledger.db.execute('update settings set data=? where key=? and data=?',
                                        (json.dumps(state),key,json.dumps(intent)))
@@ -702,10 +755,11 @@ def add_commands(commands):
         sub.add_argument('--priority', choices=PRIORITIES, default='normal')
     recover = actions.add_parser('reconcile')
     recover.add_argument('message_id', type=lambda x: str(uuid.UUID(x)))
-    evidence = recover.add_mutually_exclusive_group(required=True)
+    # Not required here: `dispatch` refuses a bare call with the fixed next step.
+    evidence = recover.add_mutually_exclusive_group()
     evidence.add_argument('--confirmed-queued', action='store_true')
     evidence.add_argument('--confirmed-absent', action='store_true',
-                          help='Owner attests the original queue/held messages lack this attempt and its old receiver/helper cannot deliver')
+                          help='Owner attests the original chat lacks this attempt and its old receiver/helper cannot deliver')
     recover.add_argument('--attempt-id', type=lambda value:str(uuid.UUID(value)),
                          help='Required with --confirmed-absent: exact unknown attempt UUID from the private ledger')
 
@@ -726,7 +780,7 @@ def add_transport_arguments(parser):
                         help='Expected parent thread UUID of the tool-inbox worker; a relationship, not authority')
 
 
-def rebind(ledger, control, sid, endpoint, guard, *, stop_seconds=60, engine='claude', authorize=None):
+def rebind(ledger, control, sid, endpoint, guard, *, inbox, stop_seconds=60, engine='claude', authorize=None):
     """Move this same chat to its current, already validated native transport.
 
     The caller has proven the session identity and endpoint from its own
@@ -737,9 +791,9 @@ def rebind(ledger, control, sid, endpoint, guard, *, stop_seconds=60, engine='cl
     if not record or record.get('session_ref') != sid or record.get('engine') != engine:
         raise ValueError('session_binding_denied')
     if engine not in ('claude', 'grok'): raise ValueError('session_binding_denied')
-    # An uncertain write stays for the owner to reconcile; never rebind past it.
-    for (raw,) in ledger.db.execute("select data from settings where key like 'delivery:%'"):
-        if json.loads(raw)['state'] == 'intent': raise ValueError('session_delivery_unknown')
+    # An uncertain head stays for the owner to reconcile; never rebind past it.
+    if head_intent(ledger, inbox()): raise ValueError('session_delivery_unknown')
+    if authorize: authorize()  # A stop during that read must win before the listener is disturbed.
     lock = ledger.root/'listener.lock'
     if locked(lock):
         run_id = (ledger.setting('listener') or {}).get('run_id')
@@ -753,8 +807,7 @@ def rebind(ledger, control, sid, endpoint, guard, *, stop_seconds=60, engine='cl
             time.sleep(.2)
     # A delivery may have begun after the first snapshot while the old run
     # was exiting. It now holds no lock and cannot add another write intent.
-    for (raw,) in ledger.db.execute("select data from settings where key like 'delivery:%'"):
-        if json.loads(raw)['state'] == 'intent': raise ValueError('session_delivery_unknown')
+    if head_intent(ledger, inbox()): raise ValueError('session_delivery_unknown')
     if authorize: authorize()
     key = 'messaging_socket' if engine == 'claude' else 'grok_transport'
     with guard.section():
@@ -793,24 +846,24 @@ def start(auth_state, ledger, sid, *, api, endpoint=None, grok_transport=None, r
         def authorize():
             guard.check()
             if recovery: require_enabled(ledger, record)
+        def inbox():
+            return api.call('session_inbox', {'agent_id':record['agent_id'], 'session_ref':sid})
         def commit():
             if not recovery: enable(ledger, ledger.setting('session-agent'))
         if recovery:
             authorize()
             # Validate current server membership/device/session without consuming
             # or acknowledging any queued message, before disturbing a live run.
-            api.call('session_inbox', {'agent_id':record['agent_id'], 'session_ref':sid})
-            for (raw,) in ledger.db.execute("select data from settings where key like 'delivery:%'"):
-                if json.loads(raw)['state'] == 'intent': raise ValueError('session_delivery_unknown')
+            if head_intent(ledger, inbox()): raise ValueError('session_delivery_unknown')
         release = ReleaseGuard(api, ledger)
         release.check()
         release.running()
         authorize()  # Service/release checks may outlive a finite grant.
         rebound = bool(record and endpoint is not None and endpoint != record.get('messaging_socket'))
-        if rebound: rebind(ledger, control, sid, endpoint, guard, authorize=authorize)
+        if rebound: rebind(ledger, control, sid, endpoint, guard, inbox=inbox, authorize=authorize)
         grok_rebound = grok_transport is not None and grok_transport != record.get('grok_transport')
         if grok_rebound:
-            rebind(ledger, control, sid, grok_transport, guard, engine='grok', authorize=authorize)
+            rebind(ledger, control, sid, grok_transport, guard, inbox=inbox, engine='grok', authorize=authorize)
         authorize()  # Recheck the latest grant after any old listener shutdown.
         if locked(ledger.root/'listener.lock'):
             # Reuse only a ready run: a degraded or starting one is neither reported nor granted.
@@ -845,8 +898,24 @@ def start(auth_state, ledger, sid, *, api, endpoint=None, grok_transport=None, r
         raise QuorumError('listener_start_failed')
 
 
+def still_unreceipted(api, record, message_id):
+    """True only when the service still lists this exact message as unreceipted for this agent."""
+    scope = {'agent_id':record['agent_id'], 'session_ref':record['session_ref']}
+    try: result = api.call('session_message_unreceipted', {**scope, 'message_id':message_id})
+    except QuorumError as error:
+        if not rpc_missing(error): raise
+        # An older server has only its priority-selected head. Empty or another
+        # UUID is not proof about this original message: fail closed.
+        messages = api.call('session_inbox', scope)
+        return isinstance(messages, list) and any(isinstance(item, dict) and item.get('id') == message_id
+                                                  and item.get('recipient_id') == record['agent_id']
+                                                  for item in messages)
+    return (isinstance(result, dict) and result.get('message_id') == message_id
+            and result.get('unreceipted') is True)
+
+
 def reconcile_absent(api, ledger, record, message_id, attempt_id):
-    """Owner-attested absence clears one exact unknown Claude attempt, without IPC.
+    """Owner-attested absence clears one exact unknown native attempt, without IPC or a service receipt.
 
     The owner must independently exclude delivery from the original queue,
     held messages and old helper. Locks exclude new local listener I/O; neither
@@ -855,17 +924,19 @@ def reconcile_absent(api, ledger, record, message_id, attempt_id):
     from quorum_live import LocalSupervisorLock
     try: attempt_id = str(uuid.UUID(attempt_id))
     except (ValueError, TypeError, AttributeError): raise ValueError('session_reconcile_denied') from None
-    if record.get('engine') != 'claude' or record.get('transport', 'native') != 'native':
+    engine = record.get('engine', 'codex')
+    if engine not in RECOVERABLE or record.get('transport', 'native') != 'native':
         raise ValueError('session_reconcile_denied')
     sid = record['session_ref']
     def authorize():
-        require_caller(sid, 'claude')
+        require_caller(sid, engine)
         if (str(Path.cwd().resolve()) != record.get('cwd')
                 or ledger.setting('session-agent') != record):
             raise ValueError('session_binding_denied')
     authorize()
     key, audit_key = 'delivery:'+message_id, 'delivery-absent:'+message_id+':'+attempt_id
-    binding = {name:record[name] for name in ('agent_id', 'session_ref', 'engine', 'cwd', 'project_ref', 'quorum_id')}
+    binding = {name:record.get(name) for name in ('agent_id', 'session_ref', 'cwd', 'project_ref', 'quorum_id')}
+    binding['engine'] = engine
     marker = {'state':'confirmed_absent', 'message_id':message_id, 'attempt_id':attempt_id, 'binding':binding}
     # Excludes any start and listener across the service check, yet leaves an owner stop free.
     with FileLock(ledger.root/START_LOCK), LocalSupervisorLock(ledger.root), FileLock(ledger.root/'listener.lock'):
@@ -880,13 +951,8 @@ def reconcile_absent(api, ledger, record, message_id, attempt_id):
         intent = json.loads(row[0])
         if intent.get('state') != 'intent' or intent.get('attempt_id') != attempt_id:
             raise ValueError('session_reconcile_denied')
-        # session_inbox returns only the current priority-selected head. Empty
-        # or another UUID is not proof about this original message: fail closed.
-        messages = api.call('session_inbox', {'agent_id':record['agent_id'], 'session_ref':sid})
-        if (not isinstance(messages, list) or not any(isinstance(item, dict)
-                and item.get('id') == message_id and item.get('recipient_id') == record['agent_id']
-                for item in messages)):
-            raise ValueError('session_reconcile_denied')
+        # An exact lookup: a newer urgent head says nothing about this message.
+        if not still_unreceipted(api, record, message_id): raise ValueError('session_reconcile_denied')
         authorize()
         # Keep RPCs outside this short transaction. A local receipt committed
         # during the service check wins the exact CAS; no marker is then added.
@@ -897,6 +963,37 @@ def reconcile_absent(api, ledger, record, message_id, attempt_id):
             if deleted.rowcount != 1: raise ValueError('session_reconcile_denied')
             ledger.db.execute('insert into settings values (?,?)', (audit_key, json.dumps(marker)))
         return {'confirmed_absent':True, 'attempt_id':attempt_id}
+
+
+# The longest helper deadline after a prompt can reach the chat: `codex queue`.
+RECEIPT_WAIT_SECONDS = 30
+
+
+def settled_delivery(ledger, message_id, *, wait=RECEIPT_WAIT_SECONDS):
+    """This message's row once any in-flight enqueue has finished.
+
+    A fast chat can run its receipt while the listener's helper is still
+    returning. Only a live listener can move an intent on, so a stuck intent
+    returns at once, and an unresolved one is never treated as a receipt.
+    """
+    key, deadline = 'delivery:'+message_id, time.monotonic()+wait
+    while True:
+        delivery = ledger.setting(key)
+        if (not delivery or delivery['state'] != 'intent' or time.monotonic() >= deadline
+                or not locked(ledger.root/'listener.lock')):
+            return delivery
+        time.sleep(.1)
+
+
+def acknowledge(api, ledger, scope, message_id):
+    """Record the chat's own proof of receipt for a submitted or queued row, then acknowledge it."""
+    key = 'delivery:'+message_id
+    # A compare-and-set: an attempt that replaced this row is not what the chat confirmed.
+    with ledger.db:
+        ledger.db.execute('update settings set data=? where key=? and data=?',
+                          (json.dumps({'state':'queued'}), key, json.dumps({'state':'submitted'})))
+    api.call('session_ack', {**scope, 'message_id':message_id})
+    ledger.setting(key, {'state':'acked'})
 
 
 def dispatch(args, auth_ledger, register_agent):
@@ -1199,6 +1296,9 @@ def _dispatch(args, auth_ledger, register_agent):
                                                           authorize=worker_guard)
         if args.action in inbox.ACTIONS: return inbox.dispatch_action(api,ledger,record,args,authorize=worker_guard)
         scope={'agent_id':record['agent_id'],'session_ref':sid}
+        if (args.action == 'reconcile'
+                and getattr(args, 'confirmed_queued', False) is getattr(args, 'confirmed_absent', False)):
+            raise ReconcileEvidenceRequired()
         # Every mutating send/reply requires the exact current server release
         # first; an older server lacks the priority RPCs this client calls.
         if args.action in ('received','reconcile','reply','send'):
@@ -1206,11 +1306,15 @@ def _dispatch(args, auth_ledger, register_agent):
         if tool and args.action=='received': return inbox.confirm(api,ledger,record,args.message_id,
                                                                        authorize=worker_guard)
         if args.action == 'reconcile' and getattr(args, 'confirmed_absent', False):
-            if getattr(args, 'confirmed_queued', False): raise ValueError('session_reconcile_denied')
             return reconcile_absent(api, ledger, record, args.message_id, getattr(args, 'attempt_id', None))
-        if args.action in ('reconcile','received'):
-            if args.action == 'received' and not ledger.setting('delivery:'+args.message_id):
+        if args.action == 'received':
+            delivery = settled_delivery(ledger, args.message_id)
+            if not delivery or delivery['state'] not in ('submitted','queued','acked'):
                 raise ValueError('receipt_not_submitted')
+            acknowledge(api, ledger, scope, args.message_id)
+            return {'confirmed_queued':True}
+        if args.action == 'reconcile':
+            # The owner's attestation is the only path that may acknowledge an unresolved attempt.
             ledger.setting('delivery:'+args.message_id,{'state':'queued'})
             api.call('session_ack',{**scope,'message_id':args.message_id})
             ledger.setting('delivery:'+args.message_id,{'state':'acked'})
@@ -1228,14 +1332,12 @@ def _dispatch(args, auth_ledger, register_agent):
                                                  'priority':priority})
                 # Answering a message this binding delivered also confirms it,
                 # including a Codex message steered into the running turn. A
-                # message this ledger never submitted, or one already
-                # acknowledged, gets no receipt claim here.
-                delivery=ledger.setting('delivery:'+args.message_id)
-                if delivery and delivery['state']!='acked':
+                # message this ledger never submitted, one already acknowledged
+                # or an unresolved attempt gets no receipt claim here.
+                delivery=settled_delivery(ledger,args.message_id)
+                if delivery and delivery['state'] in ('submitted','queued'):
                     ReleaseGuard(api, ledger).check()
-                    ledger.setting('delivery:'+args.message_id,{'state':'queued'})
-                    api.call('session_ack',{**scope,'message_id':args.message_id})
-                    ledger.setting('delivery:'+args.message_id,{'state':'acked'})
+                    acknowledge(api, ledger, scope, args.message_id)
                 return {**result, **reception_notice(ledger, auth_ledger.root)} if isinstance(result, dict) else result
             # A tool worker's api is already guarded: a rebind after its proof ends the send before dispatch.
             if worker_guard is not None: worker_guard()
@@ -1261,14 +1363,14 @@ def _dispatch(args, auth_ledger, register_agent):
                 from quorum_resume import require_enabled
                 authorize = lambda:require_enabled(ledger, record)
             guard_options = {'authorize':authorize} if authorize is not None else {}
-            def make():
-                return Relay(api,ledger,record,lambda message:enqueue({**record, 'delegation':(ledger.setting('session-agent') or {}).get('delegation')},
-                                                                   message,auth_ledger.root),
-                             route_check=lambda:check_native_route(record), **guard_options)
             liveness = None
             if engine == 'grok':
                 from quorum_grok_leader import TransportWatch
                 liveness = TransportWatch(record['grok_transport']).check
+            def make():
+                return Relay(api,ledger,record,lambda message:enqueue({**record, 'delegation':(ledger.setting('session-agent') or {}).get('delegation')},
+                                                                   message,auth_ledger.root),
+                             route_check=listener_route(record, liveness), **guard_options)
             # Native reception waits out typed service outages with this same Relay and ledger.
             return run_listener(ledger,make,args.run_id,stop_event=event,timeout=0,retry=True,
                                 waiter=RealtimeWait(api,record,ledger,

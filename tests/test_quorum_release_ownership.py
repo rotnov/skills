@@ -166,7 +166,7 @@ class ReleaseOwnershipTests(unittest.TestCase):
                     with FileLock(ledger.root / 'listener.lock'), patch.dict(os.environ, clean, clear=True), \
                             patch('quorum_live.api_for', return_value=(backend, None, None)):
                         with self.assertRaises(ReleaseMismatch) as raised:
-                            dispatch(SimpleNamespace(action=action, session_id=SID, message_id=MID), auth, None)
+                            dispatch(SimpleNamespace(action=action, session_id=SID, message_id=MID, confirmed_queued=True), auth, None)
                         self.assertFalse(Control(ledger).stopping('upgraded-run'))
                     self.assertEqual(str(raised.exception), 'skill_update_required')
                     self.assertEqual(raised.exception.diagnostic,

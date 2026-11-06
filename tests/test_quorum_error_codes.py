@@ -27,10 +27,11 @@ NAME = '[a-z][a-z0-9_]*'
 MIGRATION_GUARDS = frozenset("""
     hello_dedupe_present hello_dedupe_required hello_extension_present hello_extension_required
     knowledge_default_role_present knowledge_native_binding_required knowledge_vector_schema_required
-    knowledge_wiki_required open_access_required open_invite_ttl_present owner_update_maintenance_required
-    peer_status_present peer_status_required priority_core_present reviewed_dispatcher_changed
-    reviewed_function_changed reviewed_gate_not_unique reviewed_release_changed role_assignment_present
-    role_assignment_required serial_core_present task_authority_bound_present update_extension_present
+    knowledge_wiki_required message_unreceipted_present open_access_required open_invite_ttl_present
+    owner_update_maintenance_required peer_status_present peer_status_required priority_core_present
+    reviewed_dispatcher_changed reviewed_function_changed reviewed_gate_not_unique reviewed_release_changed
+    role_assignment_present role_assignment_required serial_core_present task_authority_bound_present
+    task_authority_bound_required update_extension_present
 """.split())
 # ValueError arguments that are not literals, with every value each one can take.
 DYNAMIC_VALUES = {

@@ -153,7 +153,7 @@ class ClaudeUnixTests(unittest.TestCase):
                 with self.subTest(endpoint=bad),patch.dict(os.environ,{'CLAUDE_CODE_MESSAGING_SOCKET':bad}):
                     with self.assertRaisesRegex(ValueError,'claude_pipe_unavailable'): binding(SID)
             with patch.dict(os.environ,{'CLAUDE_CODE_MESSAGING_SOCKET':str(ordinary)}):
-                with self.assertRaisesRegex(ValueError,'session_delivery_unknown'): submit(SID,MID,'must not write')
+                with self.assertRaisesRegex(ValueError,'^session_delivery_unsent$'): submit(SID,MID,'must not write')
             self.assertEqual(ordinary.read_text(),'unchanged')
             with patch.dict(os.environ,{'CLAUDE_CODE_MESSAGING_TOKEN':''}):
                 with self.assertRaisesRegex(ValueError,'claude_pipe_unavailable'): binding(SID)
@@ -311,31 +311,34 @@ class ClaudePipeTests(unittest.TestCase):
     def test_secret_is_not_in_child_arguments_and_timeout_is_not_retried(self):
         from quorum_claude_pipe import submit
         calls=[]
-        def timeout(command,**kwargs):
-            calls.append((command,kwargs))
-            raise subprocess.TimeoutExpired(command,10)
-        with patch('quorum_claude_pipe.subprocess.run',side_effect=timeout):
+        class Stuck:
+            def __enter__(self): return self
+            def __exit__(self,*_): return False
+            def kill(self): pass
+            def communicate(self,data,timeout):
+                calls.append(data.decode())
+                raise subprocess.TimeoutExpired('helper',timeout)
+        with patch('quorum_claude_pipe.subprocess.Popen',return_value=Stuck()) as popen:
             with self.assertRaisesRegex(ValueError,'session_delivery_unknown'):
                 submit(SID,MID,'test message')
-        self.assertEqual(len(calls),1)
-        args,kwargs=calls[0]
+        self.assertEqual((popen.call_count,len(calls)),(1,1))
+        args=popen.call_args.args[0]
         self.assertEqual(Path(args[1]).name,'quorum_claude_pipe.py')
-        self.assertEqual(json.loads(kwargs['input'])['session_id'],SID)
-        self.assertNotIn('token',kwargs['input'])
+        self.assertEqual(json.loads(calls[0])['session_id'],SID)
+        self.assertNotIn('token',calls[0])
         self.assertNotIn('claude',args)
 
     @isolated_profiles
-    def test_noisy_helper_exit_and_spawn_failure_stay_ambiguous(self):
+    def test_noisy_helper_exit_stays_ambiguous_and_a_spawn_failure_is_unsent(self):
         from quorum_claude_pipe import submit
         def noisy(command, **kwargs):
             return subprocess.CompletedProcess(command, 2, stdout='session_delivery_unsent', stderr='')
-        with patch('quorum_claude_pipe.subprocess.run', side_effect=noisy):
+        with patch('quorum_claude_pipe.run_child', side_effect=noisy):
             with self.assertRaisesRegex(ValueError, 'session_delivery_unknown'):
                 submit(SID, MID, 'x')
-        def missing_interpreter(command, **kwargs):
-            raise FileNotFoundError(errno.ENOENT, 'missing interpreter')
-        with patch('quorum_claude_pipe.subprocess.run', side_effect=missing_interpreter):
-            with self.assertRaisesRegex(ValueError, 'session_delivery_unknown'):
+        with patch('quorum_claude_pipe.subprocess.Popen',
+                   side_effect=FileNotFoundError(errno.ENOENT, 'missing interpreter')):
+            with self.assertRaisesRegex(ValueError, '^session_delivery_unsent$'):
                 submit(SID, MID, 'x')
 
     @isolated_profiles

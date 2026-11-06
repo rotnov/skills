@@ -126,7 +126,7 @@ class DispatchModeTests(unittest.TestCase):
         def run(command, **kwargs):
             delivered.append(command)
             return subprocess.CompletedProcess(command, 0, 'queued', '')
-        with patch('quorum_session.subprocess.run', side_effect=run), \
+        with patch('quorum_session.run_child', side_effect=run), \
                 patch('quorum_session.shutil.which', return_value='/synthetic/codex'):
             for changed in ({}, {'notification': True}, {'reply_to': 'previous'}):
                 enqueue(record, {**message, **changed}, Path('/private/synthetic-state'))
@@ -168,7 +168,7 @@ class DispatchModeTests(unittest.TestCase):
         def run(command, **kwargs):
             queued.append(command[-1])
             return subprocess.CompletedProcess(command, 0, 'queued', '')
-        with patch('quorum_session.subprocess.run', side_effect=run), \
+        with patch('quorum_session.run_child', side_effect=run), \
                 patch('quorum_session.shutil.which', return_value='/synthetic/codex'):
             enqueue({**record, 'engine': 'codex'}, {**message, 'notification': True},
                     Path('/private/synthetic-state'))

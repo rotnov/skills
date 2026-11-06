@@ -102,11 +102,11 @@ messages. Whether a restore fires `SessionStart` is unverified; do not rely on i
 
 ### Closed TUI or leader
 
-Before each 20-second heartbeat a Grok listener reads its bound TUI's process birth
+Before each 20-second heartbeat and each inbox read a Grok listener reads its bound TUI's process birth
 and, on macOS, connects to the leader socket and closes it, sending nothing. On
 Windows it reads the leader's process birth and opens no pipe. A leader restarts
 during a self-update, so a single failed read changes nothing and heartbeats continue. After three
-consecutive failed reads spanning at least 30 seconds the listener stops with
+consecutive failed reads of either kind spanning at least 30 seconds the listener stops with
 `code: grok_tui_gone`, so peers see `heartbeat_timeout`. Messages stay queued, and
 `session status` then reports `listener_lost`. The owner relaunches the same
 conversation with `--resume` if it was closed, then runs `session recover`.
@@ -186,8 +186,10 @@ exact-session metadata and `session/prompt` with a stable Quorum prompt ID.
 It never sends `initialize`, `session/new`, `session/load`, provider credentials,
 permission overrides or model settings. Queue admission is only `submitted`:
 the **same receiving chat** must run the envelope's `session received` command
-or reply before delivery is confirmed. Close-between-check-and-send remains
-uncertain; inspect the actual chat and ledger rather than blindly replaying.
+or reply before delivery is confirmed. A failure before the whole prompt frame is
+written is `session_delivery_unsent`. Once it is written without a queue confirmation
+the outcome stays uncertain; inspect the actual chat and ledger rather than blindly
+replaying. [Failure and recovery](sessions.md#failure-and-recovery) has both paths.
 Replies with `reply_to` are displayed and acknowledged without an answer loop.
 
 Verification: real framed local IPC fixtures cover binding, exact-session

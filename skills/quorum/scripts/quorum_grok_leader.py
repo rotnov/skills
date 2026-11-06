@@ -18,6 +18,7 @@ import subprocess
 import sys
 import time
 import uuid
+from quorum_claude_pipe import DeliveryUnsent, EXIT_UNSENT, check_helper, run_child
 
 from quorum_capabilities import GROK_LEADER_PLATFORMS
 
@@ -393,6 +394,10 @@ def checked_binding(session_id, cwd):
 
 
 class Leader:
+    # A length-prefixed frame cannot be admitted until its last byte is written, so a failed
+    # sendall proves no admission. `torn`: the stream ends inside a frame, so nothing may follow it.
+    admissible, torn = False, False
+
     def __init__(self, endpoint, server=None):
         if server is None: self.socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         else:
@@ -418,10 +423,13 @@ class Leader:
             self.socket.close()
             raise
 
-    def send(self, frame):
+    def encode(self, frame):
         raw = json.dumps(frame, ensure_ascii=False).encode()
         if len(raw) > 262144: raise ValueError('invalid_message')
-        self.socket.sendall(struct.pack('>I', len(raw))+raw)
+        return struct.pack('>I', len(raw))+raw
+
+    def send(self, frame):
+        self.socket.sendall(self.encode(frame))
 
     def receive(self, deadline):
         def exact(length):
@@ -440,10 +448,13 @@ class Leader:
         if not isinstance(frame, dict): raise ValueError('grok_transport_unavailable')
         return frame
 
-    def acp(self, method, params):
+    def request(self, method, params):
         self.ref += 1
         request = {'jsonrpc':'2.0', 'id':self.ref, 'method':method, 'params':params}
-        self.send({'type':'acp', 'payload':json.dumps(request, ensure_ascii=False)})
+        return {'type':'acp', 'payload':json.dumps(request, ensure_ascii=False)}
+
+    def acp(self, method, params):
+        self.send(self.request(method, params))
         return self.ref
 
     def metadata(self, method, params):
@@ -469,8 +480,11 @@ class Leader:
 
     def prompt(self, session_id, message_id, content):
         prompt_id = 'quorum:'+message_id
-        self.acp('session/prompt', {'sessionId':session_id,
-            'prompt':[{'type':'text', 'text':content}], '_meta':{'promptId':prompt_id}})
+        frame = self.encode(self.request('session/prompt', {'sessionId':session_id,
+            'prompt':[{'type':'text', 'text':content}], '_meta':{'promptId':prompt_id}}))
+        self.torn = True
+        self.socket.sendall(frame)
+        self.torn, self.admissible = False, True
         deadline = time.monotonic()+5
         while True:
             frame = self.receive(deadline)
@@ -486,7 +500,8 @@ class Leader:
                 return  # Submitted only; the actual chat must confirm receipt.
 
     def close(self):
-        try: self.send({'type':'disconnect'})
+        try:
+            if not self.torn: self.send({'type':'disconnect'})
         except Exception: pass
         self.socket.close()
 
@@ -568,19 +583,17 @@ class TransportWatch:
 
 
 def submit(record, message_id, content):
-    message_id = str(uuid.UUID(message_id))
-    if not isinstance(content, str) or not content or len(content.encode()) > 48000:
-        raise ValueError('invalid_message')
-    payload = json.dumps({'record':record, 'message_id':message_id, 'content':content}, ensure_ascii=False)
     try:
-        result = subprocess.run([sys.executable, str(Path(__file__).resolve())], input=payload,
-            text=True, encoding='utf-8', capture_output=True, timeout=20,
-            creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
-    except (OSError, subprocess.TimeoutExpired): raise ValueError('session_delivery_unknown') from None
-    if result.returncode: raise ValueError('session_delivery_unknown')
+        message_id = str(uuid.UUID(message_id))
+        if not isinstance(content, str) or not content or len(content.encode()) > 48000:
+            raise ValueError('invalid_message')
+        payload = json.dumps({'record':record, 'message_id':message_id, 'content':content}, ensure_ascii=False)
+    except (ValueError, TypeError, AttributeError): raise DeliveryUnsent() from None
+    check_helper(run_child([sys.executable, str(Path(__file__).resolve())], payload=payload, timeout=20))
 
 
 def main():
+    leader = None
     try:
         raw = sys.stdin.buffer.read(131073)
         if len(raw) > 131072: raise ValueError('invalid_message')
@@ -598,7 +611,8 @@ def main():
         finally: leader.close()
         return 0
     except Exception:
-        return 1  # Never print raw provider responses, environment or prompts.
+        # Never print raw provider responses, environment or prompts.
+        return 1 if leader is not None and leader.admissible else EXIT_UNSENT
 
 
 if __name__ == '__main__': raise SystemExit(main())

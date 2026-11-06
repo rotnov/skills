@@ -161,6 +161,7 @@ class ResumeTests(unittest.TestCase):
         original = self.record('grok')
         self.dispatch('start', engine='grok', transport=self.old)
         self.ledger.setting('delivery:' + MID, {'state':'intent'})
+        self.api.inbox = [{'id':MID}]
         with self.assertRaisesRegex(ValueError, 'session_delivery_unknown'): self.dispatch('recover', engine='grok')
         self.assertEqual(self.ledger.setting('session-agent'), original)
         self.assertEqual(self.ledger.setting('delivery:' + MID), {'state':'intent'})
@@ -172,6 +173,7 @@ class ResumeTests(unittest.TestCase):
         original = self.record('grok')
         self.dispatch('start', engine='grok', transport=self.old)
         request_stop = Control.request_stop
+        self.api.inbox = [{'id':MID}]
         def race(control, run_id=None):
             self.ledger.setting('delivery:' + MID, {'state':'intent'})
             return request_stop(control, run_id)
@@ -353,6 +355,7 @@ class ResumeTests(unittest.TestCase):
         original = self.record('claude')
         self.dispatch('start', engine='claude', endpoint=self.old_socket)
         self.ledger.setting('delivery:' + MID, {'state':'intent'})
+        self.api.inbox = [{'id':MID}]
         with self.assertRaisesRegex(ValueError, 'session_delivery_unknown'): self.dispatch('recover', engine='claude')
         self.assertEqual(self.ledger.setting('session-agent'), original)
         self.assertEqual(self.ledger.setting('delivery:' + MID), {'state':'intent'})

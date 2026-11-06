@@ -275,6 +275,24 @@ The reviewed body stays private as
 transaction drop the new `public.session_task_authority`, move that function back
 to `public` under its old name and grant it to `authenticated` again.
 
+## Exact unreceipted lookup
+
+After reviewing the source and obtaining administrator deployment authorization,
+apply
+[`20261106140000_session_message_unreceipted.sql`](../supabase/migrations/20261106140000_session_message_unreceipted.sql)
+in one transaction after `20261106130000_task_authority_project_bound.sql`. It pins
+the reviewed inbox predicate, the binding check, the project-bound task authority and
+the release, and refuses drift, reapplication or a server without that predecessor
+before any change. It does not change the required release, table access or task
+authority.
+
+`session_message_unreceipted` tells the caller's own native session whether one
+exact message is still unreceipted, so `session reconcile --confirmed-absent`
+works behind a newer urgent head. It returns the message UUID and one boolean,
+never a body or sender, and writes nothing. A client on a server without it falls
+back to the inbox head and fails closed. To roll back, in one transaction drop
+`public.session_message_unreceipted(uuid,text,uuid)`.
+
 ## Hello reporting extension
 
 After reviewing the source and obtaining administrator deployment authorization,

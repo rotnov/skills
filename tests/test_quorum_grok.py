@@ -111,13 +111,13 @@ def own_session():
 @unittest.skipUnless(os.name == 'posix' and hasattr(socket, 'AF_UNIX'), 'Unix transport')
 class GrokTests(unittest.TestCase):
     def setUp(self):
-        self.run_patch = patch('quorum_grok_leader.subprocess.run', side_effect=self.helper)
+        self.run_patch = patch('quorum_grok_leader.run_child', side_effect=self.helper)
         self.run_patch.start()
         self.addCleanup(self.run_patch.stop)
 
-    def helper(self, argv, *, input, **kwargs):
+    def helper(self, argv, *, payload, **kwargs):
         import quorum_grok_leader
-        with patch('sys.stdin', io.TextIOWrapper(io.BytesIO(input.encode()))):
+        with patch('sys.stdin', io.TextIOWrapper(io.BytesIO(payload.encode()))):
             code = quorum_grok_leader.main()
         return subprocess.CompletedProcess(argv, code, '', '')
 
@@ -713,7 +713,7 @@ class GrokTests(unittest.TestCase):
             current = json.loads((home / 'active_sessions.json').read_text())
             current[0]['pid_start'] = 54321
             (home / 'active_sessions.json').write_text(json.dumps(current))
-            with self.assertRaisesRegex(ValueError, 'session_delivery_unknown'):
+            with self.assertRaisesRegex(ValueError, '^session_delivery_unsent$'):
                 submit(record, MID, 'must not reach a replacement UI')
             self.assertEqual(peer.prompts, [])
 

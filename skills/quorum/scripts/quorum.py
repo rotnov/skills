@@ -13,7 +13,8 @@ from quorum_api import QuorumApi, ServiceConfig, QuorumError, SERVER_ERRORS, rpc
 from quorum_auth import token_provider
 from quorum_state import LocalLedger
 from quorum_grok_leader import GrokBindingError, GrokBuildChanged, GrokRefused
-from quorum_session import AmbiguousSession, BindingError, RecipientUnresolved, RoleHeld, UnsupportedClient
+from quorum_session import (AmbiguousSession, BindingError, ReconcileEvidenceRequired, RecipientUnresolved, RoleHeld,
+                            UnsupportedClient)
 from quorum_grok_cloud import CloudError
 from quorum_native_inbox import NativeInboxError
 from quorum_resume import BindingExists
@@ -265,6 +266,10 @@ def main(argv=None):
         return 3
     except BindingError as error:
         # This chat's own role, quorum and agent with fixed guidance; never a path, token or server body.
+        print(json.dumps({'ok': False, 'code': error.code, 'data': error.diagnostic()}))
+        return 3
+    except ReconcileEvidenceRequired as error:
+        # Fixed guidance only; nothing was changed or acknowledged.
         print(json.dumps({'ok': False, 'code': error.code, 'data': error.diagnostic()}))
         return 3
     except RoleHeld as error:
