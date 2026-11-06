@@ -383,15 +383,12 @@ class SessionTests(unittest.TestCase):
             secret = str(Path(home)/'secret-leader.sock')
             env = {**without_client_session(), 'GROK_SESSION_ID': SID, 'GROK_HOME': home,
                    'GROK_LEADER_SOCKET': secret}
-            # Real binding check: no socket exists for this chat on macOS.
-            failures = [None, GrokBindingError('leader_socket_missing'), ValueError(secret),
-                        OSError(secret), KeyError(secret), TypeError(secret)]
+            failures = [ValueError(secret), OSError(secret), KeyError(secret), TypeError(secret)]
             for failure in failures:
                 with self.subTest(failure=type(failure).__name__), patch.dict(os.environ, env, clear=True), \
                         patch('quorum_session.sys.platform', 'darwin'), \
                         patch('quorum_grok_leader.sys.platform', 'darwin'), \
-                        patch('quorum_grok_leader.binding', side_effect=failure) if failure else \
-                        contextlib.nullcontext():
+                        patch('quorum_grok_leader.binding', side_effect=failure):
                     with self.assertRaises(UnsupportedClient) as caught:
                         client_preflight()
                     data = caught.exception.diagnostic()
@@ -400,6 +397,18 @@ class SessionTests(unittest.TestCase):
                     self.assertNotIn(home, json.dumps(data))
                     self.assertNotIn('secret', json.dumps(data))
                     self.assertNotIn(SID, json.dumps(data))
+            # Connect's own failures pass unchanged. Real binding check: no socket exists for this chat on macOS.
+            with patch.dict(os.environ, env, clear=True), patch('quorum_session.sys.platform', 'darwin'), \
+                    patch('quorum_grok_leader.sys.platform', 'darwin'), \
+                    patch('quorum_grok_leader.binding', side_effect=GrokBindingError('leader_socket_missing')):
+                with self.assertRaises(GrokBindingError) as caught: client_preflight()
+            self.assertEqual(caught.exception.diagnostic()['reason'], 'leader_socket_missing')
+            for code in ('grok_transport_unavailable', 'session_binding_denied'):
+                with self.subTest(code=code), patch.dict(os.environ, env, clear=True), \
+                        patch('quorum_session.sys.platform', 'darwin'), \
+                        patch('quorum_grok_leader.binding', side_effect=ValueError(code)):
+                    with self.assertRaisesRegex(ValueError, f'^{code}$') as caught: client_preflight()
+                    self.assertNotIsInstance(caught.exception, UnsupportedClient)
             with patch.dict(os.environ, env, clear=True), patch('quorum_session.sys.platform', 'darwin'), \
                     patch('quorum_grok_leader.binding', return_value={}) as binding:
                 self.assertEqual(client_preflight(), 'grok')

@@ -43,12 +43,33 @@ class GrokBindingError(ValueError):
         return {}
 
 
-class GrokBindingDenied(ValueError):
+class GrokRefused(ValueError):
+    """A verification refusal other than a missing leader: its fixed code with a typed reason and next step."""
+    REASONS = {
+        'grok_transport_unavailable': ('leader_unavailable', (
+            'This chat\'s Grok leader could not be read or reached, or it runs an unsupported build. Nothing was '
+            'registered, accepted or sent. Keep the chat open and report this blocker; references/grok.md lists '
+            'the supported builds and relaunch.')),
+        'session_binding_denied': ('session_unverified', (
+            'This chat\'s session, TUI process, working directory or resident leader session could not be '
+            'verified. Nothing was registered, accepted or sent. Rerun from the same chat and project directory; '
+            'never borrow another session, and report this blocker if it repeats.'))}
+
+    def __init__(self, code):
+        super().__init__(code)
+        self.code = code
+
+    def diagnostic(self):
+        reason, next_step = self.REASONS[self.code]
+        return {'reason': reason, 'next_step': next_step}
+
+
+class GrokBindingDenied(GrokRefused):
     """This chat failed a named identity check. The code stays `session_binding_denied`; `reason` is typed.
 
     Only a fixed reason, one boolean and fixed guidance cross the CLI boundary, never a path or argument.
     """
-    code = 'session_binding_denied'
+    CODE = 'session_binding_denied'
     NEXT_STEPS = {
         'session_export_mismatch': 'GROK_SESSION_ID is not this binding\'s session. Run this from the bound chat.',
         'registry_mismatch': 'Grok\'s active-session list has no single row for this session and working directory. '
@@ -69,7 +90,7 @@ class GrokBindingDenied(ValueError):
     }
 
     def __init__(self, reason, *, path_has_whitespace=False):
-        super().__init__(self.code)
+        super().__init__(self.CODE)
         self.reason, self.path_has_whitespace = reason, path_has_whitespace
 
     def diagnostic(self):
@@ -77,15 +98,16 @@ class GrokBindingDenied(ValueError):
                 'next_step': 'Nothing was registered or sent. ' + self.NEXT_STEPS[self.reason]}
 
 
-class GrokPlatformUnsupported(ValueError):
+class GrokPlatformUnsupported(GrokRefused):
     """This OS has no qualified Grok TUI leader route; distinct from a missing or unusable socket."""
-    code = 'grok_leader_platform_unsupported'
+    CODE = 'grok_leader_platform_unsupported'
 
     def __init__(self):
-        super().__init__(self.code)
+        super().__init__(self.CODE)
 
     def diagnostic(self):
-        return {'platform': sys.platform, 'supported_platforms': list(GROK_LEADER_PLATFORMS), 'next_step': (
+        return {'reason': 'platform_unsupported', 'platform': sys.platform,
+                'supported_platforms': list(GROK_LEADER_PLATFORMS), 'next_step': (
             'Nothing was registered, started or sent. The existing-chat Grok TUI route is qualified only on '
             'macOS and Windows, so no leader socket can make this chat work here. Keep the chat open and report '
             'this blocker; do not start a headless session or substitute another chat. A Grok Bot personal '
@@ -116,7 +138,8 @@ class GrokBuildChanged(ValueError):
         self.running, self.installed = running, installed
 
     def diagnostic(self):
-        return {'running_build': self.running, 'installed_build': self.installed, 'next_step': (
+        return {'reason': 'tui_build_changed', 'running_build': self.running, 'installed_build': self.installed,
+                'next_step': (
             'Grok on PATH was updated to ' + self.installed + ' while this TUI still runs ' + self.running
             + ', which this Quorum adapter does not support, so it cannot verify this chat. Nothing was '
             'registered, started or sent. Ask the owner to quit this TUI completely and relaunch the same '
@@ -314,7 +337,7 @@ def windows_binding(session_id, cwd):
     verify_process(pid, tui['pid_start'], endpoint, session_id, cwd)
     try: leader = windows.discover(tui, image(installed))
     except ValueError as error:
-        if str(error) == GrokBindingDenied.code: raise GrokBindingDenied('multiple_leader_pipes') from None
+        if str(error) == GrokBindingDenied.CODE: raise GrokBindingDenied('multiple_leader_pipes') from None
         raise
     if leader is None: raise GrokBindingError('leader_socket_missing')
     return {'leader_socket': endpoint, 'leader_pipe': leader[0], 'leader_pid': leader[1],
@@ -334,13 +357,14 @@ def checked_binding(session_id, cwd):
         try: return windows_binding(session_id, cwd), None
         except ValueError: raise  # Fixed codes, including GrokBindingError.
         except Exception: raise GrokBindingDenied('process_unavailable') from None
-    if not hasattr(socket, 'AF_UNIX'): raise ValueError('grok_transport_unavailable')
     home = Path(os.environ.get('GROK_HOME') or Path.home()/'.grok')
     # --leader-socket exports GROK_LEADER_SOCKET and the process guard requires
     # that flag, so without the export this chat has no usable leader socket.
     # A stale or foreign default ~/.grok/leader.sock must not be probed.
     endpoint = os.environ.get('GROK_LEADER_SOCKET')
     if not endpoint: raise GrokBindingError('leader_socket_missing')
+    if not hasattr(socket, 'AF_UNIX'):
+        raise ValueError('grok_transport_unavailable')
     from quorum_claude_pipe import unix_endpoint
     try:
         Path(endpoint).lstat()
@@ -479,6 +503,15 @@ def connect(transport):
 
 
 def binding(session_id, cwd):
+    """Connect and accept-id share this check, so both report the same code, reason and next step."""
+    try: return verified_binding(session_id, cwd)
+    except (GrokBindingError, GrokBuildChanged, GrokRefused): raise  # A named check keeps its own reason.
+    except ValueError as error:
+        if str(error) in GrokRefused.REASONS: raise GrokRefused(str(error)) from None
+        raise
+
+
+def verified_binding(session_id, cwd):
     result, build = checked_binding(session_id, cwd)
     try:
         leader = connect(result)

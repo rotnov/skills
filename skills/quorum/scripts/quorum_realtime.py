@@ -5,6 +5,8 @@ import time
 from urllib.parse import urlencode
 import uuid
 
+from quorum_api import error_class
+
 # Frames inspected for an overdue heartbeat reply; exceeds the socket's max_queue.
 DRAIN_LIMIT = 32
 # Fixed denials end reception; reconnecting or polling must never mask them.
@@ -133,7 +135,7 @@ class RealtimeWait:
         self._close_socket()  # A resubscription after an outage replaces, never leaks, the old socket.
         try: self._join(stopping)
         except Exception as error:
-            if str(error) in TERMINAL and isinstance(error, ValueError):
+            if error_class(error) in TERMINAL and isinstance(error, ValueError):
                 self._close_socket()
                 raise
             self._fallback()
@@ -202,7 +204,7 @@ class RealtimeWait:
                     return
             if not stopping(): self._status(last_wake='safety_poll')
         except Exception as error:
-            if str(error) in TERMINAL and isinstance(error, ValueError):
+            if error_class(error) in TERMINAL and isinstance(error, ValueError):
                 self._close_socket()
                 raise
             self._fallback()

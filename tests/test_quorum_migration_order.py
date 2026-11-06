@@ -29,6 +29,7 @@ ROLES = '20261105140000_role_assignment_and_owner_retire.sql'
 STATUS = '20261105160000_peer_status_visibility.sql'
 DEFAULT_ROLE = '20261106100000_knowledge_member_default_role.sql'
 DEDUPE = '20261106120000_hello_reconnect_dedupe.sql'
+AUTHORITY = '20261106130000_task_authority_project_bound.sql'
 # prosrc hashes after the reviewed tail through 190000; tests/quorum-backend recomputes them by drift injection.
 ROLE_PINS = {
     'quorum_private.call(text,jsonb,text)': 'ca718afbcda8682ade19ea6b246ccc2f1bfd5523eb7d1076cf4e9583e24f3ab7',
@@ -173,7 +174,7 @@ class MigrationOrderTests(unittest.TestCase):
         ttl = next(name for name in names if name.endswith('_open_invite_ttl.sql'))
         self.assertGreater(ttl, '20261103180000_hello_roster_visibility.sql')
         # Only the reviewed role-assignment release (#105) follows it.
-        self.assertEqual(names[names.index(ttl) + 1:], [ROLES, STATUS, DEFAULT_ROLE, DEDUPE])
+        self.assertEqual(names[names.index(ttl) + 1:], [ROLES, STATUS, DEFAULT_ROLE, DEDUPE, AUTHORITY])
         body = (SKILL / 'supabase/migrations' / ttl).read_text(encoding='utf-8')
         pins = dict(re.findall(r"'([a-z_.]+\([a-z,]*\))','([0-9a-f]{64})'", body))
         self.assertEqual(pins, {'quorum_private.call_priority_core(text,jsonb,text)':
@@ -197,7 +198,7 @@ class MigrationOrderTests(unittest.TestCase):
 
     def test_role_assignment_follows_the_tail_pins_reviewed_bodies_and_grants_only_authenticated(self):
         names = [path.name for path in MIGRATIONS]
-        self.assertEqual(names[names.index(ROLES) + 1:], [STATUS, DEFAULT_ROLE, DEDUPE])
+        self.assertEqual(names[names.index(ROLES) + 1:], [STATUS, DEFAULT_ROLE, DEDUPE, AUTHORITY])
         self.assertGreater(ROLES, '20261103190000_open_invite_ttl.sql')
         body = (SKILL / 'supabase/migrations' / ROLES).read_text(encoding='utf-8')
         pins = dict(re.findall(r"'([a-z_.]+\([a-z,]*\))','([0-9a-f]{64})'", body))
@@ -251,7 +252,7 @@ class MigrationOrderTests(unittest.TestCase):
 
     def test_peer_status_follows_roles_pins_reviewed_bodies_and_grants_only_authenticated(self):
         names = [path.name for path in MIGRATIONS]
-        self.assertEqual(names[names.index(STATUS) + 1:], [DEFAULT_ROLE, DEDUPE])
+        self.assertEqual(names[names.index(STATUS) + 1:], [DEFAULT_ROLE, DEDUPE, AUTHORITY])
         body = (SKILL / 'supabase/migrations' / STATUS).read_text(encoding='utf-8')
         self.assertTrue(body.startswith('-- SOURCE ONLY.'))
         pins = dict(re.findall(r"'([a-z_.]+\([a-z,]*\))','([0-9a-f]{64})'", body))
@@ -306,7 +307,7 @@ class MigrationOrderTests(unittest.TestCase):
 
     def test_knowledge_default_role_follows_the_wiki_pins_every_scope_caller_and_grants_only_authenticated(self):
         names = [path.name for path in MIGRATIONS]
-        self.assertEqual(names[names.index(DEFAULT_ROLE) + 1:], [DEDUPE])
+        self.assertEqual(names[names.index(DEFAULT_ROLE) + 1:], [DEDUPE, AUTHORITY])
         self.assertGreater(DEFAULT_ROLE, '20261103075741_llm_wiki.sql')
         body = (SKILL / 'supabase/migrations' / DEFAULT_ROLE).read_text(encoding='utf-8')
         self.assertTrue(body.startswith('-- SOURCE ONLY.'))
@@ -369,9 +370,54 @@ class MigrationOrderTests(unittest.TestCase):
         self.assertIn('after `20261103075741_llm_wiki.sql`', section)
 
 
+    def test_task_authority_bound_follows_dedupe_pins_the_chain_and_changes_only_the_bound(self):
+        names = [path.name for path in MIGRATIONS]
+        self.assertEqual(names[-1], AUTHORITY)
+        body = (SKILL / 'supabase/migrations' / AUTHORITY).read_text(encoding='utf-8')
+        self.assertTrue(body.startswith('-- SOURCE ONLY.'))
+        pins = dict(re.findall(r"'([a-z_.]+\([a-z,]*\))','([0-9a-f]{64})'", body))
+        authority = 'public.session_task_authority(uuid,text,uuid)'
+        self.assertEqual(set(pins), {authority, 'quorum_private.native_session(uuid,text)', 'public.session_requirements()'})
+        # The pin is the prosrc the chain installs: nothing after 141000 replaces it, and bootstrap holds the same body.
+        reviewed = SKILL / 'supabase/migrations/20261030141000_member_task_authority.sql'
+        self.assertEqual(defining('public.session_task_authority('), [reviewed, MIGRATIONS[-1]])
+        old = reviewed.read_text(encoding='utf-8').split('$function$')[1]
+        bootstrap = (SKILL / 'references/server-bootstrap.sql').read_text(encoding='utf-8')
+        self.assertEqual(bootstrap.split('function public.session_task_authority(', 1)[1].split('$function$')[1], old)
+        self.assertEqual(pins[authority], hashlib.sha256(old.encode()).hexdigest())
+        dedupe = (SKILL / 'supabase/migrations' / DEDUPE).read_text(encoding='utf-8')
+        dedupe_pins = dict(re.findall(r"'([a-z_.]+\([a-z,]*\))','([0-9a-f]{64})'", dedupe))
+        for name in ('quorum_private.native_session(uuid,text)', 'public.session_requirements()'):
+            self.assertEqual(pins[name], dedupe_pins[name], name)
+        guard = body.split('end $migration$;', 1)[0]
+        for code in ('task_authority_bound_present', 'hello_dedupe_required'):
+            self.assertIn(f"raise exception '{code}'", guard)
+        self.assertIn("raise exception 'reviewed_dispatcher_changed: %',f;", guard)
+        for change in ('alter ', 'create ', 'drop ', 'insert ', 'update ', 'grant '):
+            self.assertNotIn(change, guard.split('begin', 1)[1].lower())
+        # The only difference from the reviewed body is the bound.
+        new = body.split('$function$')[1]
+        old_lines, new_lines = old.splitlines(), new.splitlines()
+        self.assertEqual([line.strip() for line in new_lines if line not in old_lines],
+                         ['if project is null or octet_length(project) not between 1 and 500 -- #143'])
+        self.assertEqual([line.strip() for line in old_lines if line not in new_lines],
+                         ['if project is null or octet_length(project) not between 1 and 256'])
+        code = '\n'.join(line.split('--', 1)[0] for line in body.splitlines())
+        lowered = ' '.join(code.lower().split())
+        self.assertEqual(re.findall(r'create function ([a-z_.]+)\(', body), ['public.session_task_authority'])
+        self.assertIn('revoke all on function quorum_private.session_task_authority_before_project_bound(uuid,text,uuid) '
+                      'from public,anon,authenticated,service_role;', lowered)
+        self.assertEqual(re.findall(r'grant [^;]*;', lowered),
+                         ['grant execute on function public.session_task_authority(uuid,text,uuid) to authenticated;'])
+        self.assertNotIn('function public.session_requirements', body)
+        guide = (SKILL / 'references/server.md').read_text(encoding='utf-8')
+        section = guide.split('## Task authority project bound', 1)[1].split('\n## ', 1)[0]
+        self.assertIn(AUTHORITY, section)
+        self.assertIn('after `20261106120000_hello_reconnect_dedupe.sql`', section)
+
     def test_hello_dedupe_follows_status_pins_reviewed_bodies_and_grants_nothing(self):
         names = [path.name for path in MIGRATIONS]
-        self.assertEqual(names[-1], DEDUPE)
+        self.assertEqual(names[names.index(DEDUPE) + 1:], [AUTHORITY])
         body = (SKILL / 'supabase/migrations' / DEDUPE).read_text(encoding='utf-8')
         self.assertTrue(body.startswith('-- SOURCE ONLY.'))
         pins = dict(re.findall(r"'([a-z_.]+\([a-z,]*\))','([0-9a-f]{64})'", body))

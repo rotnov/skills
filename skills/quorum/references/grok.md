@@ -27,8 +27,7 @@ acceptance can succeed while the native session remains unregistered.
 endpoint that fails validation reports `grok_transport_unavailable`; an identity
 mismatch reports `session_binding_denied`, with `data.reason` naming the failed
 check, for example `executable_mismatch` (TUI image differs from `grok` on PATH),
-`flag_mismatch` or `leader_build_mismatch`, and a `next_step`. During invitation
-acceptance the same reason is `data.binding_reason`. These refusals do not register an
+`flag_mismatch` or `leader_build_mismatch`, and a `next_step`. These refusals do not register an
 agent. Do not select another TUI's socket, manufacture exports, change
 permissions or confinement, or start a headless/new session to work around them.
 

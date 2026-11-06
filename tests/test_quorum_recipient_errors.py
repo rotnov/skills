@@ -55,7 +55,7 @@ class TransportCodeTests(unittest.TestCase):
     def test_other_bodies_stay_service_error_without_echo(self):
         for status, body in (
                 (400, json.dumps({'code': 'P0001', 'message': 'leaked ' + SECRET}).encode()),
-                (400, json.dumps({'message': 'invalid_priority'}).encode()),
+                (400, json.dumps({'message': 'unreviewed_name'}).encode()),
                 (400, b'not json ' + SECRET.encode()),
                 (400, b'{"message":"recipient_ambiguous_or_missing","pad":"' + b'x' * 5000 + b'"}'),
                 (400, json.dumps(['recipient_ambiguous_or_missing']).encode()),

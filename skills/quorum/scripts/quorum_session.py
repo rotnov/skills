@@ -30,9 +30,9 @@ SUPPORTED_TRANSPORTS = (
 
 class UnsupportedClient(ValueError):
     """Only fixed local diagnostics may cross the JSON CLI boundary."""
-    def __init__(self, reason, detected=None, binding_reason=None):
+    def __init__(self, reason, detected=None):
         super().__init__('unsupported_client')
-        self.reason, self.detected, self.binding_reason = reason, detected, binding_reason
+        self.reason, self.detected = reason, detected
 
     def diagnostic(self):
         next_step = ('The invitation was not accepted and no listener was started. Run this request '
@@ -44,7 +44,6 @@ class UnsupportedClient(ValueError):
                          'in this chat; do not start a headless model or substitute another session. '
                          'Membership-only acceptance requires an explicit owner request.')
         return {'reason':self.reason, 'detected_client':self.detected, 'platform':sys.platform,
-                **({'binding_reason':self.binding_reason} if self.binding_reason else {}),
                 'supported_transports':[dict(row) for row in SUPPORTED_TRANSPORTS],
                 'next_step':next_step}
 
@@ -311,12 +310,14 @@ def client_preflight():
         # Verify this chat's private leader socket, registry and TUI process
         # identity, then the bounded read-only protocol/version/resident-session
         # handshake connect uses. Never start a TUI/model or send a prompt.
-        from quorum_grok_leader import GrokBindingDenied, GrokBuildChanged, binding
+        from quorum_grok_leader import GrokBuildChanged, binding
         try: binding(sid, str(Path.cwd().resolve()))
         except GrokBuildChanged: raise  # Actionable as is: the owner relaunches to finish the update.
-        except GrokBindingDenied as denied:
-            raise UnsupportedClient('grok_leader_unavailable', engine, denied.reason) from None
-        except (ValueError, OSError, KeyError, TypeError, subprocess.SubprocessError):
+        except ValueError as error:
+            # Connect's own fixed failures keep its reason and next step; this runs before login or acceptance.
+            if str(error) in ('grok_transport_unavailable', 'session_binding_denied'): raise
+            raise UnsupportedClient('grok_leader_unavailable', engine) from None
+        except (OSError, KeyError, TypeError, subprocess.SubprocessError):
             raise UnsupportedClient('grok_leader_unavailable', engine) from None
     if engine == 'codex' and not shutil.which('codex'):
         raise UnsupportedClient('codex_cli_missing', engine)

@@ -295,7 +295,7 @@ class GrokTests(unittest.TestCase):
     def test_cli_and_preflight_carry_the_typed_reason(self):
         from quorum import main
         from quorum_grok_leader import GrokBindingDenied
-        from quorum_session import UnsupportedClient, client_preflight
+        from quorum_session import client_preflight
         output = io.StringIO()
         with tempfile.TemporaryDirectory() as state, patch.dict(os.environ, {'GROK_SESSION_ID':SID}, clear=True), \
                 patch('quorum_session._dispatch', side_effect=GrokBindingDenied('executable_mismatch')), \
@@ -304,11 +304,12 @@ class GrokTests(unittest.TestCase):
         result = json.loads(output.getvalue())
         self.assertEqual((code, result['code'], result['data']['reason']),
                          (3, 'session_binding_denied', 'executable_mismatch'))
+        # accept-id shares connect's code, reason and next step.
         with patch.dict(os.environ, {'GROK_SESSION_ID':SID}, clear=True), patch('sys.platform', 'darwin'), \
                 patch('quorum_grok_leader.binding', side_effect=GrokBindingDenied('flag_mismatch')), \
-                self.assertRaises(UnsupportedClient) as caught:
+                self.assertRaises(GrokBindingDenied) as caught:
             client_preflight()
-        self.assertEqual(caught.exception.diagnostic()['binding_reason'], 'flag_mismatch')
+        self.assertEqual(caught.exception.diagnostic()['reason'], 'flag_mismatch')
 
     def test_every_denial_reason_has_fixed_guidance(self):
         from quorum_grok_leader import GrokBindingDenied
@@ -424,13 +425,17 @@ class GrokTests(unittest.TestCase):
         def foreign(peer, home): peer.sid = '44444444-4444-4444-8444-444444444444'
         def nonresident(peer, home): peer.resident = False
         def missing(peer, home): os.environ['GROK_LEADER_SOCKET'] = str(home/'missing.sock')
-        for change in (unsupported, foreign, nonresident, missing):
+        # Each keeps the code connect reports, and the invitation stays unused.
+        for change, expected, reason in ((unsupported, 'grok_transport_unavailable', 'leader_unavailable'),
+                                         (foreign, 'session_binding_denied', 'session_metadata_mismatch'),
+                                         (nonresident, 'session_binding_denied', 'session_metadata_mismatch'),
+                                         (missing, 'grok_transport_unavailable', 'leader_socket_missing')):
             with self.subTest(change=change.__name__), own_session() as (root, home, peer):
                 change(peer, home)
                 api = Api()
                 code, result, login = accept(root, api)
-                self.assertEqual((code, result['code'], result['data']['reason']),
-                                 (3, 'unsupported_client', 'grok_leader_unavailable'))
+                self.assertEqual((code, result['code'], result['data']['reason']), (3, expected, reason))
+                self.assertTrue(result['data']['next_step'])
                 self.assertEqual((api.calls, login.call_count, peer.prompts), ([], 0, []))
                 self.assertNotIn('session/prompt', peer.methods)
                 for secret in (str(root), SID, peer.sid):
@@ -541,6 +546,40 @@ class GrokTests(unittest.TestCase):
                 self.assertIsNone(state.setting('session-agent'))
             finally: state.db.close()
             self.assertEqual(peer.methods, [])
+
+    @isolated_profiles
+    def test_a_python_without_unix_sockets_still_refuses_with_a_typed_reason(self):
+        """#143: Windows CI runs the macOS branch without AF_UNIX; each refusal keeps data.reason."""
+        import types
+        from quorum_grok_leader import GrokBindingError, GrokRefused, binding
+        with own_session() as (root, _, peer), patch('quorum_grok_leader.socket', types.SimpleNamespace()):
+            with self.assertRaises(GrokRefused) as refused: binding(SID, str(root))
+            self.assertEqual((str(refused.exception), refused.exception.diagnostic()['reason']),
+                             ('grok_transport_unavailable', 'leader_unavailable'))
+            with patch.dict(os.environ):
+                del os.environ['GROK_LEADER_SOCKET']
+                with self.assertRaises(GrokBindingError) as missing: binding(SID, str(root))
+            self.assertEqual(missing.exception.diagnostic()['reason'], 'leader_socket_missing')
+            self.assertEqual(peer.methods, [])
+
+    @isolated_profiles
+    def test_every_binding_refusal_prints_its_code_reason_and_next_step(self):
+        import quorum
+        from quorum_grok_leader import GrokBuildChanged, GrokRefused
+        with own_session() as (root, _, _):
+            for error, code, reason in ((GrokRefused('grok_transport_unavailable'), 'grok_transport_unavailable',
+                                         'leader_unavailable'),
+                                        (GrokRefused('session_binding_denied'), 'session_binding_denied',
+                                         'session_unverified'),
+                                        (GrokBuildChanged('1.0.70', '1.0.99'), 'grok_tui_update_pending',
+                                         'tui_build_changed')):
+                output = io.StringIO()
+                with self.subTest(code=code), patch('quorum_live.dispatch', side_effect=error), \
+                        contextlib.redirect_stdout(output):
+                    status = quorum.main(['--state', str(root/'state'), 'session', 'status'])
+                    result = json.loads(output.getvalue())
+                    self.assertEqual((status, result['code'], result['data']['reason']), (3, code, reason))
+                    self.assertTrue(result['data']['next_step'])
 
     @isolated_profiles
     def test_safe_binding_error_codes_do_not_expose_untrusted_exception_text(self):
@@ -715,6 +754,7 @@ class NativeProcessTests(unittest.TestCase):
                 local_binding(SID, '/fixture')
             data = caught.exception.diagnostic()
         self.assertIsInstance(caught.exception, GrokPlatformUnsupported)
+        self.assertEqual(data['reason'], 'platform_unsupported')
         self.assertEqual((data['platform'], data['supported_platforms']), ('linux', ['darwin', 'win32']))
         self.assertIn('Nothing was registered', data['next_step'])
 
@@ -734,6 +774,8 @@ class NativeProcessTests(unittest.TestCase):
                 result = json.loads(output.getvalue())
                 self.assertEqual((code, result['code']), (3, 'grok_leader_platform_unsupported'))
                 self.assertEqual(result['data']['supported_platforms'], ['darwin', 'win32'])
+                self.assertEqual(result['data']['reason'], 'platform_unsupported')
+                self.assertTrue(result['data']['next_step'])
                 self.assertNotIn('secret', output.getvalue())
                 self.assertNotIn(SID, output.getvalue())
 

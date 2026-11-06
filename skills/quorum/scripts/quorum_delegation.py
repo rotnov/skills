@@ -133,7 +133,7 @@ def standing_check(api, record, message_id, action, current, ledger, *, authoriz
     every check passes; any failure leaves the request held for the receiving owner.
     """
     import json
-    from quorum_api import QuorumError
+    from quorum_api import QuorumError, error_class
     if action not in STANDING_ACTIONS: raise ValueError('invalid_standing_action')
     def pending(reason, extra=None):
         return {**(extra or {}), 'authorized': False, 'state': 'pending', 'standing_action': action,
@@ -152,7 +152,7 @@ def standing_check(api, record, message_id, action, current, ledger, *, authoriz
                                          'project_ref': record['project_ref']})
     except QuorumError as error:
         if not unchanged(): return pending('delegation_changed')
-        if str(error) in ('service_error', 'service_unavailable'): return pending('authority_unavailable')
+        if error_class(error) in ('service_error', 'service_unavailable'): return pending('authority_unavailable')
         # No unique live agent holds this role: never guess another sender.
         return pending('sender_not_coordinator')
     if not unchanged(): return pending('delegation_changed')
@@ -253,7 +253,7 @@ def task_check(api, record, message_id, current, *, authorize=None):
     """
     from pathlib import Path
     import uuid
-    from quorum_api import QuorumError
+    from quorum_api import QuorumError, error_class
     message_id = str(uuid.UUID(message_id))
     def pending(reason):
         return {'authorized': False, 'state': 'pending', 'reason': reason,
@@ -273,7 +273,7 @@ def task_check(api, record, message_id, current, *, authorize=None):
                           'session_ref': record['session_ref'], 'message_id': message_id})
     except QuorumError as error:
         if not local(): return pending('delegation_changed')
-        if str(error) in ('service_error', 'service_unavailable'):
+        if error_class(error) in ('service_error', 'service_unavailable'):
             return pending('authority_unavailable')
         raise
     if not local(): return pending('delegation_changed')
