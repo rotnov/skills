@@ -334,13 +334,14 @@ class GrokTests(unittest.TestCase):
         def foreign(peer, home): peer.sid = '44444444-4444-4444-8444-444444444444'
         def nonresident(peer, home): peer.resident = False
         def missing(peer, home): os.environ['GROK_LEADER_SOCKET'] = str(home/'missing.sock')
-        for change in (unsupported, foreign, nonresident, missing):
+        # Each keeps the code connect reports, and the invitation stays unused.
+        for change, expected in ((unsupported, 'grok_transport_unavailable'), (foreign, 'session_binding_denied'),
+                                 (nonresident, 'session_binding_denied'), (missing, 'grok_transport_unavailable')):
             with self.subTest(change=change.__name__), own_session() as (root, home, peer):
                 change(peer, home)
                 api = Api()
                 code, result, login = accept(root, api)
-                self.assertEqual((code, result['code'], result['data']['reason']),
-                                 (3, 'unsupported_client', 'grok_leader_unavailable'))
+                self.assertEqual((code, result['code']), (3, expected))
                 self.assertEqual((api.calls, login.call_count, peer.prompts), ([], 0, []))
                 self.assertNotIn('session/prompt', peer.methods)
                 for secret in (str(root), SID, peer.sid):

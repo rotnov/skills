@@ -153,9 +153,11 @@ Before login or acceptance, `accept-id` checks that this chat can carry a native
 listener. For Grok it verifies this session's private leader socket, active
 session entry, TUI process identity and working directory, then runs the same
 bounded read-only leader handshake as connect (protocol, tested version, resident
-same-session metadata), without starting a TUI or model or sending a prompt. Otherwise it returns `unsupported_client` with the
-reason, detected client and supported transports, and leaves the invitation
-unused. Grok Bot uses its explicit cloud client preflight instead; other hosted
+same-session metadata), without starting a TUI or model or sending a prompt. A Grok
+binding failure reports what `session connect` reports: `grok_transport_unavailable`,
+with its `data.reason` and next step when it has them, or `session_binding_denied`.
+Any other failure returns `unsupported_client` with the reason, detected client and
+supported transports. Either way the invitation stays unused. Grok Bot uses its explicit cloud client preflight instead; other hosted
 chats and hosts exporting no supported client context remain unsupported.
 Report that blocker; do not start a headless model or borrow a session.
 
