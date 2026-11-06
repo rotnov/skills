@@ -79,6 +79,7 @@ jobs:
           docker pull pgvector/pgvector@sha256:ac08538c6f8b9904c33c8224c5e5706dbe760aca29db1d096972b4052c22a75d
           uv run --frozen python -m unittest discover -s tests -p test_quorum_knowledge_backend.py -v
           uv run --frozen python -m unittest discover -s tests -p test_quorum_wiki_backend.py -v
+          uv run --frozen python -m unittest discover -s tests -p test_quorum_knowledge_default_role_backend.py -v
 
       - name: Validate the official Agent Skills format
         run: ./scripts/check-agent-skills-spec.sh

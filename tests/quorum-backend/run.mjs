@@ -28,6 +28,9 @@ const ttl = '20261103190000_open_invite_ttl.sql';
 const roles = '20261105140000_role_assignment_and_owner_retire.sql';
 // Heartbeat peer status (awaiting owner, reception hold, run generation) and its peer view (#113, #104).
 const status = '20261105160000_peer_status_visibility.sql';
+// Space default member role for project knowledge (#128). It needs pgvector knowledge and the wiki,
+// so its guards, contract and races run in the pgvector PostgreSQL 17 suite, not PGlite.
+const defaultRole = '20261106100000_knowledge_member_default_role.sql';
 // Installations that deployed native coordination before open access apply the
 // older-dated open access file late; the final session requirements must match.
 const late = name => name.endsWith('_open_access_quorums.sql');
@@ -214,7 +217,7 @@ try {
     await drifted(fn, 'reviewed_dispatcher_changed: ' + fn, [...fresh, priority], serialization, unserialized);
   }
   const portableTail = [priority, serialization, maintenance, memberAuthority];
-  const reviewedTail = [...portableTail, knowledge, wiki, hello, ttl, roles, status];
+  const reviewedTail = [...portableTail, knowledge, wiki, hello, ttl, roles, status, defaultRole];
   if (JSON.stringify(all.filter(name => name >= priority)) !== JSON.stringify(reviewedTail)) {
     throw new Error('unreviewed migration after the close serialization');
   }
@@ -346,9 +349,18 @@ try {
       await statusDb.close();
     }
   }
+  // A server without project knowledge refuses the default-role migration before any change.
+  await gated([...beforeStatus, status], read(migrations + defaultRole), 'knowledge_wiki_required',
+    'default role without knowledge', async (db, label) => {
+      const result = await db.query(`select to_regclass('quorum_private.knowledge_member_defaults') t,
+        to_regprocedure('quorum_private.knowledge_admin_before_default_role(uuid,text,text,jsonb,text)') a,
+        to_regprocedure('quorum_private.knowledge_scope_before_default_role(uuid,text,uuid,boolean,boolean)') s`);
+      const row = result.rows[0];
+      if (row.t !== null || row.a !== null || row.s !== null) throw new Error(label + ': partial default role apply');
+    });
   if (!coordination(upgraded[3]) || !late(upgraded[4])) throw new Error('upgraded order is not coordination first');
   console.log('Invitation, session, Realtime, open-access, coordination, open-session, coordination-only refusal, '
-    + 'mandatory priority release, close serialization, member authority ACLs, open-member priority, Hello reporting/roster, 60-minute open invitations, invitation role assignment/owner retire, heartbeat peer status and pinned-chain drift regression '
+    + 'mandatory priority release, close serialization, member authority ACLs, open-member priority, Hello reporting/roster, 60-minute open invitations, invitation role assignment/owner retire, heartbeat peer status, knowledge default-role prerequisite and pinned-chain drift regression '
     + '(fresh and coordination-first upgraded order): PASS (disposable PostgreSQL)');
 } catch (error) {
   console.error(error.message, error.where || '');

@@ -59,6 +59,53 @@ class KnowledgeTests(unittest.TestCase):
         self.assertEqual(calls[0][1]['agent_id'], RECORD['agent_id'])
         self.assertEqual(calls[0][1]['session_ref'], SID)
 
+    def test_default_role_is_an_owner_admin_operation_with_a_closed_permission_set(self):
+        from quorum_knowledge import invoke, KnowledgeError
+        calls=[]
+        class Api:
+            def call(self, *args): calls.append(args); return {'operation':'default_role'}
+        for permission in ('reader','writer','none'):
+            request={'operation':'default_role','payload':{'space_id':SPACE,'permission':permission}}
+            invoke(Api(), RECORD, 'admin', request, request_id='default-'+permission, owner_action=True)
+            self.assertEqual(calls[-1], ('knowledge_admin', {'agent_id':RECORD['agent_id'],'session_ref':SID,
+                                                             **request}, 'default-'+permission))
+        sent=len(calls)
+        good={'space_id':SPACE,'permission':'writer'}
+        for payload,owner,request_id,code in [
+                (good,False,'r','knowledge_owner_action_required'),
+                (good,True,None,'knowledge_request_id_required'),
+                ({'space_id':SPACE},True,'r','knowledge_invalid_payload'),
+                ({'permission':'writer'},True,'r','knowledge_invalid_payload'),
+                ({**good,'permission':'owner'},True,'r','knowledge_invalid_payload'),
+                ({**good,'permission':True},True,'r','knowledge_invalid_payload'),
+                ({**good,'permission':['writer']},True,'r','knowledge_invalid_payload'),
+                ({**good,'space_id':'not-a-uuid'},True,'r','knowledge_invalid_payload'),
+                ({**good,'user_id':SPACE},True,'r','knowledge_invalid_payload'),
+                ({**good,'quorum_id':SPACE},True,'r','knowledge_invalid_payload')]:
+            with self.subTest(payload=payload,owner=owner), self.assertRaises(KnowledgeError) as raised:
+                invoke(Api(), RECORD, 'admin', {'operation':'default_role','payload':payload},
+                       request_id=request_id, owner_action=owner)
+            self.assertEqual(raised.exception.code, code)
+        self.assertEqual(len(calls), sent)
+
+    def test_default_role_on_an_older_server_is_the_fixed_unavailable_diagnostic(self):
+        from quorum_knowledge import invoke, KnowledgeError
+        from quorum_api import QuorumError
+        class Api:
+            def call(self, *args): raise QuorumError('service_error')
+        with self.assertRaises(KnowledgeError) as raised:
+            invoke(Api(), RECORD, 'admin', {'operation':'default_role','payload':{'space_id':SPACE,'permission':'writer'}},
+                   request_id='r', owner_action=True)
+        self.assertEqual(raised.exception.code, 'knowledge_backend_unavailable_or_rejected')
+
+    def test_worker_member_subset_never_sets_a_default_role(self):
+        from quorum_claude_worker import knowledge_request
+        from quorum_native_inbox import NativeInboxError
+        context={'scope':{'knowledge':['search','read','propose']}}
+        with self.assertRaises(NativeInboxError) as raised:
+            knowledge_request(context, 'admin', {'operation':'default_role','payload':{'space_id':SPACE,'permission':'writer'}})
+        self.assertEqual((str(raised.exception), raised.exception.reason), ('native_worker_binding_denied', 'operation_denied'))
+
     def test_untrusted_payload_cannot_override_binding_or_trigger_provider(self):
         from quorum_knowledge import invoke, KnowledgeError
         class Api:
