@@ -1271,7 +1271,49 @@ def rebind(state_root, slot_id, *, knowledge=(), update=False):
     return _rebind_result(root, _view(root, successor))
 
 
-SLOT_SCAN_LIMIT = 256
+# Bounds of the join's resume lookup (#130); exceeding one fails closed (`binding_scan_incomplete`).
+INDEX_SCAN_LIMIT, SESSION_ACTOR_LIMIT = 65536, 256
+
+
+def _session_slots(root, sid):
+    """Slot IDs the root actor index names for this exact SID, plus each one's rebind neighbours.
+
+    A direct lookup instead of a directory scan: every attested slot is claimed in the index, and a rebind
+    attest moves the claim to its successor. The predecessor (`rebind.previous_slot_id`) and an unfinished
+    successor (`rebound_to`) cover an attest interrupted before or after that move. Raises
+    `binding_scan_incomplete` when a bound is hit or the index cannot be read, and an unsafe path keeps its
+    `native_worker_unavailable` refusal: never "no binding".
+    """
+    from quorum_resume import BindingScanIncomplete
+    # A state root that does not exist yet holds no binding; any other unreadable root fails closed.
+    if not os.path.lexists(root): return []
+    try:
+        with _directory(root) as directory:
+            rows = None if directory is None else _read_db(
+                directory, root / 'ledger.sqlite',
+                lambda db: db.execute("select data from settings where key like ? limit ?",
+                                      (INDEX + '%', INDEX_SCAN_LIMIT + 1)).fetchall(), ledger='state')
+    # An unsafe root or ledger keeps its fixed refusal (native_worker_unavailable); both fail closed.
+    except (OSError, sqlite3.Error): raise BindingScanIncomplete('index_unreadable') from None
+    rows = rows or []
+    if len(rows) > INDEX_SCAN_LIMIT: raise BindingScanIncomplete('index_limit')
+    claimed = []
+    for (data,) in rows:
+        try: value = json.loads(data)
+        except ValueError: continue
+        if isinstance(value, dict) and value.get('provider_session_id') == sid and CANONICAL.fullmatch(
+                str(value.get('slot_id'))):
+            claimed.append(value['slot_id'])
+    claimed = list(dict.fromkeys(claimed))
+    if len(claimed) > SESSION_ACTOR_LIMIT: raise BindingScanIncomplete('session_limit')
+    slots = []
+    for slot_id in claimed:
+        slots.append(slot_id)
+        try: record = _view(root, slot_id)
+        except NativeInboxError: continue
+        for neighbour in ((record.get('rebind') or {}).get('previous_slot_id'), record.get('rebound_to')):
+            if isinstance(neighbour, str) and CANONICAL.fullmatch(neighbour): slots.append(neighbour)
+    return list(dict.fromkeys(slots))
 
 
 def live_slots(state_root, sid, quorum_slug):
@@ -1280,14 +1322,12 @@ def live_slots(state_root, sid, quorum_slug):
     Exactly the slots `rebindable` accepts (the same predicate `rebind` uses), named by the source slot a
     rebind continues from: an active slot whose native worker ended with a parent restart, or a predecessor
     superseded by an interrupted hand-over whose successor lapsed. A hand-over an attest retry can still
-    finish counts too, as `hand_over_pending`. Bounded; nothing is created, recovered or asked of the service.
+    finish counts too, as `hand_over_pending`. Candidates come from this SID's index claims only, so other
+    chats' or quorums' slots never crowd them out. Nothing is created, recovered or asked of the service.
     """
     root = _state_root(state_root)
-    try: names = sorted(os.listdir(root / 'claude-workers'))[:SLOT_SCAN_LIMIT]
-    except OSError: return []
     found, seen = [], set()
-    for name in names:
-        if not CANONICAL.fullmatch(name): continue
+    for name in _session_slots(root, sid):
         try:
             record = _view(root, name)
             if record.get('provider_session_id') != sid or record['scope'].get('quorum_slug') != quorum_slug:

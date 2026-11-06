@@ -105,23 +105,38 @@ def hook_environment(event, client, environment):
     return {**environment, variable:sid}
 
 
-WORKER_SCAN_LIMIT = 256
+# Session ledgers read per Codex worker lookup. No parent-to-worker index exists, so candidates are filtered
+# by name and file first; more remaining ledgers than this fail closed in the resume check.
+WORKER_SCAN_LIMIT = 4096
 WORKER_NOTICE_LIMIT = 4
 
 
-def worker_bindings(state, parent):
-    """Enabled Codex tool-inbox bindings whose worker belongs to this parent; read-only, bounded, no ledger created."""
+def worker_bindings(state, parent, *, strict=False):
+    """Enabled Codex tool-inbox bindings whose worker belongs to this parent; read-only, bounded, no ledger created.
+
+    `strict` (the join's resume check) raises `binding_scan_incomplete` instead of reading only part of the
+    candidates; the startup notice stays best-effort.
+    """
     import json
     import sqlite3
     root = Path(state) / 'sessions'
-    try: names = sorted(os.listdir(root))[:WORKER_SCAN_LIMIT]
-    except OSError: return []
-    found = []
-    for name in names:
+    try: names = os.listdir(root)
+    except FileNotFoundError: return []
+    except OSError:
+        if strict: raise BindingScanIncomplete('sessions_unreadable') from None
+        return []
+    candidates = []
+    for name in sorted(names):
         try: canonical = str(uuid.UUID(name))
         except ValueError: continue
         path = root / name / 'ledger.sqlite'
         if canonical != name or canonical == parent or path.is_symlink() or not path.is_file(): continue
+        candidates.append((name, path))
+    if len(candidates) > WORKER_SCAN_LIMIT:
+        if strict: raise BindingScanIncomplete('worker_limit')
+        candidates = candidates[:WORKER_SCAN_LIMIT]
+    found = []
+    for name, path in candidates:
         try:
             connection = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=1)
             try:
@@ -177,6 +192,22 @@ class BindingExists(ValueError):
                 'guidance': 'This chat already has a live binding in this quorum. Resume it with next_step; the '
                             'invitation was not used and stays valid until it expires, so its owner may revoke '
                             'or reuse it.'}
+
+
+class BindingScanIncomplete(BindingExists):
+    """The resume check could not see every candidate binding: refuse acceptance rather than assume none."""
+    code = 'binding_scan_incomplete'
+
+    def __init__(self, reason):
+        ValueError.__init__(self, self.code)
+        self.found = {'reason': reason}
+
+    def diagnostic(self):
+        # A fixed reason only; never a path, ID list or count.
+        return {**self.found, 'invitation': 'unused',
+                'guidance': 'Not every local binding of this chat could be checked, so the invitation was not '
+                            'used. Inspect session status (or session worker status) and stop or clean up '
+                            'unused bindings in this state, then retry.'}
 
 
 def _read_rows(path, keys):
@@ -237,7 +268,7 @@ def live_binding(state, quorum, *, sid=None, parent=None, cloud=None):
         if owner != sid: found.update(session_ref=owner, run_in='parent_chat')
         return found
     for owner in dict.fromkeys(item for item in (parent, sid) if item):
-        for item in worker_bindings(state, owner):
+        for item in worker_bindings(state, owner, strict=True):
             if item.get('quorum') == quorum and item.get('cwd') == cwd:
                 return {'quorum': quorum, 'route': 'codex-worker', 'role': item.get('role'),
                         'session_ref': item['session_ref'],

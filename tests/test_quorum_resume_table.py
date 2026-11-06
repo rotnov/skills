@@ -158,6 +158,56 @@ class ResumeTableTests(rebind_tests.RebindTests):
         self.refused(self.rebind(api, old), 'native_worker_binding_denied', 'agent_revoked')
 
 
+FOREIGN = 300
+
+
+def crowd(root, count=FOREIGN):
+    """Slot-like directories that sort before any real slot and never hold this chat's binding."""
+    workers = root / 'claude-workers'
+    for index in range(count):
+        path = workers / ('00000000-0000-4000-8000-%012d' % index)
+        path.mkdir(mode=0o700)
+
+
+@OWNER_PROOF
+class ResumeScanTests(rebind_tests.RebindTests):
+    """The resume lookup is keyed by this chat's SID, never truncated; a hit bound refuses instead."""
+
+    def live(self, sid=SID, quorum='team'):
+        from quorum_resume import live_binding
+        with claude(sid): return live_binding(self.root, quorum, sid=sid)
+
+    def prepare_cli(self):
+        import json
+        return self.cli(None, 'session', 'worker', 'prepare', '--json-stdin',
+                        stdin=json.dumps(self.accept_scope()).encode())
+
+    @isolated_profiles
+    def test_three_hundred_foreign_or_expired_slots_never_hide_the_resumable_one(self):
+        api = OwnerApi()
+        old = active(self, api)
+        crowd(self.root)
+        # Real foreign and expired slots too: another chat's pending slots and this chat's lapsed ones.
+        for _ in range(3): self.prepare(self.accept_scope(quorum_slug='other-team'), sid=OTHER_SID)
+        for _ in range(3): self.prepare(self.accept_scope(quorum_slug='other-team'))
+        self.now += 121
+        self.assertGreater(len(list((self.root / 'claude-workers').iterdir())), 256)
+        self.assertEqual(self.live()['slot_id'], old)
+        code, result, text = self.prepare_cli()
+        self.assertEqual((code, result['code'], result['data']['slot_id']), (3, 'binding_exists_resume', old), text)
+
+    @isolated_profiles
+    def test_a_hit_bound_refuses_acceptance_instead_of_assuming_no_binding(self):
+        api = OwnerApi()
+        active(self, api)
+        for limit in ('SESSION_ACTOR_LIMIT', 'INDEX_SCAN_LIMIT'):
+            with self.subTest(limit=limit), patch('quorum_claude_worker.' + limit, 0):
+                code, result, text = self.prepare_cli()
+                self.assertEqual((code, result['code'], result['data']['invitation']),
+                                 (3, 'binding_scan_incomplete', 'unused'), text)
+                self.assertIn(result['data']['reason'], ('session_limit', 'index_limit'))
+
+
 def _row_test(builder, live, succeeds, sid):
     @isolated_profiles
     def test(self): self.check(builder, live, succeeds, sid)
@@ -170,3 +220,4 @@ for _name, _builder, _live, _succeeds, _sid in ROWS:
 # RebindTests' own tests already run in their module.
 for _name in [name for name in vars(rebind_tests.RebindTests) if name.startswith('test_')]:
     setattr(ResumeTableTests, _name, None)
+    setattr(ResumeScanTests, _name, None)

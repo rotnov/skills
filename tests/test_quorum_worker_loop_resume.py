@@ -152,6 +152,34 @@ class CodexResumeTests(codex.Harness):
         code, result, text = self.accept(api, 'other-team')
         self.assertEqual(result['code'], 'machine_profile_unavailable', text)
 
+    def crowd(self, count=300):
+        """Session ledgers that sort before the real worker's and belong to no worker of this parent."""
+        for index in range(count):
+            path = Path(self.root) / 'sessions' / ('00000000-0000-4000-8000-%012d' % index)
+            path.mkdir(mode=0o700, parents=True)
+            (path / 'ledger.sqlite').touch(mode=0o600)
+
+    @isolated_profiles
+    def test_three_hundred_foreign_ledgers_never_hide_the_worker_binding(self):
+        api = codex.Api()
+        with codex.caller(self.home): self.connect(api)
+        self.crowd()
+        code, result, text = self.accept(api, 'team')
+        self.assertEqual((code, result['code'], result['data']['session_ref']),
+                         (3, 'binding_exists_resume', codex.CHILD), text)
+
+    @isolated_profiles
+    def test_more_worker_ledgers_than_the_bound_refuse_instead_of_assuming_none(self):
+        api = codex.Api()
+        with codex.caller(self.home): self.connect(api)
+        self.crowd(3)
+        mark = len(api.calls)
+        with patch('quorum_resume.WORKER_SCAN_LIMIT', 2):
+            code, result, text = self.accept(api, 'team')
+        self.assertEqual((code, result['code'], result['data']['reason'], result['data']['invitation']),
+                         (3, 'binding_scan_incomplete', 'worker_limit', 'unused'), text)
+        self.assertEqual(api.calls[mark:], [], 'no service call, so the invitation is not consumed')
+
     @isolated_profiles
     def test_a_stopped_binding_does_not_block_acceptance(self):
         api = codex.Api()

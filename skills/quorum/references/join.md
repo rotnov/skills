@@ -57,7 +57,10 @@ service-side revocation is left to the resume itself. A resumable one is
 refused with `binding_exists_resume`: `data` names the quorum, route, role and
 IDs, its `next_step` command and `invitation: unused`; with
 `run_in: parent_chat` the worker reports it and the parent chat runs that
-step. A Claude `session worker prepare` with an accept scope applies the same
+step. If it cannot check every candidate binding (a lookup bound or an
+unreadable index), it refuses with `binding_scan_incomplete` and leaves the
+invitation unused; inspect `session status` and clean up unused bindings
+first. A Claude `session worker prepare` with an accept scope applies the same
 check. Without `--quorum` (older invitations), check `session status` (or
 `session worker status <slot-uuid>`) yourself first.
 
