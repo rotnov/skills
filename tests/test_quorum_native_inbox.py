@@ -1414,8 +1414,8 @@ class HelloVisibilityTests(Harness):
             if operation == 'session_heartbeat':
                 new, type(self).fresh = type(self).fresh, False
                 return {'online': True, 'new_connection': new, 'hello': {
-                    'peers': 2, 'roles': ['alpha', 'zeta'], 'available': 1, 'available_roles': ['alpha'],
-                    'roster_message_id': ROSTER}}
+                    'peers': 2, 'skipped': 0, 'roles': ['alpha', 'zeta'], 'available': 1,
+                    'available_roles': ['alpha'], 'roster_message_id': ROSTER}}
             return super().answer(operation, payload)
 
     @isolated_profiles

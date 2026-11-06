@@ -139,6 +139,8 @@ class RealtimeWait:
                 self._close_socket()
                 raise
             self._fallback()
+            # Polling announces before the listener first reports `waiting`, as a subscription does.
+            self._keep('tick', stopping)
 
     def pulse(self, stopping=None):
         """Keep health fresh during an active inbox drain as well as idle waits."""

@@ -128,6 +128,30 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(calls[0][1]['sender_agent_id'], 'agent')
 
     @isolated_profiles
+    def test_mcp_supplies_the_arguments_the_rpcs_require_and_keeps_explicit_values(self):
+        module = importlib.import_module('quorum_mcp')
+        calls = []
+        tools = module.McpTools(lambda token: 'agent', lambda name, data: calls.append((name, data)),
+                               scope=lambda agent: {'quorum_id': 'q', 'project_ref': 'scratch/repo'})
+        tools.call('cap', 'quorum_send', {'recipient_agent_id': 'b', 'body': 'hello', 'conversation_id': 'c',
+                                          'quorum_id': 'q', 'request_id': 'r'})
+        tools.call('cap', 'quorum_context', {'quorum_id': 'q', 'project_ref': 'scratch/repo'})
+        tools.call('cap', 'quorum_thread', {'quorum_id': 'q', 'conversation_id': 'c'})
+        tools.call('cap', 'quorum_thread', {'quorum_id': 'q', 'conversation_id': 'c', 'after_sequence': 7})
+        self.assertIsNone(calls[0][1]['reply_to'])
+        self.assertEqual(calls[1][1]['after_version'], 0)
+        self.assertEqual([call[1]['after_sequence'] for call in calls[2:]], [0, 7])
+        # Each default is a parameter the bootstrap RPC declares without a default.
+        bootstrap = (Path(__file__).resolve().parents[1] / 'skills/quorum/references/server-bootstrap.sql').read_text(
+            encoding='utf-8')
+        for name, values in module.DEFAULTS.items():
+            for key in values:
+                header = next(line for line in bootstrap.splitlines()
+                              if line.startswith('CREATE OR REPLACE FUNCTION public.' + module.TOOLS[name][0] + '('))
+                self.assertIn('p_' + key + ' ', header)
+                self.assertNotIn('DEFAULT', header)
+
+    @isolated_profiles
     def test_mcp_capability_cannot_read_another_quorum_or_project(self):
         module = importlib.import_module('quorum_mcp')
         tools = module.McpTools(lambda token: 'agent', lambda *_: self.fail('cross-scope request forwarded'),

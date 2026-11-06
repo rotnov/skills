@@ -261,6 +261,11 @@ class ActorDirectoryTests(unittest.TestCase):
 
 # --- Real NTFS ----------------------------------------------------------------------------------
 
+def elevated():
+    """Only an unelevated runner may lack the owner and symlink rights; elsewhere those cases must run."""
+    return bool(ctypes.windll.shell32.IsUserAnAdmin())
+
+
 def run(*command):
     return subprocess.run(list(command), capture_output=True, text=True, timeout=30)
 
@@ -398,8 +403,8 @@ class NtfsTests(unittest.TestCase):
 
     def test_foreign_owner_refuses(self):
         path, _, _ = self.private()
-        if run('icacls', str(path), '/setowner', '*S-1-5-19').returncode != 0:  # LOCAL SERVICE
-            self.skipTest('this runner cannot assign another owner')
+        if not elevated(): self.skipTest('an unelevated runner cannot assign another owner')
+        self.assertEqual(run('icacls', str(path), '/setowner', '*S-1-5-19').returncode, 0)  # LOCAL SERVICE
         self.refused(path, 'private')
         self.refused(path, 'private', 'codex')
         self.refused(path, 'ancestor')
@@ -417,12 +422,18 @@ class NtfsTests(unittest.TestCase):
         self.assertTrue(target.exists() and (path / 'junction').is_junction())
         data = path / 'data.json'
         data.write_text('{}')
-        try: os.symlink(data, path / 'symlink.json')
-        except OSError: pass
-        else:
-            with self.assertRaises(proof.Unsafe): os.close(proof.open_verified(fd, 'symlink.json', 'file', 'claude'))
         os.link(data, path / 'hardlink.json')
         with self.assertRaises(proof.Unsafe): os.close(proof.open_verified(fd, 'data.json', 'file', 'claude'))
+
+    def test_symlinks_refuse(self):
+        path, _, fd = self.private()
+        data = path / 'data.json'
+        data.write_text('{}')
+        try: os.symlink(data, path / 'symlink.json')
+        except OSError:
+            if elevated(): raise
+            self.skipTest('an unelevated runner without Developer Mode cannot create symlinks')
+        with self.assertRaises(proof.Unsafe): os.close(proof.open_verified(fd, 'symlink.json', 'file', 'claude'))
 
     def test_network_or_unknown_roots_refuse(self):
         for root in ('\\\\server\\share\\', 'C:', 'C:/', 'relative'):

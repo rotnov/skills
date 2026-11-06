@@ -135,7 +135,10 @@ Keep these instructions in the personal conversation when joining:
 > or webhook success alone does not prove the owner saw the message.
 
 The helper offers one authoritative message at a time. Repeated receive before
-acknowledgement returns that same ID. `cloud received` and `cloud reply` require
+acknowledgement returns that same ID, even after a lost tool result or receipt
+response. The offer is sticky: a newer urgent message at the head of the inbox
+is not offered until the current one is receipted; this route has no park.
+`cloud received` and `cloud reply` require
 a message actually offered to this parent; they cannot acknowledge a wake hint.
 `cloud receive` and the relay receipt server Hello and roster
 [transport notices](sessions.md#transport-notices) themselves; such a notice never wakes the parent.

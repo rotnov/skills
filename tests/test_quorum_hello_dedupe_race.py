@@ -12,7 +12,8 @@ from test_quorum_close_race import Cluster
 from quorum_update_sql_support import wait_statement
 
 ROOT = Path(__file__).resolve().parents[1]
-MIGRATION = '20261106120000_hello_reconnect_dedupe.sql'
+# The dedupe races run on the newest release that replaces its Hello wrapper.
+MIGRATION = '20261106150000_hello_sent_skipped.sql'
 RELEASE = json.loads((ROOT / 'skills/quorum/assets/release.json').read_text())
 
 

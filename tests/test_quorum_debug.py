@@ -229,6 +229,13 @@ class DebugLifecycleTests(unittest.TestCase):
         self.assertEqual(self.github.creates(), [])
 
 
+class DebugImportDocumentationTests(unittest.TestCase):
+    def test_the_guide_shows_the_activation_that_debug_import_needs(self):
+        guide = (Path(__file__).resolve().parents[1] / 'skills/quorum/references/debug.md').read_text(encoding='utf-8')
+        command = next(line for line in guide.splitlines() if ' debug activate ' in line and '--source' in line)
+        self.assertIn('--source local-ledger --source imported-artifact', command)
+
+
 class DebugCollectionTests(unittest.TestCase):
     def setUp(self):
         self.clock = Clock()

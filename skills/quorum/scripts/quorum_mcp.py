@@ -8,6 +8,9 @@ TOOLS = {
     'quorum_status': ('agent_status', set()),
     'quorum_thread': ('conversation_read', {'quorum_id', 'conversation_id', 'after_sequence'}),
 }
+# The RPCs have no parameter defaults, so a tool call that leaves these out would match no function.
+DEFAULTS = {'quorum_send': {'reply_to': None}, 'quorum_context': {'after_version': 0},
+            'quorum_thread': {'after_sequence': 0}}
 
 
 class McpTools:
@@ -21,7 +24,7 @@ class McpTools:
         operation, allowed = TOOLS[name]
         if set(arguments) - allowed:
             raise ValueError('argument_denied')
-        data = dict(arguments)
+        data = {**DEFAULTS.get(name, {}), **arguments}
         if self.scope is None:
             raise ValueError('agent_scope_required')
         scope = self.scope(agent)
