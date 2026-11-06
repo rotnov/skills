@@ -10,7 +10,8 @@ import time
 import uuid
 from quorum_api import QuorumError, rpc_missing
 from quorum_capabilities import GROK_LEADER_PLATFORMS
-from quorum_listener import Control, abandon_start, locked, run_listener, spawn_background, stop_listener
+from quorum_listener import (Control, READY_SECONDS, START_LOCK, StartGuard, UPSERT, await_started, control_lock,
+                             locked, ready, run_listener, spawn_background, stop_listener)
 from quorum_os import FileLock
 from quorum_state import LocalLedger
 from quorum_delegation import (grant, held_status, instruction, member_grant, member_trust, opening, task_check,
@@ -203,20 +204,19 @@ def retire_binding(ledger, record, reason):
     by itself once the binding is gone. Delivery markers of the old agent are archived with it: the service
     can no longer acknowledge them, and an unresolvable intent must not block the new binding.
     """
-    with FileLock(ledger.root / 'listener-control.lock'):
+    with control_lock(ledger):
         if ledger.setting('session-agent') != record: return False
         deliveries = {key: json.loads(raw) for key, raw in
                       ledger.db.execute("select key,data from settings where key like 'delivery:%'")}
         summary = {**{key: record.get(key) for key in ('agent_id', 'role', 'quorum', 'quorum_id', 'project_ref')},
                    'reason': reason, 'retired_at': ledger.clock(), 'deliveries': deliveries}
         generation = (ledger.setting(BINDING_GENERATION) or 0) + 1
-        upsert = 'insert into settings values (?,?) on conflict(key) do update set data=excluded.data'
+        stop = Control(ledger, holding_control=True).stop_rows()
         with ledger.db:
             ledger.db.execute("delete from settings where key='session-agent' or key like 'delivery:%'")
-            ledger.db.executemany(upsert, [(RETIRED_BINDING, json.dumps(summary)),
+            ledger.db.executemany(UPSERT, [(RETIRED_BINDING, json.dumps(summary)),
                                            (BINDING_GENERATION, json.dumps(generation)),
-                                           ('session-reception', json.dumps({'enabled': False}))])
-        Control(ledger, holding_control=True).request_stop()
+                                           ('session-reception', json.dumps({'enabled': False})), *stop])
     return True
 
 
@@ -723,7 +723,7 @@ def add_transport_arguments(parser):
                         help='Expected parent thread UUID of the tool-inbox worker; a relationship, not authority')
 
 
-def rebind(ledger, control, sid, endpoint, *, stop_seconds=60, engine='claude', authorize=None):
+def rebind(ledger, control, sid, endpoint, guard, *, stop_seconds=60, engine='claude', authorize=None):
     """Move this same chat to its current, already validated native transport.
 
     The caller has proven the session identity and endpoint from its own
@@ -744,6 +744,7 @@ def rebind(ledger, control, sid, endpoint, *, stop_seconds=60, engine='claude', 
         control.request_stop(run_id)
         deadline = time.monotonic()+stop_seconds
         while locked(lock):
+            if authorize: authorize()
             # The stop request stays; retry start once status shows offline.
             if time.monotonic() >= deadline: raise ValueError('listener_stop_pending')
             time.sleep(.2)
@@ -753,15 +754,12 @@ def rebind(ledger, control, sid, endpoint, *, stop_seconds=60, engine='claude', 
         if json.loads(raw)['state'] == 'intent': raise ValueError('session_delivery_unknown')
     if authorize: authorize()
     key = 'messaging_socket' if engine == 'claude' else 'grok_transport'
-    ledger.setting('session-agent', {**record, key:endpoint})
-
-
-# Readiness bound for an explicit start, shared by a new child and a reused running listener.
-READY_SECONDS = 90
-
-
-def ready(status):
-    return status['listener']=='running' and status['state'] in ('waiting','checking') and not status['stop_requested']
+    with guard.section():
+        # Only the endpoint changes; a delegation saved during the wait stays.
+        current = ledger.setting('session-agent')
+        if not current or current.get('session_ref') != sid or current.get('engine') != engine:
+            raise ValueError('session_binding_denied')
+        ledger.setting('session-agent', {**current, key:endpoint})
 
 
 def await_ready(control, authorize):
@@ -783,13 +781,17 @@ def await_ready(control, authorize):
 def start(auth_state, ledger, sid, *, api, endpoint=None, grok_transport=None, recovery=False):
     from quorum_api import QuorumError
     from quorum_resume import enable, require_enabled
-    with FileLock(ledger.root / 'listener-control.lock'):
+    # The control lock is taken only around ledger mutations, so an owner stop lands at any point here.
+    with StartGuard(ledger) as guard:
         control = Control(ledger)
         record = ledger.setting('session-agent')
         if record is None: raise ValueError('session_not_connected')
         if record.get('session_ref') != sid: raise ValueError('session_binding_denied')
         def authorize():
+            guard.check()
             if recovery: require_enabled(ledger, record)
+        def commit():
+            if not recovery: enable(ledger, ledger.setting('session-agent'))
         if recovery:
             authorize()
             # Validate current server membership/device/session without consuming
@@ -802,22 +804,22 @@ def start(auth_state, ledger, sid, *, api, endpoint=None, grok_transport=None, r
         release.running()
         authorize()  # Service/release checks may outlive a finite grant.
         rebound = bool(record and endpoint is not None and endpoint != record.get('messaging_socket'))
-        if rebound: rebind(ledger, Control(ledger, holding_control=True), sid, endpoint, authorize=authorize)
+        if rebound: rebind(ledger, control, sid, endpoint, guard, authorize=authorize)
         grok_rebound = grok_transport is not None and grok_transport != record.get('grok_transport')
         if grok_rebound:
-            rebind(ledger, Control(ledger, holding_control=True), sid, grok_transport, engine='grok',
-                   authorize=authorize)
+            rebind(ledger, control, sid, grok_transport, guard, engine='grok', authorize=authorize)
         authorize()  # Recheck the latest grant after any old listener shutdown.
         if locked(ledger.root/'listener.lock'):
             # Reuse only a ready run: a degraded or starting one is neither reported nor granted.
             status = await_ready(control, authorize)
             if status is not None:
-                if not recovery: enable(ledger, ledger.setting('session-agent'))
+                with guard.section(): commit()
                 return status
         run_id = str(uuid.uuid4())
-        # The new child announces a new connection; never report the previous run's Hello as this one.
-        with ledger.db: ledger.db.execute("delete from settings where key='hello'")
-        control.begin(run_id, 0)
+        with guard.section():
+            # The new child announces a new connection; never report the previous run's Hello as this one.
+            with ledger.db: ledger.db.execute("delete from settings where key='hello'")
+            control.begin(run_id, 0)
         command=[sys.executable,str(Path(__file__).with_name('quorum.py')),'--state',str(auth_state),
                  'session','--session-id',sid,'run','--run-id',run_id]
         if recovery: command.append('--recovering')
@@ -827,29 +829,13 @@ def start(auth_state, ledger, sid, *, api, endpoint=None, grok_transport=None, r
         except Exception:
             control.update(run_id,'error',0,timeout=0,code='session_start_failed')
             raise QuorumError('listener_start_failed') from None
-        deadline=time.monotonic()+READY_SECONDS
-        while time.monotonic()<deadline:
-            try: authorize()
-            except ValueError:
-                abandon_start(control, run_id, child)
-                raise
-            status=control.status()
-            if status.get('run_id')==run_id:
-                if ready(status):
-                    try: authorize()
-                    except ValueError:
-                        # Only this unconfirmed owned child is stopped. The old
-                        # grant stays expired/revoked; no rearm or extension.
-                        abandon_start(control, run_id, child)
-                        raise
-                    if not recovery: enable(ledger, ledger.setting('session-agent'))
-                    if rebound: status['messaging_rebound'] = True
-                    if grok_rebound: status['transport_rebound'] = True
-                    return status
-                if status['state'] in ('error','unknown','stopped'): break
-            if child.poll() is not None: break
-            time.sleep(.1)
-        abandon_start(control, run_id, child)
+        # Only this unconfirmed owned child is ever stopped on a refusal. An expired
+        # or revoked grant stays so; there is no rearm or extension.
+        status=await_started(control, guard, run_id, child, check=authorize, commit=commit, seconds=READY_SECONDS)
+        if status is not None:
+            if rebound: status['messaging_rebound'] = True
+            if grok_rebound: status['transport_rebound'] = True
+            return status
         if (ledger.setting('release') or {}).get('update_required'):
             control.update(run_id,'error',0,timeout=0,code='skill_update_required')
             raise ReleaseMismatch(ledger.setting('release'))
@@ -878,8 +864,8 @@ def reconcile_absent(api, ledger, record, message_id, attempt_id):
     key, audit_key = 'delivery:'+message_id, 'delivery-absent:'+message_id+':'+attempt_id
     binding = {name:record[name] for name in ('agent_id', 'session_ref', 'engine', 'cwd', 'project_ref', 'quorum_id')}
     marker = {'state':'confirmed_absent', 'message_id':message_id, 'attempt_id':attempt_id, 'binding':binding}
-    with FileLock(ledger.root/'listener-control.lock'), LocalSupervisorLock(ledger.root), \
-         FileLock(ledger.root/'listener.lock'):
+    # Excludes any start and listener across the service check, yet leaves an owner stop free.
+    with FileLock(ledger.root/START_LOCK), LocalSupervisorLock(ledger.root), FileLock(ledger.root/'listener.lock'):
         authorize()
         ReleaseGuard(api, ledger).check()
         # This marker is historical, not a retry instruction. A repeated old
@@ -901,7 +887,7 @@ def reconcile_absent(api, ledger, record, message_id, attempt_id):
         authorize()
         # Keep RPCs outside this short transaction. A local receipt committed
         # during the service check wins the exact CAS; no marker is then added.
-        with ledger.db:
+        with control_lock(ledger), ledger.db:
             ledger.db.execute('begin immediate')
             authorize()
             deleted = ledger.db.execute('delete from settings where key=? and data=?', (key, row[0]))
@@ -1113,7 +1099,8 @@ def _dispatch(args, auth_ledger, register_agent):
             def save_binding():
                 nonlocal snapshot
                 if engine == 'claude':
-                    with FileLock(ledger.root/'listener-control.lock'):
+                    # An in-progress start must not see its binding move underneath it.
+                    with FileLock(ledger.root/START_LOCK), control_lock(ledger):
                         snapshot = save_grant_binding(ledger, 'session-agent', record, snapshot)
                 else:
                     snapshot = save_grant_binding(ledger, 'session-agent', record, snapshot)

@@ -148,6 +148,9 @@ jobs:
       - name: Verify native listener lifecycle without model providers
         run: uv run --no-project --python 3.12 python -m unittest discover -s tests -p test_quorum_listener.py -v
 
+      - name: Verify owner stop against every start window without providers
+        run: uv run --no-project --python 3.12 python -m unittest discover -s tests -p test_quorum_stop_during_start.py -v
+
       - name: Verify copy-installed native session transport without providers
         run: uv run --no-project --python 3.12 python -m unittest discover -s tests -p test_quorum_session.py -v
 

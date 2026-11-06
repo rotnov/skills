@@ -282,10 +282,11 @@ class TargetTests(Base):
                 self.webhook.configure(self.ledger, {'url':URL, 'key':KEY + 'X'})
         self.assertEqual(str(caught.exception), 'cloud_relay_running')
         self.assertEqual((self.ledger.root / self.webhook.TARGET_FILE).read_bytes(), before)
-        with FileLock(self.ledger.root / 'listener-control.lock'):
-            with self.assertRaises(ValueError) as caught:
-                self.webhook.configure(self.ledger, {'url':URL, 'key':KEY + 'X'})
-        self.assertEqual(str(caught.exception), 'cloud_relay_running')
+        for lock in ('listener-control.lock', 'listener-start.lock'):
+            with self.subTest(lock=lock), FileLock(self.ledger.root / lock):
+                with self.assertRaises(ValueError) as caught:
+                    self.webhook.configure(self.ledger, {'url':URL, 'key':KEY + 'X'})
+                self.assertEqual(str(caught.exception), 'cloud_relay_running')
         # Locks are released afterwards: a new configuration succeeds.
         self.webhook.configure(self.ledger, {'url':URL, 'key':KEY + 'X'})
         self.assertEqual(self.webhook.load_target(self.ledger).key, KEY + 'X')

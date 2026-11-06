@@ -341,12 +341,25 @@ class ClaudeResumeTests(unittest.TestCase):
     def test_absence_requires_listener_and_supervisor_quiescence(self):
         from quorum_os import FileLock
         self.intent()
-        for lock in ('listener-control.lock', 'supervisor.lock', 'listener.lock'):
-            with self.subTest(lock=lock), FileLock(self.ledger.root/lock):
+        for lock in ('listener-start.lock', 'listener-control.lock', 'supervisor.lock', 'listener.lock'):
+            with self.subTest(lock=lock), FileLock(self.ledger.root/lock), patch('quorum_listener.CONTROL_SECONDS', 0):
                 with self.assertRaisesRegex(ValueError, 'worker_already_running|listener_stop_pending'):
                     self.dispatch()
                 self.assertEqual(self.ledger.setting('delivery:'+MID)['attempt_id'], ATTEMPT)
         self.assertNotIn('session_ack', self.api.calls)
+
+    @isolated_profiles
+    def test_owner_stop_is_free_during_the_absence_service_check(self):
+        from quorum_listener import stop_listener
+        self.intent()
+        original, stopped = self.api.call, []
+        def call(operation, payload, request_id=None):
+            if operation == 'session_inbox': stopped.append(stop_listener(self.ledger, revoke_reception=True))
+            return original(operation, payload, request_id)
+        self.api.call = call
+        self.assertTrue(self.dispatch()['confirmed_absent'])
+        self.assertEqual(len(stopped), 1)
+        self.assertEqual(self.ledger.setting('session-reception'), {'enabled':False})
 
     @isolated_profiles
     def test_offline_status_exposes_only_unknown_message_and_attempt_ids(self):
