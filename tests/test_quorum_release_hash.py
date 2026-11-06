@@ -389,6 +389,19 @@ class UpdateOutputTests(unittest.TestCase):
         self.assertEqual(page['fleet_release']['target'], 'b'*7)
         self.assertEqual(page['fleet_release']['unreported'], 1)
 
+    def test_a_failed_read_never_promotes_an_older_runtime_report(self):
+        """A migrated server's run check could not be read: the previous run's hash must not count as running."""
+        from quorum_api import QuorumError
+        report = {**self.TARGET, 'run_id':RUN, 'reported_at':'2026-11-06T10:00:00Z'}
+        for answer in (QuorumError('service_unavailable', transient=True), QuorumError('service_error', transient=True),
+                       QuorumError('service_error'), QuorumError('auth_required'), 'nonsense', {'agents':'nonsense'}):
+            with self.subTest(answer=str(answer)):
+                page = self.fleet(self.status([{'agent_id':PEER, 'runtime_report':report}]), answer)
+                self.assertEqual(page['participants'][0]['release'], {'state':'unreported', 'running':None, 'target':'b'*7})
+                self.assertEqual(page['fleet_release'], {'target':'b'*7, 'on_target':0, 'unreported':1, 'behind':[],
+                                                         'read_failed':True})
+                self.assertNotIn('skill_version', page['participants'][0]['runtime_report'])
+
     def test_a_page_without_participants_needs_no_extra_read(self):
         from quorum_updates import with_fleet_release
         api = Api()

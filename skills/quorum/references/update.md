@@ -174,7 +174,9 @@ replaced listener reads as `unreported`, never as its predecessor's hash. A repo
 says what that listener said it ran. It is not proof of current liveness; read
 `availability` for that. On a server without the release reports, `update --status`
 falls back to a participant's runtime report for that operation, and `session peers`
-shows every row as `unreported`.
+shows every row as `unreported`. A failed read of a server that has them is different:
+nothing can say whether a report's run is still running, so every row is `unreported`,
+and `fleet_release.read_failed` is true. Read the page again.
 
 The server does not require a hash, and nothing refuses a listener for being behind:
 it is only shown. `protocol_version` stays the only gate, so a rollout can never stop

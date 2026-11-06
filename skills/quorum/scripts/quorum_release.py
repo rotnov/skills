@@ -12,7 +12,7 @@ from functools import lru_cache
 import json
 from pathlib import Path
 import re
-from quorum_api import QuorumError
+from quorum_api import QuorumError, rpc_missing
 
 # The one installer pin shared by the automatic refresh and every generated invitation.
 INSTALLER = 'skills@>=1.7.4'
@@ -152,10 +152,14 @@ def release_view(row, target):
 
 
 def release_status(api, scope, **page):
-    """The fleet target and running self-reports, or None: a server without them shows peers as before."""
+    """The fleet target and running self-reports. None only when the server has no such RPC.
+
+    Any other failure is a failed read of a server that may hold them, so nothing is known about any run.
+    """
+    failed = {'target':None, 'agents':{}, 'read_failed':True}
     try: value = api.call('session_release_status', {**scope, **page})
-    except QuorumError: return None
-    if not isinstance(value, dict) or not isinstance(value.get('agents'), list): return None
+    except QuorumError as error: return None if rpc_missing(error) else failed
+    if not isinstance(value, dict) or not isinstance(value.get('agents'), list): return failed
     target = value.get('target') if isinstance(value.get('target'), dict) else {}
     return {'target':target.get('content_sha256') if short_hash(target.get('content_sha256')) else None,
             'agents':{item['agent_id']:item for item in value['agents']

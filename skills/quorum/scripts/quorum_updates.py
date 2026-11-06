@@ -208,8 +208,9 @@ def with_fleet_release(api, record, status, page, authorize):
     """One status page by content hash: each participant's running hash against the fleet target.
 
     The fleet target is the quorum's newest requested target, which may be newer than this operation's. A running
-    hash is the listener's own report, or on a server without reports its runtime report for this operation. Both
-    are self-reports. `behind` means not on the target: hashes have no order. No update state changes here.
+    hash is the listener's own report, or only on a server without that RPC its runtime report for this operation.
+    Both are self-reports. A failed read shows `unreported`: only the server can tell whether that report's run is
+    still running. `behind` means not on the target: hashes have no order. No update state changes here.
     """
     if not isinstance(status, dict): return status
     target = source_identity(status.get('target'))
@@ -217,10 +218,10 @@ def with_fleet_release(api, record, status, page, authorize):
     shown = {**status, 'target':public_source(target)}
     if not isinstance(participants, list): return shown
     authorize()
-    fleet = release_status(api, {key: record[key] for key in ('agent_id', 'session_ref')}, **page) or {}
+    fleet = release_status(api, {key: record[key] for key in ('agent_id', 'session_ref')}, **page)
     authorize()
-    running = fleet.get('agents') or {}
-    fleet_target = fleet.get('target') or (target or {}).get('content_sha256')
+    running = fleet['agents'] if fleet else {}
+    fleet_target = (fleet['target'] if fleet else None) or (target or {}).get('content_sha256')
     rows, counts, behind = [], {'on_target':0, 'unreported':0}, []
     for item in participants:
         if not isinstance(item, dict):
@@ -230,12 +231,14 @@ def with_fleet_release(api, record, status, page, authorize):
         report = without_carried(report) if isinstance(report, dict) else report
         row = running.get(item.get('agent_id'))
         # With the server's reports its run check stands: an older report never overrules it.
-        if not fleet and isinstance(report, dict): row = {**report, 'reported_via':'update_report'}
+        if fleet is None and isinstance(report, dict): row = {**report, 'reported_via':'update_report'}
         view = release_view(row, fleet_target)
         if view['state'] == 'behind': behind.append({'agent_id':item.get('agent_id'), 'running':view['running']})
         elif view['state'] in counts: counts[view['state']] += 1
         rows.append({**item, **({'runtime_report':report} if 'runtime_report' in item else {}), 'release':view})
-    return {**shown, 'participants':rows, 'fleet_release':{'target':short_hash(fleet_target), **counts, 'behind':behind}}
+    summary = {'target':short_hash(fleet_target), **counts, 'behind':behind}
+    if fleet and fleet.get('read_failed'): summary['read_failed'] = True
+    return {**shown, 'participants':rows, 'fleet_release':summary}
 
 
 def with_restart_visibility(api, ledger, record, status, authorize):
