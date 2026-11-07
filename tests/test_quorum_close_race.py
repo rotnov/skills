@@ -16,6 +16,7 @@ close and accept/create serialize and neither survives. Those rereads need READ
 COMMITTED, so each operation run at REPEATABLE READ or SERIALIZABLE must fail
 at once, while a blocker holds every lock it could take, and change no row.
 """
+import hang_guard  # noqa: F401
 from pathlib import Path
 import json
 import os

@@ -3,6 +3,7 @@
 QUORUM_ROLE_DOCKER=1 uses only the existing local image and removes its own
 container. No real service configuration, credentials or client process is read.
 """
+import hang_guard  # noqa: F401
 import os
 from pathlib import Path
 import unittest

@@ -1,4 +1,5 @@
 """Retained-source wiki transport and independently copied client contracts."""
+import hang_guard  # noqa: F401
 import json
 import os
 from pathlib import Path

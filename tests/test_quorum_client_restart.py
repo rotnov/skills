@@ -1,4 +1,5 @@
 """Client restart visibility and the opt-in startup hook (#104): synthetic data, temporary files, no client config."""
+import hang_guard  # noqa: F401
 import contextlib
 from datetime import datetime, timezone
 import io

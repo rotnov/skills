@@ -1,4 +1,5 @@
 """Route capability report (#110): an upfront, offline unsupported result before promising until-stop work."""
+import hang_guard  # noqa: F401
 import contextlib
 import io
 import json

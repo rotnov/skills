@@ -3,6 +3,7 @@
 QUORUM_TRANSPORT_DOCKER=1 uses only the existing local PostgreSQL 17 image, with no network, and removes its
 own container. No real service configuration or credentials are read.
 """
+import hang_guard  # noqa: F401
 import os
 from pathlib import Path
 import unittest

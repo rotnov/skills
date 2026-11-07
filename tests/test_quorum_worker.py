@@ -1,3 +1,4 @@
+import hang_guard  # noqa: F401
 import importlib
 from pathlib import Path
 import sys

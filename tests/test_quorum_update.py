@@ -1,4 +1,5 @@
 """Refresh code copies without replacing active installations or private state."""
+import hang_guard  # noqa: F401
 import contextlib
 import importlib
 import io

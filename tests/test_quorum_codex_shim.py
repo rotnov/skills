@@ -3,6 +3,7 @@
 The real-shim tests need Windows and Node, and run on the windows-acl CI job. They
 never start a model: the shim's target is a fixture that records its own argv.
 """
+import hang_guard  # noqa: F401
 import json
 import os
 from pathlib import Path

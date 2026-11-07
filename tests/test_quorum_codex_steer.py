@@ -7,6 +7,7 @@ expectedTurnId precondition, the bounds and the rejection/ambiguity rules are
 exercised end to end through the pinned websockets client. A fixture is not
 evidence that an owner's actual loaded chat was steered.
 """
+import hang_guard  # noqa: F401
 import contextlib
 import json
 import os

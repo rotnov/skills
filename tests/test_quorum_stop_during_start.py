@@ -3,6 +3,7 @@
 Disposable ledgers and a fake child only; no service, model or real listener. Portable, so the
 Windows CI job runs the same table against real `msvcrt` locks.
 """
+import hang_guard  # noqa: F401
 import json
 import os
 from pathlib import Path

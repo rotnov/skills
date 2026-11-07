@@ -1,4 +1,5 @@
 """Quorum debug runs: local metadata, honest coverage, and mocked GitHub writes."""
+import hang_guard  # noqa: F401
 import contextlib
 import io
 import json

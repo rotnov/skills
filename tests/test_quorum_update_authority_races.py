@@ -1,4 +1,5 @@
 """Forced SQL waits and revocation serialization; disposable local PostgreSQL only."""
+import hang_guard  # noqa: F401
 import json
 import os
 from pathlib import Path

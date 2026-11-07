@@ -1,4 +1,5 @@
 """Wiki contracts against disposable pinned PostgreSQL, never a live service."""
+import hang_guard  # noqa: F401
 from pathlib import Path
 import os
 import json

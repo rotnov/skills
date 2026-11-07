@@ -1,4 +1,5 @@
 """Shared logins retain one rotating token family across exact state bindings."""
+import hang_guard  # noqa: F401
 import concurrent.futures
 import contextlib
 import io
