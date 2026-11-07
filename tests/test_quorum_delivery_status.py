@@ -24,6 +24,7 @@ SKILL = Path(__file__).resolve().parents[1] / 'skills/quorum'
 SCRIPTS = SKILL / 'scripts'
 sys.path.insert(0, str(SCRIPTS))
 from quorum_api import QuorumError
+from quorum_client_contracts import CODEX_QUEUE_CHANGED, ClientContractRefused, ClientOutputChanged
 from quorum_delivery import Deliveries
 from quorum_delivery_status import (ALERT_LIMIT, CHECK_KEY, PAGE_LIMIT, Reports, STATUSES, StatusWatch, STUCK_KEY,
                                     SUPPORT_KEY, SUPPORT_RETRY, WATCH_KEY, note_sent, outgoing_summary,
@@ -182,6 +183,46 @@ class WatchTests(LedgerCase):
         watch.signal()
         self.assertEqual(len(attempts), 1)
         self.assertEqual([item['status'] for item in outgoing_summary(self.ledger)['alerts']], ['failed'])
+
+    def contract_failures(self):
+        return (ClientContractRefused(CODEX_QUEUE_CHANGED, 'queue_arguments_changed'),
+                ClientOutputChanged(CODEX_QUEUE_CHANGED, 'queue_output_changed'))
+
+    def raising(self, failure):
+        attempts = []
+        def notify(alerts):
+            attempts.append(alerts)
+            raise failure
+        return attempts, notify
+
+    def test_a_changed_client_stops_reception_from_a_signal(self):
+        for failure in self.contract_failures():
+            with self.subTest(failure):
+                self.ledger.db.execute("delete from settings")
+                attempts, notify = self.raising(failure)
+                watch = self.watch(Service([feed(row('failed'))]), notify=notify)
+                with self.assertRaises(type(failure)): watch.signal()
+                self.assertEqual(len(attempts), 1)
+                # The alert moved to shown before the push, so status still lists it.
+                self.assertEqual([item['status'] for item in outgoing_summary(self.ledger)['alerts']], ['failed'])
+
+    def test_a_changed_client_stops_reception_from_a_tick(self):
+        for failure in self.contract_failures():
+            with self.subTest(failure):
+                self.ledger.db.execute("delete from settings")
+                watch = self.watch(Service([feed(row('failed'))]), notify=None)
+                watch.signal()
+                attempts, watch.notify = self.raising(failure)
+                with self.assertRaises(type(failure)): watch.tick()
+                self.assertEqual(len(attempts), 1)
+
+    def test_any_other_push_failure_stays_quiet_on_both_entry_points(self):
+        attempts, notify = self.raising(ValueError('session_queue_failed'))
+        watch = self.watch(Service([feed(row('failed')), feed(row('declined', 2, OTHER))]), notify=notify)
+        watch.signal()
+        watch.stale = True
+        watch.tick()
+        self.assertEqual([[item['status'] for item in push] for push in attempts], [['failed'], ['declined']])
 
     def test_unknown_or_malformed_rows_are_dropped(self):
         rows = [row('wiped'), {'message_id': 'not-a-uuid', 'status': 'failed'}, 'text',

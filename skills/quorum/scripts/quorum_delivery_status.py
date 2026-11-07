@@ -172,8 +172,9 @@ class StatusWatch:
     the next check to now, so the service alone says what is stuck. A routine status starts no turn. An
     alert reaches the chat at most once: `notify` pushes it on a parent route, and a pull route hands it
     over with `take`. `tick` runs once per inbox pass and is local work unless something is due. Unread
-    past the limit has no event, so it waits on the deadline `session send` sets. Nothing here raises: a
-    failed status read must never stop reception, and the next inbox read reports a real denial.
+    past the limit has no event, so it waits on the deadline `session send` sets. Only a changed client
+    contract raises, so reception stops visibly; a failed status read must never stop reception, and the
+    next inbox read reports a real denial.
     """
     def __init__(self, api, ledger, record, *, notify=None, catch_up=True, wall=time.time):
         self.api, self.ledger, self.notify, self.catch_up, self.wall = api, ledger, notify, catch_up, wall
@@ -209,6 +210,7 @@ class StatusWatch:
 
     def _guarded(self, step):
         try: step()
+        except (ClientContractRefused, ClientOutputChanged): raise  # A changed client must stop reception.
         except Exception as error:
             if rpc_missing(error): self.ledger.setting(SUPPORT_KEY, {'unsupported_at': self.wall()})
 
