@@ -568,7 +568,7 @@ stop as `client_contract` with `code`, `reason` and `next_step`.
 
 | Route | What is checked | Code |
 | --- | --- | --- |
-| `codex queue` arguments | `codex queue --help` must exit 0 and still offer `--thread` and `--message`. The help read starts no model and sends no text | `codex_queue_contract_changed` |
+| `codex queue` arguments | `codex queue --help` must exit 0 and still offer `--thread` and `--message`, as codex-cli 0.162.1 on macOS and 0.166.0 on Windows do. Other options may come and go. The help read starts no model and sends no text | `codex_queue_contract_changed` |
 | `codex queue` result | Exit 0 must print exactly one `Queued message <UUID> for thread <this thread UUID>.` line, on either stream, as codex-cli 0.166.0 does on Windows. Other lines, such as an update note, are ignored | `codex_queue_contract_changed` |
 | Windows `.cmd` shim | The npm `cmd-shim` entry line, its script and a usable Node, as [above](#windows-batch-shims) | `codex_shim_contract_changed` |
 | `turn/steer` | Before the write: each read-only method exists, answers an object, `thread/loaded/list` returns strings, `thread/read` returns a `cwd` and a known status type (`notLoaded`, `idle`, `systemError`, `active`), and `thread/turns/list` returns turns with a known status (`completed`, `interrupted`, `failed`, `inProgress`). After it: a success names a `turnId`. Additive fields are ignored | `codex_steer_contract_changed` |
@@ -591,16 +591,16 @@ The refusal before any write is unsent, so the message stays durable. A `codex
 queue` result in another shape, or a `turn/steer` success in another shape,
 comes after the client may have accepted the prompt, so that attempt stays in
 `unknown_attempts` and needs [owner reconciliation](#failure-and-recovery)
-before `recover`. The recorded refusal `thread/queue/add failed: direct
-app-server input is not allowed for unloaded spawned sub-agents (code -32600)`
-proves nothing was queued: it stops reception as unsent with
-`codex_thread_unloaded`, and the owner resumes that thread before `recover`.
+before `recover`. The recorded refusal for an unloaded subagent thread, exit 1
+with no stdout and only `Error: failed to queue session message:
+thread/queue/add failed: direct app-server input is not allowed for unloaded
+spawned sub-agents (code -32600)` on stderr, proves nothing was queued: it stops
+reception as unsent with `codex_thread_unloaded`, and the owner resumes that
+thread before `recover`. Any other failure stays unknown.
 
 To qualify a changed client, in the source repository record its real output or record in
 `tests/fixtures/client-contracts.json`, widen the record in
 `quorum_client_contracts.py`, and run `tests/test_quorum_client_contracts.py`.
-The `codex queue --help` fixture is synthesised from the argv this route runs,
-not recorded from a run, so the first live start on each OS confirms it.
 
 ## Delegation and availability
 

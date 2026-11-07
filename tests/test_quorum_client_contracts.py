@@ -3,6 +3,7 @@
 These fixtures record what is known of each client. They never run Codex, Claude Code or a model. The
 `turn/steer` server cases live with its fake app server in test_quorum_codex_steer.py.
 """
+import hang_guard  # noqa: F401
 import contextlib
 import io
 import json
@@ -84,8 +85,10 @@ class QueueArgumentTests(unittest.TestCase):
     def check(self, result):
         contracts.check_queue(['codex'], lambda *_, **__: result)
 
-    def test_the_recorded_help_passes(self):
-        self.check(done(QUEUE['help']['stdout'].encode()))
+    def test_each_recorded_help_passes(self):
+        for recorded in QUEUE['help']:
+            with self.subTest(recorded['version']):
+                self.check(done(recorded['stdout'].encode(), recorded['stderr'].encode(), recorded['returncode']))
 
     def test_a_newer_client_with_more_options_passes(self):
         self.check(done(b'Usage: codex queue --thread <ID> --message <TEXT> --stdin\n  --priority <P>\n'))
@@ -93,8 +96,14 @@ class QueueArgumentTests(unittest.TestCase):
     def test_the_probe_reads_help_through_the_given_prefix_and_never_sends_text(self):
         seen = []
         contracts.check_queue(['node', 'codex.js'], lambda command, **_: seen.append(command) or
-                              done(QUEUE['help']['stdout'].encode()))
+                              done(QUEUE['help'][0]['stdout'].encode()))
         self.assertEqual(seen, [['node', 'codex.js', 'queue', '--help']])
+
+    def test_a_recorded_help_without_either_option_is_refused(self):
+        for recorded in QUEUE['help']:
+            for option, renamed in (('--thread', '--session'), ('--message', '--text')):
+                with self.subTest(recorded['version'], option=option), self.assertRaises(ClientContractRefused):
+                    self.check(done(recorded['stdout'].replace(option + ' ', renamed + ' ').encode()))
 
     def test_a_changed_argument_shape_is_refused_as_unsent(self):
         for name, result in (('renamed', done(b'Usage: codex queue --session <ID> --message <TEXT>\n')),
@@ -137,10 +146,19 @@ class QueueResultTests(unittest.TestCase):
 
     def test_the_recorded_refusal_proves_nothing_was_queued(self):
         refused = QUEUE['refused']
-        for name, stderr in (('bare', refused['stderr'].encode()), ('prefixed', b'Error: ' + refused['stderr'].encode())):
+        self.assertEqual(refused['stderr'].strip(), contracts.QUEUE_REFUSED)
+        for name, stderr in (('recorded', refused['stderr'].encode()), ('crlf', refused['stderr'].replace('\n', '\r\n').encode())):
             with self.subTest(name), self.assertRaises(ClientContractRefused) as caught:
-                self.check(done(b'', stderr, refused['returncode']))
+                self.check(done(refused['stdout'].encode(), stderr, refused['returncode']))
             self.assertEqual(str(caught.exception), contracts.CODEX_THREAD_UNLOADED)
+
+    def test_only_the_exact_recorded_refusal_counts(self):
+        line = QUEUE['refused']['stderr'].strip()
+        for name, result in (('exit 2', done(b'', line.encode(), 2)), ('stdout too', done(b'x', line.encode(), 1)),
+                             ('more stderr', done(b'', (line + '\nnote').encode(), 1)),
+                             ('without prefix', done(b'', line.split(': ', 2)[2].encode(), 1)),
+                             ('other code', done(b'', line.replace('-32600', '-32601').encode(), 1))):
+            with self.subTest(name), self.assertRaisesRegex(ValueError, '^session_queue_failed$'): self.check(result)
 
     def test_any_other_failure_stays_the_old_unknown(self):
         for result in (done(b'', b'thread/queue/add failed: disk full\n', 1), done(ACCEPTED.encode(), code=1)):

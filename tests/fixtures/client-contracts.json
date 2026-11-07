@@ -1,9 +1,21 @@
 {
   "codex_queue": {
-    "help": {
-      "source": "Synthesised from the argv Quorum runs and the subcommand summary in the codex-cli 0.162.1 macOS binary. Not recorded from a run.",
-      "stdout": "Queue a message for an existing session\n\nUsage: codex queue [OPTIONS] --thread <THREAD> --message <MESSAGE>\n\nOptions:\n      --thread <THREAD>    Thread to queue the message on\n      --message <MESSAGE>  Message text\n  -h, --help               Print help\n"
-    },
+    "help": [
+      {
+        "source": "Windows codex-cli 0.166.0 through the npm shim, recorded read-only by the owner. Exit 0, empty stderr.",
+        "version": "0.166.0",
+        "returncode": 0,
+        "stdout": "Queue a message for an existing session\n\nUsage: codex queue [OPTIONS] --thread <THREAD> --message <TEXT>\n\nOptions:\n      --thread <THREAD>\n          Session UUID or exact session name\n\n      --enable <FEATURE>\n          Enable a feature (repeatable). Equivalent to `-c features.<name>=true`\n\n      --message <TEXT>\n          Message text to queue\n\n      --disable <FEATURE>\n          Disable a feature (repeatable). Equivalent to `-c features.<name>=false`\n\n      --resume\n          After queueing, try to resume the thread on the local daemon or selected --remote server.\n          A failed resume produces a warning and the command still succeeds\n\n      --remote <ADDR>\n          Connect the TUI to a remote app server endpoint.\n          \n          Accepted forms: `ws://host:port`, `wss://host:port`, `unix://`, or `unix://PATH`.\n\n      --remote-auth-token-env <ENV_VAR>\n          Name of the environment variable containing the bearer token to send to a remote app\n          server websocket\n\n  -p, --profile <CONFIG_PROFILE_V2>\n          Layer $CODEX_HOME/<name>.config.toml on top of the base user config\n\n      --strict-config\n          Error out when config.toml contains fields that are not recognized by this version of\n          Codex\n\n  -c, --config <key=value>\n          Override a startup configuration value (key=value). Queued messages use the thread's\n          model.\n\n  -h, --help\n          Print help (see a summary with '-h')\n\nLocal server options (without --remote):\n  -C, --cd <DIR>\n          Tell the agent to use the specified directory as its working root\n",
+        "stderr": ""
+      },
+      {
+        "source": "macOS codex-cli 0.162.1, recorded read-only by the owner. Exit 0.",
+        "version": "0.162.1",
+        "returncode": 0,
+        "stdout": "Queue a message for an existing session\n\nUsage: codex queue [OPTIONS] --thread <THREAD> --message <TEXT>\n\nOptions:\n      --thread <THREAD>\n          Session UUID or exact session name\n\n      --enable <FEATURE>\n          Enable a feature (repeatable). Equivalent to `-c features.<name>=true`\n\n      --message <TEXT>\n          Message text to queue\n\n      --disable <FEATURE>\n          Disable a feature (repeatable). Equivalent to `-c features.<name>=false`\n\n      --remote <ADDR>\n          Connect the TUI to a remote app server endpoint.\n          \n          Accepted forms: `ws://host:port`, `wss://host:port`, `unix://`, or `unix://PATH`.\n\n      --remote-auth-token-env <ENV_VAR>\n          Name of the environment variable containing the bearer token to send to a remote app\n          server websocket\n\n  -i, --image <FILE>...\n          Optional image(s) to attach to the initial prompt\n\n  -m, --model <MODEL>\n          Model the agent should use\n\n      --oss\n          Use open-source provider\n\n      --local-provider <OSS_PROVIDER>\n          Specify which local provider to use (lmstudio or ollama). If not specified with --oss,\n          will use config default or show selection\n\n  -p, --profile <CONFIG_PROFILE_V2>\n          Layer $CODEX_HOME/<name>.config.toml on top of the base user config\n\n  -s, --sandbox <SANDBOX_MODE>\n          Select the sandbox policy to use when executing model-generated shell commands\n          \n          [possible values: read-only, workspace-write, danger-full-access]\n\n      --approve-for-me\n          Route approval requests through automatic review using the workspace-write sandbox\n\n      --dangerously-bypass-approvals-and-sandbox\n          Skip all confirmation prompts and execute commands without sandboxing. EXTREMELY\n          DANGEROUS. Intended solely for running in environments that are externally sandboxed\n\n      --dangerously-bypass-hook-trust\n          Run enabled hooks without requiring persisted hook trust for this invocation. DANGEROUS.\n          Intended only for automation that already vets hook sources\n\n  -C, --cd <DIR>\n          Tell the agent to use the specified directory as its working root\n\n      --worktree\n          Run the session in a new managed Git worktree\n\n      --add-dir <DIR>\n          Additional directories that should be writable alongside the primary workspace\n\n      --strict-config\n          Error out when config.toml contains fields that are not recognized by this version of\n          Codex\n\n  -c, --config <key=value>\n          Override a configuration value that would otherwise be loaded from `~/.codex/config.toml`.\n          Use a dotted path (`foo.bar.baz`) to override nested values. The `value` portion is parsed\n          as TOML. If it fails to parse as TOML, the raw string is used as a literal.\n          \n          Examples: - `-c model=\"o3\"` - `-c 'sandbox_permissions=[\"disk-full-read-access\"]'` - `-c\n          shell_environment_policy.inherit=all`\n\n  -h, --help\n          Print help (see a summary with '-h')\n",
+        "stderr": ""
+      }
+    ],
     "accepted": {
       "source": "Windows codex-cli 0.166.0, recorded live by the owner.",
       "returncode": 0,
@@ -11,9 +23,10 @@
       "thread": "01a1a187-1a20-79d0-a737-c255e0dfd06a"
     },
     "refused": {
-      "source": "A suspended native subagent thread, recorded live by the owner. The stream and exit code were not recorded, so this fixture assumes a CLI failure on stderr.",
+      "source": "Windows codex-cli 0.166.0 for a suspended native subagent thread, recorded read-only by the owner.",
       "returncode": 1,
-      "stderr": "thread/queue/add failed: direct app-server input is not allowed for unloaded spawned sub-agents (code -32600)\n"
+      "stdout": "",
+      "stderr": "Error: failed to queue session message: thread/queue/add failed: direct app-server input is not allowed for unloaded spawned sub-agents (code -32600)\n"
     }
   },
   "cmd_shim": {
@@ -41,24 +54,47 @@
   },
   "turn_steer": {
     "source": "The documented app-server route in references/sessions.md, with the wire enums read from the codex-cli 0.162.1 macOS binary.",
-    "thread_statuses": ["notLoaded", "idle", "systemError", "active"],
-    "turn_statuses": ["completed", "interrupted", "failed", "inProgress"],
+    "thread_statuses": [
+      "notLoaded",
+      "idle",
+      "systemError",
+      "active"
+    ],
+    "turn_statuses": [
+      "completed",
+      "interrupted",
+      "failed",
+      "inProgress"
+    ],
     "request": {
       "method": "turn/steer",
-      "params": ["threadId", "expectedTurnId", "input", "clientUserMessageId"]
+      "params": [
+        "threadId",
+        "expectedTurnId",
+        "input",
+        "clientUserMessageId"
+      ]
     },
-    "result": {"turnId": "turn_0199a000-0000-7000-8000-000000000001"}
+    "result": {
+      "turnId": "turn_0199a000-0000-7000-8000-000000000001"
+    }
   },
   "claude_pipe": {
     "source": "The frames in quorum_claude_pipe.py, and the fields of ~/.claude/sessions/<pid>.json and the UDS client read from Claude Code 2.1.299, 2.1.303 and 2.1.312 on macOS.",
     "frames": [
-      {"type": "auth", "token": "local-token"},
+      {
+        "type": "auth",
+        "token": "local-token"
+      },
       {
         "type": "user",
         "session_id": "11111111-1111-4111-8111-111111111111",
         "from": "quorum",
         "msg_id": "22222222-2222-4222-8222-222222222222",
-        "message": {"role": "user", "content": "prompt"}
+        "message": {
+          "role": "user",
+          "content": "prompt"
+        }
       }
     ],
     "session_record": {
@@ -66,7 +102,11 @@
       "sessionId": "11111111-1111-4111-8111-111111111111",
       "version": "2.1.312",
       "peerProtocol": 1,
-      "peerFeatures": ["notify_idle", "reply_across_default_dirs", "artifact_yield"],
+      "peerFeatures": [
+        "notify_idle",
+        "reply_across_default_dirs",
+        "artifact_yield"
+      ],
       "kind": "interactive",
       "messagingSocketPath": "/private/fixture/messaging.sock"
     }

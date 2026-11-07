@@ -40,7 +40,8 @@ def isolated_profiles(method):
 CONTRACT_FIXTURES = json.loads((Path(__file__).parent / 'fixtures/client-contracts.json').read_text(encoding='utf-8'))
 
 
-QUEUE_HELP = CONTRACT_FIXTURES['codex_queue']['help']['stdout'].encode()
+# The newest recorded `codex queue --help`.
+QUEUE_HELP = CONTRACT_FIXTURES['codex_queue']['help'][0]['stdout'].encode()
 
 
 def queue_accepted(thread):

@@ -26,9 +26,10 @@ _UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
 QUEUE_OPTIONS = ('--thread', '--message')
 # Seen on codex-cli 0.166.0 for Windows, exit 0: one line naming the queued item and the exact thread.
 QUEUE_ACCEPTED = re.compile('Queued message (' + _UUID + ') for thread (' + _UUID + r')\.')
-# Seen on the same build for a suspended native subagent thread. It documents that nothing was queued.
-QUEUE_REFUSED = re.compile(r'(?:Error: )?thread/queue/add failed: direct app-server input is not allowed '
-                           r'for unloaded spawned sub-agents \(code -32600\)')
+# Seen on the same build for a suspended native subagent thread: exit 1, no stdout, and only this stderr line.
+# It documents that nothing was queued.
+QUEUE_REFUSED = ('Error: failed to queue session message: thread/queue/add failed: direct app-server input is '
+                 'not allowed for unloaded spawned sub-agents (code -32600)')
 # The last line of a shim written by npm's cmd-shim: "<node>" "%dp0%\<entry point>" %*
 SHIM_ENTRY = re.compile(r'"%dp0%\\([^"%\r\n]+\.[cm]?js)"\s+%\*')
 # `turn/steer` reads a thread and its turns first. Each enum is the server's complete wire set.
@@ -99,9 +100,12 @@ def notice(code, reason=None):
     return {'client_contract': {'code': code, **_diagnostic(code, reason)}} if code in CONTRACT_CODES else {}
 
 
+def _stream(data):
+    return [line.strip() for line in (data or b'').decode('utf-8', 'replace').splitlines() if line.strip()]
+
+
 def _lines(result):
-    return [line.strip() for stream in (result.stdout, result.stderr) if stream
-            for line in stream.decode('utf-8', 'replace').splitlines()]
+    return _stream(result.stdout) + _stream(result.stderr)
 
 
 def queue_command(prefix, thread, text):
@@ -120,12 +124,11 @@ def check_queue(prefix, run):
 
 def check_queue_result(result, thread):
     """Accept only one proof line for this thread. The stream is not pinned, and other lines may be update notes."""
-    lines = _lines(result)
     if result.returncode:
-        if any(QUEUE_REFUSED.fullmatch(line) for line in lines):
+        if result.returncode == 1 and not _stream(result.stdout) and _stream(result.stderr) == [QUEUE_REFUSED]:
             raise ClientContractRefused(CODEX_THREAD_UNLOADED, 'thread_unloaded')
         raise ValueError('session_queue_failed')
-    proofs = [found for found in map(QUEUE_ACCEPTED.fullmatch, lines) if found]
+    proofs = [found for found in map(QUEUE_ACCEPTED.fullmatch, _lines(result)) if found]
     if len(proofs) != 1 or proofs[0][2] != thread:
         raise ClientOutputChanged(CODEX_QUEUE_CHANGED, 'queue_output_changed')
 
