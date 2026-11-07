@@ -13,7 +13,10 @@ Four limits, each reached before the failure of 2026-11-06 could recur:
 - Memory: a run past MEMORY_BYTES of peak resident memory ends. POSIX only.
 - The caller: a run ends once any process above it has, past launchers such as `uv run`. Windows included.
 
-A process that ends here also kills the processes below it, POSIX only, so a child cannot outlive it.
+A process that ends here also kills the processes below it, POSIX only, so a child cannot outlive it. If a test
+holds the GIL no Python thread can do that and the C timer exits with no cleanup, so a watchdog process does it
+first, while the parent links still exist. It reads a tick per test boundary from a pipe; end of file means the run
+has left and it does nothing.
 """
 import faulthandler
 from functools import wraps
@@ -21,6 +24,7 @@ import importlib.machinery
 import importlib.util
 import os
 from pathlib import Path
+import select
 import signal
 import subprocess
 import sys
@@ -39,9 +43,9 @@ LISTENER_PASSES = 1000  # The busiest honest test makes 62.
 SCRIPTS = Path(__file__).resolve().parents[1] / 'skills/quorum/scripts'
 
 # Tests patch all of these; a guard that read them late would end a healthy run on a mock.
-now, kill, snapshot = time.monotonic, os.kill, subprocess.run
+now, kill, snapshot, send = time.monotonic, os.kill, subprocess.run, os.write
 POSIX, RSS_UNIT = os.name != 'nt', 1 if sys.platform == 'darwin' else 1024
-started, ticked_at, passes = False, 0.0, 0
+started, ticked_at, passes, heartbeat, watchdog_process = False, 0.0, 0, None, None
 
 
 class RunawayLoop(AssertionError):
@@ -82,9 +86,10 @@ class ListenerLoads:
         return spec
 
 
-def kill_descendants():
-    """Only processes below this one, by a parent table read now; never a match on a command line."""
+def kill_descendants(root=None):
+    """Only processes below `root`, by a parent table read now; never a match on a command line."""
     if not POSIX: return
+    root = root or os.getpid()
     try:
         listing = snapshot(['ps', '-A', '-o', 'pid=,ppid='], capture_output=True, text=True, timeout=5).stdout
         children = {}
@@ -92,10 +97,11 @@ def kill_descendants():
             pid, parent = map(int, line.split())
             children.setdefault(parent, []).append(pid)
     except (OSError, ValueError, subprocess.SubprocessError): return
-    pending = list(children.get(os.getpid(), ()))
+    pending = list(children.get(root, ()))
     while pending:
         pid = pending.pop()
         pending.extend(children.get(pid, ()))
+        if pid == os.getpid(): continue  # The watchdog is below the run it sweeps.
         try: kill(pid, signal.SIGKILL)
         except OSError: pass
 
@@ -137,9 +143,32 @@ def ancestor_probes():
     return module.ancestor_probes()
 
 
+def watchdog(run, limit):
+    """Separate process: sweep below a run that stopped ticking, before its C timer ends it and the links go."""
+    last = now()
+    while now() - last < limit:
+        if select.select([0], [], [], max(0, limit - (now() - last)))[0]:
+            if not os.read(0, 4096): return
+            last = now()
+    kill_descendants(run)
+
+
+def start_watchdog():
+    global heartbeat, watchdog_process
+    if not POSIX: return
+    reader, heartbeat = os.pipe()
+    os.set_blocking(heartbeat, False)
+    # Halfway through the grace period; a session of its own keeps it out of any signal sent to the run's group.
+    limit = TEST_SECONDS + EXIT_GRACE_SECONDS / 2
+    watchdog_process = subprocess.Popen([sys.executable, '-I', '-S', __file__, str(os.getpid()), str(limit)],
+                                        stdin=reader, stdout=subprocess.DEVNULL, start_new_session=True)
+    os.close(reader)
+
+
 def start():
     global started
     started = True
+    start_watchdog()
     threading.Thread(target=watch, args=(ancestor_probes(),), name='hang-guard', daemon=True).start()
 
 
@@ -149,6 +178,9 @@ def tick():
     if not started: start()
     ticked_at, passes = now(), 0
     faulthandler.dump_traceback_later(TEST_SECONDS + EXIT_GRACE_SECONDS, exit=True, file=sys.__stderr__)
+    if heartbeat is not None:
+        try: send(heartbeat, b'.')
+        except OSError: pass  # A full pipe already holds unread ticks; a closed one has no watchdog to tell.
 
 
 def guarded(run):
@@ -164,3 +196,5 @@ unittest.TestCase.run = guarded(unittest.TestCase.run)
 unittest.TestSuite.run = guarded(unittest.TestSuite.run)
 sys.meta_path.insert(0, ListenerLoads)
 if 'quorum_listener' in sys.modules: count_passes(sys.modules['quorum_listener'])
+
+if __name__ == '__main__': watchdog(int(sys.argv[1]), float(sys.argv[2]))

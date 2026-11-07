@@ -30,10 +30,12 @@ def child_source(body, **limits):
 
 
 def alive(pid):
+    """A zombie has ended: a container's PID 1 may never reap it, and a signal probe still finds it."""
     try: os.kill(pid, 0)
     except ProcessLookupError: return False
     except PermissionError: pass
-    return True
+    state = subprocess.run(['ps', '-o', 'stat=', '-p', str(pid)], capture_output=True, text=True, timeout=10).stdout
+    return bool(state.strip()) and not state.strip().startswith('Z')
 
 
 class Run(unittest.TestCase):
@@ -118,6 +120,46 @@ class Survivors(Run):
         pid = int(self.await_file(self.root / 'pid'))
         self.kill_after(pid)
         self.await_exit(pid)
+
+    def test_a_process_below_a_run_holding_the_gil_ends_with_the_c_timer(self):
+        self.write('''
+            import ctypes
+
+            class Stuck(unittest.TestCase):
+                def test_hangs(self):
+                    child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(50)'],
+                                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    with open('pid', 'w') as report: report.write(str(child.pid))
+                    ctypes.PyDLL(None).sleep(50)  # Keeps the GIL, so no Python thread can run.
+        ''', TEST_SECONDS=.5, EXIT_GRACE_SECONDS=4)
+        result = self.run_child()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('Timeout', result.stderr)
+        self.assertNotIn('hang_guard:', result.stderr)
+        pid = int(self.await_file(self.root / 'pid'))
+        self.kill_after(pid)
+        self.await_exit(pid)
+
+    def test_a_clean_run_leaves_a_process_it_started_alone(self):
+        self.write('''
+            class Detached(unittest.TestCase):
+                def test_starts_a_child(self):
+                    child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(50)'],
+                                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                             start_new_session=True)
+                    with open('pid', 'w') as report: report.write(str(child.pid))
+        ''', TEST_SECONDS=.5, EXIT_GRACE_SECONDS=1)
+        self.assertEqual(self.run_child().returncode, 0)
+        pid = int(self.await_file(self.root / 'pid'))
+        self.kill_after(pid)
+        time.sleep(2)  # Past both limits: the watchdog must have seen the clean exit and gone.
+        self.assertTrue(alive(pid))
+
+    def test_a_zombie_reads_as_ended(self):
+        child = subprocess.Popen([sys.executable, '-c', ''])  # Never reaped here, as under a container's PID 1.
+        self.addCleanup(child.wait)
+        self.await_exit(child.pid)
+        os.kill(child.pid, 0)  # It still exists: only its state says it ended.
 
     def test_a_run_ends_with_its_caller_past_a_launcher_that_stays_alive(self):
         self.write('''
