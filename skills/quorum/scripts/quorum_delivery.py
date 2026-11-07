@@ -30,6 +30,10 @@ class DeliveryUnsent(ValueError):
     def __init__(self): super().__init__('session_delivery_unsent')
 
 
+class DeliveryUnknown(ValueError):
+    """The client may have admitted the prompt. The message is a fixed code, and the attempt stays unknown."""
+
+
 def server_ack(api, scope, message_id):
     """The service scopes this to the owned agent and exact session, and repeating it is harmless."""
     api.call('session_ack', {**scope, 'message_id': message_id})
@@ -139,6 +143,7 @@ class Deliveries:
             # The helper (or a pre-helper guard) proved no payload write began. Never acknowledge.
             self.remove(message_id, raw)
             raise
+        except DeliveryUnknown: raise  # The intent stays, and its fixed code reaches the owner.
         except Exception: raise ValueError('session_delivery_unknown') from None
         # No route has a synchronous delivery acknowledgement: `codex queue` accepting a pointer says
         # nothing about the chat either. Only the receiving chat can confirm.

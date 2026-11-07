@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import time
 import uuid
+from quorum_client_contracts import NEXT_STEPS
 
 # The parent's readiness deadline for an explicit start; a run's unpublished startup authority ends with it.
 STARTUP_SECONDS = 90
@@ -376,6 +377,8 @@ def loss_notice(loss, state):
                 + ('The bound Grok TUI or its leader was gone for several checks: if the chat was closed, its owner '
                    'first relaunches the same conversation with --resume (references/grok.md). '
                    if loss.get('code') == 'grok_tui_gone' else '')
+                + ('A client update changed a delivery contract, so reception stopped on purpose: '
+                   + NEXT_STEPS[loss['code']] + ' ' if loss.get('code') in NEXT_STEPS else '')
                 + 'From this same chat\'s shell tool, '
                 'run ' + recovery_command(state, loss.get('engine')) + ' . It keeps the same agent, role, '
                 'delegation and queued messages and needs no invitation. Then run session status and confirm '

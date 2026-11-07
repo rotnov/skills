@@ -11,6 +11,7 @@ import uuid
 from quorum_api import QuorumError, rpc_missing
 from quorum_capabilities import GROK_LEADER_PLATFORMS
 from quorum_claude_pipe import DeliveryUnsent, run_child
+import quorum_client_contracts as contracts
 from quorum_delivery import Deliveries, RECEIPTABLE, UNRECEIPTED, server_ack
 from quorum_delivery_status import (EXPLICIT_STATUSES, MARK_HINT, REASON_LIMIT, REASON_REQUIRED, Reports, StatusWatch,
                                     note_sent, outgoing_summary, save_stuck)
@@ -448,8 +449,6 @@ def message_priority(message):
 
 # CreateProcess takes 32767 UTF-16 units including the terminator.
 WINDOWS_COMMAND_LIMIT = 32766
-# The last line of a shim written by npm's cmd-shim: "<node>" "%dp0%\<entry point>" %*
-SHIM_ENTRY = re.compile(r'"%dp0%\\([^"%\r\n]+\.[cm]?js)"\s+%\*')
 
 
 def fits_windows_command(command):
@@ -466,14 +465,49 @@ def shim_command(executable):
     directly under Node, which needs no shell to pass argv on.
     """
     if not executable.lower().endswith(('.cmd', '.bat')): return [executable]
+    def refused(reason): return contracts.ClientContractRefused(contracts.CODEX_SHIM_CHANGED, reason)
     shim = Path(executable)
-    target = SHIM_ENTRY.search(shim.read_text(encoding='utf-8', errors='replace'))
-    if not target: raise DeliveryUnsent()
+    target = contracts.SHIM_ENTRY.search(shim.read_text(encoding='utf-8', errors='replace'))
+    if not target: raise refused('shim_entry_unreadable')
     script = shim.parent.joinpath(*target[1].split('\\'))
     bundled = shim.parent/'node.exe'
     node = str(bundled) if bundled.is_file() else shutil.which('node')
-    if not script.is_file() or not node or node.lower().endswith(('.cmd', '.bat')): raise DeliveryUnsent()
+    if not script.is_file(): raise refused('shim_entry_missing')
+    if not node or node.lower().endswith(('.cmd', '.bat')): raise refused('shim_node_unusable')
     return [node, str(script)]
+
+
+# The `codex queue` installs whose help this process already read. A listener run is one process, so this
+# costs one extra child per run, not per message. An update changes a file's identity and is read again.
+QUALIFIED_QUEUES = set()
+
+
+def file_identity(paths):
+    """Path, size and modification time of each file, or None when one cannot be read."""
+    try: return tuple((str(path), info.st_size, info.st_mtime_ns) for path in paths for info in (Path(path).stat(),))
+    except (OSError, ValueError): return None
+
+
+def codex_queue_prefix(executable):
+    """The argv prefix of a `codex queue` whose shim and arguments still match their contract."""
+    prefix = shim_command(executable)
+    identity = file_identity((executable, *prefix))
+    if identity is None or identity not in QUALIFIED_QUEUES:
+        contracts.check_queue(prefix, run_child)
+        if identity is not None: QUALIFIED_QUEUES.add(identity)
+    return prefix
+
+
+def check_client_contract(record):
+    """Refuse a client outside its record at listener start, before any message is selected."""
+    if record.get('engine', 'codex') == 'claude':
+        contracts.check_claude_session(record['session_ref'], os.environ.get('CLAUDE_CODE_MESSAGING_SOCKET'))
+    elif record.get('engine', 'codex') == 'codex':
+        executable = shutil.which('codex')
+        if not executable: raise ValueError('engine_missing')
+        codex_queue_prefix(executable)
+        from quorum_codex_steer import probe
+        probe(record)
 
 
 def own_command(record, auth_state, *action):
@@ -509,13 +543,14 @@ def notify_chat(record, alerts, auth_state):
     elif engine == 'claude':
         from quorum_claude_pipe import submit
         check_native_route(record)
+        contracts.check_claude_session(record['session_ref'], record.get('messaging_socket'))
         submit(record['session_ref'], notice_id, text)
     else:
         executable = shutil.which('codex')
         if not executable: return
-        command_line = [*shim_command(executable), 'queue', '--thread', record['session_ref'], '--message', text]
+        command_line = contracts.queue_command(codex_queue_prefix(executable), record['session_ref'], text)
         if os.name == 'nt' and not fits_windows_command(command_line): return
-        run_child(command_line, timeout=30)
+        contracts.check_queue_result(run_child(command_line, timeout=30), record['session_ref'])
 
 
 def is_default_state(path):
@@ -547,6 +582,7 @@ def body_pointer(message, helper):
 def unsent_on_failure(step):
     """Run a step that precedes any payload write; its failure proves this attempt wrote nothing."""
     try: return step()
+    except DeliveryUnsent: raise  # A refusal keeps its own fixed code.
     except Exception: raise DeliveryUnsent() from None
 
 
@@ -622,6 +658,7 @@ def enqueue(record, message, auth_state):
         from quorum_claude_pipe import submit
         # These guards and frame construction perform no payload I/O.
         unsent_on_failure(lambda: check_native_route(record))
+        unsent_on_failure(lambda: contracts.check_claude_session(record['session_ref'], record.get('messaging_socket')))
         prompt = unsent_on_failure(lambda: prompt_for('piped'))
         # Claude reads accepted inbox messages between tool calls of an active
         # turn for every priority; it is not turn-ID steering.
@@ -644,17 +681,18 @@ def enqueue(record, message, auth_state):
     # `codex queue` accepts its text only as --message: it has no stdin or file form, so whatever it
     # queues is on this child's argv. It therefore gets a pointer, whose size does not depend on the
     # peer body. The guard stays for an extreme local path, the one input left that can outgrow it.
-    command_line = [*unsent_on_failure(lambda: shim_command(executable)), 'queue', '--thread', record['session_ref'],
-                    '--message', unsent_on_failure(lambda: prompt_for('queued'))]
+    command_line = contracts.queue_command(unsent_on_failure(lambda: codex_queue_prefix(executable)), record['session_ref'],
+                                           unsent_on_failure(lambda: prompt_for('queued')))
     if os.name == 'nt' and not fits_windows_command(command_line): raise DeliveryUnsent()
-    if run_child(command_line, timeout=30).returncode: raise ValueError('session_queue_failed')
+    contracts.check_queue_result(run_child(command_line, timeout=30), record['session_ref'])
     return 'pointer'
 
 
 class Relay:
     """A push route: the client's `queue` function, under the shared delivery ledger."""
-    def __init__(self, api, ledger, record, queue, *, authorize=None, route_check=None, watch=None):
+    def __init__(self, api, ledger, record, queue, *, authorize=None, route_check=None, watch=None, contract=None):
         self.api, self.ledger, self.record, self.queue = api, ledger, record, queue
+        self.contract = contract or (lambda:None)
         self.watch = watch
         self.deliveries = Deliveries(ledger)
         self.authorize = authorize or (lambda:None)
@@ -674,6 +712,7 @@ class Relay:
         self.release.check()
         self.authorize()
         self.route_check()
+        self.contract()
         messages = self.api.call('session_inbox', self.scope())
         self.authorize()
         if self.deliveries.head_unknown(messages): raise ValueError('session_delivery_unknown')
@@ -1224,15 +1263,17 @@ def _dispatch(args, auth_ledger, register_agent):
                              'owner_held_actions':held_status(record),
                              'standing_grants':standing_status(record,ledger),'release':diagnostic(ledger)}
             deliveries = Deliveries(ledger).rows()
+            listener = Control(ledger).status()
             pending = sum(value['state']=='submitted' for _,value in deliveries)
             unknown = [{'message_id':message_id, 'attempt_id':value.get('attempt_id')}
                        for message_id,value in deliveries if value['state']=='intent']
             unread = [{'message_id':message_id, 'attempt_id':value['attempt_id']}
                       for message_id,value in deliveries if value['state']=='submitted' and 'attempt_id' in value]
-            return {**Control(ledger).status(),'session_id':sid,'pending_receipts':pending,
+            return {**listener,'session_id':sid,'pending_receipts':pending,
                     **reception_notice(ledger, auth_ledger.root),
                     'transport_notices':quorum_notices.summary(ledger),'outgoing':outgoing_summary(ledger),
                     'unknown_attempts':unknown, 'unread_queued':unread,
+                    **contracts.notice(*(listener.get(key) for key in ('code', 'reason'))),
                     **({'retired_binding':retired_summary(ledger)} if not record and retired_summary(ledger) else {}),
                     'delegation':record.get('delegation') if record else None,
                     'delegation_state':delegation_state(record),
@@ -1494,6 +1535,8 @@ def _dispatch(args, auth_ledger, register_agent):
             quorum_notices.set_visible(ledger, getattr(args, 'show_transport_notices', False) is True)
         if args.action in ('start','recover'):
             if tool: return {**inbox.arm(ledger,record,authorize=worker_guard),'session_id':sid}
+            # Refused here in the owner's own command, before any running listener is disturbed.
+            check_client_contract(record)
             return {**start(auth_ledger.root,ledger,sid,api=api,endpoint=endpoint,grok_transport=transport,
                             recovery=args.action=='recover'),'session_id':sid,**grok_job_notice(engine)}
         if args.action=='receive': return inbox.receive(api,auth_ledger,ledger,record,args.wait_seconds,
@@ -1584,7 +1627,8 @@ def _dispatch(args, auth_ledger, register_agent):
             def make():
                 return Relay(api,ledger,record,lambda message:enqueue({**record, 'delegation':(ledger.setting('session-agent') or {}).get('delegation')},
                                                                    message,auth_ledger.root),
-                             route_check=listener_route(record, liveness), watch=watch, **guard_options)
+                             route_check=listener_route(record, liveness), watch=watch,
+                             contract=lambda: check_client_contract(record), **guard_options)
             # Native reception waits out typed service outages with this same Relay and ledger.
             return run_listener(ledger,make,args.run_id,stop_event=event,timeout=0,retry=True,
                                 waiter=RealtimeWait(api,record,ledger,

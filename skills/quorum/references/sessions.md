@@ -5,7 +5,8 @@ chat. Codex uses `CODEX_THREAD_ID` and `codex queue`. Claude Code uses its own
 `CLAUDE_CODE_SESSION_ID`, `CLAUDE_CODE_MESSAGING_SOCKET` and
 `CLAUDE_CODE_MESSAGING_TOKEN` exports: a Unix domain socket on macOS/Linux, or a
 local named pipe on Windows. This route is experimental and requires a client
-with cross-session messaging (macOS/Linux CLI 2.1.224 or later; Windows 2.1.234).
+with cross-session messaging (macOS/Linux CLI 2.1.224 or later; Windows 2.1.234),
+checked by the [client contract](#client-contracts) before each delivery.
 For Grok, first read [the experimental macOS TUI requirements](grok.md).
 Grok Bot personal cloud chats use a different [parent-bound cloud route](grok-cloud.md),
 including separate `cloud` commands; do not route them through native discovery.
@@ -118,6 +119,7 @@ The next signals are local to this binding, and peers never see them.
 | `unknown_attempts` | `session status` on a parent binding | Local `intent` rows: message and attempt UUIDs whose delivery has no recorded outcome | Either outcome. Only the owner can attest to one ([failure and recovery](#failure-and-recovery)). It blocks only while that message is the inbox head |
 | `pending_receipts` | `session status`; `cloud status` | Parent bindings count `submitted` rows, including unread `codex queue` pointers. Tool-inbox, Claude worker and cloud bindings count `offered` rows | Server inbox depth: 0 does not mean drained. A nonzero count does not show the chat saw the message |
 | `unread_queued` | `session status` on a parent binding | Message and attempt UUIDs of `codex queue` pointers the CLI accepted and this chat has not confirmed ([stays unread](#a-queued-message-stays-unread)) | That the envelope is lost or still in the chat's queue. Only the owner can tell |
+| `client_contract` | `session status` on a parent binding | The listener stopped because a client no longer matches its [qualified contract](#client-contracts): its fixed `code`, `reason` and `next_step` | Which build changed, or that the message was lost: an unsent message stays durable |
 | `outgoing` | `session status` on a parent binding or Codex tool inbox | This chat's stuck outgoing messages and recent alerts, as of `checked_at` | That the list is current: `status` stays offline. `session delivery` reads it live |
 
 `doctor` makes no network call and checks only this route's local configuration and
@@ -362,7 +364,9 @@ If the chat is idle, the daemon is unreachable, the thread is not loaded, the
 daemon's working directory for it disagrees with the registration, or the
 server answers `turn/steer` with a completed error frame that documents no
 append, nothing was submitted and the message is queued exactly once through
-the ordinary `codex queue` route. Those frames are `activeTurnNotSteerable`, and
+the ordinary `codex queue` route. A daemon that answers outside the
+[qualified route](#client-contracts) is not a fallback: reception stops with
+`codex_steer_contract_changed` and nothing is queued. Those frames are `activeTurnNotSteerable`, and
 JSON-RPC `-32600` with `no active turn to steer`, with
 ``expected active turn id `<id>` but found `<id>` `` or with `data.reason`
 `serverShuttingDown`. Every other steering error or lost response is
@@ -388,8 +392,8 @@ ends in one of three states:
 
 | Final state | When | Effect |
 | --- | --- | --- |
-| Unsent (`session_delivery_unsent`) | A guard, prompt build or binding check failed; the helper or `codex queue` child never started (including `OSError` from the spawn); the Claude route could not be opened; a Grok helper failed before writing a whole `session/prompt` frame; the Windows command line is too long; a Windows batch shim for `codex` [cannot be bypassed](#windows-batch-shims) | That exact intent is removed, nothing is acknowledged, reception stops, and the next owner-authorized `session start` or `recover` rereads the durable message once |
-| Unknown (`session_delivery_unknown`) | The prompt may have been admitted: a partial Claude write, a whole Grok frame with no confirmation, a child that started and timed out, failed or exited without proof, a lost `turn/steer` response or an opaque steering error | The intent stays and the message is never replayed until the owner reconciles it |
+| Unsent (`session_delivery_unsent`) | A guard, prompt build or binding check failed; the helper or `codex queue` child never started (including `OSError` from the spawn); the Claude route could not be opened; a Grok helper failed before writing a whole `session/prompt` frame; the Windows command line is too long; a Windows batch shim for `codex` [cannot be bypassed](#windows-batch-shims); a [client contract](#client-contracts) check failed before the write, or `codex queue` printed its documented refusal for an unloaded subagent thread. These keep their own fixed code | That exact intent is removed, nothing is acknowledged, reception stops, and the next owner-authorized `session start` or `recover` rereads the durable message once |
+| Unknown (`session_delivery_unknown`) | The prompt may have been admitted: a partial Claude write, a whole Grok frame with no confirmation, a child that started and timed out, failed or exited without proof, a lost `turn/steer` response or an opaque steering error. A `codex queue` exit 0 or a `turn/steer` success outside its [contract](#client-contracts) is unknown too, under that contract's code | The intent stays and the message is never replayed until the owner reconciles it |
 | Delivered | The client accepted the prompt | `submitted` until the chat confirms it; a `codex queue` pointer also keeps its attempt UUID |
 
 A helper proves no write only by exit 2 with both streams empty. A crash between
@@ -548,8 +552,55 @@ one-line prompt would not fix the last two, so no prompt goes through cmd.exe. T
 reads the shim's `"%dp0%\<entry point>" %*` line and runs that script directly with the
 shim's bundled `node.exe`, or else `node` from `PATH`. A native `codex.exe` runs as it is.
 Any other batch file, a missing script or a missing Node makes the message unsent, so
-reception stops without an acknowledgement; install Codex through npm or as a native
-executable, then run `session start`.
+reception stops without an acknowledgement and `codex_shim_contract_changed`; install
+Codex through npm or as a native executable, then run `session start`.
+
+### Client contracts
+
+Codex and Claude Code update themselves. Each route this listener pushes through
+has one qualified contract, recorded in `scripts/quorum_client_contracts.py`.
+`session start` and `recover` check it before touching a running listener, the
+listener checks it again before reading the inbox, and every delivery checks
+its own route first. A client that no longer matches stops reception with a
+fixed code and never delivers blind. Each check reads behaviour or shape, so a
+newer build whose contract still holds keeps working. `session status` shows the
+stop as `client_contract` with `code`, `reason` and `next_step`.
+
+| Route | What is checked | Code |
+| --- | --- | --- |
+| `codex queue` arguments | `codex queue --help` must exit 0 and still offer `--thread` and `--message`, as codex-cli 0.162.1 on macOS and 0.166.0 on Windows do. Other options may come and go. The help read starts no model and sends no text, and runs once per listener process for each install; a changed file is read again | `codex_queue_contract_changed` |
+| `codex queue` result | Exit 0 must print exactly one `Queued message <UUID> for thread <this thread UUID>.` line, on either stream, as codex-cli 0.166.0 does on Windows. Other lines, such as an update note, are ignored | `codex_queue_contract_changed` |
+| Windows `.cmd` shim | The npm `cmd-shim` entry line, its script and a usable Node, as [above](#windows-batch-shims) | `codex_shim_contract_changed` |
+| `turn/steer` | Before the write: each read-only method exists, answers an object, `thread/loaded/list` returns strings, `thread/read` returns a `cwd` and a known status type (`notLoaded`, `idle`, `systemError`, `active`), and `thread/turns/list` returns turns with a known status (`completed`, `interrupted`, `failed`, `inProgress`). After it: a success names a `turnId`. Additive fields are ignored | `codex_steer_contract_changed` |
+| Claude pipe frames | See below | `claude_pipe_contract_changed` |
+
+The Claude pipe only reads, so no frame can be probed. Every Claude Code process
+writes `~/.claude/sessions/<pid>.json` (under `CLAUDE_CONFIG_DIR` when set),
+and that record declares `peerProtocol`, the protocol its peers speak on its
+messaging pipe. The listener finds the record whose `messagingSocketPath` is the
+bound pipe, or, for a build that names no pipe, whose `sessionId` is this chat.
+`peerProtocol` 1, seen on 2.1.299, 2.1.303 and 2.1.312, passes whatever the
+version. Any other value is refused. A record that declares no protocol, and a
+client with no readable record, fall back to a version range, read from the
+record or from the version folder in `CLAUDE_CODE_EXECPATH`: at least the
+messaging floor (2.1.224, or 2.1.234 on Windows) and below 2.2.0. That range is
+a gate, not evidence. It is used only because nothing else can be read, and a
+build outside it is refused rather than guessed.
+
+The refusal before any write is unsent, so the message stays durable. A `codex
+queue` result in another shape, or a `turn/steer` success in another shape,
+comes after the client may have accepted the prompt, so that attempt stays in
+`unknown_attempts` and needs [owner reconciliation](#failure-and-recovery)
+before `recover`. The recorded refusal for an unloaded subagent thread, exit 1
+with no stdout and only `Error: failed to queue session message:
+thread/queue/add failed: direct app-server input is not allowed for unloaded
+spawned sub-agents (code -32600)` on stderr, proves nothing was queued: it stops
+reception as unsent with `codex_thread_unloaded`, and the owner resumes that
+thread before `recover`. Any other failure stays unknown.
+
+To qualify a changed client, in the source repository record its real output or record in
+`tests/fixtures/client-contracts.json`, widen the record in
+`quorum_client_contracts.py`, and run `tests/test_quorum_client_contracts.py`.
 
 ## Delegation and availability
 

@@ -19,7 +19,7 @@ from unittest.mock import patch
 from urllib.error import HTTPError, URLError
 import uuid
 
-from quorum_test_support import isolated_profiles
+from quorum_test_support import isolated_profiles, queue_accepted
 from test_quorum_session import without_client_session
 
 SCRIPTS = Path(__file__).resolve().parents[1] / 'skills/quorum/scripts'
@@ -39,7 +39,9 @@ class Crash(BaseException):
 
 
 class Child:
-    def __init__(self, code=0, stdout=b'', stderr=b'', failure=None):
+    """A finished child. A clean exit prints the recorded `codex queue` line, which the I/O helpers ignore."""
+    def __init__(self, code=0, stdout=None, stderr=b'', failure=None):
+        if stdout is None: stdout = queue_accepted(SID) if code == 0 else b''
         self.returncode, self.stdout, self.stderr, self.failure = code, stdout, stderr, failure
     def __enter__(self): return self
     def __exit__(self, *_): return False
@@ -77,6 +79,11 @@ class Harness(unittest.TestCase):
         isolated = patch.dict(os.environ, without_client_session(), clear=True)
         isolated.start()
         self.addCleanup(isolated.stop)
+        # These rows cover the delivery ledger; test_quorum_client_contracts covers the contract reads.
+        for name in ('check_queue', 'check_claude_session'):
+            contract = patch('quorum_client_contracts.' + name)
+            contract.start()
+            self.addCleanup(contract.stop)
         temporary = tempfile.TemporaryDirectory(prefix='qintent-', dir='/tmp' if os.name == 'posix' else None)
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name).resolve()
@@ -719,7 +726,7 @@ class PointerDeliveryTests(Harness):
             sent = []
             def run(command, **_):
                 sent.append(command)
-                return SimpleNamespace(returncode=0)
+                return subprocess.CompletedProcess(command, 0, queue_accepted(SID), b'')
             item = {**message(priority='urgent', body='x'), 'sender_id':'peer', 'sender_role':'r'*48,
                     'notification':notification}
             with patch('quorum_session.run_child', side_effect=run), \
@@ -760,7 +767,7 @@ class PointerDeliveryTests(Harness):
         def queue(item):
             from quorum_session import enqueue
             with patch('quorum_session.run_child', side_effect=lambda command, **_: (
-                    sent.append(command), SimpleNamespace(returncode=0))[1]), \
+                    sent.append(command), subprocess.CompletedProcess(command, 0, queue_accepted(SID), b''))[1]), \
                  patch('quorum_session.shutil.which', return_value='/synthetic/codex'):
                 return enqueue(record, item, self.root)
         self.relay(api, record, queue).run_once()

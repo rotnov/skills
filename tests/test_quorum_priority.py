@@ -9,7 +9,7 @@ import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
-from quorum_test_support import isolated_profiles
+from quorum_test_support import codex_child, isolated_profiles
 from unittest.mock import patch
 
 SCRIPTS = Path(__file__).resolve().parents[1] / 'skills/quorum/scripts'
@@ -28,10 +28,7 @@ def without_client_session():
 
 
 def queued(seen):
-    def run(command, **kwargs):
-        seen.append(command)
-        return subprocess.CompletedProcess(command, 0, 'queued', '')
-    return run
+    return codex_child(seen)
 
 
 class PriorityTests(unittest.TestCase):
@@ -147,6 +144,7 @@ class PriorityTests(unittest.TestCase):
         prompts = []
         with patch('quorum_claude_pipe.submit', side_effect=lambda sid, mid, text: prompts.append(text)), \
              patch('quorum_claude_pipe.binding', return_value='/tmp/quorum.sock'), \
+             patch('quorum_client_contracts.check_claude_session'), \
              patch('quorum_codex_steer.submit', side_effect=AssertionError('steered a Claude chat')), \
              patch.dict(os.environ, {'CLAUDE_CODE_SESSION_ID': SID,
                                      'CLAUDE_CODE_MESSAGING_SOCKET': '/tmp/quorum.sock',
@@ -169,6 +167,7 @@ class PriorityTests(unittest.TestCase):
         prompts = []
         with patch('quorum_claude_pipe.submit', side_effect=lambda sid, mid, text: prompts.append(text)), \
              patch('quorum_claude_pipe.binding', return_value='/tmp/quorum.sock'), \
+             patch('quorum_client_contracts.check_claude_session'), \
              patch.dict(os.environ, {'CLAUDE_CODE_SESSION_ID': SID,
                                      'CLAUDE_CODE_MESSAGING_SOCKET': '/tmp/quorum.sock',
                                      'CLAUDE_CODE_MESSAGING_TOKEN': 'synthetic-only'}):

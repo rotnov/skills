@@ -22,6 +22,10 @@ class ResumeTests(unittest.TestCase):
         env = patch.dict(os.environ, without_client_session(), clear=True)
         env.start()
         self.addCleanup(env.stop)
+        # Recovery is under test here; test_quorum_client_contracts covers the client contract checks.
+        contract = patch('quorum_session.check_client_contract')
+        contract.start()
+        self.addCleanup(contract.stop)
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         from quorum_state import LocalLedger

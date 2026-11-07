@@ -78,8 +78,10 @@ LOCAL_CODES = frozenset((
 LOCAL_VALUE_CODES = frozenset((
     'adapter_failed adapter_line_too_large adapter_output_too_large adapter_pipe_failed adapter_timeout '
     'agent_not_configured agent_scope_required argument_denied binding_conflict binding_required '
-    'cancellation_requested capability_denied claude_pipe_unavailable cloud_relay_running '
-    'completion_unconfirmed context_too_large coordinator_changed credential_directory_required '
+    'cancellation_requested capability_denied claude_pipe_contract_changed claude_pipe_unavailable '
+    'cloud_relay_running codex_queue_contract_changed codex_shim_contract_changed codex_steer_contract_changed '
+    'codex_thread_unloaded completion_unconfirmed context_too_large coordinator_changed '
+    'credential_directory_required '
     'credential_file_too_large credential_store_unavailable dedicated_pilot_profile_required '
     'delegation_scope_changed dispatch_mode_requires_coordinator engine_missing engine_version_mismatch '
     'exact_engine_versions_required execution_policy_denied github_identity_invalid github_response_too_large '

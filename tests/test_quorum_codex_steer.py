@@ -52,6 +52,31 @@ REFUSALS = {
 }
 
 
+def active_thread(server, **extra):
+    return {'result': {'thread': {'id': SID, 'cwd': server.cwd, 'status': {'type': 'active'}, **extra}}}
+
+
+#: A server outside the qualified route: scenario -> (method it changes, its answer for this server).
+CHANGED = {
+    'initialize_not_object': ('initialize', lambda server: {'result': []}),
+    'home_not_string': ('initialize', lambda server: {'result': {'codexHome': 7}}),
+    'loaded_list_missing': ('thread/loaded/list', lambda server: {'error': {'code': -32601, 'message': 'missing'}}),
+    'loaded_list_shape': ('thread/loaded/list', lambda server: {'result': {'data': {'threads': [SID]}}}),
+    'loaded_cursor_shape': ('thread/loaded/list', lambda server: {'result': {'data': [OTHER_SID], 'nextCursor': 7}}),
+    'thread_without_cwd': ('thread/read', lambda server: {'result': {'thread': {'id': SID, 'status': {'type': 'active'}}}}),
+    'thread_status_new': ('thread/read', lambda server: {'result': {'thread': {
+        'id': SID, 'cwd': server.cwd, 'status': {'type': 'paused'}}}}),
+    'turns_shape': ('thread/turns/list', lambda server: {'result': {'data': None}}),
+    'turn_status_new': ('thread/turns/list', lambda server: {'result': {'data': [{'id': TURN, 'status': 'in_progress'}]}}),
+    'turn_without_id': ('thread/turns/list', lambda server: {'result': {'data': [{'status': 'inProgress'}]}}),
+    'steer_missing': ('turn/steer', lambda server: {'error': {'code': -32601, 'message': 'missing'}}),
+    'steer_result_shape': ('turn/steer', lambda server: {'result': {'turn': {'id': TURN}}}),
+    # Additive changes stay inside the contract: new fields and flags are ignored.
+    'additive': ('thread/read', lambda server: active_thread(server, name='x', newField={'nested': True},
+                                                              status={'type': 'active', 'activeFlags': ['new']})),
+}
+
+
 class FakeAppServer:
     """A real Unix-socket WebSocket server answering like the Codex app server."""
 
@@ -87,6 +112,9 @@ class FakeAppServer:
                 ref, method, params = frame.get('id'), frame.get('method'), frame.get('params') or {}
                 if ref is None: continue
                 if self.scenario == 'noisy': self.noise(connection, ref)
+                if CHANGED.get(self.scenario, (None,))[0] == method:
+                    connection.send(json.dumps({'id': ref, **CHANGED[self.scenario][1](self)}))
+                    continue
                 if method == 'initialize':
                     if self.scenario == 'silent_initialize': continue
                     if self.scenario == 'oversized':
@@ -653,6 +681,69 @@ class CodexSteerTests(unittest.TestCase):
         self.assertNotIn('turn/steer', fixture.methods())
 
 
+@unittest.skipUnless(UNIX, 'the Codex control socket is a Unix-domain socket')
+class SteerContractTests(unittest.TestCase):
+    """A server outside the qualified route stops reception instead of steering blind or queueing a copy."""
+    fixture, submit = CodexSteerTests.fixture, CodexSteerTests.submit
+
+    def changed(self, scenario):
+        from quorum_client_contracts import CODEX_STEER_CHANGED, ClientContractRefused
+        fixture = self.fixture(scenario)
+        with self.assertRaises(ClientContractRefused) as caught: self.submit(fixture)
+        self.assertEqual(caught.exception.code, CODEX_STEER_CHANGED)
+        return fixture, caught.exception.reason
+
+    def test_each_changed_answer_before_the_write_is_refused_unsent(self):
+        for scenario, reason in (('initialize_not_object', 'result_shape'), ('home_not_string', 'initialize_shape'),
+                                 ('loaded_list_missing', 'method_missing'), ('loaded_list_shape', 'loaded_list_shape'),
+                                 ('loaded_cursor_shape', 'loaded_list_shape'), ('thread_without_cwd', 'thread_shape'),
+                                 ('thread_status_new', 'thread_status'), ('turns_shape', 'turn_list_shape'),
+                                 ('turn_status_new', 'turn_shape'), ('turn_without_id', 'turn_shape')):
+            with self.subTest(scenario):
+                fixture, found = self.changed(scenario)
+                self.assertEqual(found, reason)
+                self.assertNotIn('turn/steer', fixture.methods())
+
+    def test_a_steering_method_the_server_does_not_have_did_nothing(self):
+        fixture, reason = self.changed('steer_missing')
+        self.assertEqual((reason, len(fixture.steer_params())), ('method_missing', 1))
+
+    def test_a_success_in_another_shape_may_have_appended_and_stays_unknown(self):
+        from quorum_client_contracts import CODEX_STEER_CHANGED, ClientOutputChanged
+        from quorum_delivery import DeliveryUnsent
+        with self.assertRaises(ClientOutputChanged) as caught: self.submit(self.fixture('steer_result_shape'))
+        self.assertEqual(str(caught.exception), CODEX_STEER_CHANGED)
+        self.assertNotIsInstance(caught.exception, DeliveryUnsent)
+
+    def test_additive_fields_from_a_newer_server_still_steer(self):
+        self.assertEqual(self.submit(self.fixture('additive')), 'submitted')
+
+    def test_the_start_probe_reads_the_route_and_never_steers(self):
+        from quorum_client_contracts import ClientContractRefused
+        from quorum_codex_steer import probe
+        for scenario in ('steerable', 'idle', 'not_loaded', 'cwd_mismatch'):
+            with self.subTest(scenario):
+                fixture = self.fixture(scenario)
+                self.assertIsNone(probe(fixture.record))
+                self.assertNotIn('turn/steer', fixture.methods())
+        self.assertIsNone(probe(self.fixture('steerable', serve=False).record))
+        fixture = self.fixture('turn_status_new')
+        with self.assertRaises(ClientContractRefused): probe(fixture.record)
+        self.assertNotIn('turn/steer', fixture.methods())
+
+    def test_an_urgent_message_to_a_changed_server_is_neither_steered_nor_queued(self):
+        from quorum_client_contracts import ClientContractRefused
+        from quorum_session import enqueue
+        fixture = self.fixture('thread_status_new')
+        message = {'id': MID, 'body': 'peer text', 'sender_role': 'peer', 'reply_to': None,
+                   'priority': 'urgent', 'conversation_id': MID, 'sequence': 1}
+        with patch('quorum_session.shutil.which', return_value='/synthetic/codex'), \
+             patch('quorum_session.run_child', side_effect=AssertionError('queued a copy')), \
+             self.assertRaises(ClientContractRefused):
+            enqueue({**fixture.record, 'agent_id': 'agent'}, message, Path(fixture.cwd))
+        self.assertNotIn('turn/steer', fixture.methods())
+
+
 class UnixTransportAvailabilityTests(unittest.TestCase):
     def test_a_platform_without_unix_sockets_falls_back_explicitly(self):
         import quorum_codex_steer
@@ -678,10 +769,9 @@ class UnixTransportAvailabilityTests(unittest.TestCase):
         message = {'id': MID, 'body': 'peer text', 'sender_role': 'peer', 'reply_to': None,
                    'priority': 'urgent', 'conversation_id': MID, 'sequence': 1}
         record = {'engine': 'codex', 'session_ref': SID, 'cwd': os.getcwd(), 'quorum': 'team'}
+        from quorum_test_support import codex_child
         calls = []
-        def queued(command, **options):
-            calls.append(command)
-            return type('Result', (), {'returncode': 0})()
+        queued = codex_child(calls)
         with patch.dict(os.environ, {'CODEX_THREAD_ID': SID}), \
              patch('quorum_codex_steer.submit', side_effect=SteerUnavailable('unix_transport_unsupported')), \
              patch('quorum_session.shutil.which', return_value=sys.executable), \

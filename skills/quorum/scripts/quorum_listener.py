@@ -9,6 +9,7 @@ import threading
 import time
 import uuid
 from quorum_api import QuorumError
+from quorum_client_contracts import ClientContractRefused, ClientOutputChanged
 from quorum_os import FileLock, background_flags, open_private, protect
 from quorum_release import ReleaseGuard, ReleaseMismatch, installed_release
 
@@ -161,7 +162,7 @@ class Control:
             # The lock, not a possibly reused PID, proves the run is alive.
             self.diagnose(record)
             record = self.ledger.setting('listener') or {}
-        result = {key: record[key] for key in ('run_id', 'pid', 'state', 'handled', 'code',
+        result = {key: record[key] for key in ('run_id', 'pid', 'state', 'handled', 'code', 'reason',
                                               'started_at', 'updated_at', 'timeout', 'lost_at') if key in record}
         result.setdefault('state', 'stopped')
         result.setdefault('handled', 0)
@@ -193,12 +194,13 @@ class Control:
         result['runtime_source'] = runtime_evidence(self.ledger)
         return result
 
-    def update(self, run_id, state, handled, *, timeout=60, code=None, release=None):
+    def update(self, run_id, state, handled, *, timeout=60, code=None, reason=None, release=None):
         old = self.ledger.setting('listener') or {}
         record = {'run_id': run_id, 'pid': os.getpid(), 'state': state, 'handled': handled,
                   'timeout': timeout, 'updated_at': time.time(),
                   'started_at': old.get('started_at', time.time()) if old.get('run_id') == run_id else time.time()}
         if code is not None: record['code'] = code
+        if reason is not None: record['reason'] = reason
         records = {'listener':record}
         if release is not None:
             from quorum_release import installed_source
@@ -327,7 +329,10 @@ def run_listener(ledger, make_worker, run_id, *, sleep=time.sleep, stop_event=No
             if str(error) == 'session_recovery_denied' and isinstance(error, ValueError) and stopping():
                 # An owner stop observed by the reception guard ends the run as stopped, not failed.
                 control.update(run_id, 'stopped', handled, timeout=timeout)
-            else: control.update(run_id, 'error', handled, timeout=timeout, code=error_code(error))
+            else:
+                # Only a contract outcome's reason crosses: one fixed word from the contract record.
+                reason = error.reason if isinstance(error, (ClientContractRefused, ClientOutputChanged)) else None
+                control.update(run_id, 'error', handled, timeout=timeout, code=error_code(error), reason=reason)
         finally:
             if waiter: waiter.close()
     return control.status()

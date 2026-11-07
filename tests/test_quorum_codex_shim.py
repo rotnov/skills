@@ -1,7 +1,8 @@
 """A `codex queue` prompt must reach Codex whole on Windows, or not at all (#160).
 
 The real-shim tests need Windows and Node, and run on the windows-acl CI job. They
-never start a model: the shim's target is a fixture that records its own argv.
+never start a model: the shim's target is a fixture that records its own argv and
+answers like the recorded codex-cli 0.166.0.
 """
 import hang_guard  # noqa: F401
 import json
@@ -16,6 +17,7 @@ from unittest.mock import patch
 
 SCRIPTS = Path(__file__).resolve().parents[1] / 'skills/quorum/scripts'
 sys.path.insert(0, str(SCRIPTS))
+from quorum_test_support import QUEUE_HELP
 SID = '11111111-1111-4111-8111-111111111111'
 MID = '22222222-2222-4222-8222-222222222222'
 CONVERSATION = '66666666-6666-4666-8666-666666666666'
@@ -26,8 +28,18 @@ NPM_SHIM = '\r\n'.join((
     '  SET PATHEXT=%PATHEXT:;.JS;=;%', ')', '',
     'endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%"  '
     '"%dp0%\\node_modules\\@openai\\codex\\bin\\codex.js" %*', ''))
-RECORDER = ("require('fs').writeFileSync(process.env.QUORUM_SHIM_CAPTURE, "
-            "JSON.stringify(process.argv.slice(2)))\n")
+# Answers `queue --help` with the recorded 0.166.0 text, and records any other argv. A queue send prints the
+# recorded success line for its thread, as the real CLI does.
+RECORDER = '\n'.join((
+    "const fs = require('fs'), argv = process.argv.slice(2);",
+    "if (argv[argv.length - 1] === '--help') {",
+    "  process.stdout.write(fs.readFileSync(process.env.QUORUM_SHIM_HELP));",
+    "} else {",
+    "  fs.writeFileSync(process.env.QUORUM_SHIM_CAPTURE, JSON.stringify(argv));",
+    "  const thread = argv.indexOf('--thread');",
+    "  if (thread >= 0) process.stdout.write('Queued message 01a1b23b-83f8-74e1-b1df-91544014a099 for thread ' +",
+    "                                       argv[thread + 1] + '.\\n');",
+    "}", ''))
 
 
 def install(root, shim=NPM_SHIM):
@@ -102,7 +114,9 @@ class RealShimTests(Harness):
         self.shim, _ = install(self.root)
         self.capture = self.root / 'argv.json'
         self.marker = self.root / 'injected.txt'
-        environment = patch.dict(os.environ, {'QUORUM_SHIM_CAPTURE':str(self.capture)})
+        (self.root / 'help.txt').write_bytes(QUEUE_HELP)
+        environment = patch.dict(os.environ, {'QUORUM_SHIM_CAPTURE':str(self.capture),
+                                              'QUORUM_SHIM_HELP':str(self.root / 'help.txt')})
         environment.start()
         self.addCleanup(environment.stop)
 
@@ -122,7 +136,12 @@ class RealShimTests(Harness):
                    side_effect=lambda name: str(self.shim) if name == 'codex' else locate(name)), \
              patch('quorum_session.run_child', side_effect=spy):
             quorum_session.enqueue(record(self.root), message(role), self.root)
-        return sent[0], self.received()
+        # The contract's help read runs through the same bypass, never cmd.exe; the send is the other child.
+        probes = [command for command in sent if command[-2:] == ['queue', '--help']]
+        sends = [command for command in sent if command not in probes]
+        self.assertEqual([command[0] for command in probes], [sends[0][0]])
+        self.assertEqual(len(sends), 1)
+        return sends[0], self.received()
 
     def test_the_shim_itself_cuts_an_argument_at_the_first_newline(self):
         # The defect this route exists to avoid; if npm's shim ever stops doing this, say so here.

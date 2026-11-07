@@ -212,7 +212,8 @@ class ClaudeResumeTests(unittest.TestCase):
              patch('quorum_claude_pipe.binding', side_effect=own_endpoint), \
              patch('quorum_live.api_for', return_value=(self.api, None, None)), \
              patch('quorum_session.Path.cwd', return_value=self.root), \
-             patch('quorum_session.spawn_background', side_effect=spawn):
+             patch('quorum_session.spawn_background', side_effect=spawn), \
+             patch('quorum_session.check_client_contract'):
             dispatch(args, SimpleNamespace(root=self.root), register)
             self.assertEqual(self.ledger.setting('session-agent')['messaging_socket'], self.record['messaging_socket'])
             self.assertTrue(old.thread.is_alive())

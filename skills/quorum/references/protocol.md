@@ -67,6 +67,10 @@ routes differ on purpose, and this table is their contract.
 | Claude worker `wait` | `offered`, `parked`, `acked` | Nobody, for a peer message: it commits the `offered` row and exits. The worker's later `receive` shows it and the row above applies. It receipts quiet notices and parks an elapsed offer as `receive` does | As the row above. A killed `wait` leaves its row and frees its locks |
 | Grok Bot cloud | `offered`, `acked` | The parent chat, with `received` or `reply`: `session_ack`, then one attempt to write `acked`. The wake relay never acknowledges a peer message | An `offered` row is offered again, and its receipt can be repeated |
 
+Before a push, the parent routes check their client's [qualified contract](sessions.md#client-contracts).
+A changed shape before the write is unsent with that contract's code; a changed answer after it leaves
+the `intent` unknown under the same code. Both stop reception.
+
 Every route receipts a quiet Hello or roster notice itself, with no chat turn: the
 notice log is written first, then `session_ack`, then `acked`. On the cloud route the
 relay or `cloud receive` does this. A repeat of an already `acked` notice or row only

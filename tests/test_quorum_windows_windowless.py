@@ -22,10 +22,11 @@ ENQUEUE_TIMEOUT = 30
 PROBE_TIMEOUT = ENQUEUE_TIMEOUT + 15
 
 
-def finished_child():
+def finished_child(accepted=False):
     child = MagicMock(returncode=0)
     child.__enter__.return_value = child
-    child.communicate.return_value = (b'', b'')
+    stdout = ('Queued message 01a1b23b-83f8-74e1-b1df-91544014a099 for thread ' + SID + '.\n').encode()
+    child.communicate.return_value = (stdout if accepted else b'', b'')
     return child
 
 
@@ -45,7 +46,7 @@ class WindowlessHelpersTests(unittest.TestCase):
                     process.kill()
                     process.wait(timeout=5)
             result = json.loads((root / 'result.json').read_text())
-            self.assertEqual(result, {'listener_console': 0, 'acl_children': 0, 'queue_console': 0})
+            self.assertEqual(result, {'listener_console': 0, 'acl_children': 0, 'help_console': 0, 'queue_console': 0})
 
     def test_windows_codex_queue_cannot_allocate_a_console(self):
         import quorum_claude_pipe, quorum_session
@@ -53,7 +54,8 @@ class WindowlessHelpersTests(unittest.TestCase):
         with patch.object(quorum_session, 'os', host), patch.object(quorum_claude_pipe, 'os', host), \
              patch.object(subprocess, 'CREATE_NO_WINDOW', NO_WINDOW, create=True), \
              patch.object(quorum_session.shutil, 'which', return_value='synthetic-codex.exe'), \
-             patch.object(subprocess, 'Popen', return_value=finished_child()) as popen:
+             patch.object(quorum_session.contracts, 'check_queue'), \
+             patch.object(subprocess, 'Popen', return_value=finished_child(accepted=True)) as popen:
             quorum_session.enqueue({'session_ref': SID}, {'id': MID, 'conversation_id': MID, 'sequence': 1},
                                    Path('/synthetic/state'))
         self.assertEqual(popen.call_args.kwargs.get('creationflags', 0), NO_WINDOW)
@@ -318,21 +320,32 @@ def detached_probe(root):
     result = {'listener_console': kernel.GetConsoleWindow() or 0}
     launches = []
 
+    # Codex's recorded answers: the help read, then the success line for this thread.
+    from quorum_test_support import QUEUE_HELP, queue_accepted
+    answers = {'help': root / 'help-answer.txt', 'queue': root / 'queue-answer.txt'}
+    answers['help'].write_bytes(QUEUE_HELP)
+    answers['queue'].write_bytes(queue_accepted(SID))
+
     class SyntheticCodex(subprocess.Popen):
         """Every child of this process starts here, so the real launch flags reach the real OS call.
 
         Preserve enqueue's launch kwargs, replacing only Codex with a synthetic
-        console application. Never touch a real client chat.
+        console application. It prints its console handle, then the recorded answer for the
+        call. Never touch a real client chat.
         """
         def __init__(self, command, **kwargs):
             launches.append(command)
-            if command[1:3] != ['queue', '--thread']: raise ValueError('unexpected_command')
-            super().__init__([sys.executable, '-c', 'import ctypes; k=ctypes.WinDLL("kernel32"); '
-                              'k.GetConsoleWindow.restype=ctypes.c_void_p; print(k.GetConsoleWindow() or 0)'], **kwargs)
+            if command[1:3] == ['queue', '--help']: self.kind = 'help'
+            elif command[1:3] == ['queue', '--thread']: self.kind = 'queue'
+            else: raise ValueError('unexpected_command')
+            super().__init__([sys.executable, '-c', 'import ctypes, sys; k=ctypes.WinDLL("kernel32"); '
+                              'k.GetConsoleWindow.restype=ctypes.c_void_p; print(k.GetConsoleWindow() or 0); '
+                              'sys.stdout.flush(); sys.stdout.buffer.write(open(sys.argv[1], "rb").read())',
+                              str(answers[self.kind])], **kwargs)
 
         def communicate(self, *args, **kwargs):
             stdout, stderr = super().communicate(*args, **kwargs)
-            result['queue_console'] = int(stdout)
+            result[self.kind + '_console'] = int(stdout.splitlines()[0])
             return stdout, stderr
 
     target = root / 'synthetic-state'

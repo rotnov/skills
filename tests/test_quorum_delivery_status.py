@@ -15,7 +15,7 @@ import unittest
 from datetime import datetime, timezone
 from unittest.mock import patch
 
-from quorum_test_support import isolated_profiles
+from quorum_test_support import codex_child, isolated_profiles
 import test_quorum_claude_worker as claude_base
 import test_quorum_native_inbox as base
 from test_quorum_realtime import AGENT, Clock, Socket, TOPIC, api as realtime_api, ledger as realtime_ledger
@@ -24,6 +24,7 @@ SKILL = Path(__file__).resolve().parents[1] / 'skills/quorum'
 SCRIPTS = SKILL / 'scripts'
 sys.path.insert(0, str(SCRIPTS))
 from quorum_api import QuorumError
+from quorum_client_contracts import CODEX_QUEUE_CHANGED, ClientContractRefused, ClientOutputChanged
 from quorum_delivery import Deliveries
 from quorum_delivery_status import (ALERT_LIMIT, CHECK_KEY, PAGE_LIMIT, Reports, STATUSES, StatusWatch, STUCK_KEY,
                                     SUPPORT_KEY, SUPPORT_RETRY, WATCH_KEY, note_sent, outgoing_summary,
@@ -182,6 +183,46 @@ class WatchTests(LedgerCase):
         watch.signal()
         self.assertEqual(len(attempts), 1)
         self.assertEqual([item['status'] for item in outgoing_summary(self.ledger)['alerts']], ['failed'])
+
+    def contract_failures(self):
+        return (ClientContractRefused(CODEX_QUEUE_CHANGED, 'queue_arguments_changed'),
+                ClientOutputChanged(CODEX_QUEUE_CHANGED, 'queue_output_changed'))
+
+    def raising(self, failure):
+        attempts = []
+        def notify(alerts):
+            attempts.append(alerts)
+            raise failure
+        return attempts, notify
+
+    def test_a_changed_client_stops_reception_from_a_signal(self):
+        for failure in self.contract_failures():
+            with self.subTest(failure):
+                self.ledger.db.execute("delete from settings")
+                attempts, notify = self.raising(failure)
+                watch = self.watch(Service([feed(row('failed'))]), notify=notify)
+                with self.assertRaises(type(failure)): watch.signal()
+                self.assertEqual(len(attempts), 1)
+                # The alert moved to shown before the push, so status still lists it.
+                self.assertEqual([item['status'] for item in outgoing_summary(self.ledger)['alerts']], ['failed'])
+
+    def test_a_changed_client_stops_reception_from_a_tick(self):
+        for failure in self.contract_failures():
+            with self.subTest(failure):
+                self.ledger.db.execute("delete from settings")
+                watch = self.watch(Service([feed(row('failed'))]), notify=None)
+                watch.signal()
+                attempts, watch.notify = self.raising(failure)
+                with self.assertRaises(type(failure)): watch.tick()
+                self.assertEqual(len(attempts), 1)
+
+    def test_any_other_push_failure_stays_quiet_on_both_entry_points(self):
+        attempts, notify = self.raising(ValueError('session_queue_failed'))
+        watch = self.watch(Service([feed(row('failed')), feed(row('declined', 2, OTHER))]), notify=notify)
+        watch.signal()
+        watch.stale = True
+        watch.tick()
+        self.assertEqual([[item['status'] for item in push] for push in attempts], [['failed'], ['declined']])
 
     def test_unknown_or_malformed_rows_are_dropped(self):
         rows = [row('wiped'), {'message_id': 'not-a-uuid', 'status': 'failed'}, 'text',
@@ -766,7 +807,7 @@ class ParentRelayTests(ParentRoute):
         from quorum_session import enqueue
         prompts = []
         record = {**RECORD, 'engine': 'claude', 'role': 'doer'}
-        with patch('quorum_session.check_native_route'), \
+        with patch('quorum_session.check_native_route'), patch('quorum_client_contracts.check_claude_session'), \
                 patch('quorum_claude_pipe.submit', lambda sid, mid, text: prompts.append(text)):
             enqueue(record, self.message(), self.root)
             enqueue(record, self.message(reply_to=MID), self.root)
@@ -858,19 +899,20 @@ class AlertTests(ParentRoute):
     def test_each_parent_route_gets_one_attempt(self):
         from quorum_session import notify_chat
         record = {**RECORD, 'engine': 'claude'}
-        with patch('quorum_session.check_native_route'), patch('quorum_claude_pipe.submit') as claude:
+        with patch('quorum_session.check_native_route'), patch('quorum_client_contracts.check_claude_session'), \
+                patch('quorum_claude_pipe.submit') as claude:
             notify_chat(record, self.ALERTS, self.root)
         self.assertEqual(claude.call_count, 1)
         self.assertEqual(claude.call_args.args[0], SID)
         with patch('quorum_session.require_caller'), patch('quorum_grok_leader.submit') as grok:
             notify_chat({**RECORD, 'engine': 'grok'}, self.ALERTS, self.root)
         self.assertEqual(grok.call_count, 1)
+        sent, probes = [], []
         with patch('quorum_session.shutil.which', return_value='/usr/bin/codex'), \
-                patch('quorum_session.run_child') as child:
+                patch('quorum_session.run_child', side_effect=codex_child(sent, probes=probes)):
             notify_chat(RECORD, self.ALERTS, self.root)
-        command = child.call_args.args[0]
-        self.assertEqual(command[1:4], ['queue', '--thread', SID])
-        self.assertEqual(child.call_count, 1)
+        self.assertEqual(sent[0][1:4], ['queue', '--thread', SID])
+        self.assertEqual((len(sent), len(probes)), (1, 1))
 
 
 class WorkerApi(base.Api):
