@@ -1,4 +1,5 @@
 """Native wakeups use synthetic JWTs, disposable state and loopback WebSockets."""
+import hang_guard  # noqa: F401
 from collections import deque
 from contextlib import contextmanager
 import json

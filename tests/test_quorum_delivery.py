@@ -4,6 +4,7 @@ Route behaviour stays covered through each caller by test_quorum_delivery_intent
 test_quorum_native_inbox.py, test_quorum_awaiting_owner.py and test_quorum_grok_cloud.py. These tests pin
 the module's own contract, and that the callers keep no second copy of it.
 """
+import hang_guard  # noqa: F401
 import ast
 from contextlib import nullcontext
 import json

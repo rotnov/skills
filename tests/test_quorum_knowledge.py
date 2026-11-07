@@ -1,4 +1,5 @@
 """Portable project-knowledge client contracts; no service or provider calls."""
+import hang_guard  # noqa: F401
 import os
 import json
 from pathlib import Path

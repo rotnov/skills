@@ -1,4 +1,5 @@
 """Background helpers must not allocate consoles; never start a model or peer chat."""
+import hang_guard  # noqa: F401
 import os
 import json
 from pathlib import Path

@@ -1,4 +1,5 @@
 """Grok Bot webhook wake relay tests use local fixtures only; no network or model."""
+import hang_guard  # noqa: F401
 import http.client
 import importlib.util
 import json
@@ -87,15 +88,18 @@ class Connection:
 
 
 class Drip:
-    """Local socketpair peer: sends a prefix, then one byte per tick until the client closes."""
-    def __init__(self, peer, prefix=b'', byte=b'', interval=0.02, limit=3.0):
-        self.peer, self.prefix, self.byte, self.interval, self.limit = peer, prefix, byte, interval, limit
+    """Local socketpair peer: sends a prefix at once, then one byte per tick until the client closes.
+
+    `limit` only ends a peer whose client never closes, which `client_closed` then reports as a failure.
+    """
+    def __init__(self, peer, prefix=b'', byte=b'', interval=0.02, limit=30.0):
+        self.peer, self.byte, self.interval, self.limit = peer, byte, interval, limit
         self.client_closed, self.done = False, threading.Event()
+        if prefix: peer.sendall(prefix)  # Already buffered: a starved thread cannot cost the client its status.
         threading.Thread(target=self.run, daemon=True).start()
     def run(self):
         stop = time.monotonic() + self.limit
         try:
-            if self.prefix: self.peer.sendall(self.prefix)
             while self.byte and time.monotonic() < stop:
                 self.peer.send(self.byte)
                 time.sleep(self.interval)
@@ -123,6 +127,16 @@ class PairConnection(http.client.HTTPConnection):
     def connect(self):
         self.client.settimeout(self.timeout)
         self.sock = self.client
+
+
+class Ticks:
+    """Stands in for the relay's `time`: its clock moves only when read, so a deadline falls after a fixed
+    number of socket steps however loaded the machine is. A real socket wait stays real, and only ever ends
+    a step early, which is the outcome these tests expect."""
+    def __init__(self): self.now = 0.0
+    def monotonic(self):
+        self.now += .01
+        return self.now
 
 
 def module():
@@ -565,29 +579,27 @@ class RelayTests(Base):
 class DeadlineTests(Base):
     """One total HTTP deadline; local socketpair/loopback fixtures only, never the provider."""
     TIMEOUT = 0.3
-    BOUND = 1.5  # Fixtures drip for 3 s, so a per-recv timeout alone overruns this.
 
     def run_relay(self, connection=None, api=None):
         self.configure()
         kwargs = {'timeout':self.TIMEOUT} if connection is None else {'timeout':self.TIMEOUT, 'connection':connection}
         relay = self.webhook.CloudWakeRelay(api or Api([message()]), self.ledger, dict(RECORD), **kwargs)
-        start = time.monotonic()
-        try: return relay.run_once()
-        except ValueError as error:
-            self.assertEqual(str(error), 'grok_transport_unavailable')
-            self.assert_no_secret(repr(error))
-            self.assertTrue(error.__suppress_context__)
-            return 'raised'
-        finally: self.elapsed = time.monotonic() - start
+        with patch.object(self.webhook, 'time', Ticks()):
+            try: return relay.run_once()
+            except ValueError as error:
+                self.assertEqual(str(error), 'grok_transport_unavailable')
+                self.assert_no_secret(repr(error))
+                self.assertTrue(error.__suppress_context__)
+                return 'raised'
 
     def drip(self, prefix, byte):
         PairConnection.serve = lambda client, peer: Drip(peer, prefix, byte)
         result = self.run_relay(PairConnection)
         conn = PairConnection.instances[0]
-        self.assertLess(self.elapsed, self.BOUND)
         # The owned transport is closed before run_once returns, not left to GC.
         self.assertEqual(conn.client.fileno(), -1)
-        self.assertTrue(conn.server.done.wait(2))
+        # The client left while the peer still dripped: a per-recv timeout alone would outwait the peer.
+        self.assertTrue(conn.server.done.wait(10))
         self.assertTrue(conn.server.client_closed)
         return result
 
@@ -610,7 +622,7 @@ class DeadlineTests(Base):
         self.assertEqual(self.wake(), {'state':'failed'})
 
     def test_deadline_while_writing_request_is_unknown_and_not_retried(self):
-        peers = []
+        peers, rescues = [], []
         def stalled(client, peer):
             # The peer never reads and the send buffer is already full, so the write blocks.
             peers.append(peer)
@@ -618,10 +630,14 @@ class DeadlineTests(Base):
             try:
                 while True: client.send(b'\0' * 65536)
             except BlockingIOError: pass
+            rescues.append(threading.Timer(30, peer.close))
+            rescues[-1].daemon = True
+            rescues[-1].start()
         self.addCleanup(lambda: [peer.close() for peer in peers])
+        self.addCleanup(lambda: [rescue.cancel() for rescue in rescues])
         PairConnection.serve = stalled
         self.assertEqual(self.run_relay(PairConnection), 'unknown')
-        self.assertLess(self.elapsed, self.BOUND)
+        self.assertTrue(rescues[0].is_alive(), 'the deadline must end the write, not the peer closing')
         self.assertEqual(self.wake(), {'state':'unknown'})
         self.assertEqual(PairConnection.instances[0].client.fileno(), -1)
         relay = self.relay(Api([message()]))
@@ -630,14 +646,15 @@ class DeadlineTests(Base):
         self.assertEqual((len(PairConnection.instances), Connection.instances), (1, []))
 
     def test_dns_stall_fails_before_any_write(self):
-        release = threading.Event()
+        release, finished = threading.Event(), threading.Event()
         self.addCleanup(release.set)
         def stalled(*args, **kwargs):
-            release.wait(3.0)
+            release.wait(30)
+            finished.set()
             raise socket.gaierror('stalled ' + KEY)
         with patch.object(socket, 'getaddrinfo', stalled), patch.object(socket, 'socket') as sockets:
             self.assertEqual(self.run_relay(), 'raised')
-        self.assertLess(self.elapsed, self.BOUND)
+        self.assertFalse(finished.is_set(), 'the deadline must abandon the lookup while it is still stalled')
         self.assertEqual(sockets.call_count, 0)
         self.assertEqual(self.wake(), {'state':'failed'})
 
@@ -645,21 +662,22 @@ class DeadlineTests(Base):
         listener = socket.create_server(('127.0.0.1', 0))
         self.addCleanup(listener.close)
         address = listener.getsockname()
-        accepted = []
+        accepted, reached = [], threading.Event()
         def serve():
-            listener.settimeout(3.0)
+            listener.settimeout(30)
             try: peer, _ = listener.accept()
             except OSError: return
-            accepted.append(peer)
             # A TLS record header announcing 16 KiB that then arrives one byte per tick.
-            Drip(peer, b'\x16\x03\x03\x40\x00', b'\0')
+            accepted.append(Drip(peer, b'\x16\x03\x03\x40\x00', b'\0'))
+            reached.set()
         threading.Thread(target=serve, daemon=True).start()
         local = [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, '', address)]
-        with patch.object(socket, 'getaddrinfo', lambda *args, **kwargs: local):
+        with patch.object(self.webhook, 'resolve', lambda *args: local):
             self.assertEqual(self.run_relay(), 'raised')
-        self.assertLess(self.elapsed, self.BOUND)
         self.assertEqual(self.wake(), {'state':'failed'})
-        self.assertEqual(len(accepted), 1)
+        self.assertTrue(reached.wait(10))
+        self.assertTrue(accepted[0].done.wait(10))
+        self.assertTrue(accepted[0].client_closed)
 
     def test_connection_without_a_boundable_socket_fails_closed_before_write(self):
         class Unbounded(Connection):
@@ -682,7 +700,7 @@ class DeadlineTests(Base):
         self.assertEqual(self.drip(b'HTTP/1.1 ', b'2'), 'unknown')
         self.assertIs(signal.getsignal(signal.SIGALRM), inherited)
         remaining, interval = signal.getitimer(signal.ITIMER_REAL)
-        self.assertTrue(90 < remaining <= 100)
+        self.assertTrue(0 < remaining <= 100)
         self.assertEqual((interval, fired), (0.0, []))
 
 

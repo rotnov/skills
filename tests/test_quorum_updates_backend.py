@@ -1,4 +1,5 @@
 """Opt-in actual SQL acceptance; local image only, network-none disposable PostgreSQL."""
+import hang_guard  # noqa: F401
 import os
 import json
 from pathlib import Path

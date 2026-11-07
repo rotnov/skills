@@ -1,4 +1,5 @@
 """Static migration-order invariants; the disposable SQL harness executes them."""
+import hang_guard  # noqa: F401
 from pathlib import Path
 import hashlib
 import re

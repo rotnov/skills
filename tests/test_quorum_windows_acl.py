@@ -1,4 +1,5 @@
 """Real Windows ACL regression; no credentials, models or hosted service calls."""
+import hang_guard  # noqa: F401
 import contextlib
 import io
 import json

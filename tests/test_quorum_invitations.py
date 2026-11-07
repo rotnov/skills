@@ -1,4 +1,5 @@
 """Invitation-file creation never returns its token to an agent tool output."""
+import hang_guard  # noqa: F401
 import json
 from pathlib import Path
 import sys

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hang_guard  # noqa: F401
 import importlib.util
 import tempfile
 import unittest

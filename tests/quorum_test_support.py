@@ -1,4 +1,5 @@
 """Keep every CLI/profile fixture away from the real OS user's login registry."""
+import hang_guard  # noqa: F401
 from functools import wraps
 import json
 import os

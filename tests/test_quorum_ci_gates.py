@@ -1,4 +1,5 @@
 """Opt-in suites skip by default, so a suite no CI step enables could never fail."""
+import hang_guard  # noqa: F401
 from pathlib import Path
 import re
 import unittest

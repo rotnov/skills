@@ -1,4 +1,5 @@
 """#143: every fixed server and local code is passed through or deliberately mapped, never collapsed."""
+import hang_guard  # noqa: F401
 import ast
 import contextlib
 import io
