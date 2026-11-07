@@ -170,13 +170,15 @@ def check_claude_session(session_id, endpoint):
     """Check the client serving this exact pipe, which never answers.
 
     The record with this pipe, or this session for a build that names no pipe, declares the protocol. A
+    record that names another pipe belongs to another process and never counts, whatever its session. A
     declared qualified value passes whatever the version. Where no such value exists, only the version gate
     is left, so a build outside the floor and limit is refused.
     """
     floor = CLAUDE_FLOORS[os_family()]
     records = list(_records())
     own = ([record for record in records if record.get('messagingSocketPath') == endpoint]
-           or [record for record in records if record.get('sessionId') == session_id])
+           or [record for record in records if 'messagingSocketPath' not in record
+               and record.get('sessionId') == session_id])
     def refuse(reason): raise ClientContractRefused(CLAUDE_PIPE_CHANGED, reason)
     if not own:
         version = _executable_version()

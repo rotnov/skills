@@ -286,6 +286,23 @@ class ClaudeRecordTests(unittest.TestCase):
         self.write(messagingSocketPath='/private/other.sock', sessionId=MID)
         self.assertEqual(self.refusal(), 'session_record_missing')
 
+    def test_a_record_for_another_pipe_never_counts_even_with_this_session(self):
+        # Neither direction: a qualified record of another pipe cannot vouch for this one...
+        self.write(messagingSocketPath='/private/other.sock')
+        self.assertEqual(self.refusal(), 'session_record_missing')
+        # ...and a changed record of another pipe cannot block it.
+        self.write(messagingSocketPath='/private/other.sock', peerProtocol=2)
+        with patch.dict(os.environ, {'CLAUDE_CODE_EXECPATH':'/Users/o/.local/share/claude/versions/2.1.312'}):
+            self.check()
+
+    def test_the_session_fallback_reads_only_records_that_name_no_pipe(self):
+        (self.root / 'sessions/1.json').write_text(json.dumps(
+            {'sessionId':SID, 'version':'2.1.312', 'peerProtocol':2, 'messagingSocketPath':'/private/other.sock'}))
+        self.write(messagingSocketPath=None)
+        self.check()
+        self.write(messagingSocketPath=None, peerProtocol=2)
+        self.assertEqual(self.refusal(), 'peer_protocol_changed')
+
     def test_unreadable_entries_are_skipped_without_counting_as_proof(self):
         (self.root / 'sessions/1.json').write_text('{torn')
         (self.root / 'sessions/2.json').write_text('[]')
