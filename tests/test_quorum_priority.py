@@ -9,7 +9,7 @@ import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
-from quorum_test_support import isolated_profiles
+from quorum_test_support import codex_child, isolated_profiles
 from unittest.mock import patch
 
 SCRIPTS = Path(__file__).resolve().parents[1] / 'skills/quorum/scripts'
@@ -28,10 +28,7 @@ def without_client_session():
 
 
 def queued(seen):
-    def run(command, **kwargs):
-        seen.append(command)
-        return subprocess.CompletedProcess(command, 0, 'queued', '')
-    return run
+    return codex_child(seen)
 
 
 class PriorityTests(unittest.TestCase):

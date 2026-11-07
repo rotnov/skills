@@ -385,6 +385,7 @@ class OrdinaryRunAuthorityTests(unittest.TestCase):
                                     patch('quorum_claude_pipe.binding', return_value='/synthetic/inbox'),
                                     patch('signal.signal'), patch('quorum_realtime.RealtimeWait', Waiter),
                                     patch('quorum_session.enqueue', side_effect=queue),
+                                    patch('quorum_session.check_client_contract'),
                                     patch('quorum_session.run_listener', side_effect=launch)):
                         patches.enter_context(context)
                     if startup_seconds is not None:

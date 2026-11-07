@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from quorum_test_support import isolated_profiles
+from quorum_test_support import codex_child, isolated_profiles
 
 ROOT = Path(__file__).resolve().parents[1]
 SKILL = ROOT / 'skills/quorum'
@@ -148,8 +148,8 @@ class TrustedEnvelopeTests(unittest.TestCase):
         from quorum_session import enqueue
         delivered = []
         def run(command, **kwargs):
-            delivered.append(command[-1])
-            return subprocess.CompletedProcess(command, 0, 'queued', '')
+            if command[-1] != '--help': delivered.append(command[-1])
+            return codex_child()(command)
         with patch('quorum_session.run_child', side_effect=run), \
                 patch('quorum_session.shutil.which', return_value='/synthetic/codex'):
             enqueue({**record, 'engine': 'codex'},

@@ -21,10 +21,11 @@ ENQUEUE_TIMEOUT = 30
 PROBE_TIMEOUT = ENQUEUE_TIMEOUT + 15
 
 
-def finished_child():
+def finished_child(accepted=False):
     child = MagicMock(returncode=0)
     child.__enter__.return_value = child
-    child.communicate.return_value = (b'', b'')
+    stdout = ('Queued message 01a1b23b-83f8-74e1-b1df-91544014a099 for thread ' + SID + '.\n').encode()
+    child.communicate.return_value = (stdout if accepted else b'', b'')
     return child
 
 
@@ -52,7 +53,8 @@ class WindowlessHelpersTests(unittest.TestCase):
         with patch.object(quorum_session, 'os', host), patch.object(quorum_claude_pipe, 'os', host), \
              patch.object(subprocess, 'CREATE_NO_WINDOW', NO_WINDOW, create=True), \
              patch.object(quorum_session.shutil, 'which', return_value='synthetic-codex.exe'), \
-             patch.object(subprocess, 'Popen', return_value=finished_child()) as popen:
+             patch.object(quorum_session.contracts, 'check_queue'), \
+             patch.object(subprocess, 'Popen', return_value=finished_child(accepted=True)) as popen:
             quorum_session.enqueue({'session_ref': SID}, {'id': MID, 'conversation_id': MID, 'sequence': 1},
                                    Path('/synthetic/state'))
         self.assertEqual(popen.call_args.kwargs.get('creationflags', 0), NO_WINDOW)

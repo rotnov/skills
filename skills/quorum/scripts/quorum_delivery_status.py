@@ -10,6 +10,7 @@ import re
 import time
 
 from quorum_api import CANONICAL_UUID, ROLE, rpc_missing, server_refused
+from quorum_client_contracts import ClientContractRefused, ClientOutputChanged
 
 # A recipient's report waits here until the service has it, so a lost response or a crash after the
 # receipt cannot lose it. One day bounds what an unreachable service leaves behind.
@@ -295,4 +296,5 @@ class StatusWatch:
         if not pending: return
         # Whatever happens to the push, `session status` still lists these.
         try: self.notify(pending)
+        except (ClientContractRefused, ClientOutputChanged): raise  # A changed client stops reception here too.
         except Exception: pass

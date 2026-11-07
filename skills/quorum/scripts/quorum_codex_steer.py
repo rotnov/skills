@@ -24,7 +24,9 @@ import struct
 import sys
 import time
 import uuid
-from quorum_claude_pipe import DeliveryUnsent
+from quorum_client_contracts import (CODEX_STEER_CHANGED, ClientContractRefused, ClientOutputChanged, METHOD_NOT_FOUND,
+                                     THREAD_STATUSES, TURN_STATUSES)
+from quorum_delivery import DeliveryUnknown, DeliveryUnsent
 
 CLIENT = {'name': 'quorum-session', 'version': '1'}
 FRAME_LIMIT = 262144
@@ -33,6 +35,7 @@ FRAME_QUEUE = 16
 CLOSE_TIMEOUT = 2
 PAGE_LIMIT = 100
 PAGES = 20
+PROBE_SECONDS = 10
 #: None where the platform has no Unix-domain sockets, as on Windows builds.
 AF_UNIX = getattr(socket, 'AF_UNIX', None)
 #: JSON-RPC invalid request, the code of every refusal `turn/steer` documents.
@@ -225,9 +228,19 @@ class Client:
         except Exception: pass
 
 
+def changed(reason):
+    """Nothing was written, and this server answers outside the qualified route."""
+    return ClientContractRefused(CODEX_STEER_CHANGED, reason)
+
+
 def result_of(frame, reason):
-    if frame is None or 'error' in frame or not isinstance(frame.get('result'), dict):
+    """A silent server or a runtime error is unavailable. A missing method or another result shape is a changed route."""
+    if frame is None: raise SteerUnavailable(reason)
+    if 'error' in frame:
+        error = frame['error']
+        if isinstance(error, dict) and error.get('code') == METHOD_NOT_FOUND: raise changed('method_missing')
         raise SteerUnavailable(reason)
+    if not isinstance(frame.get('result'), dict): raise changed('result_shape')
     return frame['result']
 
 
@@ -235,11 +248,14 @@ async def head_turn(client, session_ref):
     """ID of the turn currently running, or None when the chat is not busy."""
     turns = result_of(await client.request('thread/turns/list', {'threadId': session_ref, 'limit': 1,
         'sortDirection': 'desc', 'itemsView': 'notLoaded'}), 'turns_unreadable').get('data')
-    if not isinstance(turns, list) or not turns: return None
+    if not isinstance(turns, list): raise changed('turn_list_shape')
+    if not turns: return None
     head = turns[0]
-    if not isinstance(head, dict) or head.get('status') != 'inProgress': return None
+    if not isinstance(head, dict) or head.get('status') not in TURN_STATUSES: raise changed('turn_shape')
+    if head['status'] != 'inProgress': return None
     turn_id = head.get('id')
-    return turn_id if isinstance(turn_id, str) and turn_id else None
+    if not isinstance(turn_id, str) or not turn_id: raise changed('turn_shape')
+    return turn_id
 
 
 async def active_turn(client, record, session_ref):
@@ -249,26 +265,29 @@ async def active_turn(client, record, session_ref):
         listed = result_of(await client.request('thread/loaded/list', {'cursor': cursor, 'limit': PAGE_LIMIT}),
                            'daemon_unreachable')
         data = listed.get('data')
-        if not isinstance(data, list): raise SteerUnavailable('invalid_daemon_response')
+        if not isinstance(data, list) or not all(isinstance(item, str) for item in data):
+            raise changed('loaded_list_shape')
         if session_ref in data: break
         cursor = listed.get('nextCursor')
+        if cursor is not None and not isinstance(cursor, str): raise changed('loaded_list_shape')
         # An absent thread means this daemon does not serve the owner's chat.
         if not isinstance(cursor, str) or not cursor: raise SteerUnavailable('thread_not_loaded')
     else: raise SteerUnavailable('thread_not_loaded')
     thread = result_of(await client.request('thread/read', {'threadId': session_ref, 'includeTurns': False}),
                        'thread_unreadable').get('thread')
-    if not isinstance(thread, dict) or thread.get('id') != session_ref:
-        raise SteerUnavailable('thread_not_loaded')
-    cwd = thread.get('cwd')
-    try: matches = isinstance(cwd, str) and Path(cwd).resolve() == Path(record['cwd']).resolve()
+    if (not isinstance(thread, dict) or not isinstance(thread.get('cwd'), str)
+            or not isinstance(thread.get('status'), dict)):
+        raise changed('thread_shape')
+    if thread['status'].get('type') not in THREAD_STATUSES: raise changed('thread_status')
+    if thread.get('id') != session_ref: raise SteerUnavailable('thread_not_loaded')
+    try: matches = Path(thread['cwd']).resolve() == Path(record['cwd']).resolve()
     except (OSError, ValueError): matches = False
     # The daemon must agree with the registered working directory for this chat.
     # A disagreement refuses the steering route without writing anything; the
     # caller still delivers through the ordinary queue, as it does for every
     # normal message. Caller identity is checked separately by require_caller.
     if not matches: raise SteerUnavailable('thread_directory_mismatch')
-    status = thread.get('status')
-    if not isinstance(status, dict) or status.get('type') != 'active': return None
+    if thread['status']['type'] != 'active': return None
     return await head_turn(client, session_ref)
 
 
@@ -304,6 +323,10 @@ async def steer(client, record, session_ref, turn_id, message_id, text):
     if isinstance(answer, dict) and answer.get('turnId') == turn_id: return 'submitted'
     error = frame.get('error')
     if isinstance(error, dict) and refused(error): return 'rejected'
+    if isinstance(error, dict) and error.get('code') == METHOD_NOT_FOUND: raise changed('method_missing')
+    # A success in another shape may have appended, so it stays unknown under its own code.
+    if 'error' not in frame and not (isinstance(answer, dict) and isinstance(answer.get('turnId'), str)):
+        raise ClientOutputChanged(CODEX_STEER_CHANGED, 'steer_result_shape')
     # Any other error is opaque. A later completion or replacement of that turn
     # does not prove the append never happened, so it is never a rejection.
     raise ValueError('session_delivery_unknown')
@@ -315,13 +338,26 @@ def submit(record, message_id, build, timeout=25):
     Returns 'submitted' or 'rejected'. Only a documented no-append refusal is
     a rejection. A rejection and SteerUnavailable both prove that nothing
     reached the chat, so the caller queues the message once. DeliveryUnsent
-    means the prompt itself cannot be built. Every other post-write outcome
-    raises session_delivery_unknown for reconciliation.
+    means the prompt cannot be built, or the server answered outside the
+    qualified route before any write. Every other post-write outcome is
+    unknown, for reconciliation.
     """
     session_ref = str(uuid.UUID(record['session_ref']))
     message_id = str(uuid.UUID(message_id))
     path = control_socket()
     return asyncio.run(exchange(path, record, session_ref, message_id, build, timeout))
+
+
+def probe(record):
+    """The read-only half of `submit`, for a listener start. It writes no steering frame.
+
+    A route that is not available proves nothing about the contract. Only a server that answers outside
+    it raises, as ClientContractRefused.
+    """
+    try:
+        path, session_ref = control_socket(), str(uuid.UUID(record['session_ref']))
+        asyncio.run(exchange(path, record, session_ref, None, None, PROBE_SECONDS))
+    except SteerUnavailable: pass
 
 
 async def exchange(path, record, session_ref, message_id, build, timeout):
@@ -330,17 +366,19 @@ async def exchange(path, record, session_ref, message_id, build, timeout):
     try:
         hello = result_of(await client.request('initialize', {'clientInfo': CLIENT}), 'daemon_unreachable')
         home = hello.get('codexHome')
+        if home is not None and not isinstance(home, str): raise changed('initialize_shape')
         # A daemon that reports another home serves another account's chats.
-        if home is not None and (not isinstance(home, str) or Path(home).resolve() != codex_home()):
+        if home is not None and Path(home).resolve() != codex_home():
             raise SteerUnavailable('daemon_home_mismatch')
         await client.notify('initialized')
         turn_id = await active_turn(client, record, session_ref)
+        if build is None: return None
         # Queue order is preserved whenever the chat is not inside a turn.
         if turn_id is None: raise SteerUnavailable('no_active_turn')
         try: text = build()
         except Exception: raise DeliveryUnsent() from None
         return await steer(client, record, session_ref, turn_id, message_id, text)
-    except (SteerUnavailable, DeliveryUnsent): raise
+    except (SteerUnavailable, DeliveryUnsent, DeliveryUnknown): raise
     except Exception:
         # Only a failure once the steering write began can have reached the chat.
         if client.steering: raise ValueError('session_delivery_unknown') from None

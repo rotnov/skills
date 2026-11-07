@@ -15,7 +15,7 @@ import unittest
 from datetime import datetime, timezone
 from unittest.mock import patch
 
-from quorum_test_support import isolated_profiles
+from quorum_test_support import codex_child, isolated_profiles
 import test_quorum_claude_worker as claude_base
 import test_quorum_native_inbox as base
 from test_quorum_realtime import AGENT, Clock, Socket, TOPIC, api as realtime_api, ledger as realtime_ledger
@@ -858,19 +858,20 @@ class AlertTests(ParentRoute):
     def test_each_parent_route_gets_one_attempt(self):
         from quorum_session import notify_chat
         record = {**RECORD, 'engine': 'claude'}
-        with patch('quorum_session.check_native_route'), patch('quorum_claude_pipe.submit') as claude:
+        with patch('quorum_session.check_native_route'), patch('quorum_client_contracts.check_claude_session'), \
+                patch('quorum_claude_pipe.submit') as claude:
             notify_chat(record, self.ALERTS, self.root)
         self.assertEqual(claude.call_count, 1)
         self.assertEqual(claude.call_args.args[0], SID)
         with patch('quorum_session.require_caller'), patch('quorum_grok_leader.submit') as grok:
             notify_chat({**RECORD, 'engine': 'grok'}, self.ALERTS, self.root)
         self.assertEqual(grok.call_count, 1)
+        sent, probes = [], []
         with patch('quorum_session.shutil.which', return_value='/usr/bin/codex'), \
-                patch('quorum_session.run_child') as child:
+                patch('quorum_session.run_child', side_effect=codex_child(sent, probes=probes)):
             notify_chat(RECORD, self.ALERTS, self.root)
-        command = child.call_args.args[0]
-        self.assertEqual(command[1:4], ['queue', '--thread', SID])
-        self.assertEqual(child.call_count, 1)
+        self.assertEqual(sent[0][1:4], ['queue', '--thread', SID])
+        self.assertEqual((len(sent), len(probes)), (1, 1))
 
 
 class WorkerApi(base.Api):

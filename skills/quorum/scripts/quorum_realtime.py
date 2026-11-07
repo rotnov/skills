@@ -6,13 +6,14 @@ from urllib.parse import urlencode
 import uuid
 
 from quorum_api import error_class
+from quorum_client_contracts import CONTRACT_CODES
 
 # Frames inspected for an overdue heartbeat reply; exceeds the socket's max_queue.
 DRAIN_LIMIT = 32
 # Fixed denials end reception; reconnecting or polling must never mask them.
 TERMINAL = frozenset(('auth_required', 'coordination_unavailable', 'skill_update_required',
                       'release_manifest_invalid', 'session_recovery_denied', 'session_binding_denied',
-                      'grok_tui_gone'))
+                      'grok_tui_gone')) | CONTRACT_CODES
 
 
 def connect_socket(uri, **options):

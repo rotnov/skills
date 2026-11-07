@@ -293,6 +293,7 @@ class ClaudePipeTests(unittest.TestCase):
         # This test inspects the envelope on every platform. Private endpoint
         # validation has separate real Unix/Windows transport fixtures above.
         with patch.dict(os.environ,env,clear=True), patch('quorum_claude_pipe.binding',return_value=endpoint), \
+             patch('quorum_client_contracts.check_claude_session'), \
              patch('quorum_claude_pipe.submit',side_effect=lambda *args:seen.append(args)):
             result=enqueue({'engine':'claude','session_ref':SID,'messaging_socket':endpoint,'quorum':'test-local'},
                            {'id':MID,'body':'a peer request','sender_role':'codex-test','reply_to':None},Path('/private/state'))

@@ -11,7 +11,7 @@ import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
-from quorum_test_support import isolated_profiles
+from quorum_test_support import codex_child, isolated_profiles
 from unittest.mock import patch
 import uuid
 
@@ -493,8 +493,8 @@ class SessionTests(unittest.TestCase):
                  'sender_role':'claude-test','reply_to':None,'conversation_id':MID,'sequence':4}
         seen=[]
         def run(command, **kwargs):
-            seen.append(command)
-            return subprocess.CompletedProcess(command,0,'queued','')
+            if command[-1]!='--help': seen.append(command)
+            return codex_child()(command)
         with patch('quorum_session.run_child',side_effect=run), \
              patch('quorum_session.shutil.which',return_value='/synthetic/codex'):
             enqueue({'session_ref':SID,'quorum':'test-local'},message,Path('/private/state'))

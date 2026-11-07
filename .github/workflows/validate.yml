@@ -169,6 +169,9 @@ jobs:
       - name: Verify the queued Codex prompt through a real batch shim without a model
         run: uv run --no-project --python 3.12 python -m unittest discover -s tests -p test_quorum_codex_shim.py -v
 
+      - name: Verify Codex and Claude ingress contracts without a client or a model
+        run: uv run --project skills/quorum --frozen python -m unittest discover -s tests -p test_quorum_client_contracts.py -v
+
       - name: Verify message priority routing without model providers
         run: uv run --no-project --python 3.12 python -m unittest discover -s tests -p test_quorum_priority.py -v
 

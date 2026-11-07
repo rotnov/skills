@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'skills/quorum/scripts'))
-from quorum_test_support import isolated_profiles
+from quorum_test_support import codex_child, isolated_profiles
 
 
 def arguments(*values):
@@ -125,8 +125,8 @@ class DispatchModeTests(unittest.TestCase):
                        conversation_id=message_id, sequence=1)
         delivered = []
         def run(command, **kwargs):
-            delivered.append(command)
-            return subprocess.CompletedProcess(command, 0, 'queued', '')
+            if command[-1] != '--help': delivered.append(command)
+            return codex_child()(command)
         with patch('quorum_session.run_child', side_effect=run), \
                 patch('quorum_session.shutil.which', return_value='/synthetic/codex'):
             for changed in ({}, {'notification': True}, {'reply_to': 'previous'}):
@@ -163,13 +163,14 @@ class DispatchModeTests(unittest.TestCase):
                'CLAUDE_CODE_MESSAGING_TOKEN': 'synthetic-only'}
         with patch.dict(os.environ, env, clear=True), \
                 patch('quorum_claude_pipe.binding', return_value='/synthetic.sock'), \
+                patch('quorum_client_contracts.check_claude_session'), \
                 patch('quorum_claude_pipe.submit', side_effect=lambda *args: piped.append(args[2])):
             for changed in ({}, {'notification': True}, {'reply_to': 'previous'}):
                 enqueue(record, {**message, **changed}, Path('/private/synthetic-state'))
         queued = []
         def run(command, **kwargs):
-            queued.append(command[-1])
-            return subprocess.CompletedProcess(command, 0, 'queued', '')
+            if command[-1] != '--help': queued.append(command[-1])
+            return codex_child()(command)
         with patch('quorum_session.run_child', side_effect=run), \
                 patch('quorum_session.shutil.which', return_value='/synthetic/codex'):
             enqueue({**record, 'engine': 'codex'}, {**message, 'notification': True},
