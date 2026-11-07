@@ -766,7 +766,7 @@ class ParentRelayTests(ParentRoute):
         from quorum_session import enqueue
         prompts = []
         record = {**RECORD, 'engine': 'claude', 'role': 'doer'}
-        with patch('quorum_session.check_native_route'), \
+        with patch('quorum_session.check_native_route'), patch('quorum_client_contracts.check_claude_session'), \
                 patch('quorum_claude_pipe.submit', lambda sid, mid, text: prompts.append(text)):
             enqueue(record, self.message(), self.root)
             enqueue(record, self.message(reply_to=MID), self.root)

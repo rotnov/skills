@@ -643,6 +643,10 @@ class NativeBindingTests(unittest.TestCase):
                                      'dispatch_mode':'inline'}}
         self.ledger.setting('session-agent', self.record)
         self.api, self.spawned = RequirementsApi(), []
+        # Endpoint rotation is under test; test_quorum_client_contracts covers the Claude contract read.
+        contract = patch('quorum_session.check_client_contract')
+        contract.start()
+        self.addCleanup(contract.stop)
 
     def generation(self, run_id=None):
         generation = Generation(self.ledger.root, run_id)

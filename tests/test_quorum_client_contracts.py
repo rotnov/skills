@@ -122,6 +122,37 @@ class QueueArgumentTests(unittest.TestCase):
             self.assertEqual(caught.exception.reason, 'queue_help_unavailable')
 
 
+class QueueProbeCacheTests(unittest.TestCase):
+    """The help read runs once per listener process and install, not once per message."""
+
+    def prefixes(self, executable, count):
+        from quorum_session import codex_queue_prefix
+        probes = []
+        with patch('quorum_session.run_child', side_effect=codex_child(probes=probes)):
+            for _ in range(count): self.assertEqual(codex_queue_prefix(str(executable)), [str(executable)])
+        return len(probes)
+
+    def test_one_install_is_read_once_and_again_after_it_changes(self):
+        with tempfile.TemporaryDirectory(prefix='qcontract-') as folder:
+            executable = Path(folder) / 'codex'
+            executable.write_bytes(b'one')
+            self.assertEqual(self.prefixes(executable, 3), 1)
+            executable.write_bytes(b'updated build')
+            self.assertEqual(self.prefixes(executable, 2), 1)
+
+    def test_an_install_whose_identity_cannot_be_read_is_read_every_time(self):
+        self.assertEqual(self.prefixes('/synthetic/missing/codex', 2), 2)
+
+    def test_a_refused_install_is_not_remembered(self):
+        from quorum_session import codex_queue_prefix
+        with tempfile.TemporaryDirectory(prefix='qcontract-') as folder:
+            executable = Path(folder) / 'codex'
+            executable.write_bytes(b'one')
+            with patch('quorum_session.run_child', return_value=done(b'Usage: codex queue --session <ID>\n')):
+                for _ in range(2):
+                    with self.assertRaises(ClientContractRefused): codex_queue_prefix(str(executable))
+
+
 class QueueResultTests(unittest.TestCase):
     def check(self, result, thread=SID):
         contracts.check_queue_result(result, thread)

@@ -568,7 +568,7 @@ stop as `client_contract` with `code`, `reason` and `next_step`.
 
 | Route | What is checked | Code |
 | --- | --- | --- |
-| `codex queue` arguments | `codex queue --help` must exit 0 and still offer `--thread` and `--message`, as codex-cli 0.162.1 on macOS and 0.166.0 on Windows do. Other options may come and go. The help read starts no model and sends no text | `codex_queue_contract_changed` |
+| `codex queue` arguments | `codex queue --help` must exit 0 and still offer `--thread` and `--message`, as codex-cli 0.162.1 on macOS and 0.166.0 on Windows do. Other options may come and go. The help read starts no model and sends no text, and runs once per listener process for each install; a changed file is read again | `codex_queue_contract_changed` |
 | `codex queue` result | Exit 0 must print exactly one `Queued message <UUID> for thread <this thread UUID>.` line, on either stream, as codex-cli 0.166.0 does on Windows. Other lines, such as an update note, are ignored | `codex_queue_contract_changed` |
 | Windows `.cmd` shim | The npm `cmd-shim` entry line, its script and a usable Node, as [above](#windows-batch-shims) | `codex_shim_contract_changed` |
 | `turn/steer` | Before the write: each read-only method exists, answers an object, `thread/loaded/list` returns strings, `thread/read` returns a `cwd` and a known status type (`notLoaded`, `idle`, `systemError`, `active`), and `thread/turns/list` returns turns with a known status (`completed`, `interrupted`, `failed`, `inProgress`). After it: a success names a `turnId`. Additive fields are ignored | `codex_steer_contract_changed` |

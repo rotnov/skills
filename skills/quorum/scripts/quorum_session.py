@@ -477,10 +477,24 @@ def shim_command(executable):
     return [node, str(script)]
 
 
+# The `codex queue` installs whose help this process already read. A listener run is one process, so this
+# costs one extra child per run, not per message. An update changes a file's identity and is read again.
+QUALIFIED_QUEUES = set()
+
+
+def file_identity(paths):
+    """Path, size and modification time of each file, or None when one cannot be read."""
+    try: return tuple((str(path), info.st_size, info.st_mtime_ns) for path in paths for info in (Path(path).stat(),))
+    except (OSError, ValueError): return None
+
+
 def codex_queue_prefix(executable):
     """The argv prefix of a `codex queue` whose shim and arguments still match their contract."""
     prefix = shim_command(executable)
-    contracts.check_queue(prefix, run_child)
+    identity = file_identity((executable, *prefix))
+    if identity is None or identity not in QUALIFIED_QUEUES:
+        contracts.check_queue(prefix, run_child)
+        if identity is not None: QUALIFIED_QUEUES.add(identity)
     return prefix
 
 

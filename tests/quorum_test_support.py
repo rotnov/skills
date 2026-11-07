@@ -9,6 +9,24 @@ import tempfile
 from unittest.mock import patch
 
 
+def _isolate_from_the_host_claude():
+    """Never let this machine's own Claude Code vouch for a fixture.
+
+    The Claude pipe contract reads `<CLAUDE_CONFIG_DIR>/sessions/*.json` and `CLAUDE_CODE_EXECPATH`. A developer
+    running the suite inside Claude Code has both, while CI has neither, so a test passing here would fail
+    there. Point both at nothing for the whole run; a test that needs a record writes its own.
+    """
+    import atexit
+    import shutil
+    empty = tempfile.mkdtemp(prefix='quorum-no-claude-')
+    atexit.register(shutil.rmtree, empty, True)
+    os.environ['CLAUDE_CONFIG_DIR'] = empty
+    os.environ.pop('CLAUDE_CODE_EXECPATH', None)
+
+
+_isolate_from_the_host_claude()
+
+
 def anchor_owner_proof_fixtures():
     """On Windows, keep temporary fixtures under the user profile, like the real state and Codex homes.
 
