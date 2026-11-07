@@ -267,6 +267,79 @@ class RelayOutageTests(unittest.TestCase):
             self.assertEqual(result['state'], 'stopped')
 
 
+CLOUDFLARE_ORIGIN = (520, 521, 522, 523, 524, 530)
+
+
+def http_failure(code):
+    """The QuorumError the real HTTP layer raises for one synthetic status (#179)."""
+    from quorum_api import QuorumError, ServiceConfig, QuorumApi
+    api = QuorumApi(ServiceConfig('https://example.com', 'pub'), lambda: 'token')
+    with patch('quorum_api.build_opener', raising(HTTPError('https://example.com/x', code, 'synthetic', {},
+                                                            io.BytesIO(b'')))):
+        try: api.call('session_heartbeat', {'agent_id':'a'})
+        except QuorumError as error: return error
+    raise AssertionError('no error raised')
+
+
+class CloudflareOriginTests(unittest.TestCase):
+    """Cloudflare origin errors from the Supabase edge are outages, not service faults (#179)."""
+    def test_classified_transient_while_client_errors_stay_terminal(self):
+        from quorum_api import is_transient_service
+        for code in CLOUDFLARE_ORIGIN:
+            with self.subTest(code=code):
+                error = http_failure(code)
+                self.assertEqual((str(error), is_transient_service(error)), ('service_error', True))
+        for code in (400, 501, 525, 526):
+            with self.subTest(code=code):
+                error = http_failure(code)
+                self.assertEqual((str(error), is_transient_service(error)), ('service_error', False))
+
+    @isolated_profiles
+    def test_heartbeat_edge_error_is_unreachable_and_400_stays_coordination_unavailable(self):
+        from quorum_api import QuorumError
+        from quorum_presence import Presence
+        from quorum_state import LocalLedger
+        for code, transient in ((520, True), (522, True), (400, False)):
+            with self.subTest(code=code), tempfile.TemporaryDirectory() as root:
+                ledger = LocalLedger(Path(root))
+                try:
+                    class Api:
+                        def call(self, operation, payload):
+                            if operation == 'session_requirements': return REQUIREMENTS
+                            raise http_failure(code)
+                    health = Presence(Api(), {'agent_id':'a', 'session_ref':'s'}, ledger, clock=lambda: 0)
+                    if transient:
+                        health.tick()
+                        self.assertEqual(ledger.setting('presence'),
+                                         {'state':'unreachable', 'code':'service_error'})
+                    else:
+                        with self.assertRaisesRegex(QuorumError, 'coordination_unavailable'): health.tick()
+                        self.assertEqual(ledger.setting('presence')['code'], 'coordination_unavailable')
+                finally: ledger.db.close()
+
+    def test_retrying_listener_degrades_on_edge_error_then_resumes(self):
+        from quorum_listener import Control, run_listener
+        for code in (520, 522):
+            with self.subTest(code=code), Ledger() as ledger:
+                seen = []
+                def sleep(_):
+                    status = Control(ledger).status()
+                    seen.append((status['state'], status.get('code')))
+                worker = ScriptedWorker(Control(ledger), [http_failure(code), 'delivered'])
+                result = run_listener(ledger, lambda: worker, str(uuid.uuid4()), sleep=sleep, retry=True)
+                self.assertEqual(seen[0], ('degraded', 'service_error'))
+                self.assertEqual((result['state'], result['handled']), ('stopped', 1))
+                self.assertGreaterEqual(worker.runs, 2, 'the listener resumed waiting after the outage')
+
+    def test_retrying_listener_still_ends_on_a_plain_400(self):
+        from quorum_listener import Control, run_listener
+        with Ledger() as ledger:
+            sleeps = []
+            worker = ScriptedWorker(Control(ledger), [http_failure(400), 'delivered'])
+            result = run_listener(ledger, lambda: worker, str(uuid.uuid4()), sleep=sleeps.append, retry=True)
+            self.assertEqual((result['state'], result['code'], worker.runs, sleeps), ('error', 'service_error', 1, []))
+
+
 class RealtimeTerminalTests(unittest.TestCase):
     @isolated_profiles
     def test_recovery_denial_escapes_the_realtime_fallback(self):

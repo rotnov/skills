@@ -20,7 +20,8 @@ OPERATIONS = frozenset(('quorum_create invite_create invite_accept device_regist
 
 
 # Gateway/overload statuses only; missing RPCs, denials and client errors stay terminal.
-TRANSIENT_HTTP = frozenset((408, 429, 500, 502, 503, 504))
+# 520-524 and 530 are Cloudflare origin errors from the Supabase edge, transient like 502-504.
+TRANSIENT_HTTP = frozenset((408, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524, 530))
 
 # Every fixed exception name a reviewed RPC raises: name -> (HTTP status, client code, CLI exit code).
 # PostgREST answers `raise insufficient_privilege` with 403 and `raise exception` with 400. A name is kept only

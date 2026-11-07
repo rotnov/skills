@@ -62,7 +62,7 @@ message and receipt/reply there before claiming runtime acceptance.
 ## Service outages
 
 A running native listener waits out a network failure or HTTP 408, 429, 500,
-502, 503 or 504 without a command. Status shows `state: degraded` with the code
+502, 503, 504 or a Cloudflare origin error (520-524, 530) without a command. Status shows `state: degraded` with the code
 and presence `unreachable`; it retries after 10, 20, 40 and then every 60
 seconds, reconciling before any further inbox or receipt call. Authentication or
 permission denial, other HTTP errors, release mismatch, stop and revoked or
