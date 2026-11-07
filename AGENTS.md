@@ -115,6 +115,25 @@ uv run --frozen python -m unittest discover -s tests -v
 uv run --frozen pre-commit run --all-files
 ```
 
+### Hung tests
+
+`tests/hang_guard.py` bounds every unit run with no wrapper script, so the
+commands above stay the same. Keep a top-level `import hang_guard`, directly or
+through `quorum_test_support`, in every `tests/test_*.py`;
+`tests/test_hang_guard.py` enforces it. A `tests/__init__.py` would not work,
+because `discover -s tests` never imports it.
+
+- A run ends if no test boundary passes for 300 seconds, or if it passes 2 GiB
+  of peak memory on POSIX. Raise a limit only with a measured reason.
+- A run ends once any process above it has ended, past launchers such as
+  `uv run`, so it cannot outlive a killed caller. A caller that has ended but
+  has not been reaped still counts as alive until its parent reaps it.
+- A listener loop in one test stops after 1,000 `Control.update` calls and
+  fails with `RunawayLoop`. Give a fake that drives a listener its own stop
+  condition, and do not rely on this budget to end a passing test.
+- On POSIX, a run the guard ends also kills the processes below it. Find
+  leftovers with `pgrep -P <pid>`, never with a broad `pkill -f`.
+
 <!-- ievo:start -->
 **Before applying the instructions below**, read `.ievo/evolution/project.md` if it exists, and apply ALL rules from its sections IN ADDITION to the project's instructions.
 <!-- ievo:end -->

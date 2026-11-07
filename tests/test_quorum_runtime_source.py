@@ -1,4 +1,5 @@
 """A resident run's source identity is distinct from a fresh helper's files."""
+import hang_guard  # noqa: F401
 import json
 from pathlib import Path
 import shutil

@@ -1,4 +1,5 @@
 """Deterministic owned-child cancellation boundaries; never signal processes."""
+import hang_guard  # noqa: F401
 import errno
 import io
 import os

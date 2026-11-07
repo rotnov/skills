@@ -3,6 +3,7 @@
 Every case uses real temporary state and credential stores. doctor must stay offline and read-only:
 no network call, no process, and no file or directory created or changed.
 """
+import hang_guard  # noqa: F401
 import contextlib
 import io
 import json

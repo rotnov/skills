@@ -1,4 +1,5 @@
 """Owner-scoped delegation; no models, sockets, credentials or remote service."""
+import hang_guard  # noqa: F401
 from pathlib import Path
 import sys
 import unittest

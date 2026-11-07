@@ -3,6 +3,7 @@
 QUORUM_KNOWLEDGE_DOCKER=1 uses the already fetched public test image pinned by
 OCI digest. No network, exposed ports, service configuration or provider calls.
 """
+import hang_guard  # noqa: F401
 from pathlib import Path
 import os
 import unittest

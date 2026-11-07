@@ -1,4 +1,5 @@
 """Generated invitations stay thin; the recipient's freshly installed join guide owns the procedure."""
+import hang_guard  # noqa: F401
 from pathlib import Path
 import re
 import sys

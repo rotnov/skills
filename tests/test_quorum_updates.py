@@ -1,4 +1,5 @@
 """Owner refreshes use disposable source copies and an offline RPC boundary."""
+import hang_guard  # noqa: F401
 import importlib.util
 import contextlib
 import io
