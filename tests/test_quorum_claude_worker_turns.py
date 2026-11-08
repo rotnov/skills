@@ -160,6 +160,27 @@ class RearmTurnTests(Steps):
         self.assertEqual(refused.exception.code, 2)
 
     @isolated_profiles
+    def test_zero_means_no_own_bound_also_after_a_resolve_step(self):
+        # The brief's route (#200): wait_command and the templates end in --max-seconds 0, which no elapsed step
+        # turns into a positive bound.
+        import quorum_native_inbox as inbox
+        api = Api(inbox=[message(M1)])
+        self.bound(api)
+        self.offer(api)
+        seen = []
+        def fake(api, auth, ledger, record, seconds, **_):
+            seen.append(seconds)
+            return inbox.wait_result(ledger, record, 'rearm')
+        clock = iter([100.0, 400.0])
+        with patch('quorum_native_inbox.wait', fake), \
+                patch('quorum_claude_worker.time.monotonic', lambda: next(clock)):
+            code, _, text = self.worker(api, 'received', M1, '--then-wait', '--max-seconds', '0')
+            self.assertEqual(code, 0, text)
+            self.assertEqual(self.worker(api, 'wait', '--max-seconds', '0')[0], 0)
+        self.assertEqual(seen, [inbox.WAIT_UNBOUNDED, inbox.WAIT_UNBOUNDED])
+        self.assertEqual(inbox.WAIT_UNBOUNDED, 0)
+
+    @isolated_profiles
     def test_a_then_wait_bound_counts_from_the_command_start(self):
         import quorum_native_inbox as inbox
         api = Api(inbox=[message(M1)])
@@ -262,8 +283,8 @@ class SafetyTests(Steps):
         self.assertNotIn(self.token, self.stderr)
         self.assertNotIn(str(self.root), json.dumps(woke), 'the line carries no path or command')
         self.assertNotIn('--session-id', envelope['reply_command'])
-        self.assertEqual(envelope['reply_command'][-6:], ['--worker-capability', str(self.cap), 'reply', M1,
-                                                          '--text-stdin', '--then-wait'],
+        self.assertEqual(envelope['reply_command'][-8:], ['--worker-capability', str(self.cap), 'reply', M1,
+                                                          '--text-stdin', '--then-wait', '--max-seconds', '0'],
                          'the full envelope\'s command is the brief\'s template')
 
 

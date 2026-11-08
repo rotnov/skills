@@ -173,8 +173,8 @@ def main(argv=None):
             if args.command == 'mcp': return 0
             if (args.command == 'session' and getattr(args, 'worker_context', None) is not None
                     and (args.action == 'wait' or getattr(args, 'then_wait', False))):
-                # Claude Code's Monitor truncates an event at 500 characters (#184): stdout, the event, gets one
-                # compact line; the full result goes first to stderr, which reaches only the output file.
+                # One compact stdout line (under Monitor's 500-character event, #184, for an older brief) after the
+                # full result on stderr; a background command's output file holds both, compact line last (#200).
                 from quorum_native_inbox import wake_line
                 line, whole = wake_line(value)
                 print(whole, file=sys.stderr, flush=True)
