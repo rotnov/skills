@@ -90,8 +90,10 @@ class SpawnPlanTests(Bound):
         # The prompt holds the brief and the single join command; never the key, a token or another step.
         prompt = plan['spawn_prompt']
         import shlex
-        self.assertEqual((plan['shell'], plan['join_command']), ('bash', shlex.join(plan['join_argv'])),
-                         'POSIX output is unchanged')
+        # The join runs in the bound directory: a native subagent's shell starts in the chat's project instead.
+        self.assertEqual((plan['shell'], plan['join_cwd'], plan['join_command']),
+                         ('bash', str(self.project),
+                          'cd ' + shlex.quote(str(self.project)) + ' && ' + shlex.join(plan['join_argv'])))
         self.assertIn('foreground Bash tool call', prompt)
         self.assertIn(plan['join_command'], prompt)
         self.assertIn(plan['slot_id'], prompt)
@@ -220,7 +222,9 @@ class SpawnPlanTests(Bound):
     def test_powershell_plan_renders_the_join_with_the_call_operator(self):
         plan = self.planned(PlanApi(), '--shell', 'powershell')
         self.assertEqual(plan['shell'], 'powershell')
-        self.assertTrue(plan['join_command'].startswith("& '"), plan['join_command'])
+        self.assertEqual(plan['join_command'].split('; & ', 1)[0],
+                         "Set-Location -LiteralPath '" + str(self.project).replace("'", "''") + "'", plan['join_command'])
+        self.assertIn("; & '", plan['join_command'])
         self.assertIn('foreground PowerShell tool call', plan['spawn_prompt'])
         self.assertIn(plan['join_command'], plan['spawn_prompt'])
 
@@ -240,6 +244,13 @@ class SpawnPlanTests(Bound):
         # POSIX paths keep the exact shlex.join form.
         posix = ['/usr/bin/python3', '/opt/skills/quorum.py', '--state', '/home/a/state', 'session']
         self.assertEqual(render_command(posix), shlex.join(posix))
+        # A bound directory comes first, quoted for each shell.
+        self.assertEqual(render_command(posix, cwd="/home/a/o'brien project"),
+                         "cd '/home/a/o'\"'\"'brien project' && " + shlex.join(posix))
+        self.assertEqual(shlex.split(render_command(posix, cwd='/home/a/my project'))[:3],
+                         ['cd', '/home/a/my project', '&&'])
+        self.assertEqual(render_command(argv, 'powershell', r"C:\Users\o'brien\proj"),
+                         "Set-Location -LiteralPath 'C:\\Users\\o''brien\\proj'; " + render_command(argv, 'powershell'))
 
     def test_live_agents_stay_disabled(self):
         code, result, _ = self.cli(None, 'worker')
