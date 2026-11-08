@@ -324,7 +324,13 @@ offer ends it at once, except one under an explicit `session hold`, which wakes
 nobody until the hold ends and `wait` parks it. A status alert ends `wait`, a
 routine status does not. A service outage is waited out, also at its start,
 with `presence: unreachable`, since each exit costs a turn; a release mismatch
-stays a fatal code.
+stays a fatal code. A server-side failure (`coordination_unavailable` or a
+generic `service_error`) cools down as the listener does ([service
+outages](resume.md#service-outages)): presence `unavailable` with the code, no heartbeat or Hello, rechecks
+after 1, 5, 15 and 60 minutes, then hourly, each resubscribing and reconciling
+first. `session stop` ends it within a second. If `--max-seconds` ends during a
+cooldown, `wait` returns `rearm` with that `code`. A refusal with its own name
+stays `fatal:<code>`.
 
 `--max-seconds` defaults to 1680, two minutes under the 30 minutes after which
 Monitor always, and Claude Code [background

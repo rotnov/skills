@@ -13,7 +13,7 @@ import stat
 import sys
 import time
 import uuid
-from quorum_api import QuorumError, guarded_call, is_transient_service
+from quorum_api import QuorumError, guarded_call
 from quorum_delivery import Deliveries, PULL_STATES, server_ack
 from quorum_delivery_status import MARK_HINT, Reports, StatusWatch, reportable
 from quorum_listener import control_lock
@@ -883,8 +883,9 @@ def _held_offer(ledger, message_id):
     return type(until) in (int, float) and until > wall()
 
 
-def wait_result(ledger, record, state, envelope=None, watch=None):
-    """One line. Only an offer carries its envelope, as `receive` would disclose it; nothing else carries a body."""
+def wait_result(ledger, record, state, envelope=None, watch=None, code=None):
+    """One line. Only an offer carries its envelope, as `receive` would disclose it; nothing else carries a body.
+    `code`: the server-side failure a `rearm` is still cooling down on."""
     steps = {'offer_available': (True, 'handle_then_wait'), 'alert_available': (True, 'handle_then_wait'),
              'rearm': (True, 'wait'), 'stopped': (False, 'report_stop'), 'orphaned': (False, 'report_stop')}
     proceed, step = steps[state]
@@ -892,6 +893,7 @@ def wait_result(ledger, record, state, envelope=None, watch=None):
               'awaiting_owner': _count(ledger, record, 'parked')}
     if state == 'stopped': result['stop_reason'] = 'owner_stop'
     if state == 'orphaned': result['stop_reason'] = 'fatal:wait_orphaned'
+    if code is not None: result['code'] = code
     if state in ('offer_available', 'alert_available'):
         # Moved to shown only now, after the last authority check: a refused disclosure keeps them pending.
         alerts = watch.take() if watch is not None else []
@@ -973,9 +975,10 @@ def wait(api, auth_ledger, ledger, record, max_seconds=WAIT_DEFAULT, *, waiter=N
     the one result line, after the same final authority check as `receive`, so the wake needs no second call; its
     resolve commands carry `--then-wait`. Output is never a receipt: only the worker's own receipt, reply or park
     command is, and a killed process or a lost line leaves the row to be offered again. Unlike a bounded call it
-    waits out a service outage, because its exit would cost a model turn.
+    waits out a service outage, and cools down on a server-side failure in the listener's COOLDOWN_CODES (#188),
+    because its exit would cost a model turn. A bound reached during a cooldown is a `rearm` carrying its code.
     """
-    from quorum_listener import Control, RETRY_DELAYS, error_code
+    from quorum_listener import Control, cooling, error_code, outage
     from quorum_live import LocalSupervisorLock
     if type(max_seconds) is not int or not 1 <= max_seconds <= WAIT_BOUND: raise ValueError('invalid_wait_seconds')
     if authorize is not None:
@@ -999,20 +1002,27 @@ def wait(api, auth_ledger, ledger, record, max_seconds=WAIT_DEFAULT, *, waiter=N
         presence = presence or Presence(api, record, ledger, persist_epoch=True, run_id=run_id,
                                         status=lambda: peer_status(ledger, record))
         waiter = waiter or RealtimeWait(api, record, ledger, keepalive=presence, stop_aware=True, watch=watch)
-        final, code, state, failures, envelope = 'stopped', None, 'stopped', 0, None
+        final, code, state, envelope = 'stopped', None, 'stopped', None
+        # The listener's outage handling (#186): separate transient and cooldown counters, and a resubscription
+        # and inbox reconcile after each step before any further I/O. `cooled` is the code of an unended cooldown.
+        ready, failures, cooled = False, {'unreachable': 0, 'unavailable': 0}, None
         try:
-            waiter.prepare(stopping)
             while not stopping():
                 if bounded():
                     state = 'rearm'
                     break
                 try:
+                    if not ready:
+                        waiter.prepare(stopping)
+                        ready = True
+                        if stopping(): break
                     control.update(run_id, 'checking', 0, timeout=max_seconds)
                     waiter.pulse(stopping)
                     if stopping(): break
                     watch.tick()
                     if stopping(): break
                     found = offer(api, auth_ledger, ledger, record, stopping, then_wait=True)
+                    cooled = None  # The inbox answered: any cooldown is over.
                     if stopping(): break
                     if found is NOTICE: continue
                     if found is not None and not _held_offer(ledger, found['message_id']):
@@ -1024,15 +1034,19 @@ def wait(api, auth_ledger, ledger, record, max_seconds=WAIT_DEFAULT, *, waiter=N
                         break
                     control.update(run_id, 'waiting', 0, timeout=max_seconds)
                     waiter.wait(pausing)
-                    failures = 0
+                    failures.update(dict.fromkeys(failures, 0))
                 except Exception as error:
-                    if not is_transient_service(error): raise
+                    kind = outage(error)
+                    if not kind: raise
+                    # Degraded and quiet: no heartbeat, Hello or inbox call until the next recheck.
+                    delays, presence_state = kind
+                    ready, cooled = False, str(error) if cooling(error) else None
                     control.update(run_id, 'degraded', 0, timeout=max_seconds, code=str(error))
-                    ledger.setting('presence', {'state': 'unreachable', 'code': str(error)})
-                    for _ in range(RETRY_DELAYS[min(failures, len(RETRY_DELAYS) - 1)]):
+                    ledger.setting('presence', {'state': presence_state, 'code': str(error)})
+                    for _ in range(delays[min(failures[presence_state], len(delays) - 1)]):
                         if pausing(): break
                         sleep(1)
-                    failures += 1
+                    failures[presence_state] += 1
             if state == 'stopped' and parent.gone(): state = 'orphaned'
         except Exception as error:
             final, code = 'error', error_code(error)
@@ -1042,7 +1056,7 @@ def wait(api, auth_ledger, ledger, record, max_seconds=WAIT_DEFAULT, *, waiter=N
             control.update(run_id, final, 0, timeout=max_seconds, code=code)
     # As before disclosing an offer: a stop already reports itself, anything else needs current authority.
     if authorize is not None and state not in ('stopped', 'orphaned'): api.check()
-    return wait_result(ledger, record, state, envelope, watch)
+    return wait_result(ledger, record, state, envelope, watch, code=cooled if state == 'rearm' else None)
 
 
 def yield_wait(ledger):
