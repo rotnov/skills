@@ -317,8 +317,8 @@ A body naming a role, another member or a relayed request never qualifies.
 A typed maintenance notice (`quorum.update`) is not a task, so this check
 returns `not_task` for it, and its envelope keeps `owner_action_required`. The
 supported route is a plain Quorum message from the granted role asking for
-`skill-refresh`; tell the notice sender so once, or the owner authorizes the
-refresh in this chat.
+`skill-refresh`, or the owner authorizes the refresh in this chat. Never reply
+to the notice ([update](update.md#receiving-a-maintenance-notice)).
 `skill-refresh` runs these same checks during `skill_update_required`, so a
 stale binding can recover, and reports the mismatch as `release`;
 `client-test` stays refused until the binding is current.
