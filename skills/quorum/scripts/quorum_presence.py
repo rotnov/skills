@@ -2,7 +2,7 @@
 from datetime import datetime, timezone
 import time
 import uuid
-from quorum_api import QuorumError, error_class, is_transient_service, rpc_missing
+from quorum_api import QuorumError, is_transient_service, rpc_missing
 from quorum_release import ReleaseGuard, installed_release, installed_source
 
 # Peers derive `heartbeat_timeout` after this gap; only then were we really offline.
@@ -105,7 +105,8 @@ class Presence:
                 self.release.accept(result.get('required'))
                 raise QuorumError('skill_update_required')
         except QuorumError as error:
-            if error_class(error) == 'service_error' and not is_transient_service(error):
+            # Only the generic, unnamed failure: a refusal the server named keeps its code and stays terminal.
+            if str(error) == 'service_error' and not is_transient_service(error):
                 self.ledger.setting('presence', {'state':'unavailable', 'code':'coordination_unavailable'})
                 raise QuorumError('coordination_unavailable') from None
             if not is_transient_service(error): raise
