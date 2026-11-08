@@ -39,8 +39,8 @@ _ROUTES = {
             'empty wait, and the command\'s exit wakes the worker. That wake was observed on macOS for a 90-second '
             'wait; hours-long waits and Windows are not yet observed, so this is not perpetual service. A wait exits '
             'at 1680 seconds by default (up to 7080 under a long Bash timeout) for the worker to start it again, '
-            'which costs two model turns; an offer\'s wake carries its envelope, and one resolve command also starts '
-            'the next wait. The worker stops at its '
+            'which costs two model turns; an offer\'s compact wake line carries a short message inline, and one '
+            'resolve command also starts the next wait. The worker stops at its '
             'brief\'s limit or the slot deadline (lifetime until-owner-stop has none). Nothing restarts after the '
             'client exits; the resumed chat must rebind. A dead wait shows offline and messages stay durable. Status '
             'is the last observed state, not provider liveness.'),

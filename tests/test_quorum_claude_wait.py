@@ -306,7 +306,9 @@ class WaitRouteTests(WaitCase):
             code, result, text = self.worker(api, 'wait', '--max-seconds', '5')
         self.assertEqual((code, result['data']['state']), (0, 'offer_available'), text)
         self.assertEqual(text.count('\n'), 1, 'one Monitor event, even for a multi-line body')
-        self.assertEqual(result['data']['envelope']['message']['body'], 'private peer body\nsecond line')
+        self.assertEqual((result['data']['body'], result['data']['full']), ('private peer body\nsecond line', False))
+        self.assertEqual(self.full()['data']['envelope']['message']['body'], 'private peer body\nsecond line')
+        self.assertNotIn(self.token, self.stderr)
         self.assertNotIn(self.token, text)
 
     @isolated_profiles
