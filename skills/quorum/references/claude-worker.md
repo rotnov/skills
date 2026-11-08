@@ -469,9 +469,16 @@ adopting worker) and refuses without touching reception. Then it stops this
 chat's reception like `session stop`, prepares the adopt slot (until owner
 stop by default) and returns the same `spawn_prompt`, `join_command` and
 `attest_command` as [spawn-plan](#two-call-setup), plus `verify_command`,
-`retire_parent` (step 4's leave argv and its stdin) and the fallback steps.
-Spawn the worker and attest it. When `verify_command` shows the worker's agent
-in `target`, run `retire_parent`.
+`retire_command` and the fallback steps. Spawn the worker and attest it.
+
+Retire this chat's agent only after the worker has proven reception (step 4),
+never merely because its agent is visible. Run `retire_command`
+(`session worker adopt-retire <slot-uuid>`) once the worker has connected.
+The first run sends one probe from this chat's agent to the worker's agent
+and returns `state: probe_sent`. Later runs return `probe_pending` until the
+worker's own ledger shows that probe receipted or answered. Only then does
+the command leave this chat's agent and return `retired: true`. Until then
+both agents stay, nothing is retired, and this chat stays the fallback.
 
 ### Parent reception as the fallback
 
@@ -488,7 +495,7 @@ This chat's own parent reception stays the fallback, restored with
   `session worker stop <slot-uuid> --leave`.
 
 The owner's request to move is what authorizes that one fallback start. Once
-`retire_parent` has run, this chat's agent is gone; recovery then is the
+`adopt-retire` has returned `retired: true`, this chat's agent is gone; recovery then is the
 worker's [rebind](#rebind-after-a-parent-restart), and parent reception again
 needs a new owner-approved `session connect`.
 

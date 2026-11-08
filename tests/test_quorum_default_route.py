@@ -8,7 +8,7 @@ import os
 from unittest.mock import patch
 
 from quorum_test_support import isolated_profiles
-from test_quorum_claude_worker import AGENT, OWNER_PROOF, QUORUM, SID, Api, claude, message, M1
+from test_quorum_claude_worker import AGENT, OWNER_PROOF, QUORUM, SID, Api, claude, message, M1, M2
 import test_quorum_claude_worker as _worker_tests
 from test_quorum_claude_worker import PARENT_AGENT
 
@@ -39,6 +39,15 @@ class _Base(_worker_tests.AdoptTests):
     def tail(self, argv):
         """An argv's words after this helper's own `--state <dir>`."""
         return argv[argv.index('--state') + 2:]
+
+
+class ProbeApi(_worker_tests.OwnerApi):
+    """The owner fake service; a sent probe lands in the worker's inbox as message M2 from this chat's agent."""
+    def answer(self, operation, payload):
+        if operation == 'message_send':
+            self.inbox.append(message(M2, sender_id=payload['sender_agent_id'], body=payload['body']))
+            return {'message_id': M2}
+        return super().answer(operation, payload)
 
 
 # Only the new tests; the base class's own tests already run in test_quorum_claude_worker.
@@ -97,7 +106,7 @@ class DefaultRouteTests(_Base):
         self.assertIn(plan['join_command'], plan['spawn_prompt'])
         self.assertNotIn('accepts the invitation', plan['spawn_prompt'])
         self.assertEqual(self.tail(plan['attest_command'])[:4], ['session', 'worker', 'attest', plan['slot_id']])
-        self.assertEqual(plan['retire_parent']['stdin'], {'agent_id': PARENT_AGENT})
+        self.assertEqual(self.tail(plan['retire_command']), ['session', 'worker', 'adopt-retire', plan['slot_id']])
         self.assertEqual([self.tail(step) for step in plan['fallback_steps']], [['session', 'start']])
         self.assertEqual([self.tail(step) for step in plan['fallback_steps_after_connect']],
                          [['session', 'worker', 'stop', plan['slot_id'], '--leave'], ['session', 'start']])
@@ -119,6 +128,62 @@ class DefaultRouteTests(_Base):
         self.assertEqual(code, 0, text)
         self.assertNotIn('invite_accept_id', api.ops())
         self.assertEqual(self.setting(slot)['target'], {'quorum_id': QUORUM, 'agent_id': AGENT})
+
+    def connected_worker(self, api):
+        """adopt-plan, attest and the worker's own connect; sets the Bound helpers' slot and capability."""
+        self.parent()
+        code, result, text = self.adopt_plan()
+        self.assertEqual(code, 0, text)
+        self.slot = result['data']['slot_id']
+        self.attest(self.slot)
+        self.cap = self.capability(self.slot)
+        self.assertEqual(self.connect(api, self.cap, '--require-worker-inbox')[0], 0)
+        return self.slot
+
+    def retire(self, api, slot):
+        code, result, text = self.cli(api, 'session', 'worker', 'adopt-retire', slot)
+        self.assertEqual(code, 0, text)
+        return result['data']
+
+    @isolated_profiles
+    def test_a_visible_worker_without_proof_never_retires_the_parent(self):
+        api = ProbeApi()
+        slot = self.connected_worker(api)
+        # The worker's agent is visible in its slot status, yet nothing is retired.
+        self.assertEqual(self.setting(slot)['target']['agent_id'], AGENT)
+        first = self.retire(api, slot)
+        self.assertEqual((first['retired'], first['state'], first['probe_message_id']), (False, 'probe_sent', M2))
+        send = [payload for operation, payload, _ in api.calls if operation == 'message_send']
+        self.assertEqual([(item['sender_agent_id'], item['recipient_agent_id']) for item in send],
+                         [(PARENT_AGENT, AGENT)])
+        # Offered but not receipted: still no retire, and still only one probe.
+        self.offer(api)
+        again = self.retire(api, slot)
+        self.assertEqual((again['retired'], again['state']), (False, 'probe_pending'))
+        self.assertEqual([self.tail(step) for step in again['fallback_steps']],
+                         [['session', 'worker', 'stop', slot, '--leave'], ['session', 'start']])
+        self.assertNotIn('agent_leave', api.ops())
+        self.assertEqual(api.ops().count('message_send'), 1)
+        # A worker that has not connected is refused before any probe.
+        self.write_setting(slot, {**self.setting(slot), 'target': {'quorum_id': QUORUM}})
+        code, result, text = self.cli(api, 'session', 'worker', 'adopt-retire', slot)
+        self.assertEqual((code, result['data'].get('reason')), (3, 'target_pending'), text)
+
+    @isolated_profiles
+    def test_a_receipted_probe_retires_the_parent_agent(self):
+        api = ProbeApi()
+        slot = self.connected_worker(api)
+        self.assertEqual(self.retire(api, slot)['state'], 'probe_sent')
+        self.assertEqual(self.offer(api)['message']['id'], M2)
+        code, result, text = self.worker(api, 'received', M2)
+        self.assertEqual(code, 0, text)
+        done = self.retire(api, slot)
+        self.assertEqual((done['retired'], done['state'], done['parent_agent_id']), (True, 'retired', PARENT_AGENT))
+        leave = [(payload, request) for operation, payload, request in api.calls if operation == 'agent_leave']
+        self.assertEqual(leave, [({'agent_id': PARENT_AGENT}, 'adopt-retire:' + slot)])
+        # Idempotent afterwards: no second leave.
+        self.assertEqual(self.retire(api, slot)['state'], 'retired')
+        self.assertEqual(api.ops().count('agent_leave'), 1)
 
     @isolated_profiles
     def test_failed_attestation_falls_back_to_parent_reception(self):

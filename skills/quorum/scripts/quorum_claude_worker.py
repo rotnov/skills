@@ -1952,11 +1952,82 @@ def adopt_plan(args):
             'adopt': prepared['adopt'], 'parent_reception': 'stopped',
             'parent_listener': stopped.get('listener') if isinstance(stopped, dict) else None,
             'verify_command': _command(root, 'session', 'worker', 'status', slot_id),
-            'retire_parent': {'argv': _command(root, 'leave', '--request-id', 'adopt-retire:' + slot_id,
-                                               '--json-stdin'),
-                              'stdin': {'agent_id': record['agent_id']}},
+            'retire_command': _command(root, 'session', 'worker', 'adopt-retire', slot_id),
             'fallback_steps': _fallback_steps(root, slot_id, False),
             'fallback_steps_after_connect': _fallback_steps(root, slot_id, True)}
+
+
+PROBE_BODY = ("Quorum adopt probe from this chat's parent route to its new worker. Receipt it with your received "
+              'command; no answer is needed and nothing else is asked.')
+
+
+def _probe_receipted(root, record, message_id):
+    """Read-only: whether the worker's own ledger acknowledged this exact message (receipted or answered)."""
+    names = ('sessions', actor_directory(record['binding']['session_ref']))
+    with _components(root, names, ACTOR_KINDS[:2]) as fds:
+        rows = None if fds is None else _read_db(
+            fds[-1], root.joinpath(*names, 'ledger.sqlite'),
+            lambda db: db.execute('select data from settings where key=?',
+                                  (DELIVERY_PREFIX + message_id,)).fetchall(), ledger='actor')
+    if not rows: return False
+    try: value = json.loads(rows[0][0])
+    except ValueError: return False
+    return isinstance(value, dict) and value.get('state') == 'acked'
+
+
+def adopt_retire(state_root, slot_id):
+    """Owner parent: retire this chat's own agent only once the adopting worker proved reception.
+
+    The first call sends one probe from this chat's agent to the worker's agent and records it on the slot.
+    Later calls retire the parent agent only when the worker's own ledger shows that probe acknowledged
+    (receipted or answered). Until then nothing is retired, and this chat's parent reception stays the fallback.
+    """
+    sid = actual_session()
+    root = _state_root(state_root)
+    slot_id = _slot_uuid(slot_id)
+    record = _view(root, slot_id)
+    if record.get('provider_session_id') != sid: raise _denied('session_mismatch')
+    if record['scope']['mode'] != 'adopt': raise _denied('operation_denied')
+    state, reason = _effective(record)
+    if state == 'terminal': raise _terminal(reason)
+    if state != 'active': raise _denied('slot_pending')
+    parent = record['scope']['adopt']['agent_id']
+    result = {'slot_id': slot_id, 'parent_agent_id': parent}
+    if _index_setting(root, RETIRED + parent) is not None: return {**result, 'retired': True, 'state': 'retired'}
+    target = record.get('target') or {}
+    if not target.get('agent_id') or _unresolved(record): raise _denied('target_pending')
+    fallback = {'fallback_steps': _fallback_steps(root, slot_id, True)}
+    probe = record.get('probe')
+    if not isinstance(probe, dict):
+        with _owner_api(root, record) as (_, api):
+            sent = api.call('message_send', {
+                'quorum_id': target['quorum_id'], 'sender_agent_id': parent, 'recipient_agent_id': target['agent_id'],
+                'conversation_id': str(uuid.uuid5(uuid.NAMESPACE_URL, parent + ':adopt-probe:' + slot_id)),
+                'body': PROBE_BODY, 'reply_to': None}, 'adopt-probe:' + slot_id)
+        message_id = sent.get('message_id') if isinstance(sent, dict) else None
+        if not isinstance(message_id, str) or not CANONICAL.fullmatch(message_id): raise QuorumError('invalid_response')
+        with _slot(root, slot_id, sid) as ledger:
+            current = ledger.setting(SLOT_KEY)
+            ledger.setting(SLOT_KEY, {**current, 'probe': {'message_id': message_id, 'sent_at': now()}})
+        return {**result, **fallback, 'retired': False, 'state': 'probe_sent', 'probe_message_id': message_id,
+                'next_step': ('A probe went to the worker. Nothing was retired; this chat stays the fallback. Run '
+                              'this command again once the worker has receipted it.')}
+    if not _probe_receipted(root, record, probe['message_id']):
+        return {**result, **fallback, 'retired': False, 'state': 'probe_pending',
+                'probe_message_id': probe['message_id'],
+                'next_step': ('The worker has not receipted the probe yet. Nothing was retired; this chat stays '
+                              'the fallback. Run this command again later.')}
+    with _owner_api(root, record) as (ledger, api):
+        try: api.call('agent_leave', {'agent_id': parent}, 'adopt-retire:' + slot_id)
+        except QuorumError:
+            # A lost answer leaves a committed leave a retry cannot repeat: confirm it by a read instead.
+            if not verified_retired(api, record, parent): raise
+        record_retired(ledger, parent)
+    from quorum_session import retire_after_leave
+    try: local = retire_after_leave(root, parent)
+    except (ValueError, OSError): local = None
+    return {**result, 'retired': True, 'state': 'retired', 'probe_message_id': probe['message_id'],
+            'local_binding': local}
 
 
 def join(state_root, slot_id, run):
@@ -2245,6 +2316,7 @@ def manage(args, register_agent=None):
             return prepare(args.state, _strict_json(raw, 'scope_invalid'))
         if action == 'spawn-plan': return spawn_plan(args)
         if action == 'adopt-plan': return adopt_plan(args)
+        if action == 'adopt-retire': return adopt_retire(args.state, args.slot)
         if action == 'join': raise _denied('operation_denied')  # quorum.main runs join with its own steps
         if action == 'attest': return attest(args.state, args.slot, args.native_handle, args.spawn_tool_use_id)
         if action == 'await-binding': return await_binding(args.state, args.slot, args.wait_seconds)

@@ -906,6 +906,9 @@ def add_worker_commands(actions):
     adopt.add_argument('--lifetime', choices=('bounded', 'until-owner-stop'),
                        help='Default until-owner-stop, so owner maintenance stays available')
     adopt.add_argument('--ttl-seconds', type=int, metavar='1..3600')
+    steps.add_parser('adopt-retire', help="Owner parent: probe the adopting worker, and retire this chat's own "
+                                          'agent only once the worker has receipted that probe').add_argument(
+        'slot', type=slot_uuid)
     join = steps.add_parser('join', help='Worker: await-binding, accept-id, connect and the first receive as one '
                                          'command; returns the capability reference and wait_command')
     join.add_argument('slot', type=slot_uuid)
