@@ -160,7 +160,9 @@ Q create <slug> --access github --json-stdin --worker-capability <capability-fil
 Q accept-id <invite-id> --transport tool-inbox --worker-capability <capability-file> --require-worker-inbox
 Q accept-id <invite-id> --anonymous --origin <origin> --publishable-key <key> --transport tool-inbox --worker-capability <capability-file> --require-worker-inbox
 Q session --worker-capability <capability-file> connect <slug> --role <role> --project-ref <project> --transport tool-inbox --require-worker-inbox
-Q session --worker-capability <capability-file> wait [--max-seconds 1..1500]
+Q session --worker-capability <capability-file> wait [--max-seconds 1..7080]
+Q session --worker-capability <capability-file> received|park <message-id> --then-wait [--max-seconds 1..7080]
+Q session --worker-capability <capability-file> reply <message-id> --text-stdin --then-wait [--max-seconds 1..7080]
 Q session --worker-capability <capability-file> receive --wait-seconds 0
 Q session --worker-capability <capability-file> status
 Q session --worker-capability <capability-file> stop
@@ -236,48 +238,73 @@ this scope at connect; nothing is inherited from the parent.
 ### Background wait
 
 Once connected, the worker runs `receive --wait-seconds 0` once, for its Hello
-outcome and any waiting message. It then runs `wait_command` (from any receive
-result, or `wait` in the commands above) as one background command, with the
-client's own background option and never a shell `&`, and ends its turn. An
-empty wait uses no model turn. The command's exit wakes the worker. Its one
-result line is fixed:
+outcome and any waiting message. It then starts `wait_command` (from any receive
+result, or `wait` in the commands above) and ends its turn. An empty wait uses
+no model turn, and the command's exit wakes the worker. Every model turn re-reads
+the worker's whole context, so the route keeps turns to the minimum:
+
+- Start each wait-route command with Claude Code's Monitor tool, `timeout_ms`
+  1800000. Its one result line arrives inside the event that wakes the worker.
+- Without Monitor, use Bash `run_in_background`, never a shell `&`. Its
+  completion notice holds only the output file path, so the worker reads that
+  file on each wake, which costs one more turn.
+- An offer's line already carries its envelope, so there is no `receive` call.
+  The envelope's `receipt_command`, `reply_command` and `park_command` end in
+  `--then-wait`: each resolves the offer, then waits in the same command.
 
 | `state` | `next_step` | Worker's next step |
 | --- | --- | --- |
-| `offer_available` | `receive` | Run `receive --wait-seconds 0` once, handle the result, start `wait`, end the turn |
-| `alert_available` | `receive` | The same; the receive result carries `delivery_alerts` |
+| `offer_available` | `handle_then_wait` | Handle `envelope`, run one of its resolve commands the same way, end the turn |
+| `alert_available` | `handle_then_wait` | Act on `delivery_alerts`, start `wait`, end the turn |
 | `rearm` | `wait` | Start `wait`, end the turn |
 | `stopped` | `report_stop` | Report `stop_reason` `owner_stop` |
 | `orphaned` | `report_stop` | The process that started it is gone. Report `fatal:wait_orphaned` if anything reads this |
+| `wait_failed` | `end_turn` or `report_stop` | Only after `--then-wait`: `resolved` holds the step's own result; `worker_already_running` ends the turn, anything else reports `stop_reason` |
 
-Each result also has `transport`, `continue` and `awaiting_owner`, and never a
-message, ID, path or command. The body reaches the worker only through `receive`.
-Any other exit is a fixed-code failure (`fatal:<code>`), except two:
+Each line also has `transport`, `continue` and `awaiting_owner`, and an offer or
+alert line carries the first unreported Hello outcome. Only `offer_available`
+carries a body, inside `envelope`, the same envelope `receive` discloses. A
+`--then-wait` line adds `resolved`. Any other exit is a fixed-code failure
+(`fatal:<code>`), except two:
 
 - `worker_already_running`: a wait already runs on this binding (it takes the same
   locks as `receive`), or a `receive` does. End the turn.
 - No result line: the host stopped the command or it crashed. Run `receive
   --wait-seconds 0`, then start `wait`.
 
+Per message the worker therefore takes two model turns: the wake runs one
+resolve command, and its start result ends the turn (three with the Bash
+output read). A message the worker answers only after project work takes those
+turns plus the work. A refused receipt, reply or park exits at once with its
+error and starts no wait. `--then-wait` needs the scope's `receive` operation,
+checked before the step runs, and is refused on every non-worker route.
+
 While `wait` runs, the worker has no turn, so `receive` is not called. `wait`
 keeps the heartbeat, the Realtime subscription with its safety scan, and the
 same `offer` step as `receive`. Quiet transport notices and parking an elapsed
-offer therefore use no model turn. It commits an offer locally before it exits;
-a committed offer is not a receipt, and a lost result or crash offers it again.
-Resolve each offer before starting `wait`: an open offer ends it at once, except
-one under an explicit `session hold`, which wakes nobody until the hold ends and
-`wait` parks it. A status alert ends `wait`, a routine status does not. A service
-outage is waited out, also at its start, with `presence: unreachable`, since each
-exit costs a turn; a release mismatch stays a fatal code.
+offer therefore use no model turn. It commits an offer locally before it exits,
+and the envelope is disclosed only after the final authority check, as in
+`receive`. The line is not a receipt: only the worker's own receipt, reply or
+park command is, after the body reached it, and a lost line or crash offers the
+same message again. Resolve each offer before starting a plain `wait`: an open
+offer ends it at once, except one under an explicit `session hold`, which wakes
+nobody until the hold ends and `wait` parks it. A status alert ends `wait`, a
+routine status does not. A service outage is waited out, also at its start,
+with `presence: unreachable`, since each exit costs a turn; a release mismatch
+stays a fatal code.
 
-`--max-seconds` defaults to 1500, the maximum. Claude Code [stops background
+`--max-seconds` defaults to 1680, two minutes under the 30 minutes after which
+Monitor always, and Claude Code [background
 commands](https://code.claude.com/docs/en/tools-reference.md#time-limit-for-background-commands)
-at 30 minutes by default in unattended sessions and has no limit in local
-terminal, desktop or VS Code sessions, so 25 minutes needs no longer `timeout`.
-Each `rearm` costs one model turn. For a finite brief, pass at most the seconds
-left to its deadline, so `rearm` wakes the worker to report `brief_deadline`; a
-`-p` run with a text prompt defaults to 10 minutes, so pass 540 there. The slot
-deadline and capability are rechecked at each heartbeat, every 20 seconds.
+in unattended sessions by default, stop a command. After `--then-wait` the bound
+counts from that command's start. Each `rearm` costs two model turns: start the
+next wait, then end the turn. Under Bash, `--max-seconds` may go up to 7080
+when the command starts with `timeout` 7200000, Claude Code's 2-hour maximum,
+so idle hours cost one rearm every two hours; local terminal, desktop and VS
+Code sessions set no limit. For a finite brief, pass at most the seconds left to
+its deadline, so `rearm` wakes the worker to report `brief_deadline`; a `-p` run
+with a text prompt defaults to 10 minutes, so pass 540 there. The slot deadline
+and capability are rechecked at each heartbeat, every 20 seconds.
 
 A killed `wait` releases its locks. Status then shows `listener: offline`, peers
 see the heartbeat age out and messages stay durable; the next `wait` or `receive`

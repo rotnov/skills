@@ -842,9 +842,11 @@ def _session_status(root, record):
 def _brief():
     """The wait-route part of the `quorum` worker brief the parent passes on with `bootstrap_command` (#127, #164)."""
     from quorum_native_inbox import WAIT_LOOP
-    return ('Run bootstrap_command first, then this worker\'s own capability commands per '
-            'references/claude-worker.md. Once connected, run session receive --wait-seconds 0 once: its result '
-            'carries the Hello outcome and wait_command. ' + WAIT_LOOP)
+    # Every model turn re-reads what the worker has loaded, so it reads only the two sections it runs.
+    return ('Run bootstrap_command first, then this worker\'s own capability commands per the Worker commands and '
+            'Background wait sections of references/claude-worker.md; read nothing else unless a step needs it. '
+            'Once connected, run session receive --wait-seconds 0 once: its result carries the Hello outcome and '
+            'wait_command. ' + WAIT_LOOP)
 
 
 def _bootstrap(root, slot_id):
@@ -1970,7 +1972,12 @@ def preflight(args):
                      {'action': args.action, 'owner_action': bool(args.owner_action),
                       'material_result': bool(args.material_result)})
     else: raise ClaudeWorkerError('native_inbox_transport_conflict')
-    return _authorize_route(args, operation, arguments)
+    context = _authorize_route(args, operation, arguments)
+    if args.command == 'session' and getattr(args, 'then_wait', False):
+        # The wait after a receipt, reply or park is the scope's own receive operation, checked before anything
+        # runs: no capability or scope changes, and a scope without receive refuses the whole command.
+        args.worker_wait_context = authorize(args.state, args.worker_capability, 'receive', {'wait_seconds': None})
+    return context
 
 
 def _authorize_route(args, operation, arguments):
@@ -2070,7 +2077,7 @@ def capability_status(context):
 def session_dispatch(args, auth_ledger, register_agent, context):
     """Capability-scoped session actions for the logical actor; never the parent pipe or device, and the parent
     ledger only read (an adopt scope's first connect rechecks that the parent's reception is stopped)."""
-    action = args.action
+    action, began = args.action, time.monotonic()
     if action == 'status': return capability_status(context)
     if action == 'stop':
         return stop_slot(context['state_root'], context['slot_id'], sid=context['binding']['provider_session_id'])
@@ -2099,8 +2106,44 @@ def session_dispatch(args, auth_ledger, register_agent, context):
         api, _, _ = _api(auth_ledger, context)
         guarded = Guarded(api, check)
         with _effect(guarded.effect):
-            return _session_action(args, auth_ledger, register_agent, context, ledger, record, guarded, check)
+            result = _session_action(args, auth_ledger, register_agent, context, ledger, record, guarded, check)
+        wait_context = getattr(args, 'worker_wait_context', None)
+        if wait_context is None: return result
+        return _then_wait(args, auth_ledger, wait_context, ledger, api, result, began)
     finally: ledger.db.close()
+
+
+def _then_wait(args, auth_ledger, wait_context, ledger, api, resolved, began):
+    """After a completed receipt, reply or park, wait in the same command exactly as `session wait` would (#164).
+
+    The step's own result is always returned under `resolved`, so a refused or failed wait never hides an answer
+    already sent. The bound counts from this command's start, so the step's time stays inside the host's limit.
+    """
+    import quorum_native_inbox as inbox
+    import quorum_notices
+    from quorum_listener import error_code
+    from quorum_release import ReleaseGuard
+    seconds = max(1, args.max_seconds - int(time.monotonic() - began))
+    def check():
+        guard(wait_context)
+        current = ledger.setting('session-agent')
+        if current is not None: _record_matches(current, wait_context)
+    try:
+        check()
+        record = ledger.setting('session-agent')
+        if not record: raise ValueError('session_not_connected')
+        quorum_notices.set_visible(ledger, False)
+        guarded = Guarded(api, check)
+        ReleaseGuard(guarded, ledger).running()
+        waited = inbox.wait(guarded, auth_ledger, ledger, record, seconds, authorize=check)
+    except Exception as error:
+        code = error.code if isinstance(error, NativeInboxError) else error_code(error)
+        busy = code == 'worker_already_running'
+        # The same steps as a failed `session wait`: a running wait means end the turn, anything else is fatal.
+        waited = {'state': 'wait_failed', 'transport': TRANSPORT, 'continue': busy, 'code': code,
+                  'next_step': 'end_turn' if busy else 'report_stop'}
+        if not busy: waited['stop_reason'] = 'fatal:' + code
+    return {**waited, 'resolved': resolved}
 
 
 def _session_action(args, auth_ledger, register_agent, context, ledger, record, guarded, check):
