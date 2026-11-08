@@ -5,7 +5,7 @@ import time
 from urllib.parse import urlencode
 import uuid
 
-from quorum_api import error_class
+from quorum_api import error_class, server_refused
 from quorum_client_contracts import CONTRACT_CODES
 
 # Frames inspected for an overdue heartbeat reply; exceeds the socket's max_queue.
@@ -14,6 +14,11 @@ DRAIN_LIMIT = 32
 TERMINAL = frozenset(('auth_required', 'coordination_unavailable', 'skill_update_required',
                       'release_manifest_invalid', 'session_recovery_denied', 'session_binding_denied',
                       'grok_tui_gone')) | CONTRACT_CODES
+
+
+def fatal(error):
+    """A fixed denial, or a request the server refused by name (e.g. a heartbeat), which polling cannot mask."""
+    return isinstance(error, ValueError) and (error_class(error) in TERMINAL or server_refused(error))
 
 
 def connect_socket(uri, **options):
@@ -140,7 +145,7 @@ class RealtimeWait:
         self._close_socket()  # A resubscription after an outage replaces, never leaks, the old socket.
         try: self._join(stopping)
         except Exception as error:
-            if error_class(error) in TERMINAL and isinstance(error, ValueError):
+            if fatal(error):
                 self._close_socket()
                 raise
             self._fallback()
@@ -215,7 +220,7 @@ class RealtimeWait:
                     self._busy(self.watch.signal)
             if not stopping(): self._status(last_wake='safety_poll')
         except Exception as error:
-            if error_class(error) in TERMINAL and isinstance(error, ValueError):
+            if fatal(error):
                 self._close_socket()
                 raise
             self._fallback()

@@ -272,5 +272,75 @@ class RelayCooldownTests(unittest.TestCase):
             self.assertEqual(lengths, [60, 300, 900, 60])
 
 
+def http_failure(code, message=None):
+    """The QuorumError the real HTTP layer raises for one synthetic heartbeat answer."""
+    import io
+    import json
+    from unittest.mock import patch
+    from urllib.error import HTTPError
+    from quorum_api import QuorumApi, QuorumError, ServiceConfig
+    body = json.dumps({'message':message}).encode() if message else b''
+    class Opener:
+        def open(self, request, timeout):
+            raise HTTPError('https://example.com/x', code, 'synthetic', {}, io.BytesIO(body))
+    api = QuorumApi(ServiceConfig('https://example.com', 'pub'), lambda: 'token')
+    with patch('quorum_api.build_opener', lambda *_: Opener()):
+        try: api.call('session_heartbeat', {'agent_id':'a'})
+        except QuorumError as error: return error
+    raise AssertionError('no error raised')
+
+
+class RealPresenceTests(unittest.TestCase):
+    """The real Presence and RealtimeWait under the cooling listener: no fake waiter hides the heartbeat's code."""
+    def run_real(self, ledger, heartbeats, steps):
+        from quorum_listener import Control, run_listener
+        from quorum_presence import Presence
+        from quorum_realtime import RealtimeWait
+        now, sent = [0], []
+        class Api:
+            config = type('Config', (), {'origin':'https://example.com', 'publishable_key':'pub'})()
+            def token(self): return 'jwt'
+            def call(self, operation, payload, request_id=None):
+                if operation == 'session_requirements': return REQUIREMENTS
+                if operation != 'session_heartbeat': return {}
+                sent.append(now[0])
+                step = heartbeats.pop(0) if heartbeats else None
+                if step is not None: raise step
+                return {}
+        def refuse(*_, **__): raise OSError('synthetic: no realtime socket')
+        def sleep(_): now[0] += 1
+        api, agent = Api(), str(uuid.uuid4())
+        record = {'agent_id':agent, 'session_ref':'session'}
+        presence = Presence(api, record, ledger, clock=lambda: now[0])
+        waiter = RealtimeWait(api, record, ledger, connect=refuse, clock=lambda: now[0], sleep=sleep,
+                              keepalive=presence, stop_aware=True)
+        worker = ScriptedWorker(Control(ledger), steps)
+        result = run_listener(ledger, lambda: worker, str(uuid.uuid4()), sleep=sleep, waiter=waiter, retry=True)
+        return result, worker, sent
+
+    @isolated_profiles
+    def test_a_named_heartbeat_refusal_exits_with_its_own_code(self):
+        for name in ('invalid_peer_status', 'invalid_payload', 'connection_id_required'):
+            with self.subTest(name=name), Ledger() as ledger:
+                refusal = http_failure(400, name)
+                self.assertEqual(str(refusal), name)
+                result, worker, sent = self.run_real(ledger, [refusal], ['delivered'])
+                self.assertEqual((result['state'], result['code'], result['listener']), ('error', name, 'offline'))
+                self.assertEqual((sent, worker.runs, worker.reconciled), ([0], 0, 0), 'no cooldown and no inbox call')
+
+    @isolated_profiles
+    def test_a_generic_heartbeat_failure_cools_down_then_resumes(self):
+        for code in (501, 505, 400):
+            with self.subTest(code=code), Ledger() as ledger:
+                failure = http_failure(code)
+                self.assertEqual(str(failure), 'service_error')
+                result, worker, sent = self.run_real(ledger, [failure, failure], ['delivered'])
+                self.assertEqual((result['state'], result['handled']), ('stopped', 1))
+                # No heartbeat, so no Hello, during either cooldown: the rechecks come 60 and then 300 seconds later.
+                self.assertEqual(sent[:3], [0, 60, 360])
+                self.assertEqual((worker.runs, worker.reconciled), (2, 1))
+                self.assertEqual(ledger.setting('presence')['state'], 'online')
+
+
 if __name__ == '__main__':
     unittest.main()
