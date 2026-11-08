@@ -9,6 +9,7 @@ import threading
 import time
 import uuid
 from quorum_api import QuorumError
+from quorum_claude_pipe import RouteGone
 from quorum_client_contracts import ClientContractRefused, ClientOutputChanged
 from quorum_os import FileLock, background_flags, open_private, protect
 from quorum_release import ReleaseGuard, ReleaseMismatch, installed_release
@@ -387,8 +388,9 @@ def run_listener(ledger, make_worker, run_id, *, sleep=time.sleep, stop_event=No
                 # An owner stop observed by the reception guard ends the run as stopped, not failed.
                 control.update(run_id, 'stopped', handled, timeout=timeout)
             else:
-                # Only a contract outcome's reason crosses: one fixed word from the contract record.
-                reason = error.reason if isinstance(error, (ClientContractRefused, ClientOutputChanged)) else None
+                # Only a fixed reason word crosses: from the contract record, or a gone Claude route's restart.
+                reason = (error.reason if isinstance(error, (ClientContractRefused, ClientOutputChanged, RouteGone))
+                          else None)
                 control.update(run_id, 'error', handled, timeout=timeout, code=error_code(error), reason=reason)
         finally:
             if waiter: waiter.close()

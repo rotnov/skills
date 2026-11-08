@@ -404,11 +404,16 @@ def require_caller(session_id, engine=None):
 def check_native_route(record):
     """Read only this Claude chat's current binding, before selecting new work."""
     if record.get('engine') != 'claude': return
-    from quorum_claude_pipe import binding
+    from quorum_claude_pipe import RouteGone, binding
     require_caller(record['session_ref'], 'claude')
     if os.environ.get('CLAUDE_CODE_MESSAGING_SOCKET') != record.get('messaging_socket'):
         raise ValueError('session_binding_denied')
-    binding(record['session_ref'])
+    try: binding(record['session_ref'])
+    except ValueError as error:
+        if str(error) != 'claude_pipe_unavailable' or isinstance(error, RouteGone): raise
+        # Only the wording changes: a restarted chat's new pipe is never adopted here (references/resume.md).
+        restarted = contracts.claude_endpoint_rotated(record['session_ref'], record.get('messaging_socket'))
+        raise RouteGone('client_restarted' if restarted else None) from None
 
 
 def reception_notice(ledger, state):

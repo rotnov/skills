@@ -347,17 +347,21 @@ def listener_loss(ledger):
     # `starting` without a lost mark is a start or recovery still in progress, not a loss.
     if status['listener'] == 'running' or status.get('state') == 'starting': return None
     return {'engine': record['engine'], 'quorum': record.get('quorum'), 'role': record.get('role'),
-            'run_id': status.get('run_id'), 'state': status.get('state'), 'code': status.get('code')}
+            'run_id': status.get('run_id'), 'state': status.get('state'), 'code': status.get('code'),
+            'reason': status.get('reason'), 'cwd': record.get('cwd')}
 
 
-def recovery_command(state, engine, *, windows=os.name == 'nt'):
-    """The exact same-chat recovery command for this installed copy; local paths only, never a secret."""
+def recovery_command(state, engine, *, windows=os.name == 'nt', cwd=None):
+    """The exact same-chat recovery command for this installed copy; local paths only, never a secret.
+
+    `cwd`: the bound working directory recovery requires, entered first on POSIX shells.
+    """
     import shlex
     import subprocess
     skill = Path(__file__).resolve().parents[1]
     argv = ['uv', 'run', '--project', str(skill), '--frozen', 'python', str(skill / 'scripts' / 'quorum.py'),
             '--state', str(Path(state).resolve()), 'session', 'recover']
-    if not windows: return shlex.join(argv)
+    if not windows: return ('cd ' + shlex.quote(cwd) + ' && ' if cwd else '') + shlex.join(argv)
     command = subprocess.list2cmdline(argv)
     if engine != 'grok': return command
     # Grok kills a Windows tool call's children when the call returns: keep one background task alive.
@@ -365,9 +369,33 @@ def recovery_command(state, engine, *, windows=os.name == 'nt'):
             + ' ; while ($true) { Start-Sleep 60 }  and then session status in a normal call')
 
 
+def claude_restart_notice(loss, state, *, windows=None):
+    """A Claude chat whose bound pipe is gone: reception is down, why, and the one command that ends it."""
+    windows = os.name == 'nt' if windows is None else windows
+    cwd = loss.get('cwd') if isinstance(loss.get('cwd'), str) else None
+    command = recovery_command(state, 'claude', windows=windows, cwd=cwd)
+    where = 'in the working directory ' + json_text(cwd) + ', ' if windows and cwd else ''
+    return ('Quorum reception is down in this chat. Its listener for quorum ' + json_text(loss.get('quorum'))
+            + ' (role ' + json_text(loss.get('role')) + ') stopped with claude_pipe_unavailable, so peer messages '
+            'are not reaching this chat and peers see it as unavailable. '
+            + ('Claude Code restarted this chat under the same session ID and gave it a new messaging socket. '
+               if loss.get('reason') == 'client_restarted' else
+               'This chat\'s messaging socket is gone, which a Claude Code restart causes. ')
+            + 'A listener cannot follow a restart on its own: only the restarted chat holds its new socket\'s token. '
+            'Run this one command now from this chat\'s shell tool, ' + where + 'without asking: ' + command
+            + ' . It reuses the reception the owner already enabled, adopts this chat\'s current socket and keeps '
+            'the same agent, role, delegation and queued messages, with no invitation. Then run session status and '
+            'confirm listener: running. If recover returns a code, follow references/resume.md; never start another '
+            'session or accept a new invitation for this quorum.')
+
+
 def loss_notice(loss, state):
     """Fixed fields and guidance for a lost listener; no peer text, token or environment."""
     last = str(loss.get('state')) + (', code ' + str(loss['code']) if loss.get('code') else '')
+    if loss.get('engine') == 'claude' and loss.get('code') == 'claude_pipe_unavailable':
+        return {'quorum': loss.get('quorum'), 'role': loss.get('role'), 'run_id': loss.get('run_id'),
+                'state': loss.get('state'), 'code': loss.get('code'), 'reason': loss.get('reason'),
+                'next_step': claude_restart_notice(loss, state)}
     return {'quorum': loss.get('quorum'), 'role': loss.get('role'), 'run_id': loss.get('run_id'),
             'state': loss.get('state'), 'code': loss.get('code'), 'next_step': (
                 'Quorum: this chat\'s listener for quorum ' + json_text(loss.get('quorum')) + ' (role '
