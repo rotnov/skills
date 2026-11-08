@@ -260,10 +260,19 @@ class Harness(unittest.TestCase):
                 patch('quorum_profiles.ensure_login', **(dict(side_effect=ensure) if ensure else dict(
                     return_value={'authenticated': True, 'reused': True}))), \
                 patch('sys.stdin', io.TextIOWrapper(io.BytesIO(stdin))), \
-                contextlib.redirect_stdout(io.StringIO()) as output:
+                contextlib.redirect_stdout(io.StringIO()) as output, \
+                contextlib.redirect_stderr(io.StringIO()) as errors:
             code = quorum.main(['--state', str(self.root), *argv])
         text = output.getvalue()
+        # A wait-route command's full result goes to stderr, its output file only (#184).
+        self.stderr = errors.getvalue()
         return code, json.loads(text), text
+
+    def full(self):
+        """The full result the last wait-route command wrote to its output file."""
+        lines = self.stderr.splitlines()
+        self.assertEqual(len(lines), 1, self.stderr)
+        return json.loads(lines[0])
 
 
     def configure(self, origin=ORIGIN, key=KEY):

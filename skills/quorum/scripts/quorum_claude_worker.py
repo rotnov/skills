@@ -846,7 +846,8 @@ def _brief():
     return ('Run bootstrap_command first, then this worker\'s own capability commands per the Worker commands and '
             'Background wait sections of references/claude-worker.md; read nothing else unless a step needs it. '
             'Once connected, run session receive --wait-seconds 0 once: its result carries the Hello outcome and '
-            'wait_command. ' + WAIT_LOOP)
+            'wait_command. Below, Q is the words of wait_command before session, and <cap> its --worker-capability '
+            'file. ' + WAIT_LOOP)
 
 
 def _bootstrap(root, slot_id):

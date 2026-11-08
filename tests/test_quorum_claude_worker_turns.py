@@ -13,6 +13,9 @@ from unittest.mock import patch
 from quorum_test_support import isolated_profiles
 from test_quorum_claude_worker import (AGENT, M1, M2, OWNER_PROOF, PEER, SID, Api, Bound, claude, message)
 
+# Claude Code's Monitor truncates one event at 500 characters (#184).
+MONITOR_EVENT = 500
+
 
 class Sleepy:
     """The waiter seam with a short real sleep, so a bounded wait reaches its bound without spinning."""
@@ -30,23 +33,26 @@ class Steps(Bound):
     """Runs worker commands exactly as handed out and records each one: one entry is one model turn."""
     def setUp(self):
         super().setUp()
-        self.steps = []
+        self.steps, self.lines = [], []
 
     def run_step(self, api, argv, stdin=b'', waiter=None):
         self.steps.append(argv[argv.index('--worker-capability') + 2])
         with patch('quorum_native_inbox.RealtimeWait', lambda *_, **__: waiter or Sleepy()):
             code, result, text = self.cli(api, *argv, stdin=stdin)
         self.assertEqual(text.count('\n'), 1, 'one result line: one Monitor event')
+        import quorum_native_inbox as inbox
+        self.assertLessEqual(len(text) - 1, inbox.WAKE_LIMIT, 'Monitor shows the whole line (#184)')
+        self.lines.append(len(text) - 1)
         return code, result
 
     def wait(self, api, seconds='1', waiter=None):
         return self.run_step(api, ['session', '--worker-capability', str(self.cap), 'wait', '--max-seconds', seconds],
                              waiter=waiter)
 
-    def handed(self, command, *extra):
-        """A command from a result, minus the interpreter, script and --state that the CLI harness supplies."""
-        self.assertEqual(command[2], '--state')
-        return [*command[4:], *extra]
+    def template(self, action, message_id, *extra):
+        """The brief's fixed resolve template (#184), minus Q, which the CLI harness supplies."""
+        return ['session', '--worker-capability', str(self.cap), action, message_id,
+                *(['--text-stdin'] if action == 'reply' else []), '--then-wait', *extra]
 
 
 @OWNER_PROOF
@@ -59,9 +65,9 @@ class MessageTurnTests(Steps):
             if not api.inbox: api.inbox.append(message(M1, body='ping'))
         code, woke = self.wait(api, '5', Sleepy(arrive))
         self.assertEqual((code, woke['data']['state']), (0, 'offer_available'))
-        envelope = woke['data']['envelope']
-        self.assertEqual(envelope['message']['body'], 'ping', 'the wake itself carries the body: no receive')
-        code, done = self.run_step(api, self.handed(envelope['reply_command'], '--max-seconds', '1'), stdin=b'pong')
+        self.assertEqual((woke['data']['id'], woke['data']['body'], woke['data']['full']), (M1, 'ping', False),
+                         'the wake itself carries the body: no receive and no file read')
+        code, done = self.run_step(api, self.template('reply', M1, '--max-seconds', '1'), stdin=b'pong')
         self.assertEqual(code, 0, done)
         data = done['data']
         self.assertEqual(data['resolved']['message_id'], M1)
@@ -76,10 +82,11 @@ class MessageTurnTests(Steps):
         api = Api(inbox=[message(M1), message(M2, body='second')])
         self.bound(api)
         _, woke = self.wait(api)
-        first = woke['data']['envelope']
-        _, second = self.run_step(api, self.handed(first['reply_command']), stdin=b'one')
-        self.assertEqual((second['data']['state'], second['data']['envelope']['message_id']), ('offer_available', M2))
-        _, third = self.run_step(api, self.handed(second['data']['envelope']['reply_command'], '--max-seconds', '1'),
+        _, second = self.run_step(api, self.template('reply', woke['data']['id']), stdin=b'one')
+        self.assertEqual((second['data']['state'], second['data']['id'], second['data']['body']),
+                         ('offer_available', M2, 'second'))
+        self.assertEqual(second['data']['resolved']['message_id'], M1)
+        _, third = self.run_step(api, self.template('reply', second['data']['id'], '--max-seconds', '1'),
                                  stdin=b'two')
         self.assertEqual(third['data']['state'], 'rearm')
         self.assertEqual(self.steps, ['wait', 'reply', 'reply'])
@@ -89,8 +96,8 @@ class MessageTurnTests(Steps):
         api = Api(inbox=[message(M1, reply_to=M2)])
         self.bound(api)
         _, woke = self.wait(api)
-        envelope = woke['data']['envelope']
-        _, done = self.run_step(api, self.handed(envelope['receipt_command'], '--max-seconds', '1'))
+        self.assertEqual((woke['data']['reply_to'], woke['data']['notification']), (M2, False))
+        _, done = self.run_step(api, self.template('received', M1, '--max-seconds', '1'))
         self.assertEqual(done['data']['resolved'], {'received': True, 'state': 'acked', 'message_id': M1})
         self.assertEqual(done['data']['state'], 'rearm')
         self.assertEqual(api.acked, [M1], 'the receipt is the worker\'s own command, after it read the body')
@@ -101,7 +108,7 @@ class MessageTurnTests(Steps):
         api = Api(inbox=[message(M1)])
         self.bound(api)
         _, woke = self.wait(api)
-        _, done = self.run_step(api, self.handed(woke['data']['envelope']['park_command'], '--max-seconds', '1'))
+        _, done = self.run_step(api, self.template('park', woke['data']['id'], '--max-seconds', '1'))
         self.assertEqual((done['data']['state'], done['data']['awaiting_owner']), ('rearm', 1))
         self.assertEqual(done['data']['resolved']['message_id'], M1)
         self.assertEqual(self.steps, ['wait', 'park'])
@@ -112,7 +119,10 @@ class MessageTurnTests(Steps):
         self.bound(api)
         self.wait(api)
         _, again = self.wait(api)
-        self.assertEqual(again['data']['envelope']['message_id'], M1)
+        self.assertEqual(again['data']['id'], M1)
+        self.assertEqual(api.acked, [])
+        # The receive fallback offers the same message again with its full envelope.
+        self.assertEqual(self.receive(api)[1]['data']['message_id'], M1)
         self.assertEqual(api.acked, [])
 
 
@@ -123,8 +133,9 @@ class RearmTurnTests(Steps):
         api = Api()
         self.bound(api)
         _, rearm = self.wait(api, '1')
-        self.assertEqual(rearm['data'], {'state': 'rearm', 'transport': 'tool-inbox', 'continue': True,
-                                         'next_step': 'wait', 'awaiting_owner': 0})
+        self.assertEqual(rearm['data'], {'state': 'rearm', 'next_step': 'wait', 'continue': True,
+                                         'awaiting_owner': 0, 'full': False})
+        self.assertEqual(self.full()['data']['transport'], 'tool-inbox')
         self.assertEqual(self.steps, ['wait'], 'a rearm is one command')
 
     @isolated_profiles
@@ -173,8 +184,8 @@ class SafetyTests(Steps):
         api = Api(inbox=[message(M1, notification=True)])
         self.bound(api)
         _, woke = self.wait(api)
-        command = woke['data']['envelope']['receipt_command'][:-3] + ['reply', M1, '--text-stdin', '--then-wait']
-        code, result = self.run_step(api, self.handed(command), stdin=b'no')
+        self.assertTrue(woke['data']['notification'])
+        code, result = self.run_step(api, self.template('reply', M1), stdin=b'no')
         self.assertNotEqual(code, 0)
         self.assertEqual(result['code'], 'native_inbox_reply_loop_denied')
         self.assertNotIn('session_reply', [call[0] for call in api.calls])
@@ -187,7 +198,7 @@ class SafetyTests(Steps):
         _, woke = self.wait(api)
         ledger = self.worker_ledger(self.slot)
         with FileLock(ledger.root / 'listener.lock'):
-            code, done = self.run_step(api, self.handed(woke['data']['envelope']['reply_command']), stdin=b'pong')
+            code, done = self.run_step(api, self.template('reply', woke['data']['id']), stdin=b'pong')
         self.assertEqual(code, 0)
         data = done['data']
         self.assertEqual((data['state'], data['code'], data['next_step'], data['continue']),
@@ -201,7 +212,7 @@ class SafetyTests(Steps):
         self.bound(api)
         _, woke = self.wait(api)
         stop = self.stopper()
-        code, done = self.run_step(api, self.handed(woke['data']['envelope']['receipt_command'], '--max-seconds', '30'),
+        code, done = self.run_step(api, self.template('received', woke['data']['id'], '--max-seconds', '30'),
                                    waiter=Sleepy(stop))
         self.assertEqual(code, 0)
         self.assertEqual((done['data']['state'], done['data']['stop_reason']), ('stopped', 'owner_stop'))
@@ -213,7 +224,7 @@ class SafetyTests(Steps):
         self.bound(api)
         _, woke = self.wait(api)
         self.stopper()()
-        code, result = self.run_step(api, self.handed(woke['data']['envelope']['receipt_command']))
+        code, result = self.run_step(api, self.template('received', woke['data']['id']))
         self.assertEqual((code, result['code']), (3, 'native_worker_slot_terminal'))
         self.assertEqual(api.acked, [])
 
@@ -245,10 +256,132 @@ class SafetyTests(Steps):
         api = Api(inbox=[message(M1)])
         self.bound(api)
         _, woke = self.wait(api)
-        envelope = woke['data']['envelope']
+        envelope = self.full()['data']['envelope']
         self.assertEqual((envelope['message']['recipient_id'], envelope['message']['sender_id']), (AGENT, PEER))
         self.assertNotIn(self.token, json.dumps(woke))
+        self.assertNotIn(self.token, self.stderr)
+        self.assertNotIn(str(self.root), json.dumps(woke), 'the line carries no path or command')
         self.assertNotIn('--session-id', envelope['reply_command'])
+        self.assertEqual(envelope['reply_command'][-6:], ['--worker-capability', str(self.cap), 'reply', M1,
+                                                          '--text-stdin', '--then-wait'],
+                         'the full envelope\'s command is the brief\'s template')
+
+
+
+# The worst case the line must fit: the longest role a quorum accepts, canonical IDs and a Hello far over 500.
+LONG_ROLE = 'r' + 'x' * 47
+HELLO = 'Hello! ' + 'Listener connected: ' * 300
+M3 = 'ffffffff-ffff-ffff-ffff-ffffffffffff'
+
+
+@OWNER_PROOF
+class WakeLineTests(Steps):
+    """Every wake or result line fits one Monitor event (#184); the full result stays in the output file."""
+    def worst(self, api, body='x' * 4000, alerts=8):
+        from quorum_delivery_status import WATCH_KEY
+        ledger = self.worker_ledger(self.slot)
+        ledger.setting('hello', {'summary': HELLO})
+        ledger.setting(WATCH_KEY, {'agent_id': AGENT, 'seq': 0, 'more': False, 'read_at': None, 'shown': [],
+                                   'pending': [{'message_id': M3, 'recipient_role': LONG_ROLE, 'status': 'failed',
+                                                'noted_at': 1} for _ in range(alerts)]})
+        api.inbox.append(message(M1, body=body, priority='urgent', sender_role=LONG_ROLE, reply_to=M3,
+                                 notification=True))
+
+    @isolated_profiles
+    def test_the_worst_case_offer_line_fits_and_points_to_the_full_result(self):
+        api = Api()
+        self.bound(api)
+        self.worst(api)
+        _, woke = self.wait(api)
+        data = woke['data']
+        self.assertEqual((data['state'], data['next_step'], data['id'], data['sender_role'], data['reply_to'],
+                          data['notification'], data['priority'], data['full']),
+                         ('offer_available', 'handle_then_wait', M1, LONG_ROLE, M3, True, 'urgent', True))
+        self.assertNotIn('body', data)
+        self.assertNotIn('hello', data, 'the Hello summary stays in the full result')
+        full = self.full()['data']
+        self.assertEqual(full['envelope']['message']['body'], 'x' * 4000)
+        self.assertEqual(full['hello'], HELLO)
+        self.assertEqual(len(full['delivery_alerts']), 8)
+        self.assertGreater(len(self.stderr), 5000)
+
+    @isolated_profiles
+    def test_the_worst_case_then_wait_line_fits_with_resolved_and_the_next_wake(self):
+        api = Api(inbox=[message(M2, body='first')])
+        self.bound(api)
+        _, woke = self.wait(api)
+        self.worst(api)
+        _, done = self.run_step(api, self.template('reply', woke['data']['id']), stdin=b'answer')
+        data = done['data']
+        self.assertEqual((data['state'], data['id'], data['full'], data['resolved']['message_id']),
+                         ('offer_available', M1, True, M2))
+        self.assertEqual(self.full()['data']['resolved']['message_id'], M2)
+
+    @isolated_profiles
+    def test_a_short_body_comes_inline_and_a_long_one_sets_full(self):
+        import quorum_native_inbox as inbox
+        api = Api(inbox=[message(M1, body='short question?', sender_role=LONG_ROLE)])
+        self.bound(api)
+        _, woke = self.wait(api)
+        self.assertEqual((woke['data']['body'], woke['data']['full']), ('short question?', False))
+        self.run_step(api, self.template('received', M1, '--max-seconds', '1'))
+        api.inbox.append(message(M2, body='y' * inbox.WAKE_LIMIT, sender_role=LONG_ROLE))
+        _, woke = self.wait(api)
+        self.assertEqual((woke['data']['id'], woke['data']['full']), (M2, True))
+        self.assertNotIn('body', woke['data'])
+        self.assertEqual(self.full()['data']['envelope']['message']['body'], 'y' * inbox.WAKE_LIMIT)
+
+    def test_every_state_fits_the_limit_in_the_worst_case(self):
+        import quorum_native_inbox as inbox
+        alerts = [{'message_id': M3, 'recipient_role': LONG_ROLE, 'status': 'failed'}] * 20
+        resolved = {'reply_message_id': M3, 'conversation_id': 'c' * 400, 'message_id': M3, 'state': 'acked',
+                    'received': True}
+        envelope = {'message_id': M3, 'priority': 'urgent', 'plain': True, 'notice': 'n' * 9000,
+                    'receipt_command': ['x' * 300] * 10,
+                    'message': {'id': M3, 'sender_role': LONG_ROLE, 'reply_to': M3, 'notification': True,
+                                'body': 'z' * 9000}}
+        base = {'transport': 'tool-inbox', 'awaiting_owner': 32, 'hello': HELLO}
+        cases = [
+            {'state': 'offer_available', 'next_step': 'handle_then_wait', 'continue': True, 'envelope': envelope,
+             'delivery_alerts': alerts},
+            {'state': 'alert_available', 'next_step': 'handle_then_wait', 'continue': True,
+             'delivery_alerts': alerts},
+            {'state': 'rearm', 'next_step': 'wait', 'continue': True},
+            {'state': 'stopped', 'next_step': 'report_stop', 'continue': False, 'stop_reason': 'owner_stop'},
+            {'state': 'orphaned', 'next_step': 'report_stop', 'continue': False, 'stop_reason': 'fatal:wait_orphaned'},
+            {'state': 'wait_failed', 'next_step': 'report_stop', 'continue': False, 'code': 'c' * 64,
+             'stop_reason': 'fatal:' + 'c' * 58},
+        ]
+        for case in cases:
+            for extra in ({}, {'resolved': resolved}):
+                data = {**base, **case, **extra}
+                with self.subTest(state=case['state'], resolved=bool(extra)):
+                    line, whole = inbox.wake_line(data)
+                    self.assertNotIn('\n', line)
+                    self.assertLessEqual(len(line), inbox.WAKE_LIMIT)
+                    self.assertLess(inbox.WAKE_LIMIT, MONITOR_EVENT)
+                    compact = json.loads(line)['data']
+                    self.assertEqual((compact['state'], compact['next_step']), (case['state'], case['next_step']))
+                    self.assertNotIn('hello', compact)
+                    self.assertEqual(json.loads(whole)['data'], data, 'nothing is lost from the full result')
+                    if case['state'] in ('offer_available', 'alert_available'): self.assertIs(compact['full'], True)
+
+    def test_a_notice_the_brief_does_not_cover_always_sets_full(self):
+        import quorum_native_inbox as inbox
+        def line(plain, **message_fields):
+            envelope = {'message_id': M1, 'plain': plain, 'message': {'id': M1, 'sender_role': 'peer',
+                                                                       'reply_to': None, 'body': 'hi',
+                                                                       **message_fields}}
+            return json.loads(inbox.wake_line({'state': 'offer_available', 'next_step': 'handle_then_wait',
+                                               'envelope': envelope})[0])['data']
+        self.assertEqual((line(True)['full'], line(True)['body']), (False, 'hi'))
+        for compact in (line(False), line(None), line(True, sender_role='Not A Role'), line(True, reply_to='x'),
+                        line(True, body=None)):
+            self.assertIs(compact['full'], True)
+            self.assertNotIn('body', compact)
+        record = {'agent_id': AGENT}
+        self.assertFalse(inbox.plain(record, {**message(M1), 'maintenance': True}))
+        self.assertTrue(inbox.plain(record, message(M1)))
 
 
 if __name__ == '__main__':

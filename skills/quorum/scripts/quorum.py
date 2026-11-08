@@ -165,6 +165,15 @@ def main(argv=None):
         if args.command in LIVE_COMMANDS:
             value = dispatch(args, ledger, register_agent)
             if args.command == 'mcp': return 0
+            if (args.command == 'session' and getattr(args, 'worker_context', None) is not None
+                    and (args.action == 'wait' or getattr(args, 'then_wait', False))):
+                # Claude Code's Monitor truncates an event at 500 characters (#184): stdout, the event, gets one
+                # compact line; the full result goes first to stderr, which reaches only the output file.
+                from quorum_native_inbox import wake_line
+                line, whole = wake_line(value)
+                print(whole, file=sys.stderr, flush=True)
+                print(line, flush=True)
+                return 0
             print(json.dumps({'ok': True, 'code': 'ok', 'data': value}))
             return 0
         if args.command == 'configure':

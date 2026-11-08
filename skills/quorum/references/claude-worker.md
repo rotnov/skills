@@ -244,28 +244,61 @@ no model turn, and the command's exit wakes the worker. Every model turn re-read
 the worker's whole context, so the route keeps turns to the minimum:
 
 - Start each wait-route command with Claude Code's Monitor tool, `timeout_ms`
-  1800000. Its one result line arrives inside the event that wakes the worker.
+  1800000. Its one compact result line arrives inside the event that wakes the
+  worker.
 - Without Monitor, use Bash `run_in_background`, never a shell `&`. Its
   completion notice holds only the output file path, so the worker reads that
   file on each wake, which costs one more turn.
-- An offer's line already carries its envelope, so there is no `receive` call.
-  The envelope's `receipt_command`, `reply_command` and `park_command` end in
-  `--then-wait`: each resolves the offer, then waits in the same command.
+- An offer's line carries what the worker needs, so there is no `receive` call.
+  The worker builds each resolve command from fixed templates, never from the
+  line, where `Q` is the words of `wait_command` before `session` and `<cap>` its
+  capability file:
+
+  ```text
+  Q session --worker-capability <cap> received|park <id> --then-wait
+  Q session --worker-capability <cap> reply <id> --text-stdin --then-wait
+  ```
+
+  Each resolves the offer, then waits in the same command.
+
+#### Compact line and full result
+
+Monitor shows at most 500 characters of one event, so stdout, which is the
+event, gets one compact JSON line of at most 450 characters with the
+essentials first. The full result, with the envelope, its notice and its
+commands, goes first to stderr: Monitor sends stderr only to its output file,
+and Bash writes both to its own. A second stdout line is avoided on purpose:
+Monitor batches lines within 200 ms into one event, so it would be truncated
+with the first, or would cost a second wake.
+
+- The line holds `state`, `next_step`, `continue` and `awaiting_owner`, and
+  `stop_reason`, `code` or a short `resolved` (`message_id`, `state`,
+  `received`) when they apply. It never holds the Hello summary or a command.
+- An offer's line adds `id`, `sender_role`, `reply_to` and `notification`, and
+  `priority` when it is `urgent`.
+- `full: false` on an offer means the line also carries `body`, and the brief
+  alone covers the message: a participant message under no matching
+  delegation, or a member's terminal reply or notification.
+- `full: true` means the worker reads the output file's full result and
+  follows the envelope's notice before it resolves the offer. That holds for a
+  body that does not fit, a matching delegation, member trust, a maintenance
+  proposal, or `delivery_alerts` that do not fit. If no output file is
+  readable, `receive --wait-seconds 0` offers the same message again with its
+  envelope.
 
 | `state` | `next_step` | Worker's next step |
 | --- | --- | --- |
-| `offer_available` | `handle_then_wait` | Handle `envelope`, run one of its resolve commands the same way, end the turn |
-| `alert_available` | `handle_then_wait` | Act on `delivery_alerts`, start `wait`, end the turn |
+| `offer_available` | `handle_then_wait` | Handle the message (from the output file when `full` is true), run one resolve template the same way, end the turn |
+| `alert_available` | `handle_then_wait` | Act on `delivery_alerts` (from the output file when `full` is true), start `wait`, end the turn |
 | `rearm` | `wait` | Start `wait`, end the turn |
 | `stopped` | `report_stop` | Report `stop_reason` `owner_stop` |
 | `orphaned` | `report_stop` | The process that started it is gone. Report `fatal:wait_orphaned` if anything reads this |
 | `wait_failed` | `end_turn` or `report_stop` | Only after `--then-wait`: `resolved` holds the step's own result; `worker_already_running` ends the turn, anything else reports `stop_reason` |
 
-Each line also has `transport`, `continue` and `awaiting_owner`, and an offer or
-alert line carries the first unreported Hello outcome. Only `offer_available`
-carries a body, inside `envelope`, the same envelope `receive` discloses. A
-`--then-wait` line adds `resolved`. Any other exit is a fixed-code failure
-(`fatal:<code>`), except two:
+The full result also has `transport`, and an offer or alert result carries the
+first unreported Hello outcome. Only `offer_available` carries a body, inside
+`envelope`, the same envelope `receive` discloses. A `--then-wait` result adds
+`resolved`. Any other exit is a fixed-code failure (`fatal:<code>`), except two:
 
 - `worker_already_running`: a wait already runs on this binding (it takes the same
   locks as `receive`), or a `receive` does. End the turn.
@@ -274,7 +307,7 @@ carries a body, inside `envelope`, the same envelope `receive` discloses. A
 
 Per message the worker therefore takes two model turns: the wake runs one
 resolve command, and its start result ends the turn (three with the Bash
-output read). A message the worker answers only after project work takes those
+output read, or when `full` is true). A message the worker answers only after project work takes those
 turns plus the work. A refused receipt, reply or park exits at once with its
 error and starts no wait. `--then-wait` needs the scope's `receive` operation,
 checked before the step runs, and is refused on every non-worker route.
@@ -283,8 +316,8 @@ While `wait` runs, the worker has no turn, so `receive` is not called. `wait`
 keeps the heartbeat, the Realtime subscription with its safety scan, and the
 same `offer` step as `receive`. Quiet transport notices and parking an elapsed
 offer therefore use no model turn. It commits an offer locally before it exits,
-and the envelope is disclosed only after the final authority check, as in
-`receive`. The line is not a receipt: only the worker's own receipt, reply or
+and the line and full result are written only after the final authority check,
+as in `receive`. Neither is a receipt: only the worker's own receipt, reply or
 park command is, after the body reached it, and a lost line or crash offers the
 same message again. Resolve each offer before starting a plain `wait`: an open
 offer ends it at once, except one under an explicit `session hold`, which wakes
