@@ -170,7 +170,9 @@ notices for same-project native peers; ordinary heartbeat retries create no noti
 The optional Hello reporting extension returns the recipient count and bounded roles
 for that connection, and sends the newcomer one idempotent roster notification.
 The optional reconnect dedupe skips a Hello to a peer already greeted within 30 minutes
-of the sender's unbroken presence. Clients receipt both notice kinds themselves
+of the sender's unbroken presence. With [presence without Hello](server.md#presence-without-hello)
+a new connection sends no Hello at all: its heartbeat is the presence event peers read
+through `session_peers`. Clients receipt both notice kinds themselves
 ([transport notices](sessions.md#transport-notices)).
 `session_peers` derives availability from server time and private receipt/heartbeat
 records; the [status card](sessions.md#status-card) maps each signal.

@@ -666,25 +666,30 @@ restart outside an owner update leaves no such evidence and stays `unavailable`.
 Keepalive runs quietly every 20 seconds, including polling fallback, and does not
 invoke a model or poll the inbox more often. Each newly started listener, and a
 running listener whose heartbeat went unacknowledged for at least 60 seconds,
-uses a new connection ID and sends one Hello notification to other native sessions
-in the same project (up to 128). Realtime resubscription, wake signals, safety
-scans and transient heartbeat retries keep the same connection ID, which the
-server treats idempotently, so they send no Hello. Notices require receipt but no reply and carry no
-task authority. A transport Hello does not prove the actual chat has read anything.
+uses a new connection ID. Its acknowledged heartbeat is the one presence event:
+peers see the newcomer through `session peers` availability and `last_seen`, and
+no message reaches their chat. Realtime resubscription, wake signals, safety
+scans and transient heartbeat retries keep the same connection ID.
 
-With the [Hello reporting extension](server.md#hello-reporting-extension),
-the heartbeat also reports which peers the Hello reached. `session status`,
-and once the first bounded `receive` result, carries `hello.summary`, for
-example `Hello sent to 1 peer, 1 already greeted in team/project (alpha, zeta);
-roster: 1 available` or `0 peers share project reference team/project`.
-`hello.sent` and `hello.skipped` give the same split. On a server without the
-[split](server.md#hello-sent-and-skipped-split) `hello.skipped` is null and the
-summary says `Hello reached 2 peers`, which can include peers not greeted again.
-Put it once in the setup outcome. A reused or kept connection ID says `no new Hello was sent`
-and repeats the earlier result. Each new connection also gets one roster
+With [presence without Hello](server.md#presence-without-hello) the server sends no
+Hello message to peers. Before it, each new connection ID still made the server send
+one Hello notification to each other native session in the same project (up to 128).
+A Hello requires receipt but no reply, carries no task authority and does not prove the
+actual chat has read anything.
+
+The heartbeat's `hello` report (from the [Hello reporting extension](server.md#hello-reporting-extension),
+name kept for compatibility) gives the roster. `session status`, and once the first
+bounded `receive` result, carries `hello.summary`, for example `Presence published in
+team/project: 2 peers (alpha, zeta); roster: 1 available` or `0 peers share project
+reference team/project`; `hello.peers`, `hello.roles`, `hello.available` and
+`hello.available_roles` give the same roster. On a server that still copies Hello to
+peers, the summary ends with `the server still sent Hello to N peers (presence migration
+not applied)`; without the [split](server.md#hello-sent-and-skipped-split) it says `up to N`.
+Put it once in the setup outcome. A reused or kept connection ID says `no new connection
+was announced` and repeats the earlier result. Each new connection also gets one roster
 notice listing the available peers. It is a notification: receipt it quietly,
-never answer it or treat it as a task. Without the extension the summary says
-the server did not report the result.
+never answer it or treat it as a task. Without the reporting extension the summary says
+the roster was not reported.
 Existing old listeners must be upgraded before their heartbeat is available.
 
 ### Transport notices
@@ -704,10 +709,9 @@ few: IDs, roles and times, no body). `peers` adds each peer's
 `--show-transport-notices` on `session start`, `recover` or `receive`, or on
 `cloud receive`, delivers them as envelopes again. Each such command sets the
 choice again, and leaving the flag out restores quiet receipts. The cloud relay
-follows the last `cloud receive` choice. With the
-[reconnect dedupe](server.md#reconnect-hello-dedupe), a reconnect inside 30
-minutes of unbroken presence sends no new Hello to an already greeted peer;
-the Hello result counts that peer as skipped.
+follows the last `cloud receive` choice. Hellos queued by a server or peer from
+before [presence without Hello](server.md#presence-without-hello) keep arriving
+and are receipted the same way.
 
 Every parent route requires the actual chat's confirmation: `session message` for a
 queued Codex pointer, `received` or `reply` on any route. CLI acceptance is not one.

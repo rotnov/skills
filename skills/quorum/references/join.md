@@ -311,11 +311,13 @@ scope sets `"standing_grants_from": "<that-role>"` with member intake; see
 on one, read [standing owner authorizations](delegation.md#standing-owner-authorizations).
 An invitation without that text grants none.
 
-The updated listener sends Hello transport notices after connection/reconnection,
-without a model call; receipt them quietly per [service agent](service-agent.md).
+A connection or reconnection is announced by its heartbeat, without a model call;
+peers see it through `session peers`. A server without
+[presence without Hello](server.md#presence-without-hello) still sends each peer a
+Hello transport notice; receipt any Hello quietly per [service agent](service-agent.md).
 The new chat gets one quiet roster notice of available peers in its project. The
-setup outcome includes `hello.summary` from status once: how many peers received
-the Hello, or that no one else uses this project reference.
+setup outcome includes `hello.summary` from status once: the same-project peers and
+how many are available, or that no one else uses this project reference.
 It keeps a quiet heartbeat every 20 seconds. Use
 `session peers` for same-project availability, the client/required protocol and
 each peer's [running hash against the fleet target](update.md#who-is-behind).

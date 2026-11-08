@@ -1433,7 +1433,8 @@ class HelloVisibilityTests(Harness):
             _, first, _ = self.cli(api, 'session', 'receive', '--wait-seconds', '0', '--show-transport-notices')
             self.assertEqual(first['data']['message_id'], ROSTER)
             self.assertEqual(first['data']['hello'],
-                             'Hello sent to 2 peers in team/project (alpha, zeta); roster: 1 available')
+                             'Presence published in team/project: 2 peers (alpha, zeta); roster: 1 available; '
+                             'the server still sent Hello to 2 peers (presence migration not applied)')
             # The roster is a notification: never answered, receipted quietly.
             code, result, _ = self.cli(api, 'session', 'reply', ROSTER, '--text-stdin', stdin=b'thanks')
             self.assertEqual((code, result['code']), (3, 'native_inbox_reply_loop_denied'))
@@ -1442,7 +1443,8 @@ class HelloVisibilityTests(Harness):
             _, second, _ = self.receive(api)
             self.assertEqual(second['data']['state'], 'timeout')
             self.assertTrue(second['data']['hello'].startswith('Reused connection '))
-            self.assertIn(': no new Hello was sent; earlier: Hello sent to 2 peers', second['data']['hello'])
+            self.assertIn(': no new connection was announced; earlier: Presence published in team/project: 2 peers',
+                          second['data']['hello'])
             _, third, _ = self.receive(api)
             self.assertNotIn('hello', third['data'])
             _, status, _ = self.cli(api, 'session', 'status')
@@ -1450,3 +1452,30 @@ class HelloVisibilityTests(Harness):
         self.assertEqual(status['data']['hello']['sent'], 2)
         self.assertNotIn('session_reply', api.ops())
         self.assertEqual(api.acked, [ROSTER])
+
+    class PresenceApi(Api):
+        """A server with the presence migration (#196): every peer counted, none greeted."""
+        def answer(self, operation, payload):
+            if operation == 'session_heartbeat':
+                return {'online': True, 'new_connection': True, 'hello': {
+                    'peers': 2, 'skipped': 2, 'roles': ['alpha', 'zeta'], 'available': 1,
+                    'available_roles': ['alpha'], 'roster_message_id': ROSTER}}
+            return super().answer(operation, payload)
+
+    @isolated_profiles
+    def test_connect_sends_no_hello_and_still_reports_the_roster(self):
+        api = self.PresenceApi()
+        with caller(self.home):
+            self.connect(api)
+            _, first, _ = self.receive(api)
+            _, status, _ = self.cli(api, 'session', 'status')
+        # The client writes no message of its own on connect: one presence heartbeat, no Hello copy.
+        self.assertNotIn('message_send', api.ops())
+        self.assertNotIn('session_reply', api.ops())
+        self.assertIn('session_heartbeat', api.ops())
+        expected = 'Presence published in team/project: 2 peers (alpha, zeta); roster: 1 available'
+        self.assertEqual(first['data']['hello'], expected)
+        hello = status['data']['hello']
+        self.assertEqual(hello['summary'], expected)
+        self.assertEqual((hello['sent'], hello['peers'], hello['available'], hello['available_roles'], hello['roles']),
+                         (0, 2, 1, ['alpha'], ['alpha', 'zeta']))

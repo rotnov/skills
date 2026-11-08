@@ -465,6 +465,37 @@ The reviewed bodies stay private, revoked, with the suffix `_before_hash_only`. 
 numbers are not restored; `update_targets.skill_version` stays as a nullable column the
 private bodies still name.
 
+## Presence without Hello
+
+After reviewing the source and obtaining administrator deployment authorization,
+apply
+[`20261108140000_presence_without_hello.sql`](../supabase/migrations/20261108140000_presence_without_hello.sql)
+in one transaction after `20261108120000_hash_only_release.sql`, then refresh PostgREST's
+schema cache. It pins the hash-only heartbeat, the Hello wrapper and core below it, the
+streak trigger, the binding check and the release, and refuses drift, reapplication or a
+server without the hash-only release before any change. It does not change the required
+release, the heartbeat response, table access or task authority.
+
+A new listener connection sends no Hello message to peers. Its acknowledged heartbeat is
+the presence event, which peers read through `session_peers` availability and
+`last_seen`. `session_heartbeat` becomes a thin wrapper: for a new connection on the
+required protocol it records every same-project peer as announced in
+`session_hello_sent`, so the unchanged core skips them all, then calls the moved
+heartbeat. The `hello` result keeps its shape with `skipped` equal to `peers`, and the
+newcomer still gets its own quiet roster notice.
+
+Clients need no change. A deployed client keeps working and reports `Hello sent to 0
+peers, N already greeted`; a current client reports the roster as presence. Hellos already
+queued stay queued and every client still receipts them quietly. A peer that joins during
+the heartbeat can still get one Hello. `QUORUM_RELEASE_DOCKER=1` runs
+`test_quorum_presence_sql.py` against disposable PostgreSQL 17, including two concurrent
+new connections of one agent.
+
+The moved heartbeat stays private as `quorum_private.session_heartbeat_before_presence`.
+To roll back, in one transaction drop the new `public.session_heartbeat`, move that
+function back to `public` under its old name and grant it to `authenticated` again. New
+connections then send Hello again.
+
 ## Hello reporting extension
 
 After reviewing the source and obtaining administrator deployment authorization,
