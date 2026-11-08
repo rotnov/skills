@@ -187,7 +187,11 @@ exits. The session's own inbound controls and sandbox socket permissions still
 apply; do not change them to force delivery.
 
 If Claude Code rotates this chat's endpoint (same session UUID, new exports),
-run `session start` again from that same chat. Repeating `connect` preserves the
+run `session start` again from that same chat. After a Claude Code restart with
+reception still enabled, `session recover` does the same rebind without a new
+grant; status gives that command, and
+[Claude Code restart](resume.md#claude-code-restart) explains why the listener
+cannot follow on its own. Repeating `connect` preserves the
 old endpoint until this serialized transition; it cannot bless a listener that
 still holds stale exports. Start validates the new endpoint,
 stops the old listener (which holds the stale exports) and rebinds only the

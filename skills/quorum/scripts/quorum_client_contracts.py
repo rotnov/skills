@@ -191,3 +191,13 @@ def check_claude_session(session_id, endpoint):
             if version is None or version >= CLAUDE_UNDECLARED_LIMIT: refuse('version_outside_range')
         elif type(protocol) is not int or protocol not in CLAUDE_PEER_PROTOCOLS:
             refuse('peer_protocol_changed')
+
+
+def claude_endpoint_rotated(session_id, endpoint):
+    """True when a session record names this chat at a pipe other than the bound one: Claude Code restarted it.
+
+    Wording evidence for a stopped run only. A record names a pipe and never its token, so it is no route to
+    reattach to: that token exists only in the restarted client's own environment (references/resume.md).
+    """
+    return any(record.get('sessionId') == session_id and isinstance(record.get('messagingSocketPath'), str)
+               and record['messagingSocketPath'] != endpoint for record in _records())

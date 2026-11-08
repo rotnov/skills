@@ -59,6 +59,38 @@ receipt requirement and are not replayed. Queue admission and successful recover
 are separate from a message arriving in the actual resumed chat; verify a peer
 message and receipt/reply there before claiming runtime acceptance.
 
+## Claude Code restart
+
+When Claude Code restarts a chat, for example after an app update, the session ID
+stays the same but the client process, its messaging socket or pipe and its token
+are new. The listener stops at once with `claude_pipe_unavailable`. It does not
+wait or retry, because it cannot reattach:
+
+- The listener holds only the token it inherited from the `session start` or
+  `recover` tool call. It never stores a token.
+- The restarted client's own session record (`sessions/<pid>.json`, see
+  [client contracts](sessions.md#client-contracts)) names the new socket, but
+  never its token.
+- The new token exists only in the restarted client's environment. Reading
+  another process's environment is reading a secret the listener was never
+  given.
+- The pipe never answers. A write with the old token could be dropped without
+  any sign, so each message would look delivered while it was lost.
+
+When that record names this chat at a new socket, status shows
+`reason: client_restarted`. That reason only changes the wording; nothing
+connects to the new socket. A message that arrived during the restart stays
+durable on the service.
+
+`session status`, `send` and `reply` in the restarted chat then show
+`listener_lost`. Its `next_step` starts with `Quorum reception is down in this
+chat` and gives the one recovery command above, with a `cd` into the bound
+working directory on macOS and Linux. Run it from that chat without asking: it
+reuses the reception the owner already enabled and adopts that chat's own
+current socket and token. After an owner `session stop` there is no notice and
+recovery is refused. Another session, a changed client contract or an unknown
+attempt is refused as for any recovery.
+
 ## Service outages
 
 A running native listener waits out a network failure or HTTP 408, 429, 500,
@@ -78,7 +110,8 @@ failure, holds none of them, nothing can be delivered twice, so the run shows `s
 pauses 10, 20, 40 and then 60 seconds, and reconciles again; presence is not changed. With something ambiguous
 it still stops, reports the code and waits for `session reconcile`.
 Authentication or permission denial, a request refused by its own reviewed code, release mismatch, a binding
-denial, a gone client (`session_not_connected`, `claude_pipe_unavailable`, `grok_tui_gone`,
+denial, a gone client (`session_not_connected`, `claude_pipe_unavailable` (see
+[Claude Code restart](#claude-code-restart)), `grok_tui_gone`,
 `grok_transport_unavailable`), stop and revoked or expired authority stay terminal. Every native run, not only a recovered one,
 rechecks its reception authority before token resolution, each service call and
 each chat submission, so a stop, expiry, revocation or binding change during an

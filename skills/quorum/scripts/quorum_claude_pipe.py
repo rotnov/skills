@@ -20,6 +20,19 @@ from quorum_delivery import DeliveryUnsent
 EXIT_UNSENT = 2
 
 
+class RouteGone(ValueError):
+    """`claude_pipe_unavailable` for a bound route that is gone, with one fixed reason word or none.
+
+    `client_restarted`: a session record names this chat at a new pipe, so Claude Code restarted it under the
+    same session ID. A run cannot follow: the new pipe's token exists only in the restarted client's environment.
+    """
+    REASONS = ('client_restarted',)
+
+    def __init__(self, reason=None):
+        ValueError.__init__(self, 'claude_pipe_unavailable')
+        self.reason = reason if reason in self.REASONS else None
+
+
 def run_child(command, *, payload=None, timeout):
     """Run one short-lived child and return its CompletedProcess.
 
