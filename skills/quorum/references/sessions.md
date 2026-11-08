@@ -186,6 +186,11 @@ background child can authenticate as this exact session's child even after it
 exits. The session's own inbound controls and sandbox socket permissions still
 apply; do not change them to force delivery.
 
+On Claude Code the native worker is the default reception route and this
+parent route is its fallback. `connect` and `status` return `reception_route`;
+when its `next_step` is `move`, follow the
+[one-command move](claude-worker.md#one-command-move) instead of `start`.
+
 If Claude Code rotates this chat's endpoint (same session UUID, new exports),
 run `session start` again from that same chat. After a Claude Code restart with
 reception still enabled, `session recover` does the same rebind without a new
