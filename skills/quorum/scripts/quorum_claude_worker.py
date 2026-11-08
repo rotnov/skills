@@ -1872,10 +1872,17 @@ def _parent_record(root, sid):
     return record
 
 
-def _fallback_steps(root, slot_id=None, connected=False):
-    """This chat's parent-reception fallback: retire a worker that ever connected, then restart reception here."""
-    steps = [_command(root, 'session', 'worker', 'stop', slot_id, '--leave')] if slot_id and connected else []
+def _fallback_steps(root, slot_id=None, connected=False, stop=False):
+    """This chat's parent-reception fallback: retire a worker that ever connected (or stop a live slot that never
+    did, so it cannot connect later), then restart reception here."""
+    if slot_id and connected: steps = [_command(root, 'session', 'worker', 'stop', slot_id, '--leave')]
+    elif slot_id and stop: steps = [_command(root, 'session', 'worker', 'stop', slot_id)]
+    else: steps = []
     return steps + [_command(root, 'session', 'start')]
+
+
+# How long an attested worker may take to join (accept/connect and first receive) before the route says it failed.
+JOIN_GRACE_SECONDS = 300
 
 
 def reception_route(state_root, record):
@@ -1900,9 +1907,21 @@ def reception_route(state_root, record):
         return {**result, 'next_step': 'move', 'move_command': _command(root, 'session', 'worker', 'adopt-plan')}
     state, reason = _effective(slot)
     result['worker_slot'] = slot['slot_id']
-    if state == 'active': return {**result, 'route': ROUTE_WORKER}
-    if state == 'pending': return {**result, 'next_step': 'attest'}
     connected = bool((slot.get('target') or {}).get('agent_id')) or _unresolved(slot)
+    if state == 'active':
+        # Attested is not serving: only a connected worker with live reception is the route (#198 review).
+        try:
+            _connected(root, slot)
+            return {**result, 'route': ROUTE_WORKER}
+        except (NativeInboxError, OSError, sqlite3.Error, ValueError, TypeError): pass
+        steps = _fallback_steps(root, slot['slot_id'], connected, stop=True)
+        recovery = steps[:-1] + [_command(root, 'session', 'worker', 'adopt-plan')]
+        if (not (slot.get('target') or {}).get('agent_id')
+                and now() < (slot.get('activated_at') or 0) + JOIN_GRACE_SECONDS):
+            return {**result, 'next_step': 'join_pending', 'fallback_steps': steps, 'recovery_steps': recovery}
+        return {**result, 'fallback_reason': 'worker_unavailable' if connected else 'worker_join_failed',
+                'next_step': 'fallback', 'fallback_steps': steps, 'recovery_steps': recovery}
+    if state == 'pending': return {**result, 'next_step': 'attest'}
     return {**result, 'fallback_reason': 'worker_attestation_failed' if reason == 'pending_expired'
             else 'worker_unavailable', 'terminal_reason': reason, 'next_step': 'fallback',
             'fallback_steps': _fallback_steps(root, slot['slot_id'], connected)}

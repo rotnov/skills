@@ -490,6 +490,12 @@ This chat's own parent reception stays the fallback, restored with
 - An `adopt-plan` failure after its stop returns `parent_reception: stopped`
   and `fallback_steps`.
 - `worker_attestation_failed`: the slot's 120-second attest deadline passed.
+- An attested worker is the route only once it has connected with live
+  reception. Until then `next_step` is `join_pending`. If it has no agent five
+  minutes after attestation, `fallback_reason` becomes `worker_join_failed`,
+  even on an until-owner-stop slot. Both states carry `fallback_steps`, which
+  stop the slot first so it cannot connect later, and `recovery_steps`
+  (stop, then `adopt-plan` again).
 - `worker_unavailable`: the worker stopped or its permission expired. If it
   ever connected, `fallback_steps` first retires its agent with
   `session worker stop <slot-uuid> --leave`.

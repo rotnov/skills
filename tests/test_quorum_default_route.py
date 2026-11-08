@@ -110,10 +110,13 @@ class DefaultRouteTests(_Base):
         self.assertEqual([self.tail(step) for step in plan['fallback_steps']], [['session', 'start']])
         self.assertEqual([self.tail(step) for step in plan['fallback_steps_after_connect']],
                          [['session', 'worker', 'stop', plan['slot_id'], '--leave'], ['session', 'start']])
-        # Until the parent attests, the move is pending; attested, the worker is the route.
+        # Until the parent attests, the move is pending; attested but not yet connected, the join is pending.
         self.assertEqual((self.route()['next_step'], self.route()['worker_slot']), ('attest', plan['slot_id']))
         self.attest(plan['slot_id'])
-        self.assertEqual((self.route()['route'], self.route()['fallback_reason']), ('claude-worker', None))
+        route = self.route()
+        self.assertEqual((route['route'], route['next_step']), ('parent-session', 'join_pending'))
+        self.assertEqual([self.tail(step) for step in route['fallback_steps']],
+                         [['session', 'worker', 'stop', plan['slot_id']], ['session', 'start']])
 
     @isolated_profiles
     def test_adopt_plan_worker_joins_with_the_parent_login_and_no_invitation(self):
@@ -128,6 +131,40 @@ class DefaultRouteTests(_Base):
         self.assertEqual(code, 0, text)
         self.assertNotIn('invite_accept_id', api.ops())
         self.assertEqual(self.setting(slot)['target'], {'quorum_id': QUORUM, 'agent_id': AGENT})
+        # Connected with live reception: now, and only now, the worker is the route.
+        self.assertEqual((self.route()['route'], self.route()['fallback_reason']), ('claude-worker', None))
+
+    @isolated_profiles
+    def test_a_failed_join_is_not_the_worker_route_and_falls_back_after_the_grace(self):
+        import quorum_claude_worker as worker
+        api = Api()
+        api.fail = {'quorum_lookup': ['service_unavailable'], 'agent_join': ['service_unavailable']}
+        self.parent()
+        self.reception(True)
+        code, result, text = self.adopt_plan()
+        self.assertEqual(code, 0, text)
+        slot = result['data']['slot_id']
+        self.attest(slot)
+        code, failed, text = self.connect(api, self.capability(slot), '--require-worker-inbox')
+        self.assertNotEqual(code, 0, text)
+        self.assertNotIn('agent_id', self.setting(slot)['target'])
+        self.assertIs(self.enabled(), False)
+        route = self.route()
+        self.assertEqual((route['route'], route['next_step']), ('parent-session', 'join_pending'))
+        # A day later on an until-owner-stop slot: a failed join with the fallback and a recovery, never the worker.
+        self.now += 86400
+        route = self.route()
+        stop = ['session', 'worker', 'stop', slot]
+        if self.setting(slot).get('registration'): stop.append('--leave')
+        self.assertEqual((route['route'], route['next_step']), ('parent-session', 'fallback'))
+        self.assertIn(route['fallback_reason'], ('worker_join_failed', 'worker_unavailable'))
+        self.assertEqual([self.tail(step) for step in route['fallback_steps']], [stop, ['session', 'start']])
+        self.assertEqual([self.tail(step) for step in route['recovery_steps']],
+                         [stop, ['session', 'worker', 'adopt-plan']])
+        # The fallback's first step ends the slot; the route then names the stopped worker.
+        if '--leave' not in stop:
+            with claude(): worker.stop_slot(self.root, slot)
+            self.assertEqual(self.route()['terminal_reason'], 'stopped')
 
     def connected_worker(self, api):
         """adopt-plan, attest and the worker's own connect; sets the Bound helpers' slot and capability."""
