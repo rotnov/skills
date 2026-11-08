@@ -73,6 +73,14 @@ class Waiter(StubWaiter):
         if predicate(): return
 
 
+class Monotonic(Waiter):
+    """Only the wait's own monotonic clock moves, so the slot's wall-clock deadline is not what ends it."""
+    def wait(self, predicate):
+        self.waits += 1
+        self.test.moment += self.step
+        if self.on_wait: self.on_wait()
+
+
 class WaitCase(Bound):
     def setUp(self):
         super().setUp()
@@ -147,6 +155,34 @@ class WaitRouteTests(WaitCase):
         self.assertNotIn('session_ack', calls)
 
     @isolated_profiles
+    def test_an_unbounded_wait_never_rearms_and_still_ends_on_an_offer(self):
+        # --max-seconds 0 (#200): hours past every positive bound pass with no exit, so no model turn while idle.
+        import quorum_native_inbox as inbox
+        api = Api()
+        self.bound(api)
+        def later():
+            if waiter.waits == 200: api.inbox.append(message(M1, body='after hours'))
+        waiter = Monotonic(self, step=60, on_wait=later)
+        result, ledger = self.wait_direct(api, inbox.WAIT_UNBOUNDED, waiter)
+        envelope = self.fixed(result, 'offer_available', 'handle_then_wait')
+        self.assertEqual((envelope['message_id'], envelope['message']['body']), (M1, 'after hours'))
+        self.assertEqual(waiter.waits, 200)
+        self.assertGreater(self.moment, inbox.WAIT_BOUND)
+        self.assertEqual(ledger.setting('listener')['timeout'], 0)
+
+    @isolated_profiles
+    def test_an_unbounded_wait_still_ends_on_an_owner_stop(self):
+        import quorum_native_inbox as inbox
+        api = Api()
+        self.bound(api)
+        stop = self.stopper()
+        def later():
+            if waiter.waits == 150: stop()
+        waiter = Monotonic(self, step=60, on_wait=later)
+        result, _ = self.wait_direct(api, inbox.WAIT_UNBOUNDED, waiter)
+        self.fixed(result, 'stopped', 'report_stop', False, stop_reason='owner_stop')
+
+    @isolated_profiles
     def test_an_offer_ends_the_wait_with_its_envelope_and_no_receipt_and_stays_durable(self):
         import quorum_native_inbox as inbox
         api = Api()
@@ -157,7 +193,8 @@ class WaitRouteTests(WaitCase):
         self.assertEqual((envelope['state'], envelope['message_id'], envelope['message']['body']),
                          ('offered', M1, 'private peer body'))
         for name in ('receipt_command', 'reply_command', 'park_command'):
-            self.assertEqual(envelope[name][-1], '--then-wait')
+            # Resolve, then wait with no own bound (#200).
+            self.assertEqual(envelope[name][-3:], ['--then-wait', '--max-seconds', '0'])
         self.assertIn(inbox.THEN_WAIT, envelope['notice'])
         self.assertNotIn(inbox.WAIT_LOOP, envelope['notice'])
         self.assertNotIn(self.token, json.dumps(result))
@@ -347,7 +384,12 @@ class BriefTests(WaitCase):
         import quorum_native_inbox as inbox
         brief = self.prepare(self.accept_scope())['worker_brief']
         self.assertIn('Start session wait', brief)
-        self.assertIn('Monitor', brief)
+        # A background shell command with no own bound, not Monitor's 30-minute watch (#200).
+        self.assertIn('run_in_background', brief)
+        self.assertIn('never the Monitor tool', brief)
+        self.assertIn('--then-wait --max-seconds 0', brief)
+        self.assertIn('Read its output file once', brief)
+        self.assertIn('PowerShell', brief)
         self.assertIn('end your turn', brief)
         self.assertIn('Worker commands and Background wait sections', brief)
         self.assertIn('Do not repeat session receive', brief)
@@ -356,8 +398,8 @@ class BriefTests(WaitCase):
         self.bound(api)
         envelope = self.offer(api)
         self.assertIn(inbox.WAIT_LOOP, envelope['notice'])
-        self.assertEqual(envelope['wait_command'][-1], 'wait')
-        self.assertEqual(envelope['wait_command'][-3:-1], ['--worker-capability', str(self.cap)])
+        self.assertEqual(envelope['wait_command'][-3:], ['wait', '--max-seconds', '0'])
+        self.assertEqual(envelope['wait_command'][-5:-3], ['--worker-capability', str(self.cap)])
         self.assertEqual(self.worker(api, 'received', M1)[0], 0)
         result = self.offer(api)
         self.assertEqual((result['state'], result['continue'], result['next_step']), ('timeout', True, 'wait'))

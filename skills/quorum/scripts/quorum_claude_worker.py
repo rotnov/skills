@@ -1748,7 +1748,7 @@ def render_command(argv, shell='bash', cwd=None):
 
 
 def _join_brief():
-    """The worker brief after `session worker join`: straight to the Monitor wait route (#183, #185)."""
+    """The worker brief after `session worker join`: straight to the background wait route (#183, #185, #200)."""
     from quorum_native_inbox import WAIT_LOOP
     return ('The join command already ran await-binding, accept-id, connect and the first session receive '
             '--wait-seconds 0; never run them again. Its result carries capability_file, receive (the Hello outcome '
@@ -2573,7 +2573,9 @@ def _then_wait(args, auth_ledger, wait_context, ledger, api, resolved, began):
     import quorum_notices
     from quorum_listener import error_code
     from quorum_release import ReleaseGuard
-    seconds = max(1, args.max_seconds - int(time.monotonic() - began))
+    # No own bound stays unbounded (#200); a positive bound counts from this command's start.
+    seconds = (inbox.WAIT_UNBOUNDED if args.max_seconds == inbox.WAIT_UNBOUNDED
+               else max(1, args.max_seconds - int(time.monotonic() - began)))
     def check():
         guard(wait_context)
         current = ledger.setting('session-agent')

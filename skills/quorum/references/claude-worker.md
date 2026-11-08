@@ -213,9 +213,9 @@ Q create <slug> --access github --json-stdin --worker-capability <capability-fil
 Q accept-id <invite-id> --transport tool-inbox --worker-capability <capability-file> --require-worker-inbox
 Q accept-id <invite-id> --anonymous --origin <origin> --publishable-key <key> --transport tool-inbox --worker-capability <capability-file> --require-worker-inbox
 Q session --worker-capability <capability-file> connect <slug> --role <role> --project-ref <project> --transport tool-inbox --require-worker-inbox
-Q session --worker-capability <capability-file> wait [--max-seconds 1..7080]
-Q session --worker-capability <capability-file> received|park <message-id> --then-wait [--max-seconds 1..7080]
-Q session --worker-capability <capability-file> reply <message-id> --text-stdin --then-wait [--max-seconds 1..7080]
+Q session --worker-capability <capability-file> wait [--max-seconds 0..7080]
+Q session --worker-capability <capability-file> received|park <message-id> --then-wait [--max-seconds 0..7080]
+Q session --worker-capability <capability-file> reply <message-id> --text-stdin --then-wait [--max-seconds 0..7080]
 Q session --worker-capability <capability-file> receive --wait-seconds 0
 Q session --worker-capability <capability-file> status
 Q session --worker-capability <capability-file> stop
@@ -296,33 +296,38 @@ result, or `wait` in the commands above) and ends its turn. An empty wait uses
 no model turn, and the command's exit wakes the worker. Every model turn re-reads
 the worker's whole context, so the route keeps turns to the minimum:
 
-- Start each wait-route command with Claude Code's Monitor tool, `timeout_ms`
-  1800000. Its one compact result line arrives inside the event that wakes the
-  worker.
-- Without Monitor, use Bash `run_in_background`, never a shell `&`. Its
-  completion notice holds only the output file path, so the worker reads that
-  file on each wake, which costs one more turn.
-- An offer's line carries what the worker needs, so there is no `receive` call.
-  The worker builds each resolve command from fixed templates, never from the
-  line, where `Q` is the words of `wait_command` before `session` and `<cap>` its
-  capability file:
+- Start each wait-route command as a background shell command:
+  `run_in_background` on the Bash tool, or on the PowerShell tool on Windows
+  without Git Bash. Never use a shell `&`, and never the Monitor tool, which
+  ends every watch at 30 minutes and so wakes an idle worker 48 times a day
+  (#200).
+- `wait_command` ends in `--max-seconds 0`: the wait has no own bound and exits
+  only for an offer, an alert, a stop, an orphaned parent or a fatal code. A
+  local terminal, desktop or VS Code session never stops a background command,
+  so an idle worker takes no model turn at all.
+- The completion notice holds only the output file path, so the worker reads
+  that file once on each wake. The compact result is its last line; the full
+  result is the line before it.
+- An offer's output carries what the worker needs, so there is no `receive`
+  call. The worker builds each resolve command from fixed templates, never from
+  the output, where `Q` is the words of `wait_command` before `session` and
+  `<cap>` its capability file:
 
   ```text
-  Q session --worker-capability <cap> received|park <id> --then-wait
-  Q session --worker-capability <cap> reply <id> --text-stdin --then-wait
+  Q session --worker-capability <cap> received|park <id> --then-wait --max-seconds 0
+  Q session --worker-capability <cap> reply <id> --text-stdin --then-wait --max-seconds 0
   ```
 
   Each resolves the offer, then waits in the same command.
 
 #### Compact line and full result
 
-Monitor shows at most 500 characters of one event, so stdout, which is the
-event, gets one compact JSON line of at most 450 characters with the
+Stdout gets one compact JSON line of at most 450 characters with the
 essentials first. The full result, with the envelope, its notice and its
-commands, goes first to stderr: Monitor sends stderr only to its output file,
-and Bash writes both to its own. A second stdout line is avoided on purpose:
-Monitor batches lines within 200 ms into one event, so it would be truncated
-with the first, or would cost a second wake.
+commands, goes first to stderr; a background command writes both to its output
+file. The line stays under 450 characters and alone on stdout because a
+Monitor event shows at most 500 characters and batches lines within 200 ms, and
+a worker on an older brief may still wait under Monitor.
 
 - The line holds `state`, `next_step`, `continue` and `awaiting_owner`, and
   `stop_reason`, `code` or a short `resolved` (`message_id`, `state`,
@@ -358,9 +363,11 @@ first unreported Hello outcome. Only `offer_available` carries a body, inside
 - No result line: the host stopped the command or it crashed. Run `receive
   --wait-seconds 0`, then start `wait`.
 
-Per message the worker therefore takes two model turns: the wake runs one
-resolve command, and its start result ends the turn (three with the Bash
-output read, or when `full` is true). A message the worker answers only after project work takes those
+Per message the worker therefore takes three model turns: the wake reads the
+output file, the read result runs one resolve command, and its start result
+ends the turn. An idle hour takes none. Monitor would save the read turn per
+message, but its 30-minute cap costs two turns per idle half hour, about 96 a
+day, so it pays off only above about 96 messages a day. A message the worker answers only after project work takes those
 turns plus the work. A refused receipt, reply or park exits at once with its
 error and starts no wait. `--then-wait` needs the scope's `receive` operation,
 checked before the step runs, and is refused on every non-worker route.
@@ -385,25 +392,33 @@ first. `session stop` ends it within a second. If `--max-seconds` ends during a
 cooldown, `wait` returns `rearm` with that `code`. A refusal with its own name
 stays `fatal:<code>`.
 
-`--max-seconds` defaults to 1680, two minutes under the 30 minutes after which
-Monitor always, and Claude Code [background
+`--max-seconds 0`, which `wait_command` and the resolve templates carry, sets
+no own bound. A positive value bounds the wait and is at most 7080; without the
+flag it is 1680, two minutes under the 30 minutes after which Monitor always,
+and Claude Code [background
 commands](https://code.claude.com/docs/en/tools-reference.md#time-limit-for-background-commands)
-in unattended sessions by default, stop a command. After `--then-wait` the bound
-counts from that command's start. Each `rearm` costs two model turns: start the
-next wait, then end the turn. Under Bash, `--max-seconds` may go up to 7080
-when the command starts with `timeout` 7200000, Claude Code's 2-hour maximum,
-so idle hours cost one rearm every two hours; local terminal, desktop and VS
-Code sessions set no limit. For a finite brief, pass at most the seconds left to
-its deadline, so `rearm` wakes the worker to report `brief_deadline`; a `-p` run
-with a text prompt defaults to 10 minutes, so pass 540 there. The slot deadline
-and capability are rechecked at each heartbeat, every 20 seconds.
+in unattended sessions (`-p`, Agent SDK, cloud) by default, stop a command.
+After `--then-wait` a positive bound counts from that command's start. Each
+`rearm` costs three model turns: read the output, start the next wait, end the
+turn. Local terminal, desktop and VS Code sessions set no background limit, so
+`0` never rearms there. In an unattended session, start each command with
+`timeout` 7200000, Claude Code's 2-hour maximum, and `--max-seconds 7080`, so
+idle hours cost one rearm every two hours; a `-p` run with a text prompt
+defaults to 10 minutes, so pass 540 there. A worker that sent `0` and sees the
+host stop the command at its background time limit recovers as for a missing
+result line, then passes 7080. For a finite brief, pass at most the seconds left
+to its deadline (and at most 7080), so `rearm` wakes the worker to report
+`brief_deadline`. The slot deadline and capability are rechecked at each
+heartbeat, every 20 seconds.
 
 A killed `wait` releases its locks. Status then shows `listener: offline`, peers
 see the heartbeat age out and messages stay durable; the next `wait` or `receive`
 continues. `wait` exits as `orphaned` when any of the five processes above it
 ends, which reaches past an interpreter launcher, `uv run` and the client's
 shells. A client further up, or one this user may not query, is not watched, and
-the binding can then look online until the bound ends the process. An ancestor
+the binding can then look online until the bound ends the process; with no own
+bound that lasts until the slot deadline, an owner `session stop`, or a rebind,
+which first asks a running `wait` to exit. An ancestor
 ending while the client lives, such as a closed terminal behind a `nohup` client,
 also ends the wait; the worker then reports it. Between waits, while the worker
 handles a message, the binding has no heartbeat, as between receives. An older
