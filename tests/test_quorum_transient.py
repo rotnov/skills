@@ -201,7 +201,8 @@ class ListenerRetryTests(unittest.TestCase):
 
     def test_terminal_errors_are_never_retried(self):
         from quorum_api import QuorumError
-        terminal = (QuorumError('auth_required'), QuorumError('service_error'), QuorumError('coordination_unavailable'),
+        # A non-transient `service_error` and `coordination_unavailable` cool down instead (#186).
+        terminal = (QuorumError('auth_required'), ValueError('service_error'), ValueError('coordination_unavailable'),
                     QuorumError('skill_update_required'), QuorumError('release_manifest_invalid'),
                     ValueError('session_recovery_denied'), ValueError('session_binding_denied'),
                     ValueError('session_delivery_unknown'), ValueError('service_unavailable'))
@@ -331,13 +332,15 @@ class CloudflareOriginTests(unittest.TestCase):
                 self.assertEqual((result['state'], result['handled']), ('stopped', 1))
                 self.assertGreaterEqual(worker.runs, 2, 'the listener resumed waiting after the outage')
 
-    def test_retrying_listener_still_ends_on_a_plain_400(self):
-        from quorum_listener import Control, run_listener
+    def test_retrying_listener_cools_down_on_a_plain_400_instead_of_retrying_fast(self):
+        from quorum_listener import COOLDOWN_DELAYS, Control, run_listener
         with Ledger() as ledger:
             sleeps = []
             worker = ScriptedWorker(Control(ledger), [http_failure(400), 'delivered'])
             result = run_listener(ledger, lambda: worker, str(uuid.uuid4()), sleep=sleeps.append, retry=True)
-            self.assertEqual((result['state'], result['code'], worker.runs, sleeps), ('error', 'service_error', 1, []))
+            # A cooldown (#186), not the transient backoff: the first recheck waits a full minute.
+            self.assertEqual((result['state'], result['handled'], worker.runs, len(sleeps)),
+                             ('stopped', 1, 3, COOLDOWN_DELAYS[0]))
 
 
 class RealtimeTerminalTests(unittest.TestCase):

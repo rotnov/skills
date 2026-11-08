@@ -14,10 +14,16 @@ from quorum_os import FileLock, background_flags, open_private, protect
 from quorum_release import ReleaseGuard, ReleaseMismatch, installed_release
 
 # A run in these states holds listener.lock for as long as its process lives.
-# `degraded`: an opted-in native run waiting out a service outage; live but not ready.
+# `degraded`: an opted-in native run waiting out a service outage or cooldown; live but not ready.
 LIVE_STATES = ('starting', 'waiting', 'checking', 'degraded')
 # Outage backoff in seconds after consecutive failures, capped; the run itself has no deadline.
 RETRY_DELAYS = (10, 20, 40, 60)
+# Non-transient server failures an opted-in native run cools down on instead of exiting (#186): only a change
+# on the service ends them, and only the owner could restart a stopped run. A denial, a release mismatch, a
+# refused request with its own reviewed name and a gone client are never listed and still end the run.
+COOLDOWN_CODES = frozenset(('coordination_unavailable', 'service_error'))
+# Cooldown recheck delays in seconds, then hourly; a stop still ends the wait within a second.
+COOLDOWN_DELAYS = (60, 300, 900, 3600)
 # listener-control.lock guards short ledger transitions only. listener-start.lock serializes one whole
 # start, RPCs and waits included, and is never taken by a stop. Waiting order: start, control, supervisor,
 # listener. StartGuard alone takes start under control, but never waits for it, so no cycle exists.
@@ -248,13 +254,27 @@ def error_code(error):
     return str(error) if str(error) in allowed else safe_code(error) or 'listener_failed'
 
 
+def cooling(error):
+    """A non-transient server failure in COOLDOWN_CODES: the generic code itself, never a reviewed name."""
+    from quorum_api import is_transient_service
+    return isinstance(error, QuorumError) and str(error) in COOLDOWN_CODES and not is_transient_service(error)
+
+
+def outage(error):
+    """(delays, presence state) of a service failure an opted-in native run waits out, else None."""
+    from quorum_api import is_transient_service
+    if is_transient_service(error): return RETRY_DELAYS, 'unreachable'
+    if cooling(error): return COOLDOWN_DELAYS, 'unavailable'
+    return None
+
+
 def run_listener(ledger, make_worker, run_id, *, sleep=time.sleep, stop_event=None, timeout=60, waiter=None,
                  retry=False):
-    """`retry`: native session opt-in to wait out typed service outages with the same worker.
+    """`retry`: native session opt-in to wait out typed service outages, and cool down on a server-side
+    failure in COOLDOWN_CODES, with the same worker.
 
     Each resumption reconciles first; the worker's durable ledger, not this loop, prevents replay.
     """
-    from quorum_api import is_transient_service
     from quorum_live import LocalSupervisorLock
     control, handled = Control(ledger), 0
     stop_event = stop_event or threading.Event()
@@ -270,7 +290,16 @@ def run_listener(ledger, make_worker, run_id, *, sleep=time.sleep, stop_event=No
                 control.update(run_id, 'unknown', handled, timeout=timeout, code='uncertain_attempt')
             else:
                 worker = make_worker()
-                ready, failures = False, 0
+                ready, failures = False, {'unreachable': 0, 'unavailable': 0}
+                def wait_out(error):
+                    # Degraded and quiet: no heartbeat, Hello, model turn or delivery until the next recheck.
+                    delays, presence = outage(error)
+                    control.update(run_id, 'degraded', handled, timeout=timeout, code=str(error))
+                    ledger.setting('presence', {'state':presence, 'code':str(error)})
+                    for _ in range(delays[min(failures[presence], len(delays) - 1)]):
+                        if stopping(): break
+                        sleep(1)
+                    failures[presence] += 1
                 while not stopping():
                     try:
                         if not ready:
@@ -284,17 +313,12 @@ def run_listener(ledger, make_worker, run_id, *, sleep=time.sleep, stop_event=No
                             waiter.pulse(stopping) if getattr(waiter, 'stop_aware', False) else waiter.pulse()
                         control.update(run_id, 'checking', handled, timeout=timeout)
                         outcome = worker.run_once()
-                        failures = 0  # A completed authoritative drain ends the outage.
+                        failures.update(dict.fromkeys(failures, 0))  # A completed authoritative drain ends it.
                     except Exception as error:
-                        if not (retry and is_transient_service(error)): raise
+                        if not (retry and outage(error)): raise
                         # No dispatch is repeated here: reconcile again before any further I/O.
                         ready = False
-                        control.update(run_id, 'degraded', handled, timeout=timeout, code=str(error))
-                        ledger.setting('presence', {'state':'unreachable', 'code':str(error)})
-                        for _ in range(RETRY_DELAYS[min(failures, len(RETRY_DELAYS) - 1)]):
-                            if stopping(): break
-                            sleep(1)
-                        failures += 1
+                        wait_out(error)
                         continue
                     if outcome == 'unknown':
                         control.update(run_id, 'unknown', handled, timeout=timeout, code='uncertain_attempt')
@@ -314,8 +338,9 @@ def run_listener(ledger, make_worker, run_id, *, sleep=time.sleep, stop_event=No
                     if waiter:
                         try: waiter.wait(stopping)
                         except Exception as error:
-                            if not (retry and is_transient_service(error)): raise
+                            if not (retry and outage(error)): raise
                             ready = False  # Realtime keeps its own fallback; resubscribe and reconcile.
+                            if cooling(error): wait_out(error)
                         continue
                     for _ in range(10):
                         if stopping(): break

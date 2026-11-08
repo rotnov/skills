@@ -64,9 +64,16 @@ message and receipt/reply there before claiming runtime acceptance.
 A running native listener waits out a network failure or HTTP 408, 429, 500,
 502, 503, 504 or a Cloudflare origin error (520-524, 530) without a command. Status shows `state: degraded` with the code
 and presence `unreachable`; it retries after 10, 20, 40 and then every 60
-seconds, reconciling before any further inbox or receipt call. Authentication or
-permission denial, other HTTP errors, release mismatch, stop and revoked or
-expired authority stay terminal. Every native run, not only a recovered one,
+seconds, reconciling before any further inbox or receipt call.
+
+A server-side failure that only a change on the service ends, `coordination_unavailable` or any other
+non-transient `service_error`, does not stop it either. It cools down: status shows `state: degraded` with
+that code and presence `unavailable`, and it rechecks after 1, 5, 15 and 60 minutes, then hourly. A cooldown
+sends no heartbeat or Hello, starts no model turn and delivers nothing; each recheck resubscribes and
+reconciles first, and a completed inbox pass ends it. `session stop` ends a cooldown at once.
+Authentication or permission denial, a request refused by its own reviewed code, release mismatch, a binding
+denial, a gone client (`session_not_connected`, `claude_pipe_unavailable`, `grok_tui_gone`,
+`grok_transport_unavailable`), stop and revoked or expired authority stay terminal. Every native run, not only a recovered one,
 rechecks its reception authority before token resolution, each service call and
 each chat submission, so a stop, expiry, revocation or binding change during an
 outage ends it without a later dispatch. A new run started by `session start`
