@@ -2061,9 +2061,10 @@ def owner_binding(context, auth_ledger):
 
 
 def capability_status(context):
+    from quorum_delegation import worker_trust_route
     root = _state_root(context['state_root'])
     return {**_summary(root, _view(root, context['slot_id'])), 'session_ref': context['session_ref'],
-            'transport': TRANSPORT}
+            'transport': TRANSPORT, 'member_trust_route': worker_trust_route(context.get('scope'))}
 
 
 def session_dispatch(args, auth_ledger, register_agent, context):
