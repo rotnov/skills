@@ -60,7 +60,7 @@ class SpawnPlanTests(Bound):
         return result['data']
 
     def join_plan(self, api, plan, resolved=True):
-        return self.main(api, plan['join_command'][2:], resolved=resolved)
+        return self.main(api, plan['join_argv'][2:], resolved=resolved)
 
     def slot_setting(self, plan):
         from quorum_state import LocalLedger
@@ -80,7 +80,7 @@ class SpawnPlanTests(Bound):
         worker = Path(plan['worker_state'])
         self.assertEqual(worker.parent, self.root / 'claude-open-workers', 'a fresh private state under this one')
         self.assertFalse((worker / 'config.json').exists())
-        self.assertEqual(plan['join_command'][-6:], ['--state', str(worker), 'session', 'worker', 'join',
+        self.assertEqual(plan['join_argv'][-6:], ['--state', str(worker), 'session', 'worker', 'join',
                                                      plan['slot_id']])
         self.assertEqual(plan['attest_command'][-4:], ['attest', plan['slot_id'], '--native-handle', '<native-handle>'])
         record = self.slot_setting(plan)
@@ -89,6 +89,11 @@ class SpawnPlanTests(Bound):
         self.assertEqual(record['service_locator'], {'origin': ORIGIN, 'publishable_key': KEY})
         # The prompt holds the brief and the single join command; never the key, a token or another step.
         prompt = plan['spawn_prompt']
+        import shlex
+        self.assertEqual((plan['shell'], plan['join_command']), ('bash', shlex.join(plan['join_argv'])),
+                         'POSIX output is unchanged')
+        self.assertIn('foreground Bash tool call', prompt)
+        self.assertIn(plan['join_command'], prompt)
         self.assertIn(plan['slot_id'], prompt)
         self.assertIn('session worker join', prompt)
         self.assertIn('Monitor', prompt)
@@ -210,6 +215,31 @@ class SpawnPlanTests(Bound):
         code, result, text = self.join_plan(api, plan)
         self.assertNotEqual(code, 0, text)
         self.assertEqual((result['data']['join_step'], result['data']['completed']), ('accept', []), text)
+
+    @isolated_profiles
+    def test_powershell_plan_renders_the_join_with_the_call_operator(self):
+        plan = self.planned(PlanApi(), '--shell', 'powershell')
+        self.assertEqual(plan['shell'], 'powershell')
+        self.assertTrue(plan['join_command'].startswith("& '"), plan['join_command'])
+        self.assertIn('foreground PowerShell tool call', plan['spawn_prompt'])
+        self.assertIn(plan['join_command'], plan['spawn_prompt'])
+
+    def test_windows_paths_render_for_bash_and_powershell(self):
+        import shlex
+        from quorum_claude_worker import render_command
+        argv = [r'C:\Users\alice smith\AppData\python.exe', r'C:\Program Files\quorum\scripts\quorum.py',
+                '--state', r"C:\Users\alice smith\o'brien state", 'session', 'worker', 'join',
+                '11111111-1111-4111-8111-111111111111']
+        bash = render_command(argv)
+        self.assertEqual(shlex.split(bash), argv, bash)
+        self.assertEqual(render_command(argv, 'powershell'),
+                         "& 'C:\\Users\\alice smith\\AppData\\python.exe' "
+                         "'C:\\Program Files\\quorum\\scripts\\quorum.py' '--state' "
+                         "'C:\\Users\\alice smith\\o''brien state' 'session' 'worker' 'join' "
+                         "'11111111-1111-4111-8111-111111111111'")
+        # POSIX paths keep the exact shlex.join form.
+        posix = ['/usr/bin/python3', '/opt/skills/quorum.py', '--state', '/home/a/state', 'session']
+        self.assertEqual(render_command(posix), shlex.join(posix))
 
     def test_live_agents_stay_disabled(self):
         code, result, _ = self.cli(None, 'worker')

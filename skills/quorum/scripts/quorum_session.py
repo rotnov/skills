@@ -874,6 +874,9 @@ def add_worker_commands(actions):
                                                         'under it (open)')
     plan.add_argument('--cwd', help='The approved project directory; must be the current directory (default)')
     plan.add_argument('--request-id', help='Invitation request ID; reuse after an uncertain response')
+    plan.add_argument('--shell', choices=('bash', 'powershell'), default='bash',
+                      help="The worker's shell tool for the rendered join command (default bash: Claude Code's Bash "
+                           'tool, Git Bash on Windows)')
     plan.add_argument('--lifetime', choices=('bounded', 'until-owner-stop'))
     plan.add_argument('--until-owner-stop', dest='lifetime', action='store_const', const='until-owner-stop')
     plan.add_argument('--ttl-seconds', type=int, metavar='1..3600')

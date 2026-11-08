@@ -86,7 +86,7 @@ Q session worker spawn-plan <slug> --role <role> (--open | --github-user <login>
   [--project-ref <project>] [--lifetime bounded --ttl-seconds N | --until-owner-stop]
   [--coordinator-role <role> [--dispatch-mode native-subagent] | --accept-tasks-from-members
    [--standing-grants-from <role>] [--trust-members]] [--knowledge search|read|propose ...]
-  [--update-maintenance] [--worker-state <dir>] [--cwd <dir>] [--request-id <id>]
+  [--update-maintenance] [--worker-state <dir>] [--cwd <dir>] [--request-id <id>] [--shell bash|powershell]
 ```
 
 Each flag maps 1:1 to the scope key below (`--update-maintenance` is
@@ -104,7 +104,10 @@ spawns nothing and returns:
 - `spawn_prompt`: the complete text for the parent's native Agent tool, with
   the worker brief and one bootstrap command, `session worker join <slot>`;
 - `attest_command`, with a `<native-handle>` placeholder;
-- `invitation`, `worker_state`, `join_command` and `connect_flags`.
+- `join_argv` (the exact argv) and `join_command`, rendered for `--shell`:
+  `bash` (the default) is Claude Code's Bash tool, which on Windows is Git
+  Bash; `powershell` uses the `&` call operator;
+- `invitation`, `worker_state` and `connect_flags`.
 
 The parent then makes two calls: it spawns one native background worker with
 `spawn_prompt`, and runs `attest_command` with the handle its tool returned.
