@@ -425,7 +425,9 @@ class ResumeTests(unittest.TestCase):
         self.spawn = spawn
         real, offset = time.monotonic, [0.0]
         def fast():
-            offset[0] += 5  # The 90-second readiness deadline passes without real waiting.
+            # The 90-second readiness deadline passes without real waiting, but only once the
+            # listener has tried to reconcile, so a slow thread start cannot skip the outage.
+            if attempts: offset[0] += 5
             return real() + offset[0]
         with patch('time.monotonic', side_effect=fast):
             with self.assertRaisesRegex(Exception, 'listener_start_failed'): self.dispatch('start')
