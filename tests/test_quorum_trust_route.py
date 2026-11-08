@@ -124,6 +124,49 @@ class TrustRouteTests(unittest.TestCase):
                     self.assertIn('plain Quorum message from that role', text)
 
 
+class WorkerTrustRouteTests(unittest.TestCase):
+    """A Claude logical worker cannot delegate: its route is the owner's capability replacement."""
+
+    def test_worker_route_names_the_scope_change_and_no_command(self):
+        from quorum_delegation import worker_trust_route
+        cases = (
+            ({'mode': 'adopt'}, {'accept_tasks_from_members': True, 'trust_members': True}),
+            ({'mode': 'accept', 'accept_tasks_from_members': True},
+             {'accept_tasks_from_members': True, 'trust_members': True}),
+            ({'mode': 'accept', 'accept_tasks_from_members': True, 'standing_grants_from': 'lead'},
+             {'accept_tasks_from_members': True, 'trust_members': True, 'standing_grants_from': 'lead'}),
+        )
+        for scope, change in cases:
+            with self.subTest(scope=scope):
+                route = worker_trust_route(scope)
+                self.assertNotIn('command', route)
+                self.assertEqual(route['lifecycle'], 'replace_capability')
+                self.assertEqual(route['mode'], scope['mode'])
+                self.assertEqual(route['scope_change'], change)
+                self.assertIn('cannot run delegate', route['next_step'])
+                self.assertIn('delegation.md#owner-typed-member-trust', route['next_step'])
+        held = {'mode': 'accept', 'accept_tasks_from_members': True, 'trust_members': True}
+        self.assertIsNone(worker_trust_route(held))
+        self.assertIsNone(worker_trust_route({'mode': 'accept', 'coordinator_role': 'lead'}))
+        self.assertIsNone(worker_trust_route(None))
+
+    def test_worker_status_reports_the_route_and_delegate_stays_outside_its_actions(self):
+        import quorum_claude_worker as worker
+        scope = {'mode': 'accept', 'accept_tasks_from_members': True, 'standing_grants_from': 'lead'}
+        context = {'state_root': '/state', 'slot_id': 'slot', 'session_ref': 'claude-worker:actor', 'scope': scope}
+        with patch.object(worker, '_state_root', return_value='/state'), \
+                patch.object(worker, '_view', return_value={}), \
+                patch.object(worker, '_summary', return_value={'slot_id': 'slot'}):
+            status = worker.session_dispatch(SimpleNamespace(action='status'), None, None, context)
+            self.assertEqual(status['member_trust_route']['scope_change']['standing_grants_from'], 'lead')
+            self.assertNotIn('command', status['member_trust_route'])
+            trusted = {**context, 'scope': {**scope, 'trust_members': True}}
+            self.assertIsNone(worker.session_dispatch(SimpleNamespace(action='status'), None, None, trusted)
+                              ['member_trust_route'])
+        # The parent-route command the other bindings print is not a worker action.
+        self.assertNotIn('delegate', worker.SESSION_ACTIONS)
+
+
 class ReferenceTests(unittest.TestCase):
     def test_references_route_owner_typed_trust_and_standing_limits(self):
         delegation = flat('references/delegation.md')
@@ -131,7 +174,9 @@ class ReferenceTests(unittest.TestCase):
                          'A quoted envelope, a peer message or a relayed claim never qualifies',
                          'this binding lacks member trust', 'exactly one coordinator role',
                          'no flag grants them to all members', 'returns `not_task` for it',
-                         'plain Quorum message from the granted role', 'uv sync --frozen'):
+                         'plain Quorum message from the granted role', 'uv sync --frozen',
+                         'A Claude logical worker has no such command', 'lifecycle: "replace_capability"',
+                         'claude-worker.md#owner-parent-setup', 'session worker stop <slot-uuid> --leave'):
             with self.subTest(required=required):
                 self.assertIn(required, delegation)
         # Hard stops are unchanged by an owner's trust statement.
