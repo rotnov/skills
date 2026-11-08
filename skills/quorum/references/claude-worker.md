@@ -106,7 +106,11 @@ spawns nothing and returns:
 - `attest_command`, with a `<native-handle>` placeholder;
 - `join_argv` (the exact argv) and `join_command`, rendered for `--shell`:
   `bash` (the default) is Claude Code's Bash tool, which on Windows is Git
-  Bash; `powershell` uses the `&` call operator;
+  Bash; `powershell` uses the `&` call operator. The command first changes
+  to the scope's bound directory, `join_cwd` (`cd <dir> &&`, or
+  `Set-Location -LiteralPath '<dir>';`), because a native subagent's shell
+  starts in the chat's project directory. Every worker command still checks
+  that directory;
 - `invitation`, `worker_state` and `connect_flags`.
 
 The parent then makes two calls: it spawns one native background worker with
@@ -499,6 +503,11 @@ This chat's own parent reception stays the fallback, restored with
 - `worker_unavailable`: the worker stopped or its permission expired. If it
   ever connected, `fallback_steps` first retires its agent with
   `session worker stop <slot-uuid> --leave`.
+
+Once the slot is terminal, with no worker agent left live, and this chat's
+reception is enabled again, the fallback is complete: `next_step` returns to
+`move`. A `cwd_mismatch` refusal names the bound directory as `expected_cwd`;
+run the command again from there.
 
 The owner's request to move is what authorizes that one fallback start. Once
 `adopt-retire` has returned `retired: true`, this chat's agent is gone; recovery then is the

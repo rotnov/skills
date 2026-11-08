@@ -104,6 +104,10 @@ class DefaultRouteTests(_Base):
                          ('stopped', 'until-owner-stop', {'quorum_id': QUORUM, 'agent_id': PARENT_AGENT}))
         self.assertEqual(self.tail(plan['join_argv']), ['session', 'worker', 'join', plan['slot_id']])
         self.assertIn(plan['join_command'], plan['spawn_prompt'])
+        # The worker's shell starts in the chat's project, not the bound directory: the join changes there first.
+        import shlex
+        self.assertEqual(plan['join_cwd'], str(self.project))
+        self.assertEqual(shlex.split(plan['join_command'])[:3], ['cd', str(self.project), '&&'])
         self.assertNotIn('accepts the invitation', plan['spawn_prompt'])
         self.assertEqual(self.tail(plan['attest_command'])[:4], ['session', 'worker', 'attest', plan['slot_id']])
         self.assertEqual(self.tail(plan['retire_command']), ['session', 'worker', 'adopt-retire', plan['slot_id']])
@@ -165,6 +169,42 @@ class DefaultRouteTests(_Base):
         if '--leave' not in stop:
             with claude(): worker.stop_slot(self.root, slot)
             self.assertEqual(self.route()['terminal_reason'], 'stopped')
+
+    @isolated_profiles
+    def test_a_completed_fallback_reports_the_normal_parent_state(self):
+        import quorum_claude_worker as worker
+        self.parent()
+        self.reception(True)
+        code, result, text = self.adopt_plan()
+        self.assertEqual(code, 0, text)
+        slot = result['data']['slot_id']
+        self.attest(slot)
+        self.assertEqual(self.route()['next_step'], 'join_pending')
+        # The fallback steps: stop the slot, then session start re-enables this chat's reception.
+        with claude(): worker.stop_slot(self.root, slot)
+        self.assertEqual((self.route()['next_step'], self.route()['terminal_reason']), ('fallback', 'stopped'))
+        self.reception(True)
+        route = self.route()
+        self.assertEqual((route['route'], route['next_step'], route['fallback_reason'], route['worker_slot']),
+                         ('parent-session', 'move', None, None))
+        self.assertEqual(self.tail(route['move_command']), ['session', 'worker', 'adopt-plan'])
+        self.assertNotIn('fallback_steps', route)
+
+    @isolated_profiles
+    def test_a_connected_stopped_worker_needs_its_retirement_before_the_normal_state(self):
+        import quorum_claude_worker as worker
+        api = Api()
+        slot = self.connected_worker(api)
+        with claude(): worker.stop_slot(self.root, slot)
+        self.reception(True)
+        route = self.route()
+        self.assertEqual((route['next_step'], route['fallback_reason']), ('fallback', 'worker_unavailable'))
+        self.assertEqual(self.tail(route['fallback_steps'][0]), ['session', 'worker', 'stop', slot, '--leave'])
+        from quorum_state import LocalLedger
+        index = LocalLedger(self.root)
+        try: worker.record_retired(index, AGENT)
+        finally: index.db.close()
+        self.assertEqual(self.route()['next_step'], 'move')
 
     def connected_worker(self, api):
         """adopt-plan, attest and the worker's own connect; sets the Bound helpers' slot and capability."""
@@ -263,6 +303,7 @@ class DefaultRouteTests(_Base):
         try: code, result, text = self.adopt_plan()
         finally: os.chdir(self.project)
         self.assertEqual((code, result['data'].get('reason')), (3, 'cwd_mismatch'), text)
+        self.assertEqual(result['data']['expected_cwd'], str(self.project), 'the parent learns where to run')
         self.assertIs(self.enabled(), True)
         # An earlier adopting worker still pending.
         self.reception(False)
