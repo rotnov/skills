@@ -11,6 +11,15 @@ REPORTS_KEY = 'peer-runtime-reports'
 REPORTS_LIMIT = 512
 STALE = timedelta(seconds=60)
 REPORT_FIELDS = ('refreshed_at', 'active_at', 'state')
+# What `session peers` may say about a recipient at send time (#166). Only the first two warn: the service sees no
+# live reception for that chat, so the message waits until it comes back.
+AVAILABILITIES = ('unavailable', RESTARTED, 'online', 'awaiting_owner', 'unknown')
+UNAVAILABLE = AVAILABILITIES[:2]
+AVAILABILITY_REASONS = ('receipt_timeout', 'heartbeat_timeout', 'heartbeat_not_supported', 'reception_hold',
+                        'run_changed_without_heartbeat')
+RECIPIENT_WARNING = ('Sent and stored, but the recipient\'s reception looks offline, so it is not consuming messages '
+                     'now. It gets this one when its reception resumes: do not resend. Check later with session '
+                     'peers or session delivery <message-UUID>.')
 
 
 def _time(value):
@@ -39,6 +48,33 @@ def restart_state(peer, report, *, now=None):
     now = now or datetime.now(timezone.utc)
     if now - last_seen < STALE or last_seen < refreshed - STALE: return None
     return RESTARTED
+
+
+def recipient_availability(api, scope, *, agent_id=None, message_id=None):
+    """A non-blocking hint about the recipient of a message just sent; {} whenever it cannot be read cheaply.
+
+    The message is already durable, so this never raises and never refuses. `agent_id` names the recipient; a reply
+    gives its own `message_id`, whose status row names it. One `session peers` read then gives its availability.
+    Only fixed values cross: a reason or a time of another shape is dropped.
+    """
+    try:
+        if agent_id is None:
+            view = api.call('session_delivery_status', {**scope, 'message_id': message_id})
+            agent_id = view.get('recipient_id') if isinstance(view, dict) else None
+        agent_id = str(uuid.UUID(agent_id))
+        peers = api.call('session_peers', scope)
+    except Exception: return {}
+    def same(item):
+        try: return str(uuid.UUID(item.get('agent_id'))) == agent_id
+        except (ValueError, TypeError, AttributeError): return False
+    peer = next((item for item in peers if isinstance(item, dict) and same(item)), None) if isinstance(peers, list) else None
+    availability = peer.get('availability') if peer else None
+    if availability not in AVAILABILITIES: return {}
+    result = {'recipient_availability': availability}
+    if peer.get('reason') in AVAILABILITY_REASONS: result['recipient_reason'] = peer['reason']
+    if _time(peer.get('last_seen')): result['recipient_last_seen'] = peer['last_seen']
+    if availability in UNAVAILABLE: result['recipient_warning'] = RECIPIENT_WARNING
+    return result
 
 
 def remember_reports(ledger, status):

@@ -274,6 +274,13 @@ sent. Use `session peers` (a stale duplicate shows `unavailable` /
 with [`agent-retire`](operations.md#owner-agent-commands). Then retry the same
 request ID.
 
+On a parent binding, a successful `send` or `reply` also reads `session peers` once
+and adds `recipient_availability`, with `recipient_reason` and `recipient_last_seen`
+when known. When the recipient is `unavailable` or `client_restarted_unrecovered`,
+`recipient_warning` says its reception is not consuming messages now. The message
+is still sent and stays durable: do not resend it; check `session peers` or
+`session delivery <message-UUID>` later. A failed read only omits these fields.
+
 Incoming envelopes start with `[Quorum · <quorum-name> · <sender-role>]` and
 retain the receiving owner's permission rules. They contain peer JSON, sender identity and a `session reply
 <message-UUID> --text-stdin` command; one queued through `codex queue` replaces the

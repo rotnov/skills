@@ -208,6 +208,8 @@ class ListenerRetryTests(unittest.TestCase):
                     ValueError('session_delivery_unknown'), ValueError('service_unavailable'))
         for error in terminal:
             with self.subTest(error=repr(error)), Ledger() as ledger:
+                # A delivery-unknown stays terminal only while something is ambiguous (#166).
+                ledger.setting('delivery:' + str(uuid.uuid4()), {'state': 'intent', 'attempt_id': str(uuid.uuid4())})
                 result, worker, sleeps, _ = self.run_scripted(ledger, [error])
                 self.assertEqual((result['state'], worker.runs, sleeps), ('error', 1, []))
 

@@ -15,6 +15,7 @@ import quorum_client_contracts as contracts
 from quorum_delivery import Deliveries, RECEIPTABLE, UNRECEIPTED, server_ack
 from quorum_delivery_status import (EXPLICIT_STATUSES, MARK_HINT, REASON_LIMIT, REASON_REQUIRED, Reports, StatusWatch,
                                     note_sent, outgoing_summary, save_stuck)
+from quorum_peer_wake import recipient_availability
 from quorum_listener import (Control, ListenerPending, READY_SECONDS, START_LOCK, StartGuard, UPSERT, await_exit,
                              await_started, control_lock, locked, ready, run_listener, spawn_background, stop_listener)
 from quorum_os import FileLock
@@ -722,8 +723,11 @@ class Relay:
         self.authorize()
         # The chat's `received`/`reply` acknowledges submitted messages itself,
         # so count each confirmation here once; a bare pipe write is never counted.
-        for pending in self.awaiting:
-            if self.deliveries.get(pending)['state'] == 'acked':
+        for pending in list(self.awaiting):
+            delivery = self.deliveries.get(pending)
+            # A row the owner reconciled away is no longer this run's to count (#166).
+            if not delivery: self.awaiting.remove(pending)
+            elif delivery['state'] == 'acked':
                 self.awaiting.remove(pending)
                 return 'delivered'
         self.route_check()
@@ -1589,7 +1593,11 @@ def _dispatch(args, auth_ledger, register_agent):
                 if delivery and delivery['state'] in UNRECEIPTED:
                     ReleaseGuard(api, ledger).check()
                     acknowledge(api, ledger, scope, args.message_id, proof=body_proof(delivery, 'reply'))
-                return {**result, **reception_notice(ledger, auth_ledger.root)} if isinstance(result, dict) else result
+                if not isinstance(result, dict): return result
+                # A non-blocking hint once the answer is durable: the reply's own status row names its recipient.
+                answered = result.get('reply_message_id')
+                hint = recipient_availability(api, scope, message_id=answered) if isinstance(answered, str) else {}
+                return {**result, **hint, **reception_notice(ledger, auth_ledger.root)}
             # A tool worker's api is already guarded: a rebind after its proof ends the send before dispatch.
             if worker_guard is not None: worker_guard()
             try:
@@ -1602,7 +1610,9 @@ def _dispatch(args, auth_ledger, register_agent):
                  'recipient_agent_id':peer['agent_id'],'conversation_id':conv,'body':text,'reply_to':None,
                  'priority':priority},args.request_id)
             note_sent(ledger)
-            return {**result,'conversation_id':conv,**reception_notice(ledger, auth_ledger.root)}
+            # Never refuses: the message is durable, and a recipient whose reception looks offline only adds a warning.
+            hint=recipient_availability(api,scope,agent_id=peer.get('agent_id'))
+            return {**result,'conversation_id':conv,**hint,**reception_notice(ledger, auth_ledger.root)}
         if args.action=='run':
             import signal,threading
             from quorum_realtime import RealtimeWait

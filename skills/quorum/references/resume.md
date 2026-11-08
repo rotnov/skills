@@ -71,6 +71,12 @@ non-transient `service_error`, does not stop it either. It cools down: status sh
 that code and presence `unavailable`, and it rechecks after 1, 5, 15 and 60 minutes, then hourly. A cooldown
 sends no heartbeat or Hello, starts no model turn and delivers nothing; each recheck resubscribes and
 reconciles first, and a completed inbox pass ends it. `session stop` ends a cooldown at once.
+
+`session_delivery_unknown` stops a native run only while its ledger holds something ambiguous: an
+`unknown_attempts` row, a `pending_receipts` row or an uncertain attempt. When the ledger, read after the
+failure, holds none of them, nothing can be delivered twice, so the run shows `state: degraded` with that code,
+pauses 10, 20, 40 and then 60 seconds, and reconciles again; presence is not changed. With something ambiguous
+it still stops, reports the code and waits for `session reconcile`.
 Authentication or permission denial, a request refused by its own reviewed code, release mismatch, a binding
 denial, a gone client (`session_not_connected`, `claude_pipe_unavailable`, `grok_tui_gone`,
 `grok_transport_unavailable`), stop and revoked or expired authority stay terminal. Every native run, not only a recovered one,

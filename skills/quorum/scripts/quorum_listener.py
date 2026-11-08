@@ -24,6 +24,10 @@ RETRY_DELAYS = (10, 20, 40, 60)
 COOLDOWN_CODES = frozenset(('coordination_unavailable', 'service_error'))
 # Cooldown recheck delays in seconds, then hourly; a stop still ends the wait within a second.
 COOLDOWN_DELAYS = (60, 300, 900, 3600)
+# A delivery code an opted-in native run reconciles past, after a RETRY_DELAYS pause, only while its own ledger
+# holds nothing uncertain (#166). With an unresolved intent, a receipt still pending or an uncertain attempt the
+# run still stops and reports it, and nothing is delivered again.
+SETTLED_CODES = frozenset(('session_delivery_unknown',))
 # listener-control.lock guards short ledger transitions only. listener-start.lock serializes one whole
 # start, RPCs and waits included, and is never taken by a stop. Waiting order: start, control, supervisor,
 # listener. StartGuard alone takes start under control, but never waits for it, so no cycle exists.
@@ -260,6 +264,23 @@ def cooling(error):
     return isinstance(error, QuorumError) and str(error) in COOLDOWN_CODES and not is_transient_service(error)
 
 
+def ambiguous(ledger):
+    """True while this ledger holds a delivery nobody can prove either way.
+
+    That is an unresolved push `intent` (`unknown_attempts`), a `submitted` message still waiting for the chat's
+    receipt (`pending_receipts`) or an uncertain worker attempt.
+    """
+    from quorum_delivery import Deliveries
+    if ledger.db.execute("select 1 from attempts where state in ('unknown','launch_intent','running') limit 1").fetchone():
+        return True
+    return any(state in ('intent', 'submitted') for state in Deliveries(ledger).states())
+
+
+def settled(error, ledger):
+    """A delivery-unknown failure whose ledger, read after it, shows nothing ambiguous: a reconcile cannot replay."""
+    return isinstance(error, ValueError) and str(error) in SETTLED_CODES and not ambiguous(ledger)
+
+
 def outage(error):
     """(delays, presence state) of a service failure an opted-in native run waits out, else None."""
     from quorum_api import is_transient_service
@@ -290,7 +311,7 @@ def run_listener(ledger, make_worker, run_id, *, sleep=time.sleep, stop_event=No
                 control.update(run_id, 'unknown', handled, timeout=timeout, code='uncertain_attempt')
             else:
                 worker = make_worker()
-                ready, failures = False, {'unreachable': 0, 'unavailable': 0}
+                ready, failures = False, {'unreachable': 0, 'unavailable': 0, 'settled': 0}
                 def wait_out(error):
                     # Degraded and quiet: no heartbeat, Hello, model turn or delivery until the next recheck.
                     delays, presence = outage(error)
@@ -300,6 +321,13 @@ def run_listener(ledger, make_worker, run_id, *, sleep=time.sleep, stop_event=No
                         if stopping(): break
                         sleep(1)
                     failures[presence] += 1
+                def settle(error):
+                    # Nothing is pending, so this only pauses before a fresh reconcile; presence is untouched.
+                    control.update(run_id, 'degraded', handled, timeout=timeout, code=str(error))
+                    for _ in range(RETRY_DELAYS[min(failures['settled'], len(RETRY_DELAYS) - 1)]):
+                        if stopping(): break
+                        sleep(1)
+                    failures['settled'] += 1
                 while not stopping():
                     try:
                         if not ready:
@@ -315,6 +343,12 @@ def run_listener(ledger, make_worker, run_id, *, sleep=time.sleep, stop_event=No
                         outcome = worker.run_once()
                         failures.update(dict.fromkeys(failures, 0))  # A completed authoritative drain ends it.
                     except Exception as error:
+                        if retry and settled(error, ledger):
+                            # Read after the failure: no intent, pending receipt or uncertain attempt is left, so
+                            # the reconcile that follows cannot deliver anything again (#166).
+                            ready = False
+                            settle(error)
+                            continue
                         if not (retry and outage(error)): raise
                         # No dispatch is repeated here: reconcile again before any further I/O.
                         ready = False
