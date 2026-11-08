@@ -14,7 +14,8 @@ from quorum_update_sql_support import wait_statement
 
 ROOT = Path(__file__).resolve().parents[1]
 MIGRATION = '20261105160000_peer_status_visibility.sql'
-RELEASE = json.loads((ROOT / 'skills/quorum/assets/release.json').read_text())
+# What every server required before the hash-only release (20261108120000), which this file predates.
+RELEASE = {'protocol_version': 2, 'skill_version': '0.3.0'}
 
 
 def uid(number):

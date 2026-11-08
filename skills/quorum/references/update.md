@@ -179,16 +179,15 @@ nothing can say whether a report's run is still running, so every row is `unrepo
 and `fleet_release.read_failed` is true. Read the page again.
 
 The server does not require a hash, and nothing refuses a listener for being behind:
-it is only shown. `protocol_version` stays the only gate, so a rollout can never stop
+it is only shown. `protocol_version` is the only gate, so a rollout can never stop
 the whole fleet. A refusal by hash, if ever wanted, would be a separate explicit owner
-step in [#172](https://github.com/rotnov/skills/issues/172).
+step.
 
-Phase one of the same issue is deliberately incomplete. `assets/release.json` and
-`pyproject.toml` keep the old fixed package number, because a copy from before this
-release rejects a staged copy without it, and the reviewed server functions still take
-it as a required argument. The client reads it from that file and passes it to those
-functions, and to a marker older helpers read. It never compares it, never shows it and
-never copies it from the server. Do not report it: it says nothing about which code runs.
+A release has no other version. `assets/release.json` holds only `protocol_version`,
+and the server's [hash-only release](server.md#hash-only-release) neither requires,
+stores nor returns a fixed package number. The `pyproject.toml` version is a
+placeholder that no check reads. A copy that still sends a number is accepted and the
+number is ignored.
 
 ### Receiving a maintenance notice
 

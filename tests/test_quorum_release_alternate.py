@@ -227,7 +227,7 @@ class AlternateReleaseTests(unittest.TestCase):
         from quorum_api import QuorumError
         with tempfile.TemporaryDirectory() as root:
             ledger=LocalLedger(Path(root)); backend=Backend()
-            failure={'installed':RELEASE,'required':{'protocol_version':1,'skill_version':'0.3.0'},
+            failure={'installed':RELEASE,'required':{'protocol_version':1},
                      'update_required':True,'code':'skill_update_required'}
             def spawn(command,**kwargs):
                 run_id=command[command.index('--run-id')+1]
@@ -239,6 +239,5 @@ class AlternateReleaseTests(unittest.TestCase):
                 with patch('quorum_session.subprocess.Popen',side_effect=spawn):
                     with self.assertRaisesRegex(QuorumError,'^skill_update_required$') as raised:
                         start(Path(root),ledger,'session',api=backend)
-                self.assertEqual(getattr(raised.exception,'diagnostic',None),
-                                 {**failure,'installed':{'protocol_version':2},'required':{'protocol_version':1}})
+                self.assertEqual(getattr(raised.exception,'diagnostic',None),failure)
             finally: ledger.db.close()

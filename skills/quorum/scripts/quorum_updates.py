@@ -8,7 +8,7 @@ import uuid
 from quorum_api import QuorumError, guarded_call, server_refused
 from quorum_os import FileLock
 from quorum_release import (public_source, read_release, release_status, release_view, runtime_evidence, same_source,
-                            short_hash, source_identity, without_carried)
+                            short_hash, source_identity)
 from quorum_resume import binding as resume_binding
 from quorum_update import refresh as canonical_refresh, validate_source
 
@@ -228,14 +228,13 @@ def with_fleet_release(api, record, status, page, authorize):
             rows.append(item)
             continue
         report = item.get('runtime_report')
-        report = without_carried(report) if isinstance(report, dict) else report
         row = running.get(item.get('agent_id'))
         # With the server's reports its run check stands: an older report never overrules it.
         if fleet is None and isinstance(report, dict): row = {**report, 'reported_via':'update_report'}
         view = release_view(row, fleet_target)
         if view['state'] == 'behind': behind.append({'agent_id':item.get('agent_id'), 'running':view['running']})
         elif view['state'] in counts: counts[view['state']] += 1
-        rows.append({**item, **({'runtime_report':report} if 'runtime_report' in item else {}), 'release':view})
+        rows.append({**item, 'release':view})
     summary = {'target':short_hash(fleet_target), **counts, 'behind':behind}
     if fleet and fleet.get('read_failed'): summary['read_failed'] = True
     return {**shown, 'participants':rows, 'fleet_release':summary}

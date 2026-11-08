@@ -1,7 +1,6 @@
-"""A release is its content hash; the protocol integer is the gate; older copies keep working (#168)."""
+"""A release is its content hash and the protocol integer is the only gate (#168, #172)."""
 import json
 from pathlib import Path
-import re
 import shutil
 import sys
 import tempfile
@@ -16,9 +15,10 @@ sys.path.insert(0, str(ROOT / 'tests'))
 from quorum_test_support import isolated_profiles
 
 MANIFEST = json.loads((SKILL / 'assets/release.json').read_text(encoding='utf-8'))
-NUMBER = MANIFEST['skill_version']
-# What a live server answers until phase two: the frozen requirement is not this client's concern.
-SERVER = {'protocol_version':MANIFEST['protocol_version'], 'skill_version':NUMBER}
+# What a hash-only server requires (20261108120000).
+SERVER = {'protocol_version':MANIFEST['protocol_version']}
+# What a server before it still answered: its number is not this client's concern.
+PHASE_ONE = {**SERVER, 'skill_version':'0.3.0'}
 RUN = '77777777-7777-4777-8777-777777777777'
 OTHER_RUN = '88888888-8888-4888-8888-888888888888'
 OPERATION = '99999999-9999-4999-8999-999999999999'
@@ -27,16 +27,6 @@ PEER = '22222222-2222-4222-8222-222222222222'
 THIRD = '33333333-3333-4333-8333-333333333333'
 FOURTH = '44444444-4444-4444-8444-444444444444'
 RUNNING, TARGET, OLDER = 'a' * 64, 'b' * 64, 'c' * 64
-
-
-def old_versions(value):
-    """The parser every installed copy before #168 runs: a staged copy that fails it cannot be installed."""
-    if (not isinstance(value, dict) or type(value.get('protocol_version')) is not int
-            or not 1 <= value['protocol_version'] <= 2147483647
-            or not isinstance(value.get('skill_version'), str)
-            or not re.fullmatch(r'[0-9]{1,6}\.[0-9]{1,6}\.[0-9]{1,6}', value['skill_version'])):
-        return None
-    return {key:value[key] for key in ('protocol_version', 'skill_version')}
 
 
 class Api:
@@ -53,24 +43,37 @@ class Api:
         return [payload for name, payload in self.calls if name == operation]
 
 
-class OldCopiesKeepWorking(unittest.TestCase):
-    def test_an_old_copy_can_still_install_this_copy(self):
-        self.assertIsNotNone(old_versions(MANIFEST), 'an old validate_source would answer update_invalid_copy')
+class NoNumberTests(unittest.TestCase):
+    def test_the_manifest_is_the_protocol_alone_and_the_package_version_is_a_placeholder(self):
+        self.assertEqual(MANIFEST, {'protocol_version':2})
         project = tomllib.loads((SKILL / 'pyproject.toml').read_text(encoding='utf-8'))
-        self.assertEqual(MANIFEST['skill_version'], project['project']['version'])
+        self.assertEqual(project['project']['version'], '0.0.0')
+        lock = (SKILL / 'uv.lock').read_text(encoding='utf-8')
+        self.assertIn('name = "quorum-pilot-client"\nversion = "0.0.0"', lock)
+        # Nothing reads the placeholder: no script names the package version or the manifest's old key.
+        for path in (SKILL / 'scripts').glob('*.py'):
+            text = path.read_text(encoding='utf-8')
+            self.assertNotIn('skill_version', text, path.name)
+            self.assertNotIn("['project']['version']", text, path.name)
 
-    def test_this_copy_validates_a_later_copy_without_the_number(self):
+    def test_a_manifest_with_an_old_number_is_read_as_its_protocol(self):
+        from quorum_release import read_release
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / 'release.json'
+            path.write_text(json.dumps(PHASE_ONE), encoding='utf-8')
+            self.assertEqual(read_release(path), SERVER)
+
+    def test_this_copy_validates_a_later_copy(self):
         from quorum_update import validate_source
         with tempfile.TemporaryDirectory() as root:
             copy = Path(root) / 'quorum'
             shutil.copytree(SKILL, copy, ignore=shutil.ignore_patterns('.venv', '__pycache__'))
-            (copy / 'assets/release.json').write_text('{"protocol_version":2}', encoding='utf-8')
             project = copy / 'pyproject.toml'
-            project.write_text(project.read_text(encoding='utf-8').replace(f'version = "{NUMBER}"', 'version = "1"'),
+            project.write_text(project.read_text(encoding='utf-8').replace('version = "0.0.0"', 'version = "1"'),
                                encoding='utf-8')
             self.assertRegex(validate_source(copy), '^[0-9a-f]{64}$')
 
-    def test_a_listener_marker_stays_readable_by_a_retained_old_helper(self):
+    def test_listener_markers_carry_no_number(self):
         from quorum_listener import Control
         from quorum_release import installed_release
         from quorum_state import LocalLedger
@@ -78,39 +81,54 @@ class OldCopiesKeepWorking(unittest.TestCase):
             ledger = LocalLedger(Path(root))
             try:
                 Control(ledger).update(RUN, 'waiting', 0, release=installed_release())
-                # Without these the old helper reads this run as stale and stops it.
-                self.assertEqual(old_versions(ledger.setting('listener-release')), SERVER)
-                self.assertEqual(old_versions(ledger.setting('listener-source')), SERVER)
+                self.assertEqual(ledger.setting('listener-release'), {**SERVER, 'run_id':RUN})
+                self.assertNotIn('skill_version', ledger.setting('listener-source') or {})
             finally: ledger.db.close()
 
-    def test_a_marker_from_an_old_listener_is_read_without_stopping_it(self):
+    def test_a_marker_from_an_older_listener_is_read_without_stopping_it(self):
         from quorum_listener import Control
         from quorum_os import FileLock
-        from quorum_release import ReleaseGuard, source_identity, public_source
+        from quorum_release import ReleaseGuard, source_identity
         from quorum_state import LocalLedger
         with tempfile.TemporaryDirectory() as root:
             ledger = LocalLedger(Path(root))
             try:
                 Control(ledger).begin(RUN, 60)
-                ledger.setting('listener-release', {'run_id':RUN, 'protocol_version':2, 'skill_version':'0.1.0'})
+                ledger.setting('listener-release', {'run_id':RUN, **PHASE_ONE})
                 with FileLock(ledger.root / 'listener.lock'):
                     with patch('quorum_listener.locked', return_value=True):
                         ReleaseGuard(Api({'session_requirements':SERVER}), ledger).running()
                 self.assertFalse(Control(ledger).stopping(RUN))
             finally: ledger.db.close()
-        old = {'protocol_version':2, 'skill_version':'0.1.0', 'content_sha256':OLDER}
-        self.assertEqual(source_identity(old)['skill_version'], '0.1.0', 'echoed to the server as it was given')
-        self.assertNotIn('skill_version', public_source(old))
+        self.assertEqual(source_identity({**PHASE_ONE, 'content_sha256':OLDER}), {**SERVER, 'content_sha256':OLDER})
 
-    def test_the_heartbeat_sends_the_packaged_value_and_never_echoes_the_server(self):
+    def test_the_heartbeat_sends_no_number(self):
+        from quorum_presence import Presence
+        from quorum_state import LocalLedger
+        for required in (SERVER, PHASE_ONE):
+            with self.subTest(required=required), tempfile.TemporaryDirectory() as root:
+                ledger = LocalLedger(Path(root))
+                try:
+                    api = Api({'session_requirements':required})
+                    Presence(api, {'agent_id':AGENT, 'session_ref':'s'}, ledger, run_id=RUN).tick()
+                    self.assertNotIn('skill_version', api.sent('session_heartbeat')[0])
+                    self.assertEqual(api.sent('session_heartbeat')[0]['protocol_version'], 2)
+                finally: ledger.db.close()
+
+    def test_a_server_that_still_requires_the_number_is_reported_unavailable(self):
+        """Its heartbeat has no signature without the number: apply the hash-only release first."""
+        from quorum_api import QuorumError
         from quorum_presence import Presence
         from quorum_state import LocalLedger
         with tempfile.TemporaryDirectory() as root:
             ledger = LocalLedger(Path(root))
             try:
-                api = Api({'session_requirements':{'protocol_version':2, 'skill_version':'9.9.9'}})
-                Presence(api, {'agent_id':AGENT, 'session_ref':'s'}, ledger, run_id=RUN).tick()
-                self.assertEqual(api.sent('session_heartbeat')[0]['skill_version'], NUMBER)
+                api = Api({'session_requirements':PHASE_ONE,
+                           'session_heartbeat':QuorumError('service_error', missing=True)})
+                with self.assertRaisesRegex(QuorumError, '^coordination_unavailable$'):
+                    Presence(api, {'agent_id':AGENT, 'session_ref':'s'}, ledger, run_id=RUN).tick()
+                self.assertTrue(api.sent('session_heartbeat'))
+                self.assertTrue(all('skill_version' not in sent for sent in api.sent('session_heartbeat')))
             finally: ledger.db.close()
 
 
@@ -126,13 +144,13 @@ class GateTests(unittest.TestCase):
 
     def test_only_the_protocol_integer_refuses(self):
         from quorum_release import ReleaseMismatch, installed_identity
-        for required in (SERVER, {'protocol_version':2}, {'protocol_version':2, 'skill_version':'9.9.9'}):
+        for required in (SERVER, PHASE_ONE, {'protocol_version':2, 'skill_version':'9.9.9'}):
             with self.subTest(required=required):
                 guard, ledger = self.guard(required)
                 self.assertEqual(guard.check(), installed_identity())
                 self.assertIs(ledger.setting('release')['update_required'], False)
                 self.assertEqual(ledger.setting('release')['required'], {'protocol_version':2})
-        for required in ({'protocol_version':3, 'skill_version':NUMBER}, {'protocol_version':1}, {}, None):
+        for required in ({'protocol_version':3}, {**PHASE_ONE, 'protocol_version':3}, {'protocol_version':1}, {}, None):
             with self.subTest(required=required):
                 guard, _ = self.guard(required)
                 with self.assertRaisesRegex(ReleaseMismatch, '^skill_update_required$'): guard.check()
@@ -150,20 +168,6 @@ class GateTests(unittest.TestCase):
         with patch.object(quorum_release, 'installed_source', side_effect=QuorumError('runtime_source_unavailable')):
             self.assertEqual(quorum_release.installed_identity(),
                              {'protocol_version':2, 'content_sha256':None, 'release':None})
-
-    def test_a_diagnostic_saved_by_an_older_run_shows_no_number(self):
-        from quorum_release import diagnostic
-        from quorum_state import LocalLedger
-        with tempfile.TemporaryDirectory() as root:
-            ledger = LocalLedger(Path(root))
-            try:
-                ledger.setting('release', {'installed':SERVER, 'required':SERVER, 'listener':SERVER,
-                                           'update_required':False})
-                shown = diagnostic(ledger)
-                self.assertNotIn('skill_version', json.dumps(shown))
-                self.assertNotIn(NUMBER, json.dumps(shown))
-                self.assertEqual(shown['required'], {'protocol_version':2})
-            finally: ledger.db.close()
 
 
 class ReportTests(unittest.TestCase):
@@ -317,17 +321,13 @@ class PeersTests(unittest.TestCase):
                 self.assertEqual(row['release'], {'state':'unreported', 'running':None, 'target':None})
                 self.assertEqual(row['availability'], 'online')
 
-    def test_the_number_is_gone_and_update_required_means_the_protocol(self):
+    def test_update_required_means_the_protocol(self):
         rows = self.view({'target':None, 'agents':[]},
-                         [peer(PEER), {**peer(THIRD), 'client':{'protocol_version':1, 'skill_version':'0.2.0'},
-                                       'update_required':True},
-                          {**peer(FOURTH), 'client':{'protocol_version':None, 'skill_version':None},
-                           'update_required':True},
-                          {**peer(AGENT), 'client':{'protocol_version':2, 'skill_version':'0.1.0'},
-                           'update_required':True}])
-        self.assertNotIn('skill_version', json.dumps(rows))
-        self.assertNotIn(NUMBER, json.dumps(rows))
-        self.assertEqual([row['update_required'] for row in rows], [False, True, True, False])
+                         [peer(PEER), {**peer(THIRD), 'client':{'protocol_version':1}, 'update_required':True},
+                          {**peer(FOURTH), 'client':{'protocol_version':None}, 'update_required':True}])
+        self.assertEqual([row['update_required'] for row in rows], [False, True, True])
+        self.assertEqual([row['client'] for row in rows],
+                         [SERVER, {'protocol_version':1}, {'protocol_version':None}])
 
     def test_invalid_reports_are_not_shown_as_hashes(self):
         row = self.view({'target':{'content_sha256':'../../secret'},
@@ -363,7 +363,6 @@ class UpdateOutputTests(unittest.TestCase):
         self.assertEqual(page['target'], {'protocol_version':2, 'content_sha256':TARGET, 'release':'b'*7})
         self.assertEqual([item['state'] for item in page['participants']], ['refreshed', 'active_reported', 'queued'])
         self.assertNotIn('skill_version', json.dumps(page))
-        self.assertNotIn(NUMBER, json.dumps(page))
 
     def test_a_newer_target_than_this_operation_is_the_fleet_target(self):
         page = self.fleet(self.status([{'agent_id':PEER, 'state':'active_reported'}]),
@@ -400,7 +399,7 @@ class UpdateOutputTests(unittest.TestCase):
                 self.assertEqual(page['participants'][0]['release'], {'state':'unreported', 'running':None, 'target':'b'*7})
                 self.assertEqual(page['fleet_release'], {'target':'b'*7, 'on_target':0, 'unreported':1, 'behind':[],
                                                          'read_failed':True})
-                self.assertNotIn('skill_version', page['participants'][0]['runtime_report'])
+                self.assertEqual(page['participants'][0]['runtime_report'], report)
 
     def test_a_page_without_participants_needs_no_extra_read(self):
         from quorum_updates import with_fleet_release
@@ -410,48 +409,31 @@ class UpdateOutputTests(unittest.TestCase):
         self.assertEqual(api.calls, [])
 
     def test_evidence_is_the_server_target_unchanged(self):
-        """The reviewed report compares its evidence exactly, so the frozen field is echoed and not shown."""
+        """The report compares its evidence with the target exactly: protocol and hash."""
         from quorum_release import source_identity
         self.assertEqual(source_identity(self.TARGET), self.TARGET)
+        self.assertEqual(source_identity({**self.TARGET, 'skill_version':'0.3.0'}), self.TARGET)
 
 
 NOTICE = ('Quorum maintenance proposal. Receiving-owner authorization is required for canonical refresh; '
-          'no installation, lifecycle or task permission is granted. Target protocol 2, skill %s, sha256 %s.')
+          'no installation, lifecycle or task permission is granted. Target protocol 2, sha256 %s.')
 
 
-class NoticeDisplayTests(unittest.TestCase):
+class MessageReadTests(unittest.TestCase):
     def api(self, answer):
         from quorum_api import QuorumApi, ServiceConfig
         return QuorumApi(ServiceConfig('https://example.com', 'key'), lambda:'token',
                          lambda url, headers, body: answer)
 
-    def message(self, **extra):
-        return {'id':'m', 'body':NOTICE % (NUMBER, TARGET), **extra}
-
-    def test_every_message_read_shows_the_notice_by_short_hash(self):
+    def test_every_read_returns_what_the_service_sent(self):
+        """The server names a target by protocol and hash, so no client rewrites a message."""
         marker = {'kind':'quorum.update', 'notice_id':'n', 'target':{**SERVER, 'content_sha256':TARGET}}
-        for operation, answer in (('session_inbox', [self.message(maintenance=marker)]),
-                                  ('conversation_read', [self.message()]), ('session_message', self.message())):
+        message = {'id':'m', 'body':NOTICE % TARGET, 'maintenance':marker}
+        for operation, answer in (('session_inbox', [message]), ('conversation_read', [message]),
+                                  ('session_message', message), ('session_update_status', {'target':marker['target']}),
+                                  ('session_message', None), ('session_inbox', 'x')):
             with self.subTest(operation=operation):
-                result = self.api(answer).call(operation, {})
-                text = json.dumps(result)
-                self.assertNotIn(NUMBER, text)
-                self.assertNotIn(TARGET, (result[0] if isinstance(result, list) else result)['body'])
-                self.assertIn('Target protocol 2, release ' + TARGET[:7] + '.', text)
-        shown = self.api([self.message(maintenance=marker)]).call('session_inbox', {})[0]['maintenance']
-        self.assertEqual(shown, {'kind':'quorum.update', 'notice_id':'n',
-                                 'target':{'protocol_version':2, 'content_sha256':TARGET}})
-
-    def test_other_text_stays_exactly_as_sent(self):
-        for body in ('skill 0.3.0, sha256 abc', 'Target protocol 2, skill 0.3.0.', 'ordinary peer text',
-                     'p.s. ' + NOTICE.replace('Target protocol 2', 'Target protocol X') % (NUMBER, TARGET)):
-            self.assertEqual(self.api([{'body':body}]).call('session_inbox', {}), [{'body':body}])
-
-    def test_other_operations_and_shapes_pass_through(self):
-        self.assertEqual(self.api(None).call('session_message', {}), None)
-        self.assertEqual(self.api('x').call('session_inbox', {}), 'x')
-        answer = {'target':{**SERVER, 'content_sha256':TARGET}}
-        self.assertEqual(self.api(answer).call('session_update_status', {}), answer)
+                self.assertEqual(self.api(answer).call(operation, {}), answer)
 
 
 class VisibleOutputTests(unittest.TestCase):
@@ -467,10 +449,11 @@ class VisibleOutputTests(unittest.TestCase):
                 self.assertNotIn('skill_version', json.dumps(shown))
             finally: ledger.db.close()
 
-    def test_no_script_builds_owner_text_from_the_number(self):
-        allowed = {'quorum_release.py', 'quorum_api.py'}
-        for path in (SKILL / 'scripts').glob('*.py'):
-            if path.name in allowed: continue
+    def test_no_script_or_reference_names_the_number(self):
+        # The server guide alone names it, to describe the migration that removed it.
+        for path in [*(SKILL / 'scripts').glob('*.py'), *(SKILL / 'references').glob('*.md'), SKILL / 'SKILL.md',
+                     SKILL / 'README.md']:
+            if path.name == 'server.md': continue
             self.assertNotIn('skill_version', path.read_text(encoding='utf-8'), path.name)
 
 

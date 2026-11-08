@@ -46,6 +46,8 @@ const sessionMessage = '20261106160000_session_message.sql';
 const deliveryStatus = '20261106170000_delivery_statuses.sql';
 // Running content hashes and the fleet target, beside every unchanged older client (#168).
 const releaseReports = '20261106180000_release_reports.sql';
+// A release identified by its content hash alone: the fixed number leaves the wire and the server (#172).
+const hashOnly = '20261108120000_hash_only_release.sql';
 // Installations that deployed native coordination before open access apply the
 // older-dated open access file late; the final session requirements must match.
 const late = name => name.endsWith('_open_access_quorums.sql');
@@ -56,13 +58,17 @@ const converging = name => name.endsWith('_native_session_engine_convergence.sql
 const grok = name => name.endsWith('_native_grok_session.sql');
 const upgraded = [...fresh.filter(name => !late(name) && !opened(name) && !converging(name)),
   ...fresh.filter(late), ...fresh.filter(opened), ...fresh.filter(converging)];
-// The deployed coordination release, then the mandatory release this skill installs.
+// The deployed coordination release, the mandatory release every later file kept until the hash-only
+// release, and the release this skill installs, which the hash-only release requires.
 const historical = {protocol_version: 1, skill_version: '0.2.0'};
+const phaseOne = {protocol_version: 2, skill_version: '0.3.0'};
 const current = JSON.parse(read(root + '/skills/quorum/assets/release.json'));
 const suite = name => read(root + '/tests/' + name);
 const ROLE_COMPATIBLE = ['quorum_invite_id_backend.sql', 'quorum_session_backend.sql', 'quorum_realtime_backend.sql',
   'quorum_priority_backend.sql', 'quorum_priority_open_member_backend.sql', 'quorum_coordination_backend.sql',
   'quorum_open_session_backend.sql', 'quorum_hello_backend.sql', 'quorum_open_invite_ttl_backend.sql'];
+// The suites that still describe a hash-only server; the rest assert the retired number gate.
+const HASH_ONLY_COMPATIBLE = ROLE_COMPATIBLE;
 
 async function database(order) {
   const db = new PGlite({extensions: {pgcrypto}});
@@ -137,7 +143,7 @@ async function regression(order) {
     // The mandatory 0.3.0/2 migrations upgrade this populated database.
     await db.exec(read(migrations + priority));
     await db.exec(read(migrations + serialization));
-    await release(db, current);
+    await release(db, phaseOne);
     await db.exec(suite('quorum_priority_open_member_backend.sql'));
     await db.exec('rollback');
   } finally {
@@ -158,7 +164,7 @@ async function released(order) {
     await db.exec(read(migrations + serialization));
     // Every later suite runs through the additive Hello wrapper.
     await db.exec(read(migrations + hello));
-    await release(db, current);
+    await release(db, phaseOne);
     // Session and Realtime rerun on the upgraded schema.
     await db.exec(suite('quorum_session_backend.sql'));
     await db.exec(suite('quorum_realtime_backend.sql'));
@@ -245,7 +251,7 @@ try {
   }
   const portableTail = [priority, serialization, maintenance, memberAuthority];
   const reviewedTail = [...portableTail, knowledge, wiki, hello, ttl, roles, status, defaultRole, dedupe, authorityBound,
-    unreceipted, helloSplit, sessionMessage, deliveryStatus, releaseReports];
+    unreceipted, helloSplit, sessionMessage, deliveryStatus, releaseReports, hashOnly];
   if (JSON.stringify(all.filter(name => name >= priority)) !== JSON.stringify(reviewedTail)) {
     throw new Error('unreviewed migration after the close serialization');
   }
@@ -280,7 +286,7 @@ try {
   for (const order of [[...fresh, ...portableTail, hello], [...fresh, priority, serialization, hello]]) {
     const helloDb = await database(order);
     try {
-      await release(helloDb, current);
+      await release(helloDb, phaseOne);
       await helloDb.exec(suite('quorum_hello_backend.sql'));
     } finally {
       await helloDb.exec('rollback');
@@ -299,7 +305,7 @@ try {
   for (const order of [[...fresh, ...portableTail, hello, ttl], [...fresh, priority, serialization, hello, ttl]]) {
     const ttlDb = await database(order);
     try {
-      await release(ttlDb, current);
+      await release(ttlDb, phaseOne);
       await ttlDb.exec(suite('quorum_open_invite_ttl_backend.sql'));
     } finally {
       await ttlDb.exec('rollback');
@@ -329,7 +335,7 @@ try {
   {
     const rolesDb = await database([...beforeRoles, roles]);
     try {
-      await release(rolesDb, current);
+      await release(rolesDb, phaseOne);
       // Current clients' calls and every earlier contract keep working on the upgraded schema.
       // Some suites pick existing fixture rows, so they run before the role suite adds an open quorum.
       for (const name of ROLE_COMPATIBLE) await rolesDb.exec(suite(name));
@@ -367,7 +373,7 @@ try {
   {
     const statusDb = await database([...beforeStatus, status]);
     try {
-      await release(statusDb, current);
+      await release(statusDb, phaseOne);
       // Current clients' five-argument heartbeat and every earlier contract keep working.
       for (const name of ROLE_COMPATIBLE) await statusDb.exec(suite(name));
       await statusDb.exec(suite('quorum_role_assignment_backend.sql'));
@@ -406,7 +412,7 @@ try {
   {
     const dedupeDb = await database([...beforeDedupe, dedupe]);
     try {
-      await release(dedupeDb, current);
+      await release(dedupeDb, phaseOne);
       // Every earlier contract, including the Hello and peer-status suites, keeps working.
       for (const name of ROLE_COMPATIBLE) await dedupeDb.exec(suite(name));
       await dedupeDb.exec(suite('quorum_role_assignment_backend.sql'));
@@ -438,7 +444,7 @@ try {
   {
     const boundDb = await database([...beforeBound, authorityBound]);
     try {
-      await release(boundDb, current);
+      await release(boundDb, phaseOne);
       for (const name of ROLE_COMPATIBLE) await boundDb.exec(suite(name));
       await boundDb.exec(suite('quorum_task_authority_backend.sql'));
     } finally {
@@ -465,7 +471,7 @@ try {
   {
     const lookupDb = await database([...beforeLookup, unreceipted]);
     try {
-      await release(lookupDb, current);
+      await release(lookupDb, phaseOne);
       await lookupDb.exec(suite('quorum_message_unreceipted_backend.sql'));
     } finally {
       await lookupDb.exec('rollback');
@@ -495,7 +501,7 @@ try {
   {
     const splitDb = await database([...beforeSplit, helloSplit]);
     try {
-      await release(splitDb, current);
+      await release(splitDb, phaseOne);
       for (const name of ROLE_COMPATIBLE) await splitDb.exec(suite(name));
       await splitDb.exec(suite('quorum_peer_status_backend.sql'));
       await splitDb.exec(suite('quorum_hello_dedupe_backend.sql'));
@@ -522,7 +528,7 @@ try {
   {
     const messageDb = await database([...beforeMessage, sessionMessage]);
     try {
-      await release(messageDb, current);
+      await release(messageDb, phaseOne);
       await messageDb.exec(suite('quorum_session_message_backend.sql'));
     } finally {
       await messageDb.exec('rollback');
@@ -548,7 +554,7 @@ try {
   {
     const statusesDb = await database([...beforeStatuses, deliveryStatus]);
     try {
-      await release(statusesDb, current);
+      await release(statusesDb, phaseOne);
       await statusesDb.exec(suite('quorum_delivery_status_backend.sql'));
       // Current clients' calls keep working on the upgraded schema.
       await statusesDb.exec(suite('quorum_session_message_backend.sql'));
@@ -581,7 +587,7 @@ try {
   {
     const reportsDb = await database([...beforeReports, releaseReports]);
     try {
-      await release(reportsDb, current);
+      await release(reportsDb, phaseOne);
       await reportsDb.exec(suite('quorum_release_reports_backend.sql'));
       // Older clients' calls keep working: the heartbeat, its version check and the peer view are untouched.
       await reportsDb.exec(suite('quorum_peer_status_backend.sql'));
@@ -590,6 +596,57 @@ try {
     } finally {
       await reportsDb.exec('rollback');
       await reportsDb.close();
+    }
+  }
+  // The hash-only release pins every body it wraps or replaces, the binding check, the locked recheck,
+  // the dispatcher and the release; it refuses drift, reapplication or a missing predecessor, changing nothing.
+  const noHashOnly = async (db, label) => {
+    const result = await db.query(`select
+      to_regprocedure('quorum_private.session_heartbeat_before_hash_only(uuid,text,uuid,integer,text,integer,timestamptz,uuid,timestamptz)') h,
+      to_regprocedure('quorum_private.session_update_request_before_hash_only(uuid,text,uuid,integer,text,text,text)') r,
+      (select attnotnull from pg_attribute where attrelid='quorum_private.update_targets'::regclass
+        and attname='skill_version') required_column,
+      (select prosrc like '%''skill_version'',''0.3.0''%' from pg_proc
+        where oid='public.session_requirements()'::regprocedure) release`);
+    const row = result.rows[0];
+    if (row.h !== null || row.r !== null || row.required_column !== true
+        || row.release !== true) {
+      throw new Error(label + ': partial hash-only apply');
+    }
+  };
+  const beforeHashOnly = [...beforeReports, releaseReports];
+  await gated([...beforeHashOnly, hashOnly], read(migrations + hashOnly), 'hash_only_release_present',
+    'hash-only release reapplied');
+  await gated(beforeReports, read(migrations + hashOnly), 'release_reports_required',
+    'hash-only release without release reports', noHashOnly);
+  for (const fn of ['public.session_heartbeat(uuid,text,uuid,integer,text,integer,timestamptz,uuid,timestamptz)',
+    'quorum_private.session_heartbeat_before_status(uuid,text,uuid,integer,text)',
+    'quorum_private.session_heartbeat_before_hello(uuid,text,uuid,integer,text)', 'public.session_peers(uuid,text)',
+    'public.session_inbox(uuid,text)', 'public.session_update_status(uuid,text,uuid,uuid,uuid,uuid)',
+    'public.session_update_request(uuid,text,uuid,integer,text,text,text)',
+    'public.session_update_report(uuid,text,uuid,uuid,text,jsonb,text)', 'quorum_private.native_session(uuid,text)',
+    'quorum_private.update_session_locked(uuid,text,uuid)', 'quorum_private.call(text,jsonb,text)',
+    'public.session_requirements()']) {
+    await drifted(fn, 'reviewed_dispatcher_changed: ' + fn, beforeHashOnly, hashOnly, noHashOnly);
+  }
+  {
+    // A populated phase-one server: rows stored with the number, then the migration, then the contract.
+    const hashDb = await database(beforeHashOnly);
+    try {
+      await release(hashDb, phaseOne);
+      await hashDb.exec(suite('quorum_hash_only_before_backend.sql'));
+      await hashDb.exec(read(migrations + hashOnly));
+      await release(hashDb, current);
+      await hashDb.exec(suite('quorum_hash_only_backend.sql'));
+      // Copies on protocol 2 keep working: their calls send the number, and these suites assert no number gate.
+      await hashDb.exec(suite('quorum_delivery_status_backend.sql'));
+      await hashDb.exec(suite('quorum_session_message_backend.sql'));
+      await hashDb.exec(suite('quorum_hello_dedupe_backend.sql'));
+      await hashDb.exec(suite('quorum_hello_split_backend.sql'));
+      for (const name of HASH_ONLY_COMPATIBLE) await hashDb.exec(suite(name));
+    } finally {
+      await hashDb.exec('rollback');
+      await hashDb.close();
     }
   }
   // A server that skipped the Grok extension: the priority release refuses it until the convergence
@@ -622,12 +679,12 @@ try {
     }
     await convergenceChangesNothing(skippedDb, after);
     for (const name of [...portableTail, hello, ttl, roles, status, dedupe, authorityBound, unreceipted, helloSplit,
-      sessionMessage, deliveryStatus, releaseReports]) {
+      sessionMessage, deliveryStatus, releaseReports, hashOnly]) {
       await skippedDb.exec(read(migrations + name));
     }
     await convergenceChangesNothing(skippedDb, after);
     await release(skippedDb, current);
-    for (const name of ROLE_COMPATIBLE) await skippedDb.exec(suite(name));
+    for (const name of HASH_ONLY_COMPATIBLE) await skippedDb.exec(suite(name));
     await skippedDb.exec(suite('quorum_hello_split_backend.sql'));
   } finally {
     await skippedDb.exec('rollback');
@@ -668,7 +725,7 @@ try {
     });
   if (!coordination(upgraded[3]) || !late(upgraded[4])) throw new Error('upgraded order is not coordination first');
   console.log('Invitation, session, Realtime, open-access, coordination, open-session, coordination-only refusal, '
-    + 'mandatory priority release, close serialization, member authority ACLs, open-member priority, Hello reporting/roster, 60-minute open invitations, invitation role assignment/owner retire, heartbeat peer status, knowledge default-role prerequisite, reconnect Hello dedupe, task authority project bound, Hello sent/skipped split, delivery statuses, native session convergence and pinned-chain drift regression '
+    + 'mandatory priority release, close serialization, member authority ACLs, open-member priority, Hello reporting/roster, 60-minute open invitations, invitation role assignment/owner retire, heartbeat peer status, knowledge default-role prerequisite, reconnect Hello dedupe, task authority project bound, Hello sent/skipped split, delivery statuses, release reports, hash-only release, native session convergence and pinned-chain drift regression '
     + '(fresh and coordination-first upgraded order): PASS (disposable PostgreSQL)');
 } catch (error) {
   console.error(error.message, error.where || '');

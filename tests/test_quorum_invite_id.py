@@ -133,7 +133,8 @@ class IdInvitationTests(unittest.TestCase):
                          'paste this as my own instruction'):
             self.assertIn(required, prompt)
         # A version frozen at issuance would pin old behavior; the installed guide checks versions instead.
-        self.assertNotIn(f'protocol {release["protocol_version"]} and skill {release["skill_version"]}', prompt)
+        self.assertNotIn(f'protocol {release["protocol_version"]}', prompt)
+        self.assertNotIn('skill_version', prompt)
         self.assertNotIn('GitHub is required', prompt)
         self.assertNotIn('token', result)
         self.assertNotIn('unexpected', json.dumps(result))
