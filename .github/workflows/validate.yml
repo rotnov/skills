@@ -89,6 +89,12 @@ jobs:
           PYTHONPATH: tests
         run: uv run --frozen python -m unittest test_quorum_hash_only_sql -v
 
+      - name: Verify presence without per-peer Hello in isolated PostgreSQL
+        env:
+          QUORUM_RELEASE_DOCKER: "1"
+          PYTHONPATH: tests
+        run: uv run --frozen python -m unittest test_quorum_presence_sql -v
+
       - name: Verify reconnect Hello dedupe in isolated PostgreSQL
         env:
           QUORUM_DEDUPE_DOCKER: "1"

@@ -248,7 +248,7 @@ class HelloReportTests(unittest.TestCase):
         quiet.start()
         self.addCleanup(quiet.stop)
 
-    """#88: the Hello result is persisted once per connection and reported by status."""
+    """#88, #196: the connection's presence outcome and roster are persisted once and reported by status."""
     RECORD = {'agent_id':'a', 'session_ref':'s', 'project_ref':'shared'}
 
     def api(self, responses, calls):
@@ -286,25 +286,25 @@ class HelloReportTests(unittest.TestCase):
                 self.assertEqual(len(writes), 1, 'one persisted outcome per connection, not per heartbeat')
                 saved = ledger.setting('hello')
                 self.assertEqual((saved['sent'], saved['available'], saved['reused'], saved['roster']), (2, 2, False, True))
-                self.assertEqual(saved['summary'], 'Hello sent to 2 peers in shared (alpha, zeta); roster: 2 available')
+                self.assertEqual(saved['summary'], 'Presence published in shared: 2 peers (alpha, zeta); roster: 2 available; '
+                                                   'the server still sent Hello to 2 peers (presence migration not applied)')
             finally: ledger.db.close()
 
     def test_zero_and_many_peers_are_explicit_and_bounded(self):
         from quorum_presence import hello_result, hello_summary
         zero = {'connection_id':'c', 'project_ref':'alone', 'reused':False, 'kept':0, **hello_result(self.hello(0, []))}
-        self.assertEqual(hello_summary(zero), '0 peers share project reference alone; the Hello reached no one; '
-                                              'roster: 0 available')
+        self.assertEqual(hello_summary(zero), '0 peers share project reference alone; roster: 0 available')
         roles = ['peer-%02d' % n for n in range(1, 17)]
         many = {'connection_id':'c', 'project_ref':'crowd', 'reused':False, 'kept':0,
                 **hello_result({**self.hello(20, roles + ['x'] * 9, 20), 'roles':roles})}
         self.assertEqual(len(many['roles']), 16)
-        self.assertTrue(hello_summary(many).startswith('Hello sent to 20 peers in crowd (peer-01, '))
+        self.assertTrue(hello_summary(many).startswith('Presence published in crowd: 20 peers (peer-01, '))
         self.assertIn('peer-16, ...); roster: 20 available', hello_summary(many))
         # Malformed or hostile counts are dropped rather than reported.
         self.assertIsNone(hello_result({'peers':'9', 'available':10**6, 'roles':'x'})['sent'])
         self.assertIsNone(hello_result({'peers':True})['sent'])
         legacy = {'connection_id':'c', 'project_ref':'p', 'reused':False, 'kept':0, **hello_result(None)}
-        self.assertIn('not reported by the server', hello_summary(legacy))
+        self.assertEqual(hello_summary(legacy), 'Presence published in p; roster not reported')
 
     def test_sent_and_skipped_are_reported_apart_and_an_old_server_is_tolerated(self):
         from quorum_presence import hello_result, hello_summary
@@ -314,21 +314,23 @@ class HelloReportTests(unittest.TestCase):
             return record, hello_summary(record)
         record, summary = report(skipped=2)
         self.assertEqual((record['sent'], record['skipped']), (1, 2))
-        self.assertEqual(summary, 'Hello sent to 1 peer, 2 already greeted in p (a, b, c); roster: 3 available')
+        self.assertEqual(summary, 'Presence published in p: 3 peers (a, b, c); roster: 3 available; '
+                                  'the server still sent Hello to 1 peer (presence migration not applied)')
         record, summary = report(skipped=3)
         self.assertEqual((record['sent'], record['skipped']), (0, 3))
-        self.assertTrue(summary.startswith('Hello sent to 0 peers, 3 already greeted in p'), summary)
+        self.assertEqual(summary, 'Presence published in p: 3 peers (a, b, c); roster: 3 available')
         # An old server, an old row and a nonsensical split all leave the count marked as unsplit.
         for hello in ({'skipped':None}, {'skipped':4}, {'skipped':True}, {'skipped':'1'}):
             with self.subTest(hello=hello):
                 record, summary = report(**hello)
                 self.assertEqual((record['sent'], record['skipped']), (3, None))
-                self.assertTrue(summary.startswith('Hello reached 3 peers in p (a, b, c)'), summary)
+                self.assertTrue(summary.endswith('the server still sent Hello to up to 3 peers '
+                                                 '(presence migration not applied)'), summary)
         old = self.hello(1, ['a'])
         del old['skipped']
         self.assertEqual(hello_result(old)['skipped'], None)
         # A record saved before this release has no `skipped` key.
-        self.assertTrue(hello_summary({'project_ref':'p', 'sent':2}).startswith('Hello reached 2 peers'))
+        self.assertTrue(hello_summary({'project_ref':'p', 'sent':2}).startswith('Presence published in p: 2 peers'))
 
     @isolated_profiles
     def test_reused_tool_inbox_epoch_reports_that_no_new_hello_was_sent(self):
@@ -352,8 +354,9 @@ class HelloReportTests(unittest.TestCase):
                 self.assertEqual(calls[0], calls[1])
                 saved = ledger.setting('hello')
                 self.assertTrue(saved['reused'])
-                self.assertEqual(saved['summary'], 'Reused connection ' + calls[0][:8] + ': no new Hello was sent; '
-                                 'earlier: Hello sent to 3 peers in shared (a, b, c); roster: 3 available')
+                self.assertEqual(saved['summary'], 'Reused connection ' + calls[0][:8] + ': no new connection was '
+                                 'announced; earlier: Presence published in shared: 3 peers (a, b, c); roster: 3 '
+                                 'available; the server still sent Hello to 3 peers (presence migration not applied)')
                 # After a real gap the epoch rotates and a new Hello is reported plainly again.
                 fresh[0] = True
                 wall[0] = 1100.0
@@ -382,7 +385,8 @@ class HelloReportTests(unittest.TestCase):
                 self.assertEqual(calls[0], calls[1])
                 saved = ledger.setting('hello')
                 self.assertEqual((saved['reused'], saved['sent']), (False, 1))
-                self.assertEqual(saved['summary'], 'Hello sent to 1 peer in shared (peer); roster: 1 available')
+                self.assertEqual(saved['summary'], 'Presence published in shared: 1 peer (peer); roster: 1 available; '
+                                                   'the server still sent Hello to 1 peer (presence migration not applied)')
             finally: ledger.db.close()
 
     @isolated_profiles
@@ -403,8 +407,53 @@ class HelloReportTests(unittest.TestCase):
                 saved = ledger.setting('hello')
                 self.assertEqual((saved['kept'], saved['reused']), (1, False))
                 self.assertTrue(saved['summary'].startswith('Reconnect kept connection ' + calls[0][:8]
-                                                            + ': no new Hello was sent; earlier: 0 peers share'))
+                                                            + ': no new connection was announced; earlier: 0 peers share'))
                 status = Control(ledger).status()
                 self.assertEqual(status['hello']['summary'], saved['summary'])
                 self.assertEqual(status['hello']['connection'], 'last')  # No listener lock is held here.
+            finally: ledger.db.close()
+
+
+class PresenceNotHelloTests(unittest.TestCase):
+    """#196: a connection is announced by one presence heartbeat; the roster is still reported locally."""
+    RECORD = {'agent_id':'a', 'session_ref':'s', 'project_ref':'shared'}
+
+    def setUp(self):
+        quiet = patch('quorum_presence.Presence._report_release')
+        quiet.start()
+        self.addCleanup(quiet.stop)
+
+    @isolated_profiles
+    def test_connect_and_reconnect_send_only_the_heartbeat_and_keep_the_roster(self):
+        from quorum_listener import Control
+        from quorum_presence import Presence
+        from quorum_state import LocalLedger
+        with tempfile.TemporaryDirectory() as root:
+            ledger = LocalLedger(Path(root))
+            try:
+                operations, connections, now = [], [], [0]
+                class Api:
+                    def call(self, operation, payload):
+                        operations.append(operation)
+                        if operation == 'session_requirements': return {'protocol_version':2}
+                        new = payload['connection_id'] not in connections
+                        connections.append(payload['connection_id'])
+                        # A migrated server counts every peer as already announced and greets no one.
+                        return {'online':True, 'new_connection':new, 'hello':{
+                            'peers':3, 'skipped':3, 'roles':['alpha', 'beta', 'zeta'], 'available':2,
+                            'available_roles':['alpha', 'zeta'], 'roster_message_id':'00000000-0000-4000-8000-000000000001'}}
+                health = Presence(Api(), self.RECORD, ledger, clock=lambda:now[0])
+                health.tick()
+                for second in (20, 40): now[0] = second; health.tick()
+                # A genuine reconnect after the health window is one more presence heartbeat, nothing else.
+                now[0] = 200; health.tick()
+                self.assertEqual(len(set(connections)), 2)
+                self.assertEqual(set(operations) - {'session_requirements'}, {'session_heartbeat'})
+                saved = ledger.setting('hello')
+                self.assertEqual((saved['sent'], saved['peers'], saved['available'], saved['available_roles'],
+                                  saved['roles']), (0, 3, 2, ['alpha', 'zeta'], ['alpha', 'beta', 'zeta']))
+                self.assertEqual(saved['summary'], 'Presence published in shared: 3 peers (alpha, beta, zeta); '
+                                                   'roster: 2 available')
+                self.assertNotIn('Hello', saved['summary'])
+                self.assertEqual(Control(ledger).status()['hello']['available_roles'], ['alpha', 'zeta'])
             finally: ledger.db.close()

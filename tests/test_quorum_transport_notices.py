@@ -186,6 +186,23 @@ class ParentRelayTests(unittest.TestCase):
             finally: ledger.db.close()
 
     @isolated_profiles
+    def test_a_legacy_hello_from_an_older_peer_is_still_receipted_quietly(self):
+        # #196: new connections send no Hello, but one queued by an older server or peer still arrives.
+        from quorum_state import LocalLedger
+        with tempfile.TemporaryDirectory() as root:
+            ledger = LocalLedger(Path(root))
+            try:
+                queued = []
+                legacy = hello(sender_role='old-codex', body=HELLO.replace('flaky-codex', 'old-codex'))
+                relay, acked = self.relay(ledger, [legacy, task()], queued)
+                self.assertEqual(relay.run_once(), 'notice')
+                self.assertEqual((queued, acked), ([], [HELLO_ID]))
+                self.assertEqual(relay.run_once(), 'idle')
+                self.assertEqual(queued, [TASK_ID])
+                self.assertEqual([item['kind'] for item in ledger.setting('transport-notices')['recent']], ['hello'])
+            finally: ledger.db.close()
+
+    @isolated_profiles
     def test_a_crash_between_the_ack_and_the_local_log_keeps_the_notice_in_status(self):
         from quorum_notices import summary
         from quorum_state import LocalLedger

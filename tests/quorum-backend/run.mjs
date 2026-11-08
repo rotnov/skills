@@ -48,6 +48,8 @@ const deliveryStatus = '20261106170000_delivery_statuses.sql';
 const releaseReports = '20261106180000_release_reports.sql';
 // A release identified by its content hash alone: the fixed number leaves the wire and the server (#172).
 const hashOnly = '20261108120000_hash_only_release.sql';
+// A connection is announced by presence alone: no per-peer Hello copies (#196).
+const presence = '20261108140000_presence_without_hello.sql';
 // Installations that deployed native coordination before open access apply the
 // older-dated open access file late; the final session requirements must match.
 const late = name => name.endsWith('_open_access_quorums.sql');
@@ -69,6 +71,10 @@ const ROLE_COMPATIBLE = ['quorum_invite_id_backend.sql', 'quorum_session_backend
   'quorum_open_session_backend.sql', 'quorum_hello_backend.sql', 'quorum_open_invite_ttl_backend.sql'];
 // The suites that still describe a hash-only server; the rest assert the retired number gate.
 const HASH_ONLY_COMPATIBLE = ROLE_COMPATIBLE;
+// The suites that still hold once no connection sends a per-peer Hello (#196); the rest assert those Hellos.
+const PRESENCE_COMPATIBLE = ['quorum_invite_id_backend.sql', 'quorum_session_backend.sql', 'quorum_realtime_backend.sql',
+  'quorum_open_invite_ttl_backend.sql', 'quorum_delivery_status_backend.sql', 'quorum_session_message_backend.sql',
+  'quorum_release_reports_backend.sql'];
 
 async function database(order) {
   const db = new PGlite({extensions: {pgcrypto}});
@@ -251,7 +257,7 @@ try {
   }
   const portableTail = [priority, serialization, maintenance, memberAuthority];
   const reviewedTail = [...portableTail, knowledge, wiki, hello, ttl, roles, status, defaultRole, dedupe, authorityBound,
-    unreceipted, helloSplit, sessionMessage, deliveryStatus, releaseReports, hashOnly];
+    unreceipted, helloSplit, sessionMessage, deliveryStatus, releaseReports, hashOnly, presence];
   if (JSON.stringify(all.filter(name => name >= priority)) !== JSON.stringify(reviewedTail)) {
     throw new Error('unreviewed migration after the close serialization');
   }
@@ -649,6 +655,40 @@ try {
       await hashDb.close();
     }
   }
+  // Presence without Hello pins the hash-only heartbeat, the chain below it, the streak trigger, the binding
+  // check and the release; it refuses drift, reapplication or a missing predecessor, changing nothing.
+  const noPresence = async (db, label) => {
+    const result = await db.query(`select
+      to_regprocedure('quorum_private.session_heartbeat_before_presence(uuid,text,uuid,integer,text,integer,timestamptz,uuid,timestamptz)') moved,
+      to_regprocedure('public.session_heartbeat(uuid,text,uuid,integer,text,integer,timestamptz,uuid,timestamptz)') current`);
+    const row = result.rows[0];
+    if (row.moved !== null || row.current === null) throw new Error(label + ': partial presence apply');
+  };
+  const beforePresence = [...beforeHashOnly, hashOnly];
+  await gated([...beforePresence, presence], read(migrations + presence), 'presence_without_hello_present',
+    'presence reapplied');
+  await gated(beforeHashOnly, read(migrations + presence), 'hash_only_release_required',
+    'presence without the hash-only release', noPresence);
+  for (const fn of ['public.session_heartbeat(uuid,text,uuid,integer,text,integer,timestamptz,uuid,timestamptz)',
+    'quorum_private.session_heartbeat_before_hash_only(uuid,text,uuid,integer,text,integer,timestamptz,uuid,timestamptz)',
+    'quorum_private.session_heartbeat_before_status(uuid,text,uuid,integer,text)',
+    'quorum_private.session_heartbeat_before_hello(uuid,text,uuid,integer,text)',
+    'quorum_private.session_health_streak()', 'quorum_private.native_session(uuid,text)',
+    'public.session_requirements()']) {
+    await drifted(fn, 'reviewed_dispatcher_changed: ' + fn, beforePresence, presence, noPresence);
+  }
+  {
+    const presenceDb = await database([...beforePresence, presence]);
+    try {
+      await release(presenceDb, current);
+      // Older clients' calls keep working: the response, the peer view and every other RPC are unchanged.
+      for (const name of PRESENCE_COMPATIBLE) await presenceDb.exec(suite(name));
+      await presenceDb.exec(suite('quorum_presence_backend.sql'));
+    } finally {
+      await presenceDb.exec('rollback');
+      await presenceDb.close();
+    }
+  }
   // A server that skipped the Grok extension: the priority release refuses it until the convergence
   // file gives it the reviewed bodies, after which the whole reviewed tail applies. Elsewhere the file
   // changes nothing, and it refuses a server before open access or any other body.
@@ -679,13 +719,13 @@ try {
     }
     await convergenceChangesNothing(skippedDb, after);
     for (const name of [...portableTail, hello, ttl, roles, status, dedupe, authorityBound, unreceipted, helloSplit,
-      sessionMessage, deliveryStatus, releaseReports, hashOnly]) {
+      sessionMessage, deliveryStatus, releaseReports, hashOnly, presence]) {
       await skippedDb.exec(read(migrations + name));
     }
     await convergenceChangesNothing(skippedDb, after);
     await release(skippedDb, current);
-    for (const name of HASH_ONLY_COMPATIBLE) await skippedDb.exec(suite(name));
-    await skippedDb.exec(suite('quorum_hello_split_backend.sql'));
+    for (const name of PRESENCE_COMPATIBLE) await skippedDb.exec(suite(name));
+    await skippedDb.exec(suite('quorum_presence_backend.sql'));
   } finally {
     await skippedDb.exec('rollback');
     await skippedDb.close();
@@ -725,7 +765,7 @@ try {
     });
   if (!coordination(upgraded[3]) || !late(upgraded[4])) throw new Error('upgraded order is not coordination first');
   console.log('Invitation, session, Realtime, open-access, coordination, open-session, coordination-only refusal, '
-    + 'mandatory priority release, close serialization, member authority ACLs, open-member priority, Hello reporting/roster, 60-minute open invitations, invitation role assignment/owner retire, heartbeat peer status, knowledge default-role prerequisite, reconnect Hello dedupe, task authority project bound, Hello sent/skipped split, delivery statuses, release reports, hash-only release, native session convergence and pinned-chain drift regression '
+    + 'mandatory priority release, close serialization, member authority ACLs, open-member priority, Hello reporting/roster, 60-minute open invitations, invitation role assignment/owner retire, heartbeat peer status, knowledge default-role prerequisite, reconnect Hello dedupe, task authority project bound, Hello sent/skipped split, delivery statuses, release reports, hash-only release, presence without Hello, native session convergence and pinned-chain drift regression '
     + '(fresh and coordination-first upgraded order): PASS (disposable PostgreSQL)');
 } catch (error) {
   console.error(error.message, error.where || '');

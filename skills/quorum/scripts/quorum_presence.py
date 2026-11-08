@@ -172,17 +172,23 @@ class Presence:
         return result
 
     def _hello(self, result):
-        """Persist what this connection's Hello reached, writing only when the outcome changes."""
+        """Persist this connection's presence outcome and roster, writing only when the outcome changes.
+
+        A new connection publishes one presence event, its acknowledged heartbeat, which peers read through
+        `session peers` (#196). The roster is the heartbeat's optional `hello` report, which the server builds
+        from the same peers and health as `session peers`; no extra call is made, so scoped workers keep their
+        operation set. `sent` counts the Hello copies a server without the presence migration still sent.
+        """
         saved = self.ledger.setting('hello') or {}
         same = saved.get('connection_id') == self.connection_id
         new = result.get('new_connection') is True
         record = {'connection_id': self.connection_id, 'project_ref': self.record.get('project_ref'),
-                  # A retry after a lost response is not new, yet its Hello went out; only an
-                  # epoch carried over from an earlier process, or a kept connection, sent none.
+                  # A retry after a lost response is not new, yet its connection was announced; only an
+                  # epoch carried over from an earlier process, or a kept connection, announced nothing.
                   'reused': (saved.get('reused', False) if same and self.seen == self.connection_id else
                              not new and self.connection_id == self.inherited),
                   'kept': saved.get('kept', 0) if same else 0, **hello_result(result.get('hello'))}
-        if same and record['sent'] is None and saved.get('sent') is not None:
+        if same and record['peers'] is None and saved.get('peers', saved.get('sent')) is not None:
             record.update({key: saved.get(key) for key in HELLO_FIELDS})
         if self.resubscribed and same and not new: record['kept'] += 1
         self.resubscribed, self.seen = False, self.connection_id
@@ -191,11 +197,11 @@ class Presence:
             self.ledger.setting('hello', {**record, 'recorded_at': self.wall() if self.persist else time.time()})
 
 
-HELLO_FIELDS = ('sent', 'skipped', 'roles', 'available', 'available_roles', 'roster')
+HELLO_FIELDS = ('sent', 'skipped', 'peers', 'roles', 'available', 'available_roles', 'roster')
 
 
 def hello_result(value):
-    """Bounded, typed view of the server's optional Hello report; None fields mean unreported."""
+    """Bounded, typed view of the server's optional heartbeat `hello` report; None fields mean unreported."""
     if not isinstance(value, dict): return dict.fromkeys(HELLO_FIELDS)
     def count(key):
         item = value.get(key)
@@ -204,10 +210,10 @@ def hello_result(value):
         item = value.get(key)
         if not isinstance(item, list): return []
         return [str(role)[:48] for role in item[:16] if isinstance(role, str)]
-    # `peers` includes peers the reconnect dedupe skipped; without a valid `skipped` the split is unknown.
+    # `peers` includes peers the server did not greet again; without a valid `skipped` the split is unknown.
     peers, skipped = count('peers'), count('skipped')
     if peers is None or skipped is None or skipped > peers: skipped = None
-    return {'sent': None if peers is None else peers - (skipped or 0), 'skipped': skipped,
+    return {'sent': None if peers is None else peers - (skipped or 0), 'skipped': skipped, 'peers': peers,
             'roles': roles('roles'), 'available': count('available'),
             'available_roles': roles('available_roles'), 'roster': isinstance(value.get('roster_message_id'), str)}
 
@@ -215,24 +221,27 @@ def hello_result(value):
 def hello_summary(record):
     """One owner-facing line for the setup outcome and `session status`."""
     project = record.get('project_ref') or 'this project'
-    sent, skipped = record.get('sent'), record.get('skipped')
-    if sent is None:
-        result = 'Hello result not reported by the server (Hello reporting extension not applied)'
-    elif sent + (skipped or 0) == 0:
-        result = '0 peers share project reference ' + project + '; the Hello reached no one'
+    peers, sent, skipped = record.get('peers'), record.get('sent'), record.get('skipped')
+    if peers is None and sent is not None: peers = sent + (skipped or 0)  # A record saved before #196.
+    if peers is None and record.get('available') is None:
+        result = 'Presence published in ' + project + '; roster not reported'
+    elif peers == 0:
+        result = '0 peers share project reference ' + project
     else:
-        # Without the split the count can include peers the reconnect dedupe did not greet again.
-        result = ('Hello reached ' if skipped is None else 'Hello sent to ') + str(sent) + ' peer' + (
-            '' if sent == 1 else 's') + (', ' + str(skipped) + ' already greeted' if skipped else '') + ' in ' + project
-        if record.get('roles'):
-            result += ' (' + ', '.join(record['roles']) + (
-                ', ...' if sent + (skipped or 0) > len(record['roles']) else '') + ')'
+        result = 'Presence published in ' + project
+        if peers is not None:
+            result += ': ' + str(peers) + ' peer' + ('' if peers == 1 else 's')
+            if record.get('roles'):
+                result += ' (' + ', '.join(record['roles']) + (', ...' if peers > len(record['roles']) else '') + ')'
     if record.get('available') is not None:
         result += '; roster: ' + str(record['available']) + ' available'
+    # Only a server without the presence migration still copies a Hello to each peer; say so, never hide it.
+    if sent:
+        result += ('; the server still sent Hello to ' + ('' if skipped is not None else 'up to ') + str(sent)
+                   + ' peer' + ('' if sent == 1 else 's') + ' (presence migration not applied)')
     if record.get('reused') or record.get('kept'):
         reason = 'Reused connection ' if record.get('reused') else 'Reconnect kept connection '
-        result = (reason + str(record.get('connection_id', ''))[:8] + ': no new Hello was sent'
-                  + ('' if sent is None else '; earlier: ' + result))
+        result = reason + str(record.get('connection_id', ''))[:8] + ': no new connection was announced; earlier: ' + result
     return result
 
 
