@@ -1651,6 +1651,50 @@ class AdoptTests(Bound):
         self.assertIn(AGENT, diagnostic['next_step'])
 
     @isolated_profiles
+    def test_trust_replacement_of_an_adopt_slot_after_the_parent_retired(self):
+        """#169: the documented sequence replaces an adopted worker with a member-trust one."""
+        import quorum_claude_worker as worker
+        from quorum_delegation import member_grant, member_trust
+        from quorum_state import LocalLedger
+        api = OwnerApi()
+        self.adopted(api)
+        # Adopt setup step 4: the parent chat retires its own agent, which removes its binding.
+        code, _, text = self.owner_leave(api, PARENT_AGENT)
+        self.assertEqual(code, 0, text)
+        parent = LocalLedger(self.root / 'sessions' / SID)
+        try: self.assertIsNone(parent.setting('session-agent'))
+        finally: parent.db.close()
+        # 1. Retire the old worker's agent, which frees the role and the adoption claim.
+        code, result, text = self.cli(api, 'session', 'worker', 'stop', self.slot, '--leave')
+        self.assertEqual((code, result['data']['worker_agent']), (0, 'retired'), text)
+        # Without a parent binding an adopt prepare fails: the failure this sequence must avoid.
+        trusted = self.adopt_scope(accept_tasks_from_members=True, trust_members=True)
+        error = self.denied('native_worker_binding_denied', self.prepare, trusted)
+        self.assertEqual(error.reason, 'parent_binding_missing')
+        # 2. The parent chat reconnects as a fresh binding, so it may record member trust; reception stays stopped.
+        new_parent = '99999999-9999-4999-8999-99999999999a'
+        record = {'agent_id': new_parent, 'quorum_id': QUORUM, 'session_ref': SID, 'project_ref': 'team/project',
+                  'cwd': str(self.project)}
+        self.parent(agent_id=new_parent, delegation=member_grant(record, trust=True))
+        # 3. Prepare the adopt scope (it inherits the parent's member trust), attest, connect with its flags.
+        prepared = self.prepare(self.adopt_scope())
+        self.assertEqual(prepared['adopt']['agent_id'], new_parent)
+        self.assertIn('--trust-members', prepared['connect_flags'])
+        slot = prepared['slot_id']
+        self.attest(slot, HANDLE + ' trusted')
+        cap = self.capability(slot)
+        code, _, text = self.connect(api, cap, *prepared['connect_flags'])
+        self.assertEqual(code, 0, text)
+        self.assertTrue(member_trust(self.worker_ledger(slot).setting('session-agent')))
+        with claude():
+            context = worker.authorize(self.root, cap, 'status', {})
+        self.assertIsNone(worker.capability_status(context)['member_trust_route'])
+        # 4. The parent chat retires its new agent again, so the role names only the worker.
+        code, _, text = self.owner_leave(api, new_parent)
+        self.assertEqual(code, 0, text)
+        self.assertEqual(api.calls[-1][:2], ('agent_leave', {'agent_id': new_parent}))
+
+    @isolated_profiles
     def test_stopped_connected_worker_blocks_a_replacement_until_its_agent_leaves(self):
         import quorum_claude_worker as worker
         api = OwnerApi()

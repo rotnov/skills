@@ -145,6 +145,7 @@ class WorkerTrustRouteTests(unittest.TestCase):
                 self.assertEqual(route['scope_change'], change)
                 self.assertIn('cannot run delegate', route['next_step'])
                 self.assertIn('delegation.md#owner-typed-member-trust', route['next_step'])
+                self.assertIn('reconnect with --trust-members', route['next_step'])
         held = {'mode': 'accept', 'accept_tasks_from_members': True, 'trust_members': True}
         self.assertIsNone(worker_trust_route(held))
         self.assertIsNone(worker_trust_route({'mode': 'accept', 'coordinator_role': 'lead'}))
@@ -176,7 +177,9 @@ class ReferenceTests(unittest.TestCase):
                          'no flag grants them to all members', 'returns `not_task` for it',
                          'plain Quorum message from the granted role', 'uv sync --frozen',
                          'A Claude logical worker has no such command', 'lifecycle: "replace_capability"',
-                         'claude-worker.md#owner-parent-setup', 'session worker stop <slot-uuid> --leave'):
+                         'claude-worker.md#owner-parent-setup', 'session worker stop <slot-uuid> --leave',
+                         'fails with `parent_binding_missing`', '--dispatch-mode inline --trust-members',
+                         'Do not start its reception', 'Retire the new parent agent with `leave`'):
             with self.subTest(required=required):
                 self.assertIn(required, delegation)
         # Hard stops are unchanged by an owner's trust statement.
