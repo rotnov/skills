@@ -420,13 +420,50 @@ fact, never a grant, and nothing reads one to refuse a listener.
 [Who is behind](update.md#who-is-behind) has the contract.
 
 `session_heartbeat` and `session_peers` are untouched, so a client without this keeps
-working exactly as before and shows as `unreported`. A new client on a server without
-this keeps heartbeating, asks again every 10 minutes and shows every peer as
-`unreported`. Its heartbeat still passes the unchanged version check, because it sends
-the value in its own manifest, not because the server was changed to tolerate it.
+working exactly as before and shows as `unreported`. A client on a server without this
+keeps heartbeating, asks again every 10 minutes and shows every peer as `unreported`.
 
 To roll back, in one transaction drop the two public RPCs and the table
 `session_release`. Listeners go back to `unreported`; nothing else changes.
+
+## Hash-only release
+
+After reviewing the source and obtaining administrator deployment authorization,
+apply
+[`20261108120000_hash_only_release.sql`](../supabase/migrations/20261108120000_hash_only_release.sql)
+in one transaction after `20261106180000_release_reports.sql`, then refresh PostgREST's
+schema cache. It pins every body it wraps or replaces, the binding check, the locked
+recheck, the dispatcher and the release, and refuses drift, reapplication or a server
+without the release reports before any change. It changes no table access or task
+authority.
+
+It removes the fixed `skill_version`: a release is its content hash, and
+`protocol_version` is the only gate. `session_requirements()` returns only
+`protocol_version`. `session_heartbeat` and `session_update_request` keep their
+`p_skill_version` argument, now optional and never read, so copies on protocol 2 that
+still send it keep working. `session_peers`, `session_inbox` and `session_update_status`
+wrap their reviewed bodies and drop the field; `session_update_report` accepts evidence
+with or without it. `session_update_request` and `session_update_report` are the
+reviewed bodies with the number taken out, because the request writes it into the
+target and the notice text and the report compares evidence by exact equality, which no
+wrapper can change. Stored targets, evidence, health rows and the server's own notice
+text lose the number in the same transaction.
+
+Order matters. Apply this before releasing a client without the number: such a client's
+heartbeat names no number, which the older server refuses, so its listener reports
+`coordination_unavailable`. A copy from before [#168](https://github.com/rotnov/skills/issues/168)
+still compares the requirement's number and stops with `skill_update_required` on every
+check, and its updater rejects a staged copy whose manifest has no number. Apply it only
+once `session peers` shows a reported hash for every listener.
+
+A call that already started on the old bodies when the migration commits can still store
+the number once. The listener's next heartbeat clears its health row; any other such row
+stays as written. `QUORUM_RELEASE_DOCKER=1` runs `test_quorum_hash_only_sql.py` against
+disposable PostgreSQL 17, including a heartbeat held across the migration.
+
+The reviewed bodies stay private, revoked, with the suffix `_before_hash_only`. Cleared
+numbers are not restored; `update_targets.skill_version` stays as a nullable column the
+private bodies still name.
 
 ## Hello reporting extension
 

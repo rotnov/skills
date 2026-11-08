@@ -18,8 +18,10 @@ begin
  perform set_config('request.jwt.claim.sub',b.owner_id::text,true);
 
  -- The mandatory migration advanced the exact release gate with its RPCs and
- -- left no old normal signature beside the priority entry points.
- if public.session_requirements()<>jsonb_build_object('protocol_version',2,'skill_version','0.3.0') then
+ -- left no old normal signature beside the priority entry points. The runner sets
+ -- quorum_test.release to that release, or to the hash-only release that followed it.
+ if public.session_requirements()<>current_setting('quorum_test.release')::jsonb
+    or (public.session_requirements()->>'protocol_version')::integer<>2 then
   raise exception 'release_not_advanced'; end if;
  if to_regprocedure('public.message_send(uuid,uuid,uuid,uuid,uuid,text,text)') is not null
    or to_regprocedure('public.session_reply(uuid,text,uuid,text)') is not null then

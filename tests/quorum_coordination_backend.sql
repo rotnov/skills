@@ -17,7 +17,9 @@ begin
  exception when insufficient_privilege then null; end;
  perform set_config('request.jwt.claim.sub',a.owner_id::text,true);
  if public.session_requirements()<>required then raise exception 'wrong_release_requirements'; end if;
- for result in select value from jsonb_array_elements('[{}, {"protocol_version":1,"skill_version":"0.2.0"}, {"protocol_version":1,"skill_version":"0.2.1"}, {"protocol_version":2,"skill_version":"0.2.0"}, {"protocol_version":1,"skill_version":"0.3.0"}, {"protocol_version":2,"skill_version":"0.3.0"}, {"protocol_version":2,"skill_version":"0.3.1"}]'::jsonb) where value<>required loop
+ for result in select value from jsonb_array_elements('[{}, {"protocol_version":1,"skill_version":"0.2.0"}, {"protocol_version":1,"skill_version":"0.2.1"}, {"protocol_version":2,"skill_version":"0.2.0"}, {"protocol_version":1,"skill_version":"0.3.0"}, {"protocol_version":2,"skill_version":"0.3.0"}, {"protocol_version":2,"skill_version":"0.3.1"}]'::jsonb) where value<>required
+  -- A hash-only server (#172) requires no number, so there only another protocol is refused.
+  and (required ? 'skill_version' or (value->>'protocol_version')::integer is distinct from (required->>'protocol_version')::integer) loop
   sent:=public.session_heartbeat(target,sid,epoch,(result->>'protocol_version')::integer,result->>'skill_version');
   if sent->>'code' is distinct from 'skill_update_required' or sent->'required' is distinct from required then raise exception 'missing_release_rejection'; end if;
   if exists(select 1 from quorum_private.session_health where agent_id=target) or exists(select 1 from quorum_private.session_connections where agent_id=target) or exists(select 1 from quorum_private.session_notices where agent_id=target) then raise exception 'mismatch_wrote_health_or_hello'; end if;

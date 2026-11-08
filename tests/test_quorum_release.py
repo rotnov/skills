@@ -166,7 +166,7 @@ class ReleaseTests(unittest.TestCase):
                 presence.tick()
                 beat=next(payload for op,payload in backend.calls if op=='session_heartbeat')
                 self.assertEqual(beat['protocol_version'],2)
-                self.assertEqual(beat['skill_version'],MANIFEST['skill_version'],'carried as packaged, never echoed')
+                self.assertNotIn('skill_version',beat,'a release is its hash; no number is sent')
                 backend.required={'protocol_version':3,'skill_version':'0.2.0'}
                 clock.sleep(20); backend.calls.clear()
                 waiter=RealtimeWait(transport,{'agent_id':AID},ledger,clock=clock,sleep=clock.sleep,keepalive=presence)

@@ -91,11 +91,11 @@ def installed():
 class MandatoryReleaseTests(Gate):
     def test_the_release_is_named_by_protocol_and_hash_never_by_a_number(self):
         manifest = json.loads((ROOT / 'skills/quorum/assets/release.json').read_text(encoding='utf-8'))
-        self.assertEqual(manifest['protocol_version'], 2)
-        # Installed copies from before #168 refuse a staged copy unless these two agree.
+        self.assertEqual(manifest, {'protocol_version':2})
+        # The package version is a placeholder; the last fixed number must not come back anywhere owners read.
         project = tomllib.loads((ROOT / 'skills/quorum/pyproject.toml').read_text(encoding='utf-8'))
-        self.assertEqual(manifest['skill_version'], project['project']['version'])
-        number = re.compile(re.escape(manifest['skill_version']))
+        self.assertEqual(project['project']['version'], '0.0.0')
+        number = re.compile(re.escape('0.3.0'))
         # Owner-facing guidance names the protocol and the content hash, and no number.
         for path in [ROOT / 'skills/quorum/README.md', ROOT / 'skills/quorum/SKILL.md',
                      *(ROOT / 'skills/quorum/references').glob('*.md')]:

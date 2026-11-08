@@ -100,7 +100,7 @@ class OwnerUpdateTests(unittest.TestCase):
         result = self.invoke()
         self.assertEqual(sent, [('https://synthetic.invalid/rest/v1/rpc/session_update_request',
                                 {'p_agent_id':AID, 'p_session_ref':SID, 'p_quorum_id':QID,
-                                 'p_protocol_version':2, 'p_skill_version':'0.3.0',
+                                 'p_protocol_version':2,
                                  'p_content_sha256':result['target']['content_sha256'],
                                  'p_request_id':'owner-1'})])
         self.assertEqual(result['fanout'], {'operation_id':OPID, 'queued':2, 'existing':0})

@@ -2,11 +2,6 @@
 
 A release is identified by its content SHA-256, shown in its short form. `protocol_version` alone is the
 compatibility gate. A listener behind the fleet target is shown, never refused.
-
-`assets/release.json` still carries the frozen `skill_version`, and so does `pyproject.toml`, because installed
-copies from before #168 refuse a staged copy without it and the reviewed server functions still take it as a
-required argument. Here it is carried to those two places exactly as packaged: it is never compared and never
-shown. Removing it is phase two (#172), once every listener reports a hash.
 """
 from functools import lru_cache
 import json
@@ -21,8 +16,6 @@ INSTALLER_NODE = (22, 20)
 # What owners and agents see; the full digest stays the identity on the wire.
 SHORT_HASH = 7
 DIGEST = re.compile('[0-9a-f]{64}')
-_CARRIED = 'skill_version'
-_CARRIED_VALUE = re.compile(r'[0-9]{1,6}\.[0-9]{1,6}\.[0-9]{1,6}')
 RELEASE_VIAS = ('heartbeat', 'update_report')
 
 
@@ -39,12 +32,6 @@ def versions(value):
     return {'protocol_version':value['protocol_version']}
 
 
-def _carried(value):
-    """The frozen wire field when present and well formed. Opaque here: see the module note."""
-    token = value.get(_CARRIED)
-    return {_CARRIED:token} if isinstance(token, str) and _CARRIED_VALUE.fullmatch(token) else {}
-
-
 def read_release(path):
     """Use the same bounded manifest parser for runtime and staged updates."""
     try:
@@ -53,7 +40,7 @@ def read_release(path):
         manifest = json.loads(raw)
         result = versions(manifest)
         if result is None: raise ValueError
-        return {**result, **_carried(manifest)}
+        return result
     except (OSError, ValueError, TypeError, UnicodeError):
         raise QuorumError('release_manifest_invalid') from None
 
@@ -71,7 +58,7 @@ def source_identity(value):
     digest = value.get('content_sha256') if isinstance(value, dict) else None
     if release is None or not isinstance(digest, str) or not DIGEST.fullmatch(digest):
         return None
-    return {**release, **_carried(value), 'content_sha256':digest}
+    return {**release, 'content_sha256':digest}
 
 
 def public_source(value):
@@ -80,11 +67,6 @@ def public_source(value):
     if source is None: return None
     return {'protocol_version':source['protocol_version'], 'content_sha256':source['content_sha256'],
             'release':short_hash(source['content_sha256'])}
-
-
-def without_carried(value):
-    """A service record as shown: everything but the frozen wire field."""
-    return {key:item for key, item in value.items() if key != _CARRIED}
 
 
 def same_source(left, right):
@@ -127,16 +109,6 @@ def runtime_evidence(ledger):
             'verified':verified, 'source':source if verified else None}
 
 
-def public_diagnostic(value):
-    """A saved compatibility diagnostic as shown. A run before #168 saved the retired number too."""
-    if not isinstance(value, dict): return value
-    shown = dict(value)
-    for key in ('installed', 'required', 'listener'):
-        if isinstance(value.get(key), dict):
-            shown[key] = public_source(value[key]) or versions(value[key])
-    return shown
-
-
 def release_view(row, target):
     """One listener against the fleet target. A running hash is always that listener's own self-report."""
     running = row.get('content_sha256') if isinstance(row, dict) else None
@@ -167,7 +139,7 @@ def release_status(api, scope, **page):
 
 
 def peers_view(api, scope):
-    """`session peers`: the service's rows without the retired number, plus each hash against the target."""
+    """`session peers`: the service's rows, plus each listener's hash against the fleet target."""
     peers = api.call('session_peers', scope)
     if not isinstance(peers, list): return peers
     fleet = release_status(api, scope) or {'target':None, 'agents':{}}
@@ -187,7 +159,7 @@ def peers_view(api, scope):
 class ReleaseMismatch(QuorumError):
     def __init__(self, diagnostic):
         super().__init__('skill_update_required')
-        self.diagnostic = public_diagnostic(diagnostic)
+        self.diagnostic = diagnostic
 
 
 class ReleaseGuard:
@@ -247,5 +219,5 @@ class ReleaseGuard:
 
 def diagnostic(ledger):
     saved = ledger.setting('release')
-    if saved: return public_diagnostic(saved)
+    if saved: return saved
     return {'installed':installed_identity(), 'required':None, 'update_required':None}

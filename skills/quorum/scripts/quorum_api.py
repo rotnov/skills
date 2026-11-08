@@ -241,27 +241,6 @@ def _error_body(error):
     return body if isinstance(body, dict) else {}
 
 
-# The server's fixed owner-update notice. The stored text names the retired number until #172, so it is shown by
-# short hash. An old client's copy is untouched, and the full target stays in the `maintenance` field.
-_UPDATE_NOTICE = re.compile(r'(Quorum maintenance proposal\. Receiving-owner authorization is required for canonical '
-                            r'refresh; no installation, lifecycle or task permission is granted\. Target protocol '
-                            r'[0-9]{1,10}), skill [0-9]{1,6}\.[0-9]{1,6}\.[0-9]{1,6}, sha256 ([0-9a-f]{7})[0-9a-f]{57}\.')
-_MESSAGE_READS = frozenset(('session_inbox', 'conversation_read', 'session_message'))
-
-
-def shown_message(message):
-    """One message as a client shows it; every field but the retired number stays as the service sent it."""
-    if not isinstance(message, dict): return message
-    shown = dict(message)
-    if isinstance(message.get('body'), str):
-        shown['body'] = _UPDATE_NOTICE.sub(r'\1, release \2.', message['body'])
-    marker = message.get('maintenance')
-    if isinstance(marker, dict) and isinstance(marker.get('target'), dict):
-        shown['maintenance'] = {**marker, 'target':{key:value for key, value in marker['target'].items()
-                                                    if key != 'skill_version'}}
-    return shown
-
-
 class QuorumApi:
     def __init__(self, config, token, request=request_json):
         self.config, self.token, self.request = config, token, request
@@ -289,12 +268,10 @@ class QuorumApi:
         body = json.dumps(data, ensure_ascii=False).encode()
         if len(body) > 131072:
             raise ValueError('request_too_large')
-        result = self.request(self.config.origin.rstrip('/') + '/rest/v1/rpc/' + operation,
-                              {'Authorization': 'Bearer ' + self.token(),
-                               'apikey': self.config.publishable_key,
-                               'Content-Type': 'application/json'}, body)
-        if operation not in _MESSAGE_READS: return result
-        return [shown_message(item) for item in result] if isinstance(result, list) else shown_message(result)
+        return self.request(self.config.origin.rstrip('/') + '/rest/v1/rpc/' + operation,
+                            {'Authorization': 'Bearer ' + self.token(),
+                             'apikey': self.config.publishable_key,
+                             'Content-Type': 'application/json'}, body)
 
 
 def guarded_call(api, operation, payload, request_id=None, *, before_request, on_dispatch):

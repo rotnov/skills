@@ -5,7 +5,8 @@ declare
  owner_id uuid:=gen_random_uuid(); anon_id uuid:=gen_random_uuid(); outsider_id uuid:=gen_random_uuid();
  q uuid; closed_q uuid; invitation uuid; device uuid; agent uuid; owner_device uuid; owner_agent uuid;
  sid text:=gen_random_uuid()::text; owner_sid text:=gen_random_uuid()::text; req text:=gen_random_uuid()::text;
- required jsonb:=jsonb_build_object('protocol_version',2,'skill_version','0.3.0');
+ -- The runner sets quorum_test.release to the release the server must require.
+ required jsonb:=current_setting('quorum_test.release')::jsonb;
  result jsonb; head jsonb; normal_id uuid; urgent_id uuid; conv uuid:=gen_random_uuid(); urgent_conv uuid:=gen_random_uuid(); f text;
  big_id uuid; big_body text;
 begin
