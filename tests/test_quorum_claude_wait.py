@@ -92,8 +92,14 @@ class WaitCase(Bound):
         self.moment += seconds
 
     def fixed(self, result, state, step, proceed=True, awaiting=0, **extra):
+        """The fixed fields; an offer's envelope and a first Hello outcome are returned for their own checks."""
+        result = dict(result)
+        envelope = result.pop('envelope', None)
+        result.pop('hello', None)
         self.assertEqual(result, {'state': state, 'transport': 'tool-inbox', 'continue': proceed, 'next_step': step,
                                   'awaiting_owner': awaiting, **extra})
+        self.assertEqual(envelope is not None, state == 'offer_available')
+        return envelope
 
 
 @OWNER_PROOF
@@ -137,18 +143,26 @@ class WaitRouteTests(WaitCase):
         self.assertNotIn('session_ack', calls)
 
     @isolated_profiles
-    def test_an_offer_ends_the_wait_with_no_body_and_no_receipt_and_receive_gets_it(self):
+    def test_an_offer_ends_the_wait_with_its_envelope_and_no_receipt_and_stays_durable(self):
+        import quorum_native_inbox as inbox
         api = Api()
         self.bound(api)
         def arrive(): api.inbox.append(message(M1, body='private peer body'))
         result, ledger = self.wait_direct(api, waiter=Waiter(self, on_wait=arrive))
-        self.fixed(result, 'offer_available', 'receive')
-        self.assertNotIn('private peer body', json.dumps(result))
+        envelope = self.fixed(result, 'offer_available', 'handle_then_wait')
+        self.assertEqual((envelope['state'], envelope['message_id'], envelope['message']['body']),
+                         ('offered', M1, 'private peer body'))
+        for name in ('receipt_command', 'reply_command', 'park_command'):
+            self.assertEqual(envelope[name][-1], '--then-wait')
+        self.assertIn(inbox.THEN_WAIT, envelope['notice'])
+        self.assertNotIn(inbox.WAIT_LOOP, envelope['notice'])
+        self.assertNotIn(self.token, json.dumps(result))
+        # Disclosure is not a receipt: the row stays offered and a lost line offers it again.
         self.assertEqual(ledger.setting('delivery:' + M1)['state'], 'offered')
         self.assertNotIn('session_ack', api.ops())
-        envelope = self.offer(api)
-        self.assertEqual((envelope['state'], envelope['message_id']), ('offered', M1))
-        self.assertEqual(envelope['next_step'], 'handle_then_wait')
+        again = self.offer(api)
+        self.assertEqual((again['state'], again['message_id']), ('offered', M1))
+        self.assertEqual(again['receipt_command'][-1], M1, 'a receive envelope keeps its plain commands')
 
     @isolated_profiles
     def test_an_unreceipted_offer_after_a_crash_ends_the_next_wait_at_once(self):
@@ -156,7 +170,7 @@ class WaitRouteTests(WaitCase):
         self.bound(api)
         self.offer(api)
         waiter = Waiter(self)
-        self.fixed(self.wait_direct(api, waiter=waiter)[0], 'offer_available', 'receive')
+        self.fixed(self.wait_direct(api, waiter=waiter)[0], 'offer_available', 'handle_then_wait')
         self.assertEqual(waiter.waits, 0)
         self.assertNotIn('session_ack', api.ops())
 
@@ -205,7 +219,7 @@ class WaitRouteTests(WaitCase):
         self.bound(api)
         api.fail['session_inbox'] = ['service_unavailable', 'service_unavailable', None]
         result, ledger = self.wait_direct(api)
-        self.fixed(result, 'offer_available', 'receive')
+        self.fixed(result, 'offer_available', 'handle_then_wait')
         self.assertEqual(self.moment, 30, 'the listener\'s retry delays, on the wait\'s own bound')
         self.assertEqual(ledger.setting('presence')['state'], 'unreachable')
 
@@ -237,11 +251,11 @@ class WaitRouteTests(WaitCase):
         self.offer(api)
         self.now += 601
         result, ledger = self.wait_direct(api)
-        self.fixed(result, 'offer_available', 'receive', awaiting=1)
+        self.assertEqual(self.fixed(result, 'offer_available', 'handle_then_wait', awaiting=1)['message_id'], M2)
         self.assertEqual(ledger.setting('delivery:' + M2)['state'], 'offered')
 
     @isolated_profiles
-    def test_a_material_alert_wakes_and_stays_for_the_next_receive(self):
+    def test_a_material_alert_wakes_with_the_alert_and_is_shown_once(self):
         from quorum_delivery_status import WATCH_KEY
         api = Api()
         self.bound(api)
@@ -249,10 +263,11 @@ class WaitRouteTests(WaitCase):
         ledger.setting(WATCH_KEY, {'agent_id': AGENT, 'seq': 0, 'more': False, 'read_at': None, 'shown': [],
                                    'pending': [{'message_id': M1, 'recipient_role': 'peer', 'status': 'failed',
                                                 'noted_at': 1}]})
-        self.fixed(self.wait_direct(api)[0], 'alert_available', 'receive')
+        alert = {'message_id': M1, 'recipient_role': 'peer', 'status': 'failed'}
+        self.fixed(self.wait_direct(api)[0], 'alert_available', 'handle_then_wait', delivery_alerts=[alert])
         result = self.offer(api)
         self.assertEqual(result['state'], 'timeout')
-        self.assertEqual(result['delivery_alerts'][0]['status'], 'failed')
+        self.assertNotIn('delivery_alerts', result)
 
     @isolated_profiles
     def test_authority_lost_at_the_last_step_is_refused_before_the_worker_is_told_anything(self):
@@ -272,21 +287,27 @@ class WaitRouteTests(WaitCase):
                    stop_reason='fatal:wait_orphaned')
 
     @isolated_profiles
-    def test_the_bound_is_enforced_and_the_cli_prints_one_fixed_line(self):
+    def test_the_bound_is_enforced_and_the_cli_prints_one_line(self):
         import quorum_native_inbox as inbox
-        api = Api(inbox=[message(M1, body='private peer body')])
+        api = Api()
         self.bound(api)
-        self.assertEqual(inbox.WAIT_BOUND, 1500)
+        # Two minutes under Claude Code's 30-minute default and Monitor cap, and under its 2-hour Bash maximum.
+        self.assertEqual((inbox.WAIT_DEFAULT, inbox.WAIT_BOUND), (1680, 7080))
         with self.assertRaises(ValueError) as raised:
             self.wait_direct(api, inbox.WAIT_BOUND + 1)
         self.assertEqual(str(raised.exception), 'invalid_wait_seconds')
         with patch('quorum_native_inbox.RealtimeWait', lambda *_, **__: StubWaiter()):
-            code, result, text = self.worker(api, 'wait', '--max-seconds', '5')
-        self.assertEqual(code, 0, text)
-        self.assertEqual(result['data']['state'], 'offer_available')
+            code, result, text = self.worker(api, 'wait', '--max-seconds', '1')
+        self.assertEqual((code, result['data']['state']), (0, 'rearm'), text)
         self.assertEqual(text.count('\n'), 1)
-        self.assertNotIn('private peer body', text)
-        self.assertNotIn(str(self.root), text)
+        self.assertNotIn(str(self.root), text, 'a rearm line has no path or command')
+        api.inbox.append(message(M1, body='private peer body\nsecond line'))
+        with patch('quorum_native_inbox.RealtimeWait', lambda *_, **__: StubWaiter()):
+            code, result, text = self.worker(api, 'wait', '--max-seconds', '5')
+        self.assertEqual((code, result['data']['state']), (0, 'offer_available'), text)
+        self.assertEqual(text.count('\n'), 1, 'one Monitor event, even for a multi-line body')
+        self.assertEqual(result['data']['envelope']['message']['body'], 'private peer body\nsecond line')
+        self.assertNotIn(self.token, text)
 
     @isolated_profiles
     def test_an_outage_at_the_start_is_waited_out_and_a_release_mismatch_stays_fatal(self):
@@ -319,8 +340,10 @@ class BriefTests(WaitCase):
     def test_a_new_worker_is_briefed_to_wait_and_an_older_loop_keeps_working(self):
         import quorum_native_inbox as inbox
         brief = self.prepare(self.accept_scope())['worker_brief']
-        self.assertIn('Run session wait', brief)
+        self.assertIn('Start session wait', brief)
+        self.assertIn('Monitor', brief)
         self.assertIn('end your turn', brief)
+        self.assertIn('Worker commands and Background wait sections', brief)
         self.assertIn('Do not repeat session receive', brief)
         self.assertIn('fatal:<code>', brief)
         api = Api(inbox=[message(M1)])
