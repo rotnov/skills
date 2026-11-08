@@ -16,6 +16,7 @@ decision is pending is quiet: it is receipted here, becomes the newest pending t
 produces a reply. `session status` shows the newest target as `pending_update`. The owner's refresh to it ends the
 pending state, so the next new target reaches the chat once again. The opt-out does not apply to maintenance.
 """
+import json
 import re
 import time
 import uuid
@@ -86,39 +87,46 @@ def maintenance(message, agent_id):
     return {'notice_id': notice_id, 'protocol_version': protocol, 'content_sha256': digest}
 
 
-def _pending(ledger, agent_id):
-    saved = ledger.setting(PENDING_KEY)
+def _load(db, agent_id):
+    """This binding's pending record, read inside the caller's transaction."""
+    row = db.execute('select data from settings where key=?', (PENDING_KEY,)).fetchone()
+    saved = json.loads(row[0]) if row else None
     return saved if isinstance(saved, dict) and agent_id and saved.get('agent_id') == agent_id else None
+
+
+def _store(db, value):
+    db.execute('insert into settings values (?,?) on conflict(key) do update set data=excluded.data',
+               (PENDING_KEY, json.dumps(value)))
 
 
 def _quiet_maintenance(ledger, message, agent_id, *, wall=time.time):
     """True when an owner decision is already pending for another proposal to this binding.
 
-    With nothing pending, this proposal is recorded as the pending one before it reaches the chat, so a repeat
-    offer of that same message (a lost receipt) is shown again rather than swallowed.
+    The decision and its record are one IMMEDIATE transaction, which `settle_update` also takes, so an owner's
+    refresh can never clear the pending state between them and lose a quiet proposal. A quiet proposal becomes the
+    newest pending target here, before the caller's ACK; IDs, hashes and times only, never a body. With nothing
+    pending, this proposal is recorded as the one surfaced in the chat, so a repeat offer of that same message (a
+    lost receipt) is shown again rather than swallowed.
     """
     proposal = maintenance(message, agent_id)
     if proposal is None: return False
-    pending = _pending(ledger, agent_id)
-    if pending is None:
-        ledger.setting(PENDING_KEY, {'agent_id': agent_id, 'message_id': message.get('id'), **proposal,
-                                     'received_at': int(wall()), 'surfaced_message_id': message.get('id'),
-                                     'quiet_notices': 0, 'seen': [message.get('id')]})
-        return False
-    return message.get('id') != pending.get('surfaced_message_id')
-
-
-def _record_maintenance(ledger, message, *, wall=time.time):
-    """A quietly receipted proposal becomes the newest pending target; IDs, hashes and times only, never a body."""
-    agent_id = message.get('recipient_id') if isinstance(message, dict) else None
-    proposal = maintenance(message, agent_id)
-    pending = _pending(ledger, agent_id)
-    if proposal is None or pending is None: return
-    seen = [item for item in pending.get('seen', []) if isinstance(item, str)]
-    if message.get('id') in seen: return  # The redelivery of an unacknowledged notice is the one repeat.
-    ledger.setting(PENDING_KEY, {**pending, 'message_id': message.get('id'), **proposal, 'received_at': int(wall()),
-                                 'quiet_notices': int(pending.get('quiet_notices', 0)) + 1,
-                                 'seen': (seen + [message.get('id')])[-RECENT_LIMIT:]})
+    message_id = message.get('id')
+    with ledger.db:
+        ledger.db.execute('begin immediate')
+        pending = _load(ledger.db, agent_id)
+        if pending is None:
+            _store(ledger.db, {'agent_id': agent_id, 'message_id': message_id, **proposal,
+                               'received_at': int(wall()), 'surfaced_message_id': message_id,
+                               'quiet_notices': 0, 'seen': [message_id]})
+            return False
+        if message_id == pending.get('surfaced_message_id'): return False
+        seen = [item for item in pending.get('seen', []) if isinstance(item, str)]
+        # The redelivery of an unacknowledged notice is the one repeat: still quiet, recorded once.
+        if message_id not in seen:
+            _store(ledger.db, {**pending, 'message_id': message_id, **proposal, 'received_at': int(wall()),
+                               'quiet_notices': int(pending.get('quiet_notices', 0)) + 1,
+                               'seen': (seen + [message_id])[-RECENT_LIMIT:]})
+        return True
 
 
 def pending_update(ledger, agent_id=None):
@@ -135,12 +143,16 @@ def pending_update(ledger, agent_id=None):
 def settle_update(ledger, agent_id, content_sha256):
     """The owner refreshed this binding to `content_sha256`, which decides a pending update for that target.
 
-    A pending update for another, newer target stays, so the owner still sees the newest one.
+    A pending update for another, newer target stays, so the owner still sees the newest one. This takes the same
+    IMMEDIATE transaction as the listener's decision, so a concurrent quiet proposal either lands first (and stays
+    pending as the newer target) or after (and finds nothing pending, so it reaches the chat once).
     """
-    pending = _pending(ledger, agent_id)
-    if pending is not None and pending.get('content_sha256') == content_sha256:
-        # The ledger keeps a key once written, so a decided state is a record with no pending binding.
-        ledger.setting(PENDING_KEY, {'agent_id': None, 'settled_content_sha256': content_sha256})
+    with ledger.db:
+        ledger.db.execute('begin immediate')
+        pending = _load(ledger.db, agent_id)
+        if pending is not None and pending.get('content_sha256') == content_sha256:
+            # The ledger keeps a key once written, so a decided state is a record with no pending binding.
+            _store(ledger.db, {'agent_id': None, 'settled_content_sha256': content_sha256})
 
 
 def quiet(ledger, message, agent_id):
@@ -156,7 +168,7 @@ def record(ledger, message, notice_kind, route, *, wall=time.time):
     Callers record before the service ACK: a crash between the two then keeps the notice in status, and
     the redelivery of an unacknowledged notice is the one repeat, recognised here by its message ID.
     """
-    if notice_kind == 'maintenance': return _record_maintenance(ledger, message, wall=wall)
+    if notice_kind == 'maintenance': return  # Recorded with its quiet decision, in one transaction.
     now = int(wall())
     saved = ledger.setting(LOG_KEY)
     saved = saved if isinstance(saved, dict) else {}

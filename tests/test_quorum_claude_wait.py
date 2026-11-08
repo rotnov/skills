@@ -42,8 +42,12 @@ WAIT = textwrap.dedent('''
     print(json.dumps(result), flush=True)
 ''')
 # What stands between a client and an interpreter: a Windows venv launcher or `uv run` waits on its child.
+# It records its own PID beside itself: it outlives the wait briefly, and on Windows its working directory (the
+# test's project directory) cannot be removed until it has exited.
 LAUNCHER = textwrap.dedent('''
-    import subprocess, sys
+    import os, subprocess, sys
+    from pathlib import Path
+    Path(__file__).with_suffix('.pid').write_text(str(os.getpid()))
     sys.exit(subprocess.call([sys.executable, *sys.argv[1:]]))
 ''')
 # A parent that dies above the wait, directly or above a launcher that stays. Lines go through a file.
@@ -514,6 +518,12 @@ class ProcessTests(Bound):
             from quorum_debug import _windows_pid_alive
             while time.monotonic() < deadline and _windows_pid_alive(int(pid)): time.sleep(0.05)
             self.assertFalse(_windows_pid_alive(int(pid)), 'nothing may keep the ledger open')
+            # A launcher exits just after its wait. Until it has, the temporary project directory it runs in
+            # cannot be removed (WinError 32 at cleanup), so the test waits for it too.
+            for marker in (Path(item).with_suffix('.pid') for item in wrapper):
+                launcher = int(marker.read_text())
+                while time.monotonic() < deadline and _windows_pid_alive(launcher): time.sleep(0.05)
+                self.assertFalse(_windows_pid_alive(launcher), 'the launcher must exit after its wait')
 
     @isolated_profiles
     def test_a_wait_whose_parent_died_exits_and_frees_its_lock(self):

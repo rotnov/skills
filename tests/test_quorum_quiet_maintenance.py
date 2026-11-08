@@ -136,6 +136,39 @@ class ParentRelayTests(unittest.TestCase):
         self.assertEqual(pending_update(self.ledger)['content_sha256'], digest('d'))
 
     @isolated_profiles
+    def test_an_owner_refresh_between_the_quiet_decision_and_the_ack_never_loses_the_proposal(self):
+        """The listener and the owner's update use separate ledger connections; settlement may land anywhere."""
+        import quorum_notices
+        from quorum_state import LocalLedger
+        owner = LocalLedger(Path(self.temporary.name))
+        self.addCleanup(owner.db.close)
+        first, second = proposal(digest('a')), proposal(digest('b'))
+        inbox, queued, calls = [first], [], []
+        relay, acked = self.relay(inbox, queued, calls)
+        self.drain(relay)
+        self.ledger.setting('delivery:' + first['id'], {'state': 'acked'})
+        acked.append(first['id'])
+        inbox.append(second)
+        original = quorum_notices.quiet
+        def settle_after_decision(ledger, message, agent_id):
+            decided = original(ledger, message, agent_id)
+            # The owner's refresh to A commits on its own connection after B was judged quiet, before B's ACK.
+            if message['id'] == second['id']: quorum_notices.settle_update(owner, AGENT, digest('a'))
+            return decided
+        with patch('quorum_notices.quiet', side_effect=settle_after_decision):
+            self.assertEqual([relay.run_once() for _ in range(3)], ['delivered', 'notice', 'idle'])
+        # B was acknowledged without an envelope, so it must stay visible as the newest pending target.
+        self.assertEqual(acked[-1], second['id'])
+        self.assertEqual(queued, [first['id']])
+        self.assertEqual(quorum_notices.pending_update(owner)['content_sha256'], digest('b'))
+        # Settled the other way round, the next proposal finds nothing pending and reaches the chat once.
+        quorum_notices.settle_update(owner, AGENT, digest('b'))
+        third = proposal(digest('c'))
+        inbox.append(third)
+        self.drain(relay)
+        self.assertEqual(queued, [first['id'], third['id']])
+
+    @isolated_profiles
     def test_a_lost_receipt_offers_the_surfaced_proposal_again(self):
         first = proposal(digest('a'))
         queued, calls = [], []
