@@ -6,6 +6,7 @@ import re
 import uuid
 
 from quorum_api import QuorumError, guarded_call, server_refused
+from quorum_notices import settle_update
 from quorum_os import FileLock
 from quorum_release import (public_source, read_release, release_status, release_view, runtime_evidence, same_source,
                             short_hash, source_identity)
@@ -126,6 +127,8 @@ def owner_update(api, ledger, record, request_id, *, current, cache,
         fanout = {'operation_id':operation_id, **counts}
         if failure_count: fanout['failed'] = failure_count
         ledger.setting(key, {**journal, 'state':'queued', 'fanout':fanout})
+        # The owner's own refresh to a pending proposal's target also decides that proposal (#191).
+        settle_update(ledger, record['agent_id'], journal['target']['content_sha256'])
         return {'target':public_source(journal['target']), 'local':journal['local'], 'fanout':fanout,
                 'runtime':runtime_evidence(ledger), 'all_participants_upgraded':False}
 
@@ -186,6 +189,8 @@ def apply_notice(api, ledger, record, notice_id, request_id, *, owner_refresh=Fa
                   'event':'refreshed', 'evidence':target}, 'refresh:'+hashlib.sha256(notice_id.encode()).hexdigest(), authorize)
             journal = {**journal, 'state':'reported'}
             ledger.setting(key, journal)
+        # The owner decided this target: the next new proposal reaches the chat once again (#191).
+        settle_update(ledger, record['agent_id'], target['content_sha256'])
         return {'state':'refreshed', 'target':public_source(target), 'local':journal['local'],
                 'runtime':runtime_evidence(ledger), 'lifecycle_required':True}
 

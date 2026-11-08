@@ -811,7 +811,7 @@ def _session_status(root, record):
         if fds is None: return None
         rows = _read_db(fds[-1], root.joinpath(*names, 'ledger.sqlite'), lambda db: db.execute(
             "select key,data from settings where key in ('listener', 'hello', 'transport-notices', "
-            "'show-transport-notices', 'session-agent', ?) or key like ? order by rowid",
+            "'show-transport-notices', 'pending-update', 'session-agent', ?) or key like ? order by rowid",
             (CONTROL, DELIVERY_PREFIX + '%')).fetchall(),
                         ledger='actor')
         if rows is None: return None
@@ -836,6 +836,8 @@ def _session_status(root, record):
             'hello': (settings.get('hello') or {}).get('summary') if isinstance(settings.get('hello'), dict) else None,
             # Hello/roster transport notices this worker receipted quietly (#126): IDs, roles and times only.
             'transport_notices': quorum_notices.summary(SimpleNamespace(setting=settings.get)),
+            # The newest maintenance target awaiting the owner; later proposals were receipted quietly (#191).
+            'pending_update': quorum_notices.pending_update(SimpleNamespace(setting=settings.get)),
             **awaiting}
 
 
