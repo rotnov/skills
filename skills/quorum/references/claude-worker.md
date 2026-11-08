@@ -446,6 +446,65 @@ maintenance stays available.
    fail with `recipient_ambiguous_or_missing` and send nothing; retry them with
    the same request ID. `session peers` then lists only the worker for the role.
 
+### One-command move
+
+The worker is the default route for a Claude parent binding. `session connect`
+and `session status` on that binding return `reception_route`: `default` is
+`claude-worker`, `route` is the route serving reception now, and `next_step`
+is `move` (with `move_command`), `attest`, `fallback` (with `fallback_steps`
+and `fallback_reason`) or null. Codex and Grok bindings get no such field and
+keep their route.
+
+When `next_step` is `move`, offer the move once in the setup outcome, or run it
+when the owner asks to connect or recover this chat's reception. It widens
+nothing: the same login, membership, role, project and intake policy. Run it
+from this chat in the binding's directory:
+
+```text
+Q session worker adopt-plan [--shell bash|powershell] [--lifetime bounded --ttl-seconds N]
+```
+
+It checks steps 1 and 2 above first (binding, directory, service, an earlier
+adopting worker) and refuses without touching reception. Then it stops this
+chat's reception like `session stop`, prepares the adopt slot (until owner
+stop by default) and returns the same `spawn_prompt`, `join_command` and
+`attest_command` as [spawn-plan](#two-call-setup), plus `verify_command`,
+`retire_command` and the fallback steps. Spawn the worker and attest it.
+
+Retire this chat's agent only after the worker has proven reception (step 4),
+never merely because its agent is visible. Run `retire_command`
+(`session worker adopt-retire <slot-uuid>`) once the worker has connected.
+The first run sends one probe from this chat's agent to the worker's agent
+and returns `state: probe_sent`. Later runs return `probe_pending` until the
+worker's own ledger shows that probe receipted or answered. Only then does
+the command leave this chat's agent and return `retired: true`. Until then
+both agents stay, nothing is retired, and this chat stays the fallback.
+
+### Parent reception as the fallback
+
+This chat's own parent reception stays the fallback, restored with
+`session start` from the same binding:
+
+- `worker_capability_missing`: the owner proof is unavailable here, so no
+  move is offered and parent reception continues.
+- An `adopt-plan` failure after its stop returns `parent_reception: stopped`
+  and `fallback_steps`.
+- `worker_attestation_failed`: the slot's 120-second attest deadline passed.
+- An attested worker is the route only once it has connected with live
+  reception. Until then `next_step` is `join_pending`. If it has no agent five
+  minutes after attestation, `fallback_reason` becomes `worker_join_failed`,
+  even on an until-owner-stop slot. Both states carry `fallback_steps`, which
+  stop the slot first so it cannot connect later, and `recovery_steps`
+  (stop, then `adopt-plan` again).
+- `worker_unavailable`: the worker stopped or its permission expired. If it
+  ever connected, `fallback_steps` first retires its agent with
+  `session worker stop <slot-uuid> --leave`.
+
+The owner's request to move is what authorizes that one fallback start. Once
+`adopt-retire` has returned `retired: true`, this chat's agent is gone; recovery then is the
+worker's [rebind](#rebind-after-a-parent-restart), and parent reception again
+needs a new owner-approved `session connect`.
+
 Do not restart this chat's reception for that quorum afterwards. Invitations
 (`invite-id`) still run in this chat: they use the login, not an agent. Owner
 operations bound to an agent move to the worker, because the retired agent is
@@ -579,7 +638,9 @@ and inherits nothing, and a bound handle cannot be bound to another slot.
 
 ## Parent fallback
 
-If the client has no native background worker, capacity or attestation
+A chat that already has a parent binding keeps it as the fallback for its
+worker; see [parent reception as the fallback](#parent-reception-as-the-fallback).
+For a new join: if the client has no native background worker, capacity or attestation
 receipt, keep the invitation unused and report that blocker once per
 [join without a worker](join.md#without-a-worker). The parent route in
 [sessions](sessions.md) shows raw envelopes and queue cards; it is a legacy

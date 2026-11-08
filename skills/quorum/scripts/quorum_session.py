@@ -423,6 +423,17 @@ def reception_notice(ledger, state):
     return {'listener_lost': loss_notice(loss, state)} if loss else {}
 
 
+def route_notice(state, record):
+    """`reception_route` for a Claude parent binding: the worker is the default, this chat the fallback (#165).
+
+    Codex and Grok parent routes get nothing here; their route is unchanged.
+    """
+    if not isinstance(record, dict) or record.get('engine') != 'claude': return {}
+    from quorum_claude_worker import reception_route
+    route = reception_route(state, record)
+    return {'reception_route': route} if route else {}
+
+
 def grok_job_notice(engine):
     """A warning when a Windows Grok start runs inside a kill-on-close job; it cannot prove the listener dies.
 
@@ -887,6 +898,17 @@ def add_worker_commands(actions):
     plan.add_argument('--trust-members', action='store_true')
     plan.add_argument('--knowledge', action='append', choices=('search', 'read', 'propose'))
     plan.add_argument('--update-maintenance', action='store_true', help='Scope "update": true')
+    adopt = steps.add_parser('adopt-plan', help="Owner parent: stop this Claude chat's parent reception and prepare "
+                                                'one adopt slot; returns the spawn prompt, attest command and the '
+                                                'parent-reception fallback, spawns nothing')
+    adopt.add_argument('--shell', choices=('bash', 'powershell'), default='bash',
+                       help="The worker's shell tool for the rendered join command")
+    adopt.add_argument('--lifetime', choices=('bounded', 'until-owner-stop'),
+                       help='Default until-owner-stop, so owner maintenance stays available')
+    adopt.add_argument('--ttl-seconds', type=int, metavar='1..3600')
+    steps.add_parser('adopt-retire', help="Owner parent: probe the adopting worker, and retire this chat's own "
+                                          'agent only once the worker has receipted that probe').add_argument(
+        'slot', type=slot_uuid)
     join = steps.add_parser('join', help='Worker: await-binding, accept-id, connect and the first receive as one '
                                          'command; returns the capability reference and wait_command')
     join.add_argument('slot', type=slot_uuid)
@@ -1326,7 +1348,8 @@ def _dispatch(args, auth_ledger, register_agent):
                     'delegation':record.get('delegation') if record else None,
                     'delegation_state':delegation_state(record),
                     'owner_held_actions':held_status(record),'member_trust_route':trust_route(record),
-                    'standing_grants':standing_status(record,ledger) if record else None, 'release':diagnostic(ledger)}
+                    'standing_grants':standing_status(record,ledger) if record else None, 'release':diagnostic(ledger),
+                    **route_notice(auth_ledger.root, record)}
         if args.action=='stop':
             # Exact-SID supervision: a parent may stop its worker but never act as it.
             if tool: return {**inbox.stop(ledger,record),'session_id':sid}
@@ -1503,7 +1526,8 @@ def _dispatch(args, auth_ledger, register_agent):
                 reception = inbox.initialize_control(ledger, new_binding=old is None)
                 return {**result,'session_ref':sid,'transport':inbox.TRANSPORT,'reception':reception,
                         'listener':'offline','worker_binding':proved,'delegation':record.get('delegation')}
-            return {**result,'session_ref':sid,'transport':'offline','delegation':record.get('delegation')}
+            return {**result,'session_ref':sid,'transport':'offline','delegation':record.get('delegation'),
+                    **route_notice(auth_ledger.root, record)}
         record = require_live_binding(ledger, record, sid)
         if args.action == 'delegate':
             snapshot = dict(record)
