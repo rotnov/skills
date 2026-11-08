@@ -168,25 +168,32 @@ member trust must equal its owner-prepared scope, and a
 capability status's `member_trust_route` instead carries
 `lifecycle: "replace_capability"`, the slot's `mode` and the `scope_change` keys.
 The worker tells the owner; only the parent chat, on the owner's own words,
-replaces the capability. For a create or accept slot, stop it, then prepare,
-attest and connect a new one whose scope adds `scope_change`, per
-[owner-parent setup](claude-worker.md#owner-parent-setup); an accept scope
-needs a fresh invitation, because invitations are single-use.
+replaces the capability, with the slot's own `--state`. A stopped slot's agent
+still holds the role, and the service refuses a replacement's connect with
+`role_held_by_own_agent` until that agent is retired, so the order matters.
+Reception pauses until the replacement connects.
 
-An adopt slot whose setup retired the parent agent has no parent binding left,
-so an adopt prepare alone fails with `parent_binding_missing`. In the parent
-chat, in this order (reception pauses between steps 1 and 3):
-
-1. `session worker stop <slot-uuid> --leave`, which retires the worker agent
-   and frees the role.
-2. `session connect <quorum> --role <role> --project-ref <project>
+1. Retire the old worker agent. For an adopt slot, run
+   `session worker stop <slot-uuid> --leave`. `--leave` covers adopt slots
+   only, so for a create or accept slot run `session worker stop <slot-uuid>`,
+   read the agent ID from `session worker status <slot-uuid>` (`target.agent_id`),
+   then run `leave --request-id <stable-ID> --json-stdin` with
+   `{"agent_id":"<that ID>"}`.
+2. An accept slot: prepare a new accept scope with `scope_change` added and a
+   fresh invitation's `invite_id` (invitations are single-use), then attest it
+   and run its `accept-id` and connect with the returned `connect_flags`, per
+   [owner-parent setup](claude-worker.md#owner-parent-setup). That completes it.
+3. A create or adopt slot: a create slot cannot be prepared again, since a new
+   one would create a quorum that already exists, and an adopt prepare needs a parent binding the adopt setup
+   retired (it fails with `parent_binding_missing`). The parent chat runs
+   `session connect <quorum> --role <role> --project-ref <project>
    --accept-tasks-from-members --dispatch-mode inline --trust-members`, adding
    `--standing-grants-from <role>` when `scope_change` names one. This is a
    fresh binding, so it may record member trust. Do not start its reception.
-3. Prepare the adopt scope, which inherits that trust, then attest the worker
-   and connect it with the returned `connect_flags`
-   ([adopting](claude-worker.md#adopting-this-chats-binding)).
-4. Retire the new parent agent with `leave`, as in the adopt setup.
+4. Prepare an adopt scope, which inherits that trust, then attest the worker and
+   connect it with the returned `connect_flags`
+   ([adopting](claude-worker.md#adopting-this-chats-binding)). Retire the new
+   parent agent with `leave`, as in the adopt setup.
 
 When a member request reaches an owner-held exclusion on a binding whose
 `member_trust_route` is set, tell the owner once that this binding lacks member

@@ -145,7 +145,8 @@ class WorkerTrustRouteTests(unittest.TestCase):
                 self.assertEqual(route['scope_change'], change)
                 self.assertIn('cannot run delegate', route['next_step'])
                 self.assertIn('delegation.md#owner-typed-member-trust', route['next_step'])
-                self.assertIn('reconnect with --trust-members', route['next_step'])
+                self.assertIn("first retires this worker's agent", route['next_step'])
+                self.assertIn('reconnects the parent chat with --trust-members', route['next_step'])
         held = {'mode': 'accept', 'accept_tasks_from_members': True, 'trust_members': True}
         self.assertIsNone(worker_trust_route(held))
         self.assertIsNone(worker_trust_route({'mode': 'accept', 'coordinator_role': 'lead'}))
@@ -179,7 +180,9 @@ class ReferenceTests(unittest.TestCase):
                          'A Claude logical worker has no such command', 'lifecycle: "replace_capability"',
                          'claude-worker.md#owner-parent-setup', 'session worker stop <slot-uuid> --leave',
                          'fails with `parent_binding_missing`', '--dispatch-mode inline --trust-members',
-                         'Do not start its reception', 'Retire the new parent agent with `leave`'):
+                         'Do not start its reception', 'Retire the new parent agent with `leave`',
+                         '`role_held_by_own_agent` until that agent is retired', '`--leave` covers adopt slots only',
+                         '(`target.agent_id`)', 'a create slot cannot be prepared again'):
             with self.subTest(required=required):
                 self.assertIn(required, delegation)
         # Hard stops are unchanged by an owner's trust statement.
