@@ -19,7 +19,7 @@ from quorum_listener import (Control, ListenerPending, READY_SECONDS, START_LOCK
                              await_started, control_lock, locked, ready, run_listener, spawn_background, stop_listener)
 from quorum_os import FileLock
 from quorum_state import LocalLedger, default_state_root
-from quorum_delegation import (carried_grant, delegation_state, grant, held_status, instruction, member_grant, member_trust, opening, task_check,
+from quorum_delegation import (carried_grant, delegation_state, grant, held_status, trust_route, instruction, member_grant, member_trust, opening, task_check,
                                trusted,
                                save_grant_binding, standing_check, standing_grants, standing_status,
                                STANDING_ACTIONS)
@@ -1260,7 +1260,7 @@ def _dispatch(args, auth_ledger, register_agent):
             if tool: return {**inbox.status(ledger,record),'session_id':sid,
                              'transport_notices':quorum_notices.summary(ledger),'outgoing':outgoing_summary(ledger),
                              'delegation':record.get('delegation'),'delegation_state':delegation_state(record),
-                             'owner_held_actions':held_status(record),
+                             'owner_held_actions':held_status(record),'member_trust_route':trust_route(record),
                              'standing_grants':standing_status(record,ledger),'release':diagnostic(ledger)}
             deliveries = Deliveries(ledger).rows()
             listener = Control(ledger).status()
@@ -1277,7 +1277,7 @@ def _dispatch(args, auth_ledger, register_agent):
                     **({'retired_binding':retired_summary(ledger)} if not record and retired_summary(ledger) else {}),
                     'delegation':record.get('delegation') if record else None,
                     'delegation_state':delegation_state(record),
-                    'owner_held_actions':held_status(record),
+                    'owner_held_actions':held_status(record),'member_trust_route':trust_route(record),
                     'standing_grants':standing_status(record,ledger) if record else None, 'release':diagnostic(ledger)}
         if args.action=='stop':
             # Exact-SID supervision: a parent may stop its worker but never act as it.

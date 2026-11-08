@@ -13,7 +13,7 @@ import uuid
 from quorum_api import QuorumError
 from quorum_delivery import CLOUD_STATES, Deliveries, server_ack
 from quorum_delivery_status import Reports, reportable
-from quorum_delegation import (carried_grant, delegation_state, grant, held_status, instruction, member_grant, member_trust, opening, task_check,
+from quorum_delegation import (carried_grant, delegation_state, grant, held_status, trust_route, instruction, member_grant, member_trust, opening, task_check,
                                save_grant_binding, trusted)
 from quorum_release import ReleaseGuard, ReleaseMismatch, diagnostic, peers_view
 import quorum_notices
@@ -509,7 +509,7 @@ def status(ledger, record, conversation):
             'transport_notices': quorum_notices.summary(ledger),
             'delegation': record.get('delegation') if record else None,
             'delegation_state': delegation_state(record),
-            'owner_held_actions': held_status(record), 'release': diagnostic(ledger)}
+            'owner_held_actions': held_status(record), 'member_trust_route': trust_route(record), 'release': diagnostic(ledger)}
 
 
 def start(auth_ledger, ledger, api):
