@@ -861,6 +861,32 @@ def add_worker_commands(actions):
     stop.add_argument('slot', type=slot_uuid)
     stop.add_argument('--leave', action='store_true',
                       help="Adopt slot only: also retire that worker's own agent with the owner's login")
+    plan = steps.add_parser('spawn-plan', help='Owner parent: issue one invitation and prepare its accept slot; '
+                                               'returns a copy-ready spawn prompt and the attest command, spawns nothing')
+    plan.add_argument('quorum')
+    plan.add_argument('--role', required=True)
+    plan.add_argument('--project-ref', help='Default: the quorum slug')
+    target = plan.add_mutually_exclusive_group(required=True)
+    target.add_argument('--open', action='store_true', help='Single-use open invitation; anonymous worker state')
+    target.add_argument('--github-user')
+    target.add_argument('--github-id')
+    plan.add_argument('--worker-state', type=Path, help='Default: this state (GitHub) or a fresh private state '
+                                                        'under it (open)')
+    plan.add_argument('--cwd', help='The approved project directory; must be the current directory (default)')
+    plan.add_argument('--request-id', help='Invitation request ID; reuse after an uncertain response')
+    plan.add_argument('--lifetime', choices=('bounded', 'until-owner-stop'))
+    plan.add_argument('--until-owner-stop', dest='lifetime', action='store_const', const='until-owner-stop')
+    plan.add_argument('--ttl-seconds', type=int, metavar='1..3600')
+    plan.add_argument('--coordinator-role')
+    plan.add_argument('--dispatch-mode', choices=('inline', 'native-subagent'))
+    plan.add_argument('--accept-tasks-from-members', action='store_true')
+    plan.add_argument('--standing-grants-from')
+    plan.add_argument('--trust-members', action='store_true')
+    plan.add_argument('--knowledge', action='append', choices=('search', 'read', 'propose'))
+    plan.add_argument('--update-maintenance', action='store_true', help='Scope "update": true')
+    join = steps.add_parser('join', help='Worker: await-binding, accept-id, connect and the first receive as one '
+                                         'command; returns the capability reference and wait_command')
+    join.add_argument('slot', type=slot_uuid)
 
 
 def add_commands(commands):

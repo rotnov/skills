@@ -136,6 +136,12 @@ def main(argv=None):
             import quorum_claude_worker as claude_worker
             # A Claude worker route validates its capability and arguments before the root ledger exists.
             if claude_worker.selected(args):
+                if (args.command == 'session' and args.action == 'worker' and args.worker_action == 'join'
+                        and getattr(args, 'worker_capability', None) is None and args.session_id is None):
+                    # One worker command: each step runs through this same entry point and its own checks.
+                    exit_code, value = claude_worker.join(args.state, args.slot, main)
+                    print(json.dumps(value))
+                    return exit_code
                 value = claude_worker.manage(args, register_agent)
                 if value is not None:
                     print(json.dumps({'ok': True, 'code': 'ok', 'data': value}))

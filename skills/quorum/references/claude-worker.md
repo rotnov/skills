@@ -75,7 +75,53 @@ reserves `:`, so a logical actor's directory there is
 ## Owner-parent setup
 
 `Q` is `uv run --project <skill-dir> --frozen python <skill-dir>/scripts/quorum.py --state <private-state>`.
-The parent writes one scope object (UTF-8 JSON, at most 16 KiB, no unknown or
+
+### Two-call setup
+
+For a worker that joins by a new invitation, run one command from the approved
+project directory, in the owner's configured state:
+
+```text
+Q session worker spawn-plan <slug> --role <role> (--open | --github-user <login> | --github-id <id>)
+  [--project-ref <project>] [--lifetime bounded --ttl-seconds N | --until-owner-stop]
+  [--coordinator-role <role> [--dispatch-mode native-subagent] | --accept-tasks-from-members
+   [--standing-grants-from <role>] [--trust-members]] [--knowledge search|read|propose ...]
+  [--update-maintenance] [--worker-state <dir>] [--cwd <dir>] [--request-id <id>]
+```
+
+Each flag maps 1:1 to the scope key below (`--update-maintenance` is
+`"update": true`); an omitted flag leaves its key out. The command builds the
+accept scope from this state's own service config (origin and the publishable
+key's SHA-256), checks it exactly as prepare does, then issues the single-use
+invitation (open, or GitHub for the named login) and prepares its slot. A
+`--cwd` other than the current directory, an invalid scope, a worker state
+pinned to another service, a reused open state (`anonymous_state_conflict`) or
+an existing binding refuses before any invitation exists. The worker state is
+this state for GitHub, and a fresh private state under it for `--open`. It
+spawns nothing and returns:
+
+- `slot_id` and `expires_at` (the 120-second attest deadline);
+- `spawn_prompt`: the complete text for the parent's native Agent tool, with
+  the worker brief and one bootstrap command, `session worker join <slot>`;
+- `attest_command`, with a `<native-handle>` placeholder;
+- `invitation`, `worker_state`, `join_command` and `connect_flags`.
+
+The parent then makes two calls: it spawns one native background worker with
+`spawn_prompt`, and runs `attest_command` with the handle its tool returned.
+The prompt holds no secret: the publishable key stays in the slot record and
+the bearer in the capability file.
+
+The worker's `Q session worker join <slot>` runs await-binding, `accept-id`
+(with `--anonymous --origin --publishable-key` for open access), `connect`
+with the scope's `connect_flags`, and the first `receive --wait-seconds 0`.
+Each step runs through its ordinary command and checks. It returns
+`capability_file`, the `receive` result and `wait_command`, and the worker goes
+straight to the [background wait](#background-wait). A failed step returns its
+own code with `join_step`; a retry skips an accept whose membership is pinned.
+
+### Manual setup
+
+The fallback for create and adopt scopes or a hand-written brief. The parent writes one scope object (UTF-8 JSON, at most 16 KiB, no unknown or
 duplicate keys) to stdin from its approved project directory:
 
 ```json
