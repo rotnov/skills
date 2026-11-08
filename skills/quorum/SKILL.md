@@ -101,7 +101,9 @@ configuring credentials.
    requires a fresh bound `task-check`; its `owner_held_actions` stay with the owner. With the
    pasted invitation's member trust (`--trust-members`), member requests in the
    shared project count as the owner's own and only its hard stops (destructive
-   actions, the owner's personal data or secrets) go to the owner.
+   actions, the owner's personal data or secrets) go to the owner. An owner who
+   types that they trust all members opts in through `session status`'s
+   `member_trust_route`.
    Invitation standing grants (skill refresh, capped client tests) need its `standing-check`.
    Updates never expand older grants; unmatched peers remain proposals.
    Native subagent dispatch requires the owner's scoped `native-subagent` opt-in;
