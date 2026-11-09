@@ -13,7 +13,7 @@ import stat
 import sys
 import time
 import uuid
-from quorum_api import QuorumError, guarded_call
+from quorum_api import QuorumError, guarded_call, is_transient_service, rpc_missing
 from quorum_delivery import Deliveries, PULL_STATES, server_ack
 from quorum_delivery_status import MARK_HINT, Reports, StatusWatch, reportable
 from quorum_listener import control_lock
@@ -86,7 +86,9 @@ WAIT_LOOP = ('Do not repeat session receive through empty waits. Start session w
              'result\'s envelope notice first (if the output file is not readable, run session receive '
              '--wait-seconds 0, which offers it again). rearm: start wait again. alert_available: act on '
              'delivery_alerts, start wait again. worker_already_running: end your turn. No result line (stopped or '
-             'crashed): run session receive --wait-seconds 0, then wait; if the host stopped it at its background '
+             'crashed): run session receive --wait-seconds 0; its interrupted_resolve, if any, says whether that '
+             'received, reply or park was applied before the crash (resolved_before_crash, reply_message_id) and '
+             'already finished it once, so never resend it yourself. Then wait; if the host stopped it at its background '
              'time limit, from then on pass --max-seconds 7080 in place of 0 with timeout 7200000. Stop only at the '
              'brief\'s limit, on next_step report_stop or a fatal error, and report brief_deadline, brief_count, '
              'owner_stop or fatal:<code> to the parent. Without background commands, repeat session receive '
@@ -948,6 +950,11 @@ def wake_line(data):
         if key in data: line[key] = data[key]
     for key in ('stop_reason', 'code'):
         if key in data: line[key] = _short(data[key], 64)
+    interrupted = data.get('interrupted_resolve')
+    if isinstance(interrupted, dict):
+        line['interrupted_resolve'] = {key: interrupted[key] for key in (
+            'action', 'message_id', 'resolved_before_crash', 'reply_message_id', 'code')
+            if type(interrupted.get(key)) is bool or _short(interrupted.get(key), 64) is not None}
     resolved = data.get('resolved')
     if isinstance(resolved, dict):
         line['resolved'] = {key: resolved[key] for key in ('message_id', 'state', 'received')
@@ -1282,6 +1289,125 @@ def _close_parked(api, ledger, record, message_id):
         return {**current, 'state': 'acked', 'dismissed': True}
     if Deliveries(ledger).write_then_ack(api, _scope(record), message_id, change) is None:
         raise ValueError('session_delivery_unknown')
+
+
+# --- An interrupted resolve (#206) -----------------------------------------------------------------
+# A resolve command (received, reply or park, usually with --then-wait) journals itself in the actor's private
+# ledger before its first service call and marks the journal resolved once the service answered. A command
+# that returns its result clears it; a command killed with no result line leaves it. The next receive, wait or
+# resolve command reads it under the resolve lock, so it never touches the journal of a resolve still running,
+# reports whether the step was applied before the crash and finishes it once. Each replay is idempotent at the
+# service: a reply is keyed by its original message (the service's own `native-reply:<agent>:<message>`
+# request ID), so an identical retry returns the first answer, and a receipt only repeats its ACK.
+RESOLVE_JOURNAL = 'pending-resolve'
+RESOLVE_ACTIONS = ('received', 'reply', 'park')
+RECOVERY_CODE = re.compile(r'[a-z][a-z0-9_]{0,63}')
+
+
+def resolve_lock(ledger):
+    """Held by a resolve command from its journal write until its service step is done; the OS frees it on a kill."""
+    return FileLock(ledger.root / 'resolve.lock')
+
+
+def _journal_raw(ledger):
+    row = ledger.db.execute('select data from settings where key=?', (RESOLVE_JOURNAL,)).fetchone()
+    return row[0] if row else None
+
+
+def journal(ledger, record, action, message_id, body=None, priority=None):
+    """Persist the pending resolve before any service call: what a replay needs, and nothing secret."""
+    entry = {'id': str(uuid.uuid4()), 'action': action, 'message_id': message_id, 'state': 'pending',
+             'agent_id': record['agent_id'], 'session_ref': record['session_ref']}
+    if action == 'reply':
+        entry.update(request_id='native-reply:' + record['agent_id'] + ':' + message_id, body=body, priority=priority)
+    ledger.setting(RESOLVE_JOURNAL, entry)
+    return entry
+
+
+def journal_resolved(ledger, entry, result):
+    """The service answered: keep only the outcome, never the body."""
+    raw = _journal_raw(ledger)
+    if raw is None or json.loads(raw).get('id') != entry['id']: return
+    done = {key: value for key, value in entry.items() if key not in ('body', 'priority')}
+    done['state'] = 'resolved'
+    if isinstance(result, dict) and isinstance(result.get('reply_message_id'), str):
+        done['reply_message_id'] = result['reply_message_id']
+    with ledger.db:
+        ledger.db.execute('update settings set data=? where key=? and data=?', (json.dumps(done), RESOLVE_JOURNAL, raw))
+
+
+def journal_clear(ledger, entry=None):
+    """Delete this entry only (any entry when None), preserving a newer command's journal."""
+    raw = _journal_raw(ledger)
+    if raw is None or (entry is not None and json.loads(raw).get('id') != entry['id']): return
+    with ledger.db:
+        ledger.db.execute('delete from settings where key=? and data=?', (RESOLVE_JOURNAL, raw))
+
+
+def _applied(api, ledger, record, action, message_id):
+    """Whether the service already has the interrupted step: True, False, or None when it cannot say."""
+    if action == 'reply':
+        delivery = Deliveries(ledger).get(message_id) or {}
+        # The receipt follows the answer, so a receipted row with its answer intent was answered.
+        if delivery.get('state') == 'acked' and delivery.get('reply_digest'): return True
+        try: view = api.call('session_delivery_status', {**_scope(record), 'message_id': message_id})
+        except QuorumError as error:
+            if rpc_missing(error): return None
+            raise
+        return isinstance(view, dict) and view.get('answered_at') is not None
+    # received and park end in the service receipt: a receipted message is no longer listed.
+    messages = _authoritative(api, ledger, record)
+    return not any(isinstance(item, dict) and str(item.get('id', '')).lower() == message_id for item in messages)
+
+
+def recover_resolve(api, ledger, record, *, authorize=None, locked=False):
+    """Report and finish a resolve whose command ended with no result line; None when there is none.
+
+    `locked`: the caller already holds the resolve lock. Otherwise a resolve still running holds it, and its
+    journal is left alone. A transient outage keeps the journal for the next command.
+    """
+    if _journal_raw(ledger) is None: return None
+    if not locked:
+        lock = resolve_lock(ledger)
+        try: lock.__enter__()
+        except ValueError: return None
+        try: return recover_resolve(api, ledger, record, authorize=authorize, locked=True)
+        finally: lock.__exit__()
+    raw = _journal_raw(ledger)
+    if raw is None: return None
+    entry = json.loads(raw)
+    action, message_id = entry.get('action'), entry.get('message_id')
+    if (action not in RESOLVE_ACTIONS or not isinstance(message_id, str) or entry.get('agent_id') != record['agent_id']
+            or entry.get('session_ref') != record['session_ref']):
+        journal_clear(ledger, entry)  # Another binding's journal: nothing of this actor to finish.
+        return None
+    report = {'action': action, 'message_id': message_id}
+    if action == 'reply': report['request_id'] = entry.get('request_id')
+    if entry.get('state') == 'resolved':
+        report['resolved_before_crash'] = True
+        if action == 'reply': report['reply_message_id'] = entry.get('reply_message_id')
+        journal_clear(ledger, entry)
+        return report
+    if authorize is not None: api = _guarded(api, authorize)
+    before = None
+    try:
+        before = _applied(api, ledger, record, action, message_id)
+        if action == 'reply':
+            # The identical answer: the service returns the first one if it has it, so nothing duplicates.
+            result = reply(api, ledger, record, message_id, entry.get('body'), entry.get('priority') or 'normal')
+            report['reply_message_id'] = result.get('reply_message_id')
+        elif action == 'received': confirm(api, ledger, record, message_id)
+        else:
+            state = (Deliveries(ledger).get(message_id) or {}).get('state')
+            if state == 'offered': park(api, ledger, record, message_id)
+            elif state == 'parked': server_ack(api, _scope(record), message_id)
+    except ValueError as error:
+        if isinstance(error, QuorumError) and is_transient_service(error): return None
+        code = getattr(error, 'code', None) or str(error)
+        report['code'] = code if RECOVERY_CODE.fullmatch(code) else 'operation_failed'
+    report['resolved_before_crash'] = before
+    journal_clear(ledger, entry)
+    return report
 
 
 def wait_seconds(parser):

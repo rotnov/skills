@@ -362,7 +362,48 @@ first unreported Hello outcome. Only `offer_available` carries a body, inside
 - `worker_already_running`: a wait already runs on this binding (it takes the same
   locks as `receive`), or a `receive` does. End the turn.
 - No result line: the host stopped the command or it crashed. Run `receive
-  --wait-seconds 0`, then start `wait`.
+  --wait-seconds 0`, then start `wait`. If the lost command was a resolve, the
+  result carries `interrupted_resolve`, described below. Never resend the
+  answer yourself.
+
+#### Interrupted resolve
+
+A `received`, `reply` or `park` command, with or without `--then-wait`, first
+journals its step in the worker's private ledger: the action, message ID and,
+for a reply, the request ID, text and priority. This happens before its first
+service call. When the service answers, the journal keeps only the outcome, so
+the text is dropped. A command that prints any result line, error lines
+included, clears the journal. Only a command killed with no result line leaves
+it, for example by `taskkill`, `Stop-Process`, a signal or a host time limit.
+
+The next `receive`, `wait` or resolve command checks the journal and reports
+`interrupted_resolve`, once, with `action`, `message_id` and
+`resolved_before_crash`. A reply also carries `request_id` and
+`reply_message_id`. The compact line holds the same fields except
+`request_id`.
+
+- `resolved_before_crash: true`: the step reached the service before the
+  kill. The service's answer may have been lost, or the kill may have come
+  during the wait. Nothing is sent again. A reply reports its first
+  `reply_message_id`.
+- `false`: the step had not reached the service, so recovery finishes it once.
+  A reply is sent with the journaled text, and a receipt or park repeats its
+  ACK.
+- `null`: an older server without delivery statuses cannot say whether a reply
+  was answered. Recovery still finishes it, and `reply_message_id` names the
+  one answer.
+- `code`: the replay was refused, for example because the message was
+  dismissed meanwhile. Nothing further is retried.
+
+A replay cannot duplicate. The service keys a reply to its original message
+with its own request ID, `native-reply:<agent>:<message>`, so an identical
+retry returns the first answer. A receipt only repeats its idempotent ACK.
+
+A resolve command holds a resolve lock until its service step ends. Recovery
+skips a journal whose command still holds that lock, and the operating system
+releases it when the process dies. A transient service outage leaves the
+journal for the next command. The journal lives in the worker's actor ledger
+and works the same on Windows, PowerShell and POSIX shells.
 
 Per message the worker therefore takes three model turns: the wake reads the
 output file, the read result runs one resolve command, and its start result
