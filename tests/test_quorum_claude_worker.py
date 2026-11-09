@@ -1722,6 +1722,35 @@ class AdoptTests(Bound):
         # Read only: the stored scope and its integrity hash are unchanged.
         self.assertEqual(self.setting(self.slot)['scope_hash'], stored['scope_hash'])
         self.assertEqual(self.setting(self.slot)['scope'], stored['scope'])
+        self.assertEqual(stored['scope']['operations'], list(worker.ADOPT_BEFORE_SEND))
+
+    @isolated_profiles
+    def test_narrowed_adopt_scope_never_sends(self):
+        """An owner's explicit `operations` restriction holds, for a legacy slot and a new one alike (#202)."""
+        import quorum_claude_worker as worker
+        api = OwnerApi()
+        self.parent()
+        legacy = tuple(name for name in worker.OPERATIONS['adopt'] if name != 'send')
+        narrowed = ['connect', 'receive', 'status', 'stop']
+        cases = ((narrowed, True), (narrowed, False), ([name for name in legacy if name != 'update'], True))
+        for number, (operations, patched) in enumerate(cases):
+            with self.subTest(operations=operations, legacy=patched):
+                with patch.dict(worker.OPERATIONS, {'adopt': legacy} if patched else {}):
+                    slot = self.prepare(self.adopt_scope(operations=operations))['slot_id']
+                self.assertNotIn('send', self.setting(slot)['scope']['operations'])
+                self.attest(slot, handle='narrowed-' + str(number))
+                # The operation check precedes the connected-target check: refused before any service call.
+                code, result, text = self.send(api, self.capability(slot))
+                self.assertEqual((code, result['code'], result['data']['reason']),
+                                 (3, 'native_worker_binding_denied', 'operation_denied'), text)
+                with claude(): worker.stop_slot(self.root, slot)
+        self.assertEqual(api.calls, [])
+
+    def test_new_default_adopt_scope_lists_send(self):
+        import quorum_claude_worker as worker
+        scope = worker.normalize_scope(self.adopt_scope())
+        self.assertIn('send', scope['operations'])
+        self.assertEqual(scope['operations'], list(worker.OPERATIONS['adopt']))
 
     @isolated_profiles
     def test_send_needs_a_connected_adopt_scope(self):

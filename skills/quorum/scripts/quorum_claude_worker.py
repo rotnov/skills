@@ -44,6 +44,9 @@ OPERATIONS = {'create': ('create', 'connect', 'receive', 'received', 'reply', 's
               # worker, on the parent's explicit brief and never on a peer's request.
               'adopt': ('connect', 'receive', 'received', 'reply', 'send', 'status', 'stop', 'task-check',
                         'knowledge', 'update')}
+# The default adopt operations `adopt-plan` stored before `send` joined them (#202); only an unnarrowed legacy
+# slot (this list, plus `standing-check` with standing grants) is granted `send`.
+ADOPT_BEFORE_SEND = ('connect', 'receive', 'received', 'reply', 'status', 'stop', 'task-check', 'knowledge', 'update')
 # A create/accept scope may carry an optional member knowledge subset; it adds the `knowledge` operation for
 # exactly these commands (`write` only as `propose`). Verification, administration, audit, catalog, sources and
 # capture stay with an owner binding. The server's own space ACL still decides every call.
@@ -748,11 +751,13 @@ def _allowed(scope, standing):
 
 
 def _granted(scope):
-    """The operations a stored scope admits. `send` follows the recorded adopt mode (#202), not the stored list,
-    so an adopt slot prepared before `send` existed can start messages without a re-adopt. The stored scope is
-    read only: its hash, which covers the mode, is checked unchanged."""
+    """The operations a stored scope admits. An adopt slot prepared before `send` existed (#202) gains it only
+    when its stored list is exactly that release's default adopt set, so it was never narrowed; a narrowed
+    scope, old or new, never sends. The stored scope is read only: its hash is checked unchanged."""
     operations = scope['operations']
-    if scope['mode'] == 'adopt' and 'send' not in operations: return [*operations, 'send']
+    if (scope['mode'] == 'adopt' and 'send' not in operations
+            and operations in (list(ADOPT_BEFORE_SEND), [*ADOPT_BEFORE_SEND, 'standing-check'])):
+        return [*operations, 'send']
     return operations
 
 
