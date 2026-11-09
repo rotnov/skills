@@ -2588,9 +2588,11 @@ def session_dispatch(args, auth_ledger, register_agent, context):
                 if lock is not None: lock.__exit__()
         wait_context = getattr(args, 'worker_wait_context', None)
         if wait_context is not None: result = _then_wait(args, auth_ledger, wait_context, ledger, api, result, began)
-        # The result is about to be returned: only a command killed before this point leaves its journal.
+        # The result is about to be returned: only a command killed before this point leaves its journal, and
+        # the reports it carries are dropped only now, so a recovering command killed meanwhile loses none.
         entry = getattr(args, 'worker_resolve_journal', None)
         if entry is not None: inbox.journal_clear(ledger, entry)
+        if interrupted: inbox.reports_reported(ledger, interrupted)
         return {**result, 'interrupted_resolve': interrupted} if interrupted else result
     finally: ledger.db.close()
 

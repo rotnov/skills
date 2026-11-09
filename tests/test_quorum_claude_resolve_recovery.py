@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import patch
 
 from quorum_test_support import isolated_profiles
-from test_quorum_claude_worker import OWNER_PROOF, M1, Api, message
+from test_quorum_claude_worker import OWNER_PROOF, M1, M2, Api, message
 from test_quorum_claude_worker_turns import Sleepy, Steps
 
 
@@ -60,6 +60,11 @@ class InterruptedResolveTests(Steps):
     def replies(self, api):
         return [call for call in api.calls if call[0] == 'session_reply']
 
+    def only(self, data):
+        reports = data['interrupted_resolve']
+        self.assertEqual(len(reports), 1, reports)
+        return reports[0]
+
     @isolated_profiles
     def test_a_reply_killed_before_the_service_call_is_replayed_once(self):
         api = KillApi(inbox=[message(M1, body='ping')])
@@ -69,7 +74,7 @@ class InterruptedResolveTests(Steps):
         self.assertEqual(self.journal()['state'], 'pending', 'persisted before the service call')
         self.assertEqual(api.replies, {}, 'nothing reached the service')
         data = self.recover(api)
-        report = data['interrupted_resolve']
+        report = self.only(data)
         self.assertEqual((report['action'], report['message_id'], report['resolved_before_crash']),
                          ('reply', M1, False))
         self.assertEqual(report['reply_message_id'], api.replies[M1])
@@ -91,7 +96,7 @@ class InterruptedResolveTests(Steps):
         sent = api.replies[M1]
         self.assertEqual(self.journal()['state'], 'pending', 'the answer arrived after the kill')
         data = self.recover(api)
-        report = data['interrupted_resolve']
+        report = self.only(data)
         self.assertEqual((report['resolved_before_crash'], report['reply_message_id']), (True, sent))
         self.assertEqual(api.replies, {M1: sent}, 'the identical replay returned the first answer')
         self.assertEqual(api.acked, [M1])
@@ -107,7 +112,7 @@ class InterruptedResolveTests(Steps):
         self.assertNotIn('body', self.journal(), 'the answer text leaves the journal once sent')
         before = len(api.calls)
         data = self.recover(api)
-        self.assertEqual(data['interrupted_resolve'], {'action': 'reply', 'message_id': M1, 'request_id':
+        self.assertEqual(self.only(data), {'action': 'reply', 'message_id': M1, 'request_id':
                                                        self.journal_request_id(), 'resolved_before_crash': True,
                                                        'reply_message_id': sent})
         self.assertNotIn('session_reply', [call[0] for call in api.calls[before:]])
@@ -124,7 +129,7 @@ class InterruptedResolveTests(Steps):
         self.kill(api, 'received')
         self.assertEqual(api.acked, [])
         data = self.recover(api)
-        self.assertEqual(data['interrupted_resolve'],
+        self.assertEqual(self.only(data),
                          {'action': 'received', 'message_id': M1, 'resolved_before_crash': False})
         self.assertEqual((api.acked, data['state']), ([M1], 'timeout'), 'finished, not offered again')
 
@@ -135,7 +140,7 @@ class InterruptedResolveTests(Steps):
         api.hooks['session_ack'] = killed
         self.kill(api, 'received')
         data = self.recover(api)
-        self.assertEqual(data['interrupted_resolve'],
+        self.assertEqual(self.only(data),
                          {'action': 'received', 'message_id': M1, 'resolved_before_crash': True})
         self.assertEqual((api.acked, data['state']), ([M1], 'timeout'))
 
@@ -146,7 +151,7 @@ class InterruptedResolveTests(Steps):
         api.kill_before.add('session_ack')
         self.kill(api, 'park')
         data = self.recover(api)
-        self.assertEqual(data['interrupted_resolve'],
+        self.assertEqual(self.only(data),
                          {'action': 'park', 'message_id': M1, 'resolved_before_crash': False})
         self.assertEqual((api.acked, data['awaiting_owner'], data['state']), ([M1], 1, 'timeout'))
 
@@ -157,7 +162,7 @@ class InterruptedResolveTests(Steps):
         api.hooks['session_ack'] = killed
         self.kill(api, 'park')
         data = self.recover(api)
-        self.assertEqual(data['interrupted_resolve'],
+        self.assertEqual(self.only(data),
                          {'action': 'park', 'message_id': M1, 'resolved_before_crash': True})
         self.assertEqual((api.acked, data['awaiting_owner']), ([M1], 1))
 
@@ -172,7 +177,7 @@ class InterruptedResolveTests(Steps):
             self.assertNotIn('interrupted_resolve', self.recover(api))
         self.assertEqual(self.journal()['state'], 'pending')
         self.assertEqual(api.replies, {})
-        self.assertFalse(self.recover(api)['interrupted_resolve']['resolved_before_crash'])
+        self.assertFalse(self.only(self.recover(api))['resolved_before_crash'])
 
     @isolated_profiles
     def test_a_wait_start_also_recovers_and_its_line_says_so(self):
@@ -181,10 +186,10 @@ class InterruptedResolveTests(Steps):
         api.kill_before.add('session_reply')
         self.kill(api, 'reply', stdin=b'pong')
         _, line = self.wait(api)
-        self.assertEqual(line['data']['interrupted_resolve'],
+        self.assertEqual(self.only(line['data']),
                          {'action': 'reply', 'message_id': M1, 'resolved_before_crash': False,
                           'reply_message_id': api.replies[M1]})
-        self.assertEqual(self.full()['data']['interrupted_resolve']['request_id'], self.journal_request_id())
+        self.assertEqual(self.only(self.full()['data'])['request_id'], self.journal_request_id())
         self.assertEqual(len(self.replies(api)), 1)
 
     @isolated_profiles
@@ -205,6 +210,55 @@ class InterruptedResolveTests(Steps):
         self.assertNotIn('interrupted_resolve', done['data'])
         self.assertIsNone(self.journal())
         self.assertEqual(json.loads(self.stderr)['data']['resolved']['message_id'], M1)
+
+    @isolated_profiles
+    def test_a_recovering_wait_killed_too_keeps_its_report_for_the_next_receive(self):
+        import quorum_native_inbox as inbox
+        api = KillApi(inbox=[message(M1, body='ping')])
+        self.offered(api)
+        api.kill_before.add('session_reply')
+        self.kill(api, 'reply', stdin=b'pong')
+        # The plain wait recovers the reply, then is killed during its (possibly unbounded) wait.
+        with patch('quorum_native_inbox.RealtimeWait', lambda *_, **__: Sleepy(killed)), self.assertRaises(Killed):
+            self.cli(api, 'session', '--worker-capability', str(self.cap), 'wait', '--max-seconds', '0')
+        sent = api.replies[M1]
+        self.assertIsNone(self.journal(), 'the step itself is settled')
+        self.assertEqual(len(self.worker_ledger(self.slot).setting(inbox.RESOLVE_REPORTS)), 1, 'its report is kept')
+        report = self.only(self.recover(api))
+        self.assertEqual((report['resolved_before_crash'], report['reply_message_id']), (False, sent),
+                         'the outcome of the original kill, not of the recovery')
+        self.assertEqual(len(self.replies(api)), 1)
+        self.assertIsNone(self.worker_ledger(self.slot).setting(inbox.RESOLVE_REPORTS))
+        self.assertNotIn('interrupted_resolve', self.recover(api))
+
+    @isolated_profiles
+    def test_a_deferred_recovery_refuses_the_next_resolve_and_never_overwrites_the_journal(self):
+        api = KillApi(inbox=[message(M1, body='ping'), message(M2, body='second')])
+        self.offered(api)
+        api.kill_before.add('session_reply')
+        self.kill(api, 'reply', stdin=b'pong')
+        pending = self.journal()
+        api.fail['session_delivery_status'] = ['service_unavailable']
+        code, result, _ = self.cli(api, *self.template('received', M2, '--max-seconds', '1'))
+        self.assertEqual((code, result['code']), (5, 'service_unavailable'), 'a retryable refusal')
+        self.assertEqual(self.journal(), pending, 'the unsent reply text survives')
+        self.assertNotIn(M2, api.acked)
+        report = self.only(self.recover(api))
+        self.assertEqual((report['message_id'], report['resolved_before_crash']), (M1, False))
+        self.assertEqual([call[1]['body'] for call in self.replies(api)], ['pong'])
+
+    @isolated_profiles
+    def test_a_journal_is_insert_only(self):
+        import quorum_native_inbox as inbox
+        from quorum_api import QuorumError
+        api = KillApi(inbox=[message(M1, body='ping')])
+        self.offered(api)
+        ledger = self.worker_ledger(self.slot)
+        record = ledger.setting('session-agent')
+        first = inbox.journal(ledger, record, 'reply', M1, 'pong', 'normal')
+        with self.assertRaises(QuorumError):
+            inbox.journal(ledger, record, 'received', M2)
+        self.assertEqual(self.journal(), first)
 
 
 if __name__ == '__main__':

@@ -376,11 +376,17 @@ the text is dropped. A command that prints any result line, error lines
 included, clears the journal. Only a command killed with no result line leaves
 it, for example by `taskkill`, `Stop-Process`, a signal or a host time limit.
 
-The next `receive`, `wait` or resolve command checks the journal and reports
-`interrupted_resolve`, once, with `action`, `message_id` and
-`resolved_before_crash`. A reply also carries `request_id` and
-`reply_message_id`. The compact line holds the same fields except
-`request_id`.
+The next `receive`, `wait` or resolve command settles the journal. It
+finishes the step if needed and, in one transaction, moves the outcome to a
+report row. `interrupted_resolve` is a list of these reports, oldest first.
+Each report has `action`, `message_id` and `resolved_before_crash`. A reply
+also carries `request_id` and `reply_message_id`. The compact line holds the
+same fields except `request_id`.
+
+A report is dropped only when the command carrying it is about to print its
+result line. A recovering command that is killed too therefore loses nothing.
+This holds even for a `wait` that may run for hours: the next `receive`
+reports the original outcome.
 
 - `resolved_before_crash: true`: the step reached the service before the
   kill. The service's answer may have been lost, or the kill may have come
@@ -402,7 +408,10 @@ retry returns the first answer. A receipt only repeats its idempotent ACK.
 A resolve command holds a resolve lock until its service step ends. Recovery
 skips a journal whose command still holds that lock, and the operating system
 releases it when the process dies. A transient service outage leaves the
-journal for the next command. The journal lives in the worker's actor ledger
+journal for the next command. A journal is never overwritten. A resolve whose
+recovery an outage deferred fails with the retryable `service_unavailable`
+before it journals anything, so an unsent reply's text survives. A `receive` or
+`wait` continues and recovers later. The journal lives in the worker's actor ledger
 and works the same on Windows, PowerShell and POSIX shells.
 
 Per message the worker therefore takes three model turns: the wake reads the
