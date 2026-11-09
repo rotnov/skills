@@ -175,7 +175,8 @@ BEGIN
 union all
 select 'extension', e.extname::text, n.nspname::text, null
  from pg_catalog.pg_extension e join pg_catalog.pg_namespace n on n.oid=e.extnamespace
- where e.extname in ('pgcrypto','vector')
+ where e.extname='pgcrypto'
+  or (e.extname='vector' and pg_catalog.to_regclass('quorum_private.knowledge_spaces') is not null)
 union all
 select 'relation', n.nspname||'.'||c.relname, pg_catalog.concat_ws(E'\n',
   c.relkind::text||' rls='||c.relrowsecurity::text||' force='||c.relforcerowsecurity::text

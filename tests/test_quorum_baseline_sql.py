@@ -141,6 +141,18 @@ class BaselineEquivalenceTests(unittest.TestCase):
         self.sql(db, knowledge.read_text())
         self.refused(db, baseline.ADOPT_FILE.read_text(), 'quorum_baseline_mismatch')
 
+    def test_pgvector_from_another_application_does_not_block_a_core_server(self):
+        db = self.copy('history_core', 'foreign_vector')
+        self.sql(db, 'create extension vector schema public;')
+        self.sql(db, baseline.ADOPT_FILE.read_text())
+        self.assertEqual(self.sql(db, "select string_agg(part,',') from quorum_private.schema_baseline").strip(), 'core')
+
+    def test_a_knowledge_server_still_verifies_its_vector_extension(self):
+        db = self.copy('history_full', 'moved_vector')
+        self.sql(db, 'alter extension vector set schema public;')
+        error = self.refused(db, baseline.ADOPT_FILE.read_text(), 'quorum_baseline_mismatch')
+        self.assertIn('definition extension vector', error)
+
     def test_on_plain_postgresql_the_baseline_differs_only_by_service_role_grants(self):
         # Without Supabase's default privileges the history never grants service_role what it did not name; the
         # baseline grants what Supabase left. This is the one documented difference outside Supabase.

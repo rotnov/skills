@@ -55,8 +55,9 @@ revoke all on quorum_private.schema_baseline from public,anon,authenticated,serv
 # client can observe is in the definition: columns in order, constraints, indexes, triggers, policies, row
 # security, grants other than the owner's own, and for functions the signature, defaults, result, security,
 # settings and the SHA-256 of prosrc. Run with an empty search_path so every deparsed name is qualified.
-# Scope: schema quorum_private, the public functions whose body names quorum_private, the extensions the
-# schema needs and policies named quorum_* on other tables. Objects outside that scope are not Quorum's.
+# Scope: schema quorum_private, the public functions whose body names quorum_private, pgcrypto, vector only where
+# Quorum knowledge is deployed (another application may own it) and policies named quorum_* on other tables.
+# Objects outside that scope are not Quorum's.
 # Grants other than the owner's own; a NULL ACL is read as the built-in default it stands for.
 ACL = ("coalesce((select pg_catalog.string_agg(g,',' order by g) from (select case when x.grantee=0 then 'PUBLIC' "
        "else pg_catalog.pg_get_userbyid(x.grantee) end||'='||x.privilege_type as g from pg_catalog.aclexplode("
@@ -73,7 +74,8 @@ select 'schema'::text as kind, n.nspname::text as identity,
 union all
 select 'extension', e.extname::text, n.nspname::text, null
  from pg_catalog.pg_extension e join pg_catalog.pg_namespace n on n.oid=e.extnamespace
- where e.extname in ('pgcrypto','vector')
+ where e.extname='pgcrypto'
+  or (e.extname='vector' and pg_catalog.to_regclass('quorum_private.knowledge_spaces') is not null)
 union all
 select 'relation', n.nspname||'.'||c.relname, pg_catalog.concat_ws(E'\\n',
   c.relkind::text||' rls='||c.relrowsecurity::text||' force='||c.relforcerowsecurity::text
