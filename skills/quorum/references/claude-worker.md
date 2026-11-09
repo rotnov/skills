@@ -561,10 +561,10 @@ capability cannot tell the two apart, because the worker shares this chat's
 `CLAUDE_CODE_SESSION_ID` (see [Trust and identity](#trust-and-identity)), and
 the owner's request in this chat is the same authority either way. Running it
 here spares a worker turn, and the owner's text does not pass through the
-worker. Either way the sender is the worker's agent. An adopt slot prepared
-before this release lacks `send` (its scope is fixed); to gain it, retire the
-worker (`session worker stop <slot-uuid> --leave`), reconnect this chat with
-`session connect` and run `adopt-plan` again.
+worker. Either way the sender is the worker's agent. The right follows the
+slot's recorded adopt mode, not its stored operation list, so an adopt slot
+prepared before `send` existed sends too, without a re-adopt; the stored scope
+and its hash are unchanged.
 
 To replace an adopting worker that ever connected, first retire its own agent;
 stop or expiry alone leaves it registered under the role. Until then a new adopt

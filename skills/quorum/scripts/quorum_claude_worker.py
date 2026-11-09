@@ -747,6 +747,15 @@ def _allowed(scope, standing):
             + (('update',) if scope.get('update') is True and 'update' not in OPERATIONS[scope['mode']] else ()))
 
 
+def _granted(scope):
+    """The operations a stored scope admits. `send` follows the recorded adopt mode (#202), not the stored list,
+    so an adopt slot prepared before `send` existed can start messages without a re-adopt. The stored scope is
+    read only: its hash, which covers the mode, is checked unchanged."""
+    operations = scope['operations']
+    if scope['mode'] == 'adopt' and 'send' not in operations: return [*operations, 'send']
+    return operations
+
+
 def _effective(record):
     """Terminal state, or the applicable deadline: pending expiry only while pending, permission once active."""
     if record['state'] == 'terminal': return 'terminal', record.get('terminal_reason')
@@ -2272,7 +2281,7 @@ def authorize(state_root, capability_path, operation, arguments):
     if record['provider_session_id'] != sid or binding['provider_session_id'] != sid:
         raise _denied('session_mismatch')
     if str(Path.cwd().resolve()) != record['scope']['cwd']: raise _cwd_mismatch(record['scope']['cwd'])
-    if operation not in record['scope']['operations']: raise _denied('operation_denied')
+    if operation not in _granted(record['scope']): raise _denied('operation_denied')
     _check_arguments(record, operation, arguments)
     return {'authority': 'same-user-capability', 'operation': operation, 'arguments': dict(arguments),
             'state_root': str(root), 'slot_id': slot_id, 'capability_file': str(path), 'binding': _public(record),

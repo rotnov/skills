@@ -1706,6 +1706,24 @@ class AdoptTests(Bound):
         self.assertEqual(len(api.calls), before)
 
     @isolated_profiles
+    def test_adopt_slot_prepared_before_send_existed_sends_without_a_re_adopt(self):
+        import quorum_claude_worker as worker
+        api = OwnerApi()
+        api.answers['message_send'] = lambda payload: {'message_id': str(uuid.uuid4())}
+        legacy = tuple(name for name in worker.OPERATIONS['adopt'] if name != 'send')
+        with patch.dict(worker.OPERATIONS, {'adopt': legacy}):
+            cap = self.adopted(api)
+        stored = self.setting(self.slot)
+        self.assertNotIn('send', stored['scope']['operations'])
+        code, result, text = self.send(api, cap, 'send-legacy')
+        self.assertEqual(code, 0, text)
+        _, payload, request = [call for call in api.calls if call[0] == 'message_send'][-1]
+        self.assertEqual((payload['sender_agent_id'], request), (AGENT, 'send-legacy'))
+        # Read only: the stored scope and its integrity hash are unchanged.
+        self.assertEqual(self.setting(self.slot)['scope_hash'], stored['scope_hash'])
+        self.assertEqual(self.setting(self.slot)['scope'], stored['scope'])
+
+    @isolated_profiles
     def test_send_needs_a_connected_adopt_scope(self):
         api = OwnerApi()
         self.parent()
