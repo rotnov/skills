@@ -218,7 +218,7 @@ def main(argv=None):
                 if not isinstance(data, dict): raise ValueError('invalid_arguments')
                 operations = {'create': 'quorum_create', 'invite': 'invite_create', 'accept': 'invite_accept',
                               'join': 'agent_join', 'leave': 'agent_leave', 'send': 'message_send',
-                              'context': 'context_read', 'work': 'work_register'}
+                              'context': 'context_read', 'work': 'work_register'}  # work: FROZEN tracker
                 api = QuorumApi(config, token_provider(config, store))
                 if args.command == 'join':
                     value = register_agent(api, ledger, args.quorum, args.role, data)

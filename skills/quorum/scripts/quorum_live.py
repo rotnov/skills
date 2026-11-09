@@ -112,6 +112,7 @@ def add_commands(commands):
         if name != 'connect': command.add_argument('quorum')
         command.add_argument('--role', required=True)
         command.add_argument('--session-ref', required=True)
+    # FROZEN legacy fallback (references/protocol.md#frozen-historical-pilot): no new options.
     worker = commands.add_parser('pilot-worker', help='Explicit bounded foreground Claude pilot')
     worker.add_argument('--toolchain', type=Path, required=True)
     worker.add_argument('--approve-subscription', action='store_true', required=True)
@@ -297,6 +298,7 @@ def owner_agents(api, ledger, args):
     return {**value, 'local_binding': 'retired'} if local == 'retired' else value
 
 
+# FROZEN legacy fallback: the handler behind `pilot-worker` and `listen` (references/protocol.md#frozen-historical-pilot).
 def prepare_worker(ledger, api, toolchain, timeout, approved):
     import shutil
     from quorum_acp import ClaudePilotRunner, ExecutionPolicy

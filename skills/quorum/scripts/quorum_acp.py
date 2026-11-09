@@ -1,4 +1,8 @@
-"""ACP execution boundary. Live adapters require separate acceptance evidence."""
+"""ACP execution boundary. Live adapters require separate acceptance evidence.
+
+FROZEN legacy fallback (references/protocol.md#frozen-historical-pilot): no new feature, caller or state;
+only fixes that keep the guarding tests listed there green.
+"""
 from dataclasses import dataclass
 import re
 

@@ -1,5 +1,8 @@
 # Explicit Claude messaging pilot
 
+Frozen legacy fallback: this path gets fixes only, no new features. See the
+[frozen historical pilot](protocol.md#frozen-historical-pilot) for its scope and tests.
+
 This opt-in slice runs directly on the host using uv-managed Python 3.12,
 Node >=22.13 (>=22.20 for the `skills@>=1.7.4` installer), npm, an authenticated
 local Claude Code CLI and outbound HTTPS.
