@@ -2573,12 +2573,43 @@ def session_dispatch(args, auth_ledger, register_agent, context):
             if parent != scope['adopt']: raise _denied('target_mismatch')
         api, _, _ = _api(auth_ledger, context)
         guarded = Guarded(api, check)
+        import quorum_native_inbox as inbox
+        resolving, interrupted = action in inbox.RESOLVE_ACTIONS, None
         with _effect(guarded.effect):
-            result = _session_action(args, auth_ledger, register_agent, context, ledger, record, guarded, check)
+            # A resolve holds the resolve lock through its own service step, so a receive, wait or another resolve
+            # never finishes a journal whose command is still running (#206).
+            lock = inbox.resolve_lock(ledger) if resolving else None
+            if lock is not None: lock.__enter__()
+            try:
+                if record is not None and (resolving or action in ('receive', 'wait')):
+                    interrupted = inbox.recover_resolve(guarded, ledger, record, authorize=check, locked=resolving)
+                result = _session_action(args, auth_ledger, register_agent, context, ledger, record, guarded, check)
+            finally:
+                if lock is not None: lock.__exit__()
         wait_context = getattr(args, 'worker_wait_context', None)
-        if wait_context is None: return result
-        return _then_wait(args, auth_ledger, wait_context, ledger, api, result, began)
+        if wait_context is not None: result = _then_wait(args, auth_ledger, wait_context, ledger, api, result, began)
+        # The result is about to be returned: only a command killed before this point leaves its journal, and
+        # the reports it carries are dropped only now, so a recovering command killed meanwhile loses none.
+        entry = getattr(args, 'worker_resolve_journal', None)
+        if entry is not None: inbox.journal_clear(ledger, entry)
+        if interrupted: inbox.reports_reported(ledger, interrupted)
+        return {**result, 'interrupted_resolve': interrupted} if interrupted else result
     finally: ledger.db.close()
+
+
+def _journaled(args, ledger, message_id, record, step, body=None, priority=None):
+    """Run one resolve step behind its local journal (#206): persisted before the first service call, marked
+    resolved when the service answered. A failure is a result line too: its code already tells the worker what
+    to retry, so it clears the journal. Only a command killed with no result line leaves it."""
+    import quorum_native_inbox as inbox
+    entry = inbox.journal(ledger, record, args.action, message_id, body, priority)
+    try: result = step()
+    except Exception:
+        inbox.journal_clear(ledger, entry)
+        raise
+    inbox.journal_resolved(ledger, entry, result)
+    args.worker_resolve_journal = entry
+    return result
 
 
 def _then_wait(args, auth_ledger, wait_context, ledger, api, resolved, began):
@@ -2707,17 +2738,24 @@ def _session_action(args, auth_ledger, register_agent, context, ledger, record, 
     ReleaseGuard(guarded, ledger).check()
     if action == 'task-check':
         return task_check(guarded, record, args.message_id, lambda: ledger.setting('session-agent'), authorize=check)
-    if action == 'received': return inbox.confirm(guarded, ledger, record, args.message_id, authorize=check)
+    if action == 'received':
+        return _journaled(args, ledger, args.message_id, record,
+                          lambda: inbox.confirm(guarded, ledger, record, args.message_id, authorize=check))
     if action == 'mark':
         from quorum_session import delivery_mark, mark_reason
         return delivery_mark(guarded, inbox._scope(record), args.message_id, args.delivery_status, mark_reason(args))
+    if action == 'park':
+        return _journaled(args, ledger, args.message_id, record,
+                          lambda: inbox.dispatch_action(guarded, ledger, record, args, authorize=check))
     if action in inbox.ACTIONS: return inbox.dispatch_action(guarded, ledger, record, args, authorize=check)
     if action == 'reply':
         text = sys.stdin.buffer.read(16385).decode('utf-8')
         if not text or len(text.encode()) > 16384: raise ValueError('invalid_message')
         priority = getattr(args, 'priority', 'normal') or 'normal'
         if priority not in PRIORITIES: raise ValueError('invalid_priority')
-        return inbox.reply(guarded, ledger, record, args.message_id, text, priority, authorize=check)
+        return _journaled(args, ledger, args.message_id, record,
+                          lambda: inbox.reply(guarded, ledger, record, args.message_id, text, priority, authorize=check),
+                          body=text, priority=priority)
     if action == 'send':
         # An adopt scope only (#202): the parent route's own send, as this worker's agent. `guarded` rechecks
         # the capability and binding before each service call; the request ID keeps a retry idempotent.

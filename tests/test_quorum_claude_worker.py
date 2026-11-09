@@ -118,6 +118,9 @@ class Api:
         if operation == 'session_reply':
             reply = self.replies.setdefault(payload['message_id'], str(uuid.uuid4()))
             return {'reply_message_id': reply, 'conversation_id': 'c-1'}
+        if operation == 'session_delivery_status':
+            answered = payload['message_id'] in self.replies
+            return {'status': 'answered' if answered else 'sent', 'answered_at': T0 if answered else None}
         if operation == 'invite_accept_id': return {'quorum_id': QUORUM, 'membership_id': 'membership-1'}
         raise AssertionError(operation)
 
