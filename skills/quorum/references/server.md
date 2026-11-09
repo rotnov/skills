@@ -19,7 +19,146 @@ management credentials out of prompts, invitations and source control.
 
 ## Fresh project
 
-Review and apply the following in one administrator-controlled transaction:
+A fresh project installs the generated SQL baseline: one snapshot of everything the
+[migration history](#migration-history) installs through `20261108140000`. Review
+and apply the following in one administrator-controlled transaction:
+
+1. [`20261108140000_baseline.sql`](../supabase/baseline/20261108140000_baseline.sql)
+   supplies the private tables, RLS, grants, RPCs, the invitation and creator gate
+   and the Realtime receive policy. Supabase Auth, Realtime, the standard Supabase
+   roles and pgcrypto are prerequisites. It holds no production rows or config and
+   refuses to run where `quorum_private` exists (`quorum_schema_present`).
+2. Only on an explicit administrator request for project knowledge, apply
+   [`20261108140000_baseline_knowledge.sql`](../supabase/baseline/20261108140000_baseline_knowledge.sql).
+   It needs pgvector (see [project knowledge](#optional-durable-project-knowledge))
+   and refuses without the core baseline.
+3. Apply every file in `supabase/migrations` dated after `20261108140000`, in
+   order, following its own section below. There are none yet.
+4. Explicitly grant creation to the intended instance owner's verified immutable
+   numeric GitHub ID. Look up `https://api.github.com/users/<login>`, check the
+   returned `login` matches, and use the positive integer `id`.
+   Never use an editable profile field.
+
+Each baseline file records itself in `quorum_private.schema_baseline`, one row per
+part. The required release is protocol `2`.
+
+Open access keeps every existing quorum GitHub-only. To allow open quorums,
+enable **Allow anonymous sign-ins** in the project's Auth settings. Leave CAPTCHA
+for anonymous sign-ins off: the helper cannot solve it and reports
+`anonymous_login_unavailable`. Supabase's sign-in rate limits still apply;
+anonymous users get no access without an open invitation.
+
+After loading the baseline and any later migrations within `BEGIN`, substitute the verified ID:
+
+```sql
+INSERT INTO quorum_private.instance_creators(github_id)
+VALUES ('<verified-owner-github-id>');
+-- COMMIT only after the reviewed baseline and later migrations succeeded.
+```
+
+The published allowlist starts empty. Repository authors, quorum owners and
+members receive no implicit server-wide creation permission. Only a database
+administrator manages this list; revocation sets the row's `revoked=true`.
+The server checks current identity and permission before creation, including
+cached retries.
+
+Skill installation never runs cloud DDL or grants.
+
+## Baseline and history
+
+The repository keeps both. The history, `server-bootstrap.sql` plus
+`supabase/migrations`, is the record every existing server was built from; its
+files are never edited, because later pins hash what they installed.
+`supabase/baseline` holds a generated snapshot of that history through one file:
+the core and knowledge install files, and an adopt file for existing servers.
+`tests/quorum_baseline_support.py` generates all three from disposable PostgreSQL 17
+with Supabase's default privileges; nobody edits them by hand.
+
+- `tests/test_quorum_baseline.py` (no database) checks that the covered history
+  files are byte-identical and that every function `prosrc` SHA-256 in the adopt
+  file is the one the history sources install.
+- `tests/test_quorum_baseline_sql.py` (`QUORUM_BASELINE_DOCKER=1`) installs both
+  paths on fresh databases, then compares every `pg_dump` catalog entry and the
+  adopt manifest, runs the current SQL behaviour suites on the baseline, and
+  regenerates the files byte for byte. Every migration dated after the baseline is
+  applied to both paths, so a new file must work on both.
+- New server behaviour still ships as a new file in `supabase/migrations`, under
+  [add server behaviour](#add-server-behaviour). A baseline install and an adopted
+  history server hold the same function bodies, so its pins hold on both.
+- Moving the baseline forward is its own reviewed change: raise `COVERS`,
+  regenerate, and let existing servers adopt the new file in a window.
+
+The baseline matches the history exactly except for these deliberate differences:
+
+- `quorum_private.schema_baseline`, the bookkeeping table, exists only after an
+  install or adoption.
+- Every moved ancestor (`call_*_core`, `*_before_*`) is kept with its body, because
+  pins and wrappers name them. Dropping the unused ones is a later migration.
+- On plain PostgreSQL without Supabase's default privileges, the baseline grants
+  `service_role` EXECUTE on `invite_accept_id`, `invite_revoke_id`,
+  `message_send`, `quorum_set_access`, `session_reply` and `session_requirements`,
+  as the history leaves them on Supabase. Supabase projects are identical.
+- Table OIDs and attribute numbers are new; column order and names are the same.
+
+## Baseline maintenance window
+
+This moves an existing server onto the baseline's bookkeeping. It changes no Quorum
+object: [`20261108140000_adopt.sql`](../supabase/baseline/20261108140000_adopt.sql)
+compares the live catalog with the baseline manifest and, only on an exact match,
+creates `quorum_private.schema_baseline` and records the parts present. Give it a
+window of its own, after administrator authorization: not with another migration,
+a client release or a delivery change.
+
+Prerequisites: every core history file through `20261108140000` is applied. With
+project knowledge, all three knowledge files are applied; a partial knowledge
+deployment fails the check until its missing files are applied.
+
+1. Dry run, any time before the window. Run the adopt file between `begin;` and
+   `rollback;`. Success means the catalog matches. Otherwise it raises
+   `quorum_baseline_mismatch: N differences`, and its DETAIL lists one line per
+   object: `missing`, `unexpected`, `prosrc` or `definition`, with the kind and
+   identity. Stop and review every line; never edit the adopt file to pass.
+2. Check the function bodies by their `prosrc` SHA-256, independently of the
+   manifest's own comparison:
+
+   ```sql
+   select n.nspname||'.'||p.proname||'('||pg_catalog.oidvectortypes(p.proargtypes)||')' as function,
+          encode(sha256(convert_to(p.prosrc,'UTF8')),'hex') as prosrc_sha256
+     from pg_proc p join pg_namespace n on n.oid=p.pronamespace
+    where n.nspname='quorum_private'
+       or (n.nspname='public' and p.prosrc like '%quorum\_private%')
+    order by 1;
+   ```
+
+   Each row must equal the last hash of the adopt file's `'function'` row with the
+   same identity, and every such row must appear (knowledge rows only with project
+   knowledge). They are the hashes the history pins.
+3. In the window, stop applying any other SQL and apply the adopt file in one
+   transaction. Through a tool that records migration history, name it
+   `quorum_baseline_20261108140000_adopt`, so the record shows the move.
+4. Verify: `select part, covers_through, installed_by from
+   quorum_private.schema_baseline` returns `core` (and `knowledge`) with
+   `20261108140000` and `adopt`. Rerun the query in step 2; nothing changed. No RPC
+   changed, so no PostgREST schema refresh or client restart is needed. One
+   listener heartbeat is a sufficient smoke check.
+
+Rollback: the transaction either records the baseline or changes nothing. To undo
+a committed adoption, run `drop table quorum_private.schema_baseline;` in one
+transaction and remove its migration-history record, if one was written. Nothing
+else changed, so clients notice neither step.
+
+Limits: relation definitions are compared as PostgreSQL 17 prints them, so a
+server on another major version may report `definition` lines that are formatting
+only. Review those against the history. `prosrc`, `missing` and `unexpected` are
+never formatting. Public functions are in scope only when their body names
+`quorum_private`; unrelated public objects are ignored.
+
+## Migration history
+
+This is the record of how existing servers were built. A fresh project uses the
+[baseline](#fresh-project) instead. An existing server that has not adopted the
+baseline applies only its missing files, in this order, then each later section,
+within one administrator-controlled transaction per step:
 
 1. Load [server-bootstrap.sql](server-bootstrap.sql). It supplies the private
    tables, RLS, grants and RPCs, including native-session RPCs. Supabase Auth,
@@ -71,34 +210,10 @@ Review and apply the following in one administrator-controlled transaction:
    It adds a read-only check for one addressed message, its current sender and
    exact receiving binding. It grants no task permission; the receiving owner
    must explicitly enable member intake locally. It changes no release requirement.
-7. Explicitly grant creation to the intended instance owner's verified immutable
-   numeric GitHub ID. Look up `https://api.github.com/users/<login>`, check the
-   returned `login` matches, and use the positive integer `id`.
-   Never use an editable profile field.
-
-Open access keeps every existing quorum GitHub-only. To allow open quorums,
-enable **Allow anonymous sign-ins** in the project's Auth settings. Leave CAPTCHA
-for anonymous sign-ins off: the helper cannot solve it and reports
-`anonymous_login_unavailable`. Supabase's sign-in rate limits still apply;
-anonymous users get no access without an open invitation.
-
-After loading the bootstrap and required migrations within `BEGIN`, substitute the verified ID:
-
-```sql
-INSERT INTO quorum_private.instance_creators(github_id)
-VALUES ('<verified-owner-github-id>');
--- COMMIT only after the reviewed bootstrap and required migrations succeeded.
-```
-
-The published allowlist starts empty. Repository authors, quorum owners and
-members receive no implicit server-wide creation permission. Only a database
-administrator manages this list; revocation sets the row's `revoked=true`.
-The server checks current identity and permission before creation, including
-cached retries.
+7. Grant creation as in [fresh project](#fresh-project).
 
 Existing servers apply only the missing reviewed migrations in the order above,
-with a separate
-explicit administrator creator grant when needed. Skill installation never runs cloud DDL or grants.
+with a separate explicit administrator creator grant when needed.
 
 ## Check readiness
 
@@ -144,8 +259,10 @@ Ship new behaviour in one of these ways, in this order:
    [`20261105160000_peer_status_visibility.sql`](../supabase/migrations/20261105160000_peer_status_visibility.sql).
    Around `call`, this adds another dispatcher layer, so prefer a new RPC there.
 
-If neither fits, raise it with the owner instead of pasting a body; the baseline
-question is tracked in [#156](https://github.com/rotnov/skills/issues/156).
+If neither fits, raise it with the owner instead of pasting a body. The
+[SQL baseline](#baseline-and-history) is not a way around this: it copies every
+body unchanged, and a new file must apply to a baseline install and to an adopted
+history server alike.
 
 A new RPC also needs its name in `OPERATIONS` in `quorum_api.py`, any new exception
 name in that file's error table, a client fallback for a server without it, and
@@ -517,7 +634,10 @@ extension report the Hello result as not reported by the server.
 
 ## Optional durable project knowledge
 
-For an explicit administrator request to deploy project knowledge, review
+A fresh project installs knowledge with the
+[knowledge baseline](#fresh-project) instead of these files and the default role file.
+For an explicit administrator request to deploy project knowledge on an existing
+server, review
 [project knowledge](../supabase/migrations/20261030142000_project_knowledge.sql)
 after the native/open-access and required release migrations above. This source
 extension creates pgvector in `extensions`, private RLS spaces/grants/attachments,

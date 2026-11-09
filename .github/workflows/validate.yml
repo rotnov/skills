@@ -110,6 +110,11 @@ jobs:
           uv run --frozen python -m unittest discover -s tests -p test_quorum_wiki_backend.py -v
           uv run --frozen python -m unittest discover -s tests -p test_quorum_knowledge_default_role_backend.py -v
 
+      - name: Verify the SQL baseline installs what the migration history installs
+        env:
+          QUORUM_BASELINE_DOCKER: "1"
+        run: uv run --frozen python -m unittest discover -s tests -p test_quorum_baseline_sql.py -v
+
       - name: Validate the official Agent Skills format
         run: ./scripts/check-agent-skills-spec.sh
 

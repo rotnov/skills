@@ -250,6 +250,25 @@ the transports look uniform.
 | ACP: `quorum_acp.py` | `ClaudePilotRunner` for those same commands. The default `worker` command and Codex runner raise `live_agents_disabled`, and `assets/engines.lock.json` accepts no engine |
 | `work_register`, `work_admit`, `work_transition`, `work_items`, `capacity_reservations` | `quorum.py work` still reaches `work_register`. No client calls the other two |
 
+The client side is a legacy fallback with no new features: the headless `listen`
+handler, the bounded `pilot-worker`, `Worker`, the ACP runners and the `work`
+command. A change there may only fix a defect and keep its behaviour. Native
+reception shares the listener run loop and start/stop control in
+`quorum_listener.py`; those stay live, and only the `listen` commands are frozen.
+`tests/test_quorum_frozen_pilot.py` refuses a new caller of the frozen code or
+RPCs. These tests guard the frozen behaviour and grow only with a fix:
+
+| Test | What it guards |
+| --- | --- |
+| `test_quorum_worker.py`, `test_quorum_live.py` | `Worker` claim, reply and recovery; ACP prompt output and subscription checks |
+| `test_quorum_cancel.py`, `test_quorum_windows_windowless.py` | `ClaudePilotRunner` cancellation and windowless Windows launch |
+| `test_quorum_release_alternate.py` | The release gate on `listen run`, `pilot-worker` and the prepared worker |
+| `test_quorum_listener.py`, `test_quorum_stop_during_start.py` | The `listen` lifecycle and owner stop; also the shared run loop |
+| `test_quorum_capabilities.py` | The default worker and Codex runner stay `live_agents_disabled` |
+
+No test drives `work_register`, `work_admit` or `work_transition`. Their bodies are
+pinned only by the [SQL baseline](server.md#baseline-and-history) equivalence.
+
 One frozen check reaches the live path: `session_reply` refuses with
 `active_attempt_requires_reconciliation` while a handler attempt holds the original
 delivery. A plain native send keeps the `requires_handler` default of true, and

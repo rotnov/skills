@@ -487,6 +487,9 @@ def spawn_background(command, ledger):
     finally: os.close(fd)
 
 
+# FROZEN legacy fallback: start_listener, add_commands and dispatch are the `listen` commands of the headless pilot
+# handler (references/protocol.md#frozen-historical-pilot). The run loop, control and stop_listener are shared with
+# native reception and stay live.
 def start_listener(ledger, toolchain, timeout, approved):
     from quorum_acp import ExecutionPolicy
     from quorum_live import supervisor_running

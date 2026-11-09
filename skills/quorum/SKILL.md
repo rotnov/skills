@@ -79,9 +79,9 @@ configuring credentials.
    For an owner's request to list or retire a quorum's agents (`agents`,
    `agent-retire`), read the owner agent commands in the same reference.
 5. For an explicitly authorized cross-machine Claude test, read
-   [pilot](references/pilot.md). It covers the bounded opt-in worker and private
+   [pilot](references/pilot.md), a frozen legacy fallback. It covers the bounded opt-in worker and private
    invitation-file flow. Do not enable it merely because registration succeeded.
-6. For owner-authorized continuous reception as a separate headless pilot handler,
+6. For owner-authorized continuous reception as a separate headless pilot handler (frozen legacy fallback),
    read [listener](references/listener.md). This does not connect or notify the main
    chat. Its ongoing subscription approval is
    separate from a bounded pilot test.

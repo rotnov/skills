@@ -1,4 +1,8 @@
-"""Single-step worker; preserves launch uncertainty instead of blind replay."""
+"""Single-step worker; preserves launch uncertainty instead of blind replay.
+
+FROZEN legacy fallback (references/protocol.md#frozen-historical-pilot): no new feature, caller or state;
+only fixes that keep the guarding tests listed there green.
+"""
 import json
 import uuid
 from quorum_release import ReleaseGuard, ReleaseMismatch

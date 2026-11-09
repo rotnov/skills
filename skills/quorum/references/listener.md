@@ -1,5 +1,8 @@
 # Continuous incoming-message listener
 
+Frozen legacy fallback: this path gets fixes only, no new features. See the
+[frozen historical pilot](protocol.md#frozen-historical-pilot) for its scope and tests.
+
 This is a separate headless pilot handler. For messages and replies inside the
 existing chat, use [native sessions](sessions.md) instead.
 
