@@ -423,6 +423,25 @@ def reception_notice(ledger, state):
     return {'listener_lost': loss_notice(loss, state)} if loss else {}
 
 
+def send_message(api, ledger, record, scope, to_role, request_id, text, priority):
+    """One new message from this binding's agent to a role: the parent route's `send`, shared with an adopt
+    worker's capability (#202). The request ID keeps a retry idempotent: the same conversation, the same send."""
+    try:
+        peer = api.call('resolve_role', {'quorum_id': record['quorum_id'], 'role': to_role,
+                                         'project_ref': record['project_ref']})
+    except QuorumError as error:
+        if str(error) == RecipientUnresolved.code: raise RecipientUnresolved(to_role) from None
+        raise
+    conv = str(uuid.uuid5(uuid.NAMESPACE_URL, record['agent_id'] + ':' + request_id))
+    result = api.call('message_send', {'quorum_id': record['quorum_id'], 'sender_agent_id': record['agent_id'],
+                                       'recipient_agent_id': peer['agent_id'], 'conversation_id': conv, 'body': text,
+                                       'reply_to': None, 'priority': priority}, request_id)
+    note_sent(ledger)
+    # Never refuses: the message is durable, and a recipient whose reception looks offline only adds a warning.
+    hint = recipient_availability(api, scope, agent_id=peer.get('agent_id'))
+    return {**result, 'conversation_id': conv, **hint}
+
+
 def route_notice(state, record):
     """`reception_route` for a Claude parent binding: the worker is the default, this chat the fallback (#165).
 
@@ -1665,19 +1684,8 @@ def _dispatch(args, auth_ledger, register_agent):
                 return {**result, **hint, **reception_notice(ledger, auth_ledger.root)}
             # A tool worker's api is already guarded: a rebind after its proof ends the send before dispatch.
             if worker_guard is not None: worker_guard()
-            try:
-                peer=api.call('resolve_role',{'quorum_id':record['quorum_id'],'role':args.to_role,'project_ref':record['project_ref']})
-            except QuorumError as error:
-                if str(error)==RecipientUnresolved.code: raise RecipientUnresolved(args.to_role) from None
-                raise
-            conv=str(uuid.uuid5(uuid.NAMESPACE_URL,record['agent_id']+':'+args.request_id))
-            result=api.call('message_send',{'quorum_id':record['quorum_id'],'sender_agent_id':record['agent_id'],
-                 'recipient_agent_id':peer['agent_id'],'conversation_id':conv,'body':text,'reply_to':None,
-                 'priority':priority},args.request_id)
-            note_sent(ledger)
-            # Never refuses: the message is durable, and a recipient whose reception looks offline only adds a warning.
-            hint=recipient_availability(api,scope,agent_id=peer.get('agent_id'))
-            return {**result,'conversation_id':conv,**hint,**reception_notice(ledger, auth_ledger.root)}
+            result=send_message(api,ledger,record,scope,args.to_role,args.request_id,text,priority)
+            return {**result,**reception_notice(ledger, auth_ledger.root)}
         if args.action=='run':
             import signal,threading
             from quorum_realtime import RealtimeWait

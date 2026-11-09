@@ -703,11 +703,15 @@ class CliTests(Harness):
         self.assertEqual((code, result['code']), (3, 'native_worker_binding_denied'))
         code, result, _ = self.cli(None, 'session', '--session-id', SID, '--worker-capability', cap, 'status')
         self.assertEqual((code, result['code']), (3, 'native_worker_binding_denied'))
-        for action in (('start',), ('run', '--run-id', SID), ('reconcile', M1, '--confirmed-queued'),
-                       ('send', '--to-role', 'peer', '--request-id', 'r', '--text-stdin'), ('peers',),
+        for action in (('start',), ('run', '--run-id', SID), ('reconcile', M1, '--confirmed-queued'), ('peers',),
                        ('thread', M1), ('delegate', '--revoke')):
             code, result, text = self.cli(None, 'session', '--worker-capability', cap, *action, stdin=b'x')
             self.assertEqual((code, result['code']), (3, 'native_inbox_transport_conflict'), text)
+        # `send` is an adopt operation only (#202): this bounded create slot refuses it as outside its scope.
+        code, result, text = self.cli(None, 'session', '--worker-capability', cap, 'send', '--to-role', 'peer',
+                                      '--request-id', 'r', '--text-stdin', stdin=b'x')
+        self.assertEqual((code, result['code'], result['data']['reason']),
+                         (3, 'native_worker_binding_denied', 'operation_denied'), text)
         code, stopped, text = self.cli(None, 'session', '--session-id', actor(), 'stop')
         self.assertEqual((code, stopped['data']['state'], stopped['data']['terminal_reason']), (0, 'terminal', 'stopped'))
         code, result, _ = self.cli(None, 'session', '--worker-capability', cap, 'status')
@@ -1642,6 +1646,89 @@ class AdoptTests(Bound):
             self.assertNotIn('knowledge', self.setting(self.prepare(scope)['slot_id'])['scope']['operations'])
             self.denied('native_worker_binding_denied', self.prepare, {**scope, 'operations': ['connect', 'update']})
         self.assertEqual(api.calls, [])
+
+    def send(self, api, cap, request_id='send-1', text=b'hello peer', *extra, sid=SID):
+        return self.cli(api, 'session', '--worker-capability', str(cap), 'send', '--to-role', 'peer', '--request-id',
+                        request_id, '--text-stdin', *extra, stdin=text, sid=sid)
+
+    @isolated_profiles
+    def test_adopted_worker_sends_a_new_message_as_its_own_agent(self):
+        """After adopt-retire only the worker's agent can start a conversation (#202): the parent route's send."""
+        from quorum_api import QuorumError
+        api = OwnerApi()
+        sent = {}
+        api.answers['message_send'] = lambda payload: {
+            'message_id': sent.setdefault(payload['conversation_id'], str(uuid.uuid4()))}
+        cap = self.adopted(api)
+        self.assertIn('send', self.setting(self.slot)['scope']['operations'])
+        # The tests' shell is this chat's (the worker shares its CLAUDE_CODE_SESSION_ID): either may run it.
+        for priority in ('normal', 'urgent'):
+            with self.subTest(priority=priority):
+                before = len(api.calls)
+                code, result, text = self.send(api, cap, 'send-' + priority, b'hello peer', '--priority', priority)
+                self.assertEqual(code, 0, text)
+                operations = [call for call in api.calls[before:] if call[0] in ('resolve_role', 'message_send')]
+                self.assertEqual([call[0] for call in operations], ['resolve_role', 'message_send'])
+                self.assertEqual(operations[0][1], {'quorum_id': QUORUM, 'role': 'peer', 'project_ref': 'team/project'})
+                _, payload, request = operations[1]
+                conversation = str(uuid.uuid5(uuid.NAMESPACE_URL, AGENT + ':send-' + priority))
+                self.assertEqual((payload, request), ({'quorum_id': QUORUM, 'sender_agent_id': AGENT,
+                                                       'recipient_agent_id': PEER, 'conversation_id': conversation,
+                                                       'body': 'hello peer', 'reply_to': None,
+                                                       'priority': priority}, 'send-' + priority))
+                self.assertEqual(result['data']['conversation_id'], conversation)
+                self.assertNotEqual(payload['sender_agent_id'], PARENT_AGENT, 'never the retired parent agent')
+        # A retry with the same request ID is the same send in the same conversation.
+        code, again, text = self.send(api, cap, 'send-normal')
+        self.assertEqual(code, 0, text)
+        self.assertEqual([call[2] for call in api.calls if call[0] == 'message_send'][-1], 'send-normal')
+        self.assertEqual(again['data']['conversation_id'],
+                         str(uuid.uuid5(uuid.NAMESPACE_URL, AGENT + ':send-normal')))
+        # The parent route's validation: an empty or oversized body and an unresolved role send nothing.
+        before = len(api.calls)
+        for body in (b'', b'x' * 16385):
+            code, result, text = self.send(api, cap, 'send-bad', body)
+            self.assertEqual((code, result['code']), (3, 'invalid_message'), text)
+        api.answers['resolve_role'] = lambda _: QuorumError('recipient_ambiguous_or_missing')
+        code, result, text = self.send(api, cap, 'send-missing')
+        self.assertEqual((code, result['code']), (3, 'recipient_ambiguous_or_missing'), text)
+        self.assertNotIn('message_send', [call[0] for call in api.calls[before:]])
+        del api.answers['resolve_role']
+        # Another chat holding the file is refused before any service call.
+        before = len(api.calls)
+        code, result, text = self.send(api, cap, sid=OTHER_SID)
+        self.assertEqual((code, result['code']), (3, 'native_worker_binding_denied'), text)
+        # A stopped slot refuses it before any service call.
+        import quorum_claude_worker as worker
+        with claude(): worker.stop_slot(self.root, self.slot)
+        code, result, text = self.send(api, cap, 'send-after-stop')
+        self.assertEqual((code, result['code']), (3, 'native_worker_slot_terminal'), text)
+        self.assertEqual(len(api.calls), before)
+
+    @isolated_profiles
+    def test_send_needs_a_connected_adopt_scope(self):
+        api = OwnerApi()
+        self.parent()
+        slot = self.prepare(self.adopt_scope())['slot_id']
+        self.attest(slot)
+        code, result, text = self.send(api, self.capability(slot))
+        self.assertEqual((code, result['code'], result['data']['reason']),
+                         (3, 'native_worker_binding_denied', 'target_pending'), text)
+        # Create and accept scopes never send, and cannot ask for it.
+        for scope in (self.scope(), self.accept_scope()):
+            self.assertNotIn('send', self.setting(self.prepare(scope)['slot_id'])['scope']['operations'])
+            self.denied('native_worker_binding_denied', self.prepare, {**scope, 'operations': ['connect', 'send']})
+        self.assertEqual(api.calls, [])
+
+    @isolated_profiles
+    def test_connected_accept_worker_cannot_send(self):
+        api = Api()
+        _, cap, _ = self.joined(api)
+        before = len(api.calls)
+        code, result, text = self.send(api, cap)
+        self.assertEqual((code, result['code'], result['data']['reason']),
+                         (3, 'native_worker_binding_denied', 'operation_denied'), text)
+        self.assertEqual(len(api.calls), before)
 
     def owner_leave(self, api, agent_id):
         """The existing owner `leave` from the parent chat, with the owner's login."""
@@ -3334,7 +3421,8 @@ class PromptTests(unittest.TestCase):
         self.assertTrue(commands)
         for line in commands:
             self.assertNotIn('token', line.lower())
-            self.assertNotIn('--request-id', line)
+            # Only an adopt worker's own send carries its caller's stable request ID (#202); nothing else overrides one.
+            if ' send --to-role ' not in line: self.assertNotIn('--request-id', line)
         for required in ('`lifetime: "bounded"`', '900', 'until-owner-stop', 'not evidence that the provider keeps',
                          'no renewal', 'regrant', 'same OS user'):
             self.assertIn(required, text)

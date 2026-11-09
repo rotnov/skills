@@ -98,6 +98,8 @@ class SpawnPlanTests(Bound):
         self.assertIn(plan['join_command'], prompt)
         self.assertIn(plan['slot_id'], prompt)
         self.assertIn('session worker join', prompt)
+        # Only an adopt worker sends; an accept worker's prompt never offers it (#202).
+        self.assertNotIn('session send', prompt)
         self.assertIn('run_in_background', prompt)
         for absent in (KEY, '--publishable-key', '--origin', '--anonymous', 'await-binding ' + plan['slot_id']):
             self.assertNotIn(absent, prompt)
