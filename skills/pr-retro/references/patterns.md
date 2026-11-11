@@ -62,16 +62,15 @@ Status: open | resolved (<change pull request link>)
   environment values, local paths, or personal data. If the project has a
   check for such content in published docs, run it on this folder too.
 
-## Guard and lifecycle
+## Status field
 
-- A pattern qualifies for a change at 2 or more distinct pull requests, or at
-  one serious occurrence (Critical, P1, or a finding that escaped review). A
-  review-caught Important finding counts toward the 2-pull-request guard but
-  does not qualify on its own.
-- The change pull request names the key and sets the status to `resolved` with
-  its own link. The file stays, for history.
-- After a resolving change, a first new occurrence is recorded with a note; a
-  second reopens the pattern (`Status: open`) and counts toward a new change.
+The guard, including how a resolved pattern reopens, is defined once in
+`SKILL.md` step 4. The file only records its outcome:
+
+- the change pull request names the key and sets the status to `resolved` with
+  its own link; the file and its entries stay, for history;
+- an entry added after a resolving change notes that the pattern was resolved;
+- reopening sets `Status: open` and keeps the resolved link in the history.
 
 ## Optional batching
 

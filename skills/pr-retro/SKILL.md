@@ -100,10 +100,18 @@ avoidable, generalisable finding:
    describes the same error and trigger; otherwise create a new file.
 2. Add one occurrence entry per pull request, however many times the error
    happened in it.
-3. A pattern qualifies for a change when it has entries from **2 or more
-   distinct pull requests**, or one **serious** entry: a Critical or P1
-   finding, or one that escaped review (found after the merge by CI on the
-   default branch, a tester, a deploy, or a person).
+3. Apply the guard to the **counted entries**: all entries of an open
+   pattern, or only those after the last resolving change of a resolved one.
+   A pattern qualifies when its counted entries come from **2 or more
+   distinct pull requests**, or when the entry just added is **serious**: a
+   Critical or P1 finding, or one that escaped review (found after the merge
+   by CI on the default branch, a tester, a deploy, or a person). For a
+   resolved pattern, the first new ordinary entry is recorded with a note and
+   does not qualify; the second reopens it (`Status: open`) and qualifies; a
+   new serious entry reopens it and qualifies on its own. A serious entry from
+   before a resolving change never qualifies again, and a review-caught
+   Important finding counts toward the 2 pull requests but never qualifies on
+   its own.
 4. If it qualifies, propose the change through the gate in
    [root-cause tracing](references/root-cause.md). The owner approves the diff
    before anything is edited; the change ships as its own pull request that

@@ -51,6 +51,9 @@ class PrRetroSkillTests(unittest.TestCase):
             "Search first, update over add",
             "A mechanical check beats prose",
             "not located",
+            "only those after the last resolving change",
+            "a new serious entry reopens it and qualifies on its own",
+            "never qualifies again",
         ):
             self.assertIn(phrase, skill)
 
@@ -59,6 +62,16 @@ class PrRetroSkillTests(unittest.TestCase):
         self.assertIn(".claude/projects/", sources)
         self.assertIn(".codex/sessions/", sources)
         self.assertIn("subagents/", sources)
+
+    def test_ci_reads_earlier_attempts_and_failed_logs(self) -> None:
+        sources = (SKILL_DIR / "references" / "sources.md").read_text(encoding="utf-8")
+        self.assertIn("--attempt <k> --log-failed", sources)
+        self.assertIn("never paste log text", sources)
+
+    def test_guard_is_defined_once(self) -> None:
+        patterns = (SKILL_DIR / "references" / "patterns.md").read_text(encoding="utf-8")
+        self.assertNotIn("2 or more distinct pull requests", patterns)
+        self.assertIn("defined once", patterns)
 
     def test_evals_cover_required_paths(self) -> None:
         data = json.loads(

@@ -16,6 +16,8 @@ gh api repos/<o>/<r>/pulls/<n>/comments --paginate    # inline review comments
 gh api repos/<o>/<r>/issues/<n>/comments --paginate   # conversation comments, bot summaries
 gh api repos/<o>/<r>/issues/<n>/timeline --paginate   # commits, reviews, branch updates, cross-references
 gh run list -R <o>/<r> --branch <branch> --limit 50 --json databaseId,name,event,conclusion,headSha,createdAt,attempt
+gh run view <id> -R <o>/<r> --attempt <k> --json attempt,conclusion,headSha,createdAt,jobs   # each earlier attempt
+gh run view <id> -R <o>/<r> --attempt <k> --log-failed   # failed-step log of that attempt
 ```
 
 - **Rounds**: one per reviewed head; pair each review's `commit_id` with the
@@ -28,7 +30,11 @@ gh run list -R <o>/<r> --branch <branch> --limit 50 --json databaseId,name,event
   reviewed commit is the reliable sign of which head it reviewed.
 - **CI**: `attempt` above 1 is a rerun; a failure followed by a success on the
   same head is a rerun or a flake; a new head after a failure is a fix. A merge
-  commit from the base branch in the commits list is a branch update.
+  commit from the base branch in the commits list is a branch update. For every
+  run with `attempt` above 1, read attempts 1 to `attempt - 1` and their
+  failed-step logs to tell an avoidable error (a test, lint, or build failure
+  in the change) from an infrastructure flake (runner, network, or service
+  outage). Cite by run id plus attempt; never paste log text.
 - **Brief**: a `Refs`, `Fixes`, or `Closes` line in the body names the issue;
   read it with `gh issue view`.
 - **Dates**: date a rule or change by when it reached the base branch (the
