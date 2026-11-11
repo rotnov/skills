@@ -73,6 +73,13 @@ Not every event is an error. A branch update after a sibling merge, a Minor
 finding accepted as written, or a planned wait is not one unless it was
 avoidable.
 
+Rate every review finding, human or bot, before it counts: **valid**,
+**valid-minor**, or **invalid**, as defined in
+[the finding template](references/finding-template.md). Only valid findings
+are author errors. Successive rounds that yield only valid-minor findings are
+one finding about the review process, not the author: record it with its cost
+and trace it like any other.
+
 ### 3. Record each finding
 
 Write each finding with [the finding template](references/finding-template.md):

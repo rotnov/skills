@@ -72,6 +72,14 @@ class PrRetroSkillTests(unittest.TestCase):
         self.assertIn("pull_requests", sources)
         self.assertIn("between the pull request's `createdAt` and `mergedAt`", " ".join(sources.split()))
 
+    def test_review_findings_are_rated(self) -> None:
+        skill = " ".join(SKILL.read_text(encoding="utf-8").split())
+        self.assertIn("Only valid findings are author errors", skill)
+        template = (SKILL_DIR / "references" / "finding-template.md").read_text(encoding="utf-8")
+        self.assertIn("- Rating: valid | valid-minor | invalid", template)
+        self.assertIn("Review loop:", template)
+        self.assertNotIn("nitpick", skill)
+
     def test_guard_is_defined_once(self) -> None:
         patterns = (SKILL_DIR / "references" / "patterns.md").read_text(encoding="utf-8")
         self.assertNotIn("2 or more distinct pull requests", patterns)
