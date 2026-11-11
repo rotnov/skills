@@ -69,6 +69,8 @@ class PrRetroSkillTests(unittest.TestCase):
         self.assertIn("never paste log text", sources)
         self.assertIn("actions/runs -X GET -f branch=<branch> -f per_page=100 --paginate", sources)
         self.assertNotIn("--limit 50", sources)
+        self.assertIn("pull_requests", sources)
+        self.assertIn("between the pull request's `createdAt` and `mergedAt`", " ".join(sources.split()))
 
     def test_guard_is_defined_once(self) -> None:
         patterns = (SKILL_DIR / "references" / "patterns.md").read_text(encoding="utf-8")
