@@ -31,9 +31,10 @@ gh run view <id> -R <o>/<r> --attempt <k> --log-failed   # failed-step log of th
   reviewed commit is the reliable sign of which head it reviewed.
 - **CI**: count runs only from the paginated call above; a capped list such as
   `gh run list --limit` silently drops older runs. A branch can serve several
-  pull requests, so keep a run when its `pull_requests` names `<n>`, or else when
-  its `head_sha` is one of this pull request's commits and its `created_at` falls
-  between the pull request's `createdAt` and `mergedAt`. `run_attempt` above 1
+  pull requests, so keep a run when its `pull_requests` names `<n>`, or, when
+  `pull_requests` is empty, when its `head_sha` is one of this pull request's
+  commits and its `created_at` is before `mergedAt` (push runs from before the
+  pull request opened count). `run_attempt` above 1
   is a rerun; a failure followed by a success on the same head is a rerun or a
   flake; a new head after a failure is a fix. A merge commit from the base
   branch in the commits list is a branch update. Read the job details and

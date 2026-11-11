@@ -71,7 +71,8 @@ class PrRetroSkillTests(unittest.TestCase):
         self.assertIn("actions/runs -X GET -f branch=<branch> -f per_page=100 --paginate", sources)
         self.assertNotIn("--limit 50", sources)
         self.assertIn("pull_requests", sources)
-        self.assertIn("between the pull request's `createdAt` and `mergedAt`", " ".join(sources.split()))
+        self.assertIn("its `created_at` is before `mergedAt`", " ".join(sources.split()))
+        self.assertNotIn("`createdAt` and `mergedAt`", " ".join(sources.split()))
 
     def test_review_findings_are_rated(self) -> None:
         skill = " ".join(SKILL.read_text(encoding="utf-8").split())
