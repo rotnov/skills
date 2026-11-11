@@ -67,6 +67,7 @@ class PrRetroSkillTests(unittest.TestCase):
         sources = (SKILL_DIR / "references" / "sources.md").read_text(encoding="utf-8")
         self.assertIn("--attempt <k> --log-failed", sources)
         self.assertIn("never paste log text", sources)
+        self.assertIn("of every failed attempt: a run's only or latest attempt", " ".join(sources.split()))
         self.assertIn("actions/runs -X GET -f branch=<branch> -f per_page=100 --paginate", sources)
         self.assertNotIn("--limit 50", sources)
         self.assertIn("pull_requests", sources)

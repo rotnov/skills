@@ -36,11 +36,12 @@ gh run view <id> -R <o>/<r> --attempt <k> --log-failed   # failed-step log of th
   between the pull request's `createdAt` and `mergedAt`. `run_attempt` above 1
   is a rerun; a failure followed by a success on the same head is a rerun or a
   flake; a new head after a failure is a fix. A merge commit from the base
-  branch in the commits list is a branch update. For every
-  run with `run_attempt` above 1, read attempts 1 to `run_attempt - 1` and their
-  failed-step logs to tell an avoidable error (a test, lint, or build failure
-  in the change) from an infrastructure flake (runner, network, or service
-  outage). Cite by run id plus attempt; never paste log text.
+  branch in the commits list is a branch update. Read the job details and
+  `--log-failed` output of every failed attempt: a run's only or latest
+  attempt, and attempts 1 to `run_attempt - 1` of a rerun run. Use them to tell
+  an avoidable error (a test, lint, or build failure in the change) from an
+  infrastructure flake (runner, network, or service outage). Cite by run id
+  plus attempt; never paste log text.
 - **Brief**: a `Refs`, `Fixes`, or `Closes` line in the body names the issue;
   read it with `gh issue view`.
 - **Dates**: date a rule or change by when it reached the base branch (the

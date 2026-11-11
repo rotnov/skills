@@ -75,6 +75,11 @@
       "id": 15,
       "prompt": "Retro #120. A review bot ran four rounds: rounds 1 and 2 found real defects, rounds 3 and 4 only raised edge-case P2s that each cost a fix commit and about 30 minutes.",
       "expected_output": "Rates the round 1 and 2 findings valid and counts them as author errors, rates the round 3 and 4 findings valid-minor and does not count them as author errors, and records one review-process finding for the minor-only tail with its rounds and minutes, traced to an earliest preventable point such as no stop rule for bot review rounds, not four author errors."
+    },
+    {
+      "id": 16,
+      "prompt": "Retro #130. No transcripts. CI failed on the first commit and passed on the next commit; both runs have run_attempt 1.",
+      "expected_output": "Reads the job details and --log-failed output of the failed run's only attempt, decides whether the failure was an avoidable error in the change or an infrastructure flake, cites the run id and attempt, and never pastes log text."
     }
   ]
 }
