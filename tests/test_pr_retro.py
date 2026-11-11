@@ -67,6 +67,8 @@ class PrRetroSkillTests(unittest.TestCase):
         sources = (SKILL_DIR / "references" / "sources.md").read_text(encoding="utf-8")
         self.assertIn("--attempt <k> --log-failed", sources)
         self.assertIn("never paste log text", sources)
+        self.assertIn("actions/runs -X GET -f branch=<branch> -f per_page=100 --paginate", sources)
+        self.assertNotIn("--limit 50", sources)
 
     def test_guard_is_defined_once(self) -> None:
         patterns = (SKILL_DIR / "references" / "patterns.md").read_text(encoding="utf-8")

@@ -15,7 +15,8 @@ gh api repos/<o>/<r>/pulls/<n>/reviews --paginate     # reviews, with commit_id 
 gh api repos/<o>/<r>/pulls/<n>/comments --paginate    # inline review comments
 gh api repos/<o>/<r>/issues/<n>/comments --paginate   # conversation comments, bot summaries
 gh api repos/<o>/<r>/issues/<n>/timeline --paginate   # commits, reviews, branch updates, cross-references
-gh run list -R <o>/<r> --branch <branch> --limit 50 --json databaseId,name,event,conclusion,headSha,createdAt,attempt
+gh api repos/<o>/<r>/actions/runs -X GET -f branch=<branch> -f per_page=100 --paginate \
+  --jq '.workflow_runs[] | {id, name, event, conclusion, head_sha, created_at, run_attempt}'   # every run, all pages
 gh run view <id> -R <o>/<r> --attempt <k> --json attempt,conclusion,headSha,createdAt,jobs   # each earlier attempt
 gh run view <id> -R <o>/<r> --attempt <k> --log-failed   # failed-step log of that attempt
 ```
@@ -28,10 +29,12 @@ gh run view <id> -R <o>/<r> --attempt <k> --log-failed   # failed-step log of th
 - **Review bots**: identify them by account type `Bot` or a `[bot]` login. A
   bot's findings are usually inline comments; a bot summary comment naming the
   reviewed commit is the reliable sign of which head it reviewed.
-- **CI**: `attempt` above 1 is a rerun; a failure followed by a success on the
-  same head is a rerun or a flake; a new head after a failure is a fix. A merge
+- **CI**: count runs only from the paginated call above; a capped list such as
+  `gh run list --limit` silently drops older runs. `run_attempt` above 1 is a
+  rerun; a failure followed by a success on the same head is a rerun or a
+  flake; a new head after a failure is a fix. A merge
   commit from the base branch in the commits list is a branch update. For every
-  run with `attempt` above 1, read attempts 1 to `attempt - 1` and their
+  run with `run_attempt` above 1, read attempts 1 to `run_attempt - 1` and their
   failed-step logs to tell an avoidable error (a test, lint, or build failure
   in the change) from an infrastructure flake (runner, network, or service
   outage). Cite by run id plus attempt; never paste log text.
