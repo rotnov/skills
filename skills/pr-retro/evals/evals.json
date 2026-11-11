@@ -65,6 +65,11 @@
       "id": 13,
       "prompt": "Retro #103. No transcripts are available. CI shows one run with attempt 2 that succeeded on the same head.",
       "expected_output": "Reads attempt 1 with gh run view --attempt 1 and its --log-failed output, decides from the failed step whether it was an avoidable error in the change or an infrastructure flake, cites the run id and attempt, and never pastes log text."
+    },
+    {
+      "id": 14,
+      "prompt": "Review pull request #55 for bugs before I merge it.",
+      "expected_output": "Does not trigger a retro: the pull request is not merged and the user wants a code review, not a retrospective; it says the retro applies after the merge."
     }
   ]
 }

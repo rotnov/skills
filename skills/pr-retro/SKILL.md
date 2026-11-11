@@ -1,20 +1,12 @@
 ---
 name: pr-retro
 description: >-
-  Runs a post-merge retrospective of one merged pull request across its whole
-  chain (brief, agent transcripts, review rounds, review bots, CI, human
-  steers), records avoidable recurring errors as pattern occurrences, and
-  proposes the smallest fix in the owning skill or instruction file once a
-  pattern recurs. Use when asked for a retro of a merged pull request.
+  Use when the user asks for a retrospective, post-mortem, or lessons learned
+  on a merged pull request, or wants to stop the errors made in its review
+  cycle from recurring.
 ---
 
-# PR Retro
-
-Read the whole chain of one merged pull request, from the brief to the merge,
-read-only. List the errors made along the way, count the avoidable,
-generalisable ones as pattern occurrences, and turn a pattern that recurs into
-the smallest durable change in the skill or project instruction file that owns
-its topic.
+# Instructions
 
 ## Scope
 
