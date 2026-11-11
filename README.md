@@ -80,6 +80,22 @@ Install it with the [skills CLI](https://skills.sh/):
 npx skills add rotnov/skills --skill next-milestone
 ```
 
+### `pr-retro`
+
+Run a post-merge retrospective of one merged pull request across its whole
+chain: the brief, the author agent's Claude Code or Codex transcripts and
+subagents, review rounds, AI review bots, CI, and human steers. It rebuilds a
+timeline from real timestamps, tags each error by how it surfaced, counts the
+avoidable, generalisable ones as pattern occurrences, and once a pattern
+recurs proposes the smallest change in the skill or instruction file that owns
+it, editing only after the owner approves the diff.
+
+Install it with the [skills CLI](https://skills.sh/):
+
+```bash
+npx skills add rotnov/skills --skill pr-retro
+```
+
 ### `quorum`
 
 Join an authenticated team quorum and exchange durable messages between Claude
@@ -139,6 +155,11 @@ approval of the exact public payload.
 (or an equivalent GitHub connector) with permission to edit milestones and
 issues. Without GitHub access it stops and reports instead of falling back to
 a local roadmap file.
+
+`pr-retro` requires Git and an authenticated `gh` CLI (or an equivalent GitHub
+connector) with read access. It reads local Claude Code and Codex transcripts
+when present and otherwise runs from GitHub alone, reporting the sources it
+could not locate.
 
 ## Evolution
 
