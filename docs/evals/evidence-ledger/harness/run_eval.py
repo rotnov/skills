@@ -74,6 +74,8 @@ FAMILY = {
     "short": SCENARIO_DIR,
     "long": EVAL_DIR / "scenarios-long",
     "quiet": EVAL_DIR / "scenarios-quiet",
+    # Post-hoc probe of the skill's own risk (over-committing); it has no split.
+    "weak": EVAL_DIR / "scenarios-weak",
 }
 SPLIT_FILES = {"short": SPLIT_FILE, "long": SPLIT_FILE, "quiet": EVAL_DIR / "split-quiet.json"}
 ACTIVE_FAMILY = "short"
@@ -387,8 +389,10 @@ def run_one(job: tuple, options: argparse.Namespace) -> dict:
 
 
 def command_run(options: argparse.Namespace) -> int:
-    split = json.loads(SPLIT_FILES[ACTIVE_FAMILY].read_text(encoding="utf-8"))
-    ids = options.scenarios.split(",") if options.scenarios else split[options.set]
+    if options.scenarios:
+        ids = options.scenarios.split(",")
+    else:
+        ids = json.loads(SPLIT_FILES[ACTIVE_FAMILY].read_text(encoding="utf-8"))[options.set]
     jobs = [
         (scenario_id, condition, run_index)
         for scenario_id in ids

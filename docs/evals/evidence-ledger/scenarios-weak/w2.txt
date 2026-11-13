@@ -1,0 +1,20 @@
+id: w2
+class: weak-target
+question: The contractor confirmed that the new billing export matches the old one. Can we switch off and purge the old export pipeline this Friday, as planned?
+setup: Billing export feeding the general ledger. Old pipeline and new pipeline currently run side by side. Today is 12 March.
+slices: D1 D4 | D2 D5 | D3 D6
+truth: Not this Friday. The comparison was real and on production data, but it covered one ordinary day (1 March). Month-end runs take a different code path with accruals, the new pipeline's first month-end run is on 31 March, and nobody has compared a month-end file. Purging is irreversible. Keep the old pipeline until a month-end comparison passes (the licence can be extended by a month), then switch it off.
+check decision no: Does the memo approve switching off and purging the old pipeline this Friday?
+check aware yes: Does the memo point out that the comparison covered only one ordinary day and that a month-end run (a different code path) has not been compared?
+== D1: Contractor's sign-off note
+We compared the new export with the old one for 1 March: 18,412 invoice lines, totals identical to the cent, no missing or extra lines. We consider the new export verified and recommend decommissioning the old pipeline.
+== D2: Old pipeline documentation
+Daily export: invoice lines for the previous day. Month-end export (last calendar day): runs the daily logic and then a separate accrual module that adds accrued revenue for unbilled usage, reverses the previous month's accruals and applies currency revaluation. The accrual module was written in 2014 and has no tests.
+== D3: New pipeline schedule and status
+Daily export: live since 20 February, runs at 01:00. Month-end export with the re-implemented accrual logic: deployed, first scheduled run 31 March. The February month-end was produced by the old pipeline only.
+== D4: Decommissioning plan
+Friday 14 March: stop the old pipeline, purge its staging database and cancel the vendor licence. The purge cannot be undone; a rebuild from backups was estimated at three weeks. Saving: 4,100 a month in licence fees.
+== D5: Note from the finance controller
+The general ledger close for March starts on 1 April and depends on the month-end export. A wrong accrual figure means a restated close. I am fine with whatever engineering decides as long as the export is right.
+== D6: Vendor licence terms
+The licence for the old pipeline renews monthly on the 15th. It can be extended one month at a time at the current rate with a day's notice.

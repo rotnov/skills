@@ -92,18 +92,27 @@ def run_codex(root: Path, prompt: str, mode: str) -> dict:
         check=False,
     )
     events = [line for line in done.stdout.splitlines() if line.startswith("{")]
-    spawned = sum(1 for line in events if "spawn" in line and "agent" in line)
     tokens_in = tokens_out = 0
+    item_types: dict[str, int] = {}
     for line in events:
         try:
-            usage = json.loads(line).get("usage") or {}
+            event = json.loads(line)
         except json.JSONDecodeError:
             continue
+        usage = event.get("usage") or {}
+        item = event.get("item") or {}
+        if event.get("type") == "item.completed" and item.get("type"):
+            item_types[item["type"]] = item_types.get(item["type"], 0) + 1
         tokens_in += usage.get("input_tokens", 0)
         tokens_out += usage.get("output_tokens", 0)
     return {
         "text": last.read_text(encoding="utf-8") if last.exists() else "",
-        "subagents": spawned,
+        # Codex reports subagent work as collaboration items, when it has any.
+        "subagents": sum(
+            count for kind, count in item_types.items()
+            if "collab" in kind or "agent" in kind and kind != "agent_message"
+        ),
+        "item_types": item_types,
         "turns": len(events),
         "tokens_in": tokens_in,
         "tokens_out": tokens_out,

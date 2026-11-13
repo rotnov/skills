@@ -6,6 +6,11 @@ An edit whose `old` text is missing fails loudly, so a variant can never
 silently equal the full skill. Copies are written as .txt files under
 `ablations/<variant>/` so that no tool mistakes them for publishable skills.
 
+The variants in this file were derived from the second draft of the skill,
+frozen as `ablations/v2/`:
+
+    make_ablations.py ../ablations/v2 noplan lean nopool nodecide core
+
 Usage: make_ablations.py <source skill dir> <variant> [<variant> ...]
 """
 
@@ -117,13 +122,103 @@ unclear or lanes disagree.
     ("references/ledger.md", None, None),
 ]
 
-VARIANTS = {"noplan": NO_PLAN, "lean": LEAN}
+POOL_RULE = """1. **Pool first.** A lane saw part of the evidence. What one lane lacks,
+   another may hold: join them before judging anything. A gap or doubt a lane
+   mentions is closed when another lane's claim fills it.
+"""
+ORIGIN_RULE = """2. **Count origins, not voices.** Group claims by origin. Sources, people and
+   lanes repeating one origin are one line of evidence. A lane agreeing with
+   another lane is not evidence.
+"""
+TARGET_RULE = """3. **Check each result against the target.** "Verified", "confirmed" and
+   "reproduced" mean only what was actually observed, and where. A result
+   from another setup counts for the target unless you can name a difference
+   that touches the mechanism; one unit of several like units, or a sample
+   of the real load, is the target.
+"""
+RIVAL_RULE = """4. **List the rival answers the pooled facts allow**, including one that
+   rejects the question's own framing, and test each against every
+   observation: when the effect started,
+   where it appeared, when it stopped, on what setup. A rival is dead when a
+   named observation contradicts it, and alive only while some observation
+   fits it better than the leading one. Lack of proof against a rival does
+   not keep it alive; fewer lanes backing it does not kill it.
+"""
+DECIDE_RULES = """The crux is the claim the decision turns on. Decide for the action, not for
+certainty: a doubt matters only if settling it could change what to do.
+
+- **Commit** when the crux was observed on the target and no rival is alive.
+  Say so plainly. Do not add conditions, pre-checks or caveats; routine
+  monitoring is not a condition.
+- **Hold** when the crux was not observed on the target, or a live rival
+  would change the action,
+  and the action is costly to undo. Name the one cheapest check that would
+  settle it, and the action that is safe meanwhile.
+- **Split** when the evidence covers part of the target: go where it is
+  observed, hold where it is not.
+"""
+REPORT_TAIL = """Not verified: <what would change the decision and nobody observed on the
+target, or "nothing that would change the decision">
+Next check: <the one cheapest step, or "none needed">
+"""
+
+# Coordinator-rule ablations, each on top of LEAN.
+NO_POOL = LEAN + [("SKILL.md", POOL_RULE, "")]
+NO_DECIDE = LEAN + [
+    ("SKILL.md", DECIDE_RULES, "Find the crux, the claim the decision turns on, and decide.\n"),
+    (
+        "SKILL.md",
+        REPORT_TAIL,
+        "Not verified: <what nobody observed on the target>\n"
+        "Next check: <the cheapest step that would settle it>\n",
+    ),
+]
+# Only pooling and the decision rule: no origin count, target check or rivals.
+CORE = LEAN + [
+    ("SKILL.md", ORIGIN_RULE, ""),
+    ("SKILL.md", TARGET_RULE, ""),
+    ("SKILL.md", RIVAL_RULE, ""),
+    (
+        "SKILL.md",
+        "- **Commit** when the crux was observed on the target and no rival is alive.",
+        "- **Commit** when the pooled facts settle the question for the asker's own\n"
+        "  setup.",
+    ),
+    (
+        "SKILL.md",
+        """- **Hold** when the crux was not observed on the target, or a live rival
+  would change the action,
+  and the action is costly to undo.""",
+        "- **Hold** when they do not, and the action is costly to undo.",
+    ),
+    (
+        "SKILL.md",
+        "Rests on: <crux claim> - <how it is known, and where it was observed>,\n"
+        "<n> independent origin(s)\n"
+        "Ruled out: <rival> - <the observation that kills it>\n",
+        "Rests on: <crux claim>\n",
+    ),
+]
+
+VARIANTS = {
+    "noplan": NO_PLAN,
+    "lean": LEAN,
+    "nopool": NO_POOL,
+    "nodecide": NO_DECIDE,
+    "core": CORE,
+}
 
 
 def build(source: Path, name: str) -> None:
+    # The source may be a skill directory (.md) or a frozen copy (.txt).
+    paths = [
+        path
+        for path in [*source.glob("SKILL.*"), *sorted((source / "references").iterdir())]
+        if path.suffix in (".md", ".txt")
+    ]
     texts = {
-        str(path.relative_to(source)): path.read_text(encoding="utf-8")
-        for path in [source / "SKILL.md", *sorted((source / "references").glob("*.md"))]
+        str(path.relative_to(source).with_suffix(".md")): path.read_text(encoding="utf-8")
+        for path in paths
     }
     for relative, old, new in VARIANTS[name]:
         if old is None:
