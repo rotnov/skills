@@ -148,15 +148,35 @@ def materials(scenario: dict, doc_ids: list[str]) -> str:
     )
 
 
+def skill_file(skill_dir: Path, relative: str) -> Path:
+    """Ablation copies are stored as .txt so no tool mistakes them for skills."""
+    path = skill_dir / relative
+    return path if path.exists() else path.with_suffix(".txt")
+
+
 def skill_text(skill_dir: Path) -> str:
-    parts = [f"--- SKILL.md ---\n{(skill_dir / 'SKILL.md').read_text(encoding='utf-8')}"]
+    parts = [
+        "--- SKILL.md ---\n"
+        + skill_file(skill_dir, "SKILL.md").read_text(encoding="utf-8")
+    ]
     references = skill_dir / "references"
     if references.is_dir():
-        for path in sorted(references.glob("*.md")):
+        for path in sorted(references.iterdir()):
             parts.append(
-                f"--- references/{path.name} ---\n{path.read_text(encoding='utf-8')}"
+                f"--- references/{path.stem}.md ---\n{path.read_text(encoding='utf-8')}"
             )
     return "\n\n".join(parts)
+
+
+def fixed_brief(skill_dir: Path, scenario: dict) -> str:
+    """The lane brief template with only the question and target filled in."""
+    text = skill_file(skill_dir, "references/lane-brief.md").read_text(encoding="utf-8")
+    template = re.search(r"```text\n(.*?)```", text, flags=re.S).group(1)
+    if "Rival" in template:
+        raise RuntimeError("skillfixed needs a lane brief without rivals")
+    return template.replace("<the question as asked>", scenario["question"]).replace(
+        "<the exact setup or population the decision applies to>", scenario["setup"]
+    )
 
 
 def memo_of(text: str) -> str:
@@ -190,7 +210,7 @@ def cond_solo(scenario: dict, options: argparse.Namespace) -> list[dict]:
     return [{"role": "final", **call_model(prompt, options.model)}]
 
 
-def cond_flat(scenario: dict, options: argparse.Namespace) -> list[dict]:
+def flat_lanes(scenario: dict, options: argparse.Namespace) -> list[dict]:
     prompts = [
         "You are one of three analysts investigating the question below in "
         "parallel for a coordinator. You do not see the other analysts' "
@@ -199,7 +219,11 @@ def cond_flat(scenario: dict, options: argparse.Namespace) -> list[dict]:
         f"recommendation to the coordinator. At most {options.lane_words} words."
         for lane in scenario["slices"]
     ]
-    calls = run_lanes(prompts, options.lane_model)
+    return run_lanes(prompts, options.lane_model)
+
+
+def cond_flat(scenario: dict, options: argparse.Namespace) -> list[dict]:
+    calls = flat_lanes(scenario, options)
     reports = "\n\n".join(
         f"REPORT FROM ANALYST {index}:\n{call['text']}"
         for index, call in enumerate(calls, 1)
@@ -256,7 +280,75 @@ def cond_skill(scenario: dict, options: argparse.Namespace) -> list[dict]:
     return calls
 
 
+def cond_skillfixed(scenario: dict, options: argparse.Namespace) -> list[dict]:
+    """No planning call: every lane gets the same template brief."""
+    brief = fixed_brief(options.skill_dir, scenario)
+    lane_calls = run_lanes(
+        [
+            f"{brief}\n\nMATERIALS YOU FOUND:\n{materials(scenario, lane)}\n\n"
+            f"Your report: at most {options.lane_words} words."
+            for lane in scenario["slices"]
+        ],
+        options.lane_model,
+    )
+    reports = "\n\n".join(
+        f"REPORT FROM LANE {index}:\n{call['text']}"
+        for index, call in enumerate(lane_calls, 1)
+    )
+    prompt = (
+        "You have this skill loaded and you are finishing the investigation it "
+        f"governs. You sent each of three lanes the skill's lane brief.\n\n"
+        f"<skill>\n{skill_text(options.skill_dir)}\n</skill>\n\n"
+        f"{task_block(scenario)}\n\n{reports}\n\n"
+        f"Follow the skill to finish. {MEMO_ASK}"
+    )
+    return lane_calls + [{"role": "final", **call_model(prompt, options.model)}]
+
+
+def cond_format(scenario: dict, options: argparse.Namespace) -> list[dict]:
+    """Ablation: the skill's lane report format, merged by a coordinator with no skill."""
+    brief = fixed_brief(options.skill_dir, scenario)
+    lane_calls = run_lanes(
+        [
+            f"{brief}\n\nMATERIALS YOU FOUND:\n{materials(scenario, lane)}\n\n"
+            f"Your report: at most {options.lane_words} words."
+            for lane in scenario["slices"]
+        ],
+        options.lane_model,
+    )
+    reports = "\n\n".join(
+        f"REPORT FROM ANALYST {index}:\n{call['text']}"
+        for index, call in enumerate(lane_calls, 1)
+    )
+    prompt = (
+        "You coordinate three analysts who investigated the question below in "
+        "parallel. You have only their reports.\n\n"
+        f"{task_block(scenario)}\n\n{reports}\n\n{MEMO_ASK}"
+    )
+    return lane_calls + [{"role": "final", **call_model(prompt, options.model)}]
+
+
+def cond_merge(scenario: dict, options: argparse.Namespace) -> list[dict]:
+    """Ablation: ordinary analyst reports, merged by a coordinator with the skill."""
+    calls = flat_lanes(scenario, options)
+    reports = "\n\n".join(
+        f"REPORT FROM LANE {index}:\n{call['text']}"
+        for index, call in enumerate(calls, 1)
+    )
+    prompt = (
+        "You have this skill loaded and you are finishing an investigation. "
+        "Three analysts already reported, in their own format.\n\n"
+        f"<skill>\n{skill_text(options.skill_dir)}\n</skill>\n\n"
+        f"{task_block(scenario)}\n\n{reports}\n\n"
+        f"Follow the skill to finish. {MEMO_ASK}"
+    )
+    return calls + [{"role": "final", **call_model(prompt, options.model)}]
+
+
 CONDITIONS = {
+    "skillfixed": cond_skillfixed,
+    "format": cond_format,
+    "merge": cond_merge,
     "single": cond_single,
     "solo": cond_solo,
     "flat": cond_flat,
