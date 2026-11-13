@@ -1,9 +1,9 @@
 ---
 name: evidence-ledger
 description: >-
-  Use when several agents, or several passes by one agent, have investigated
-  one uncertain question (research, diagnosis, architecture or library choice,
-  review) and their findings must be merged into one decision.
+  Use when the findings of several agents, or one agent's reading of mixed
+  evidence, on one uncertain question (research, diagnosis, architecture or
+  library choice, review) must be turned into one decision.
 ---
 
 # Instructions
@@ -16,17 +16,16 @@ settle the question. Merge facts, then decide once.
 ## Scope
 
 Use it when two or more lanes (subagents, or separate passes) each looked at
-part of the evidence for one decision. Skip it when one agent can read all the
-evidence itself: that is cheaper and needs no merge.
+part of the evidence for one decision. When one agent can read all the
+evidence itself, prefer that to a panel, which costs about three times as
+much, and apply steps 3 and 4 to its reading.
 
 ## Workflow
 
 ### 1. Run the lanes
 
 Lanes work apart and do not see each other's reports. Brief them as you
-normally would, or read [references/lane-brief.md](references/lane-brief.md)
-when you write the briefs yourself and want shorter reports. Reports that
-already exist are fine as they are.
+normally would. Reports that already exist are fine as they are.
 
 ### 2. Pool
 

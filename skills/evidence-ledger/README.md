@@ -27,8 +27,8 @@ npx --yes "skills@>=1.7.4" add rotnov/skills --skill evidence-ledger -a claude-c
 
 None beyond the agent itself. Subagents are used when the host has them;
 without them the same decision rule applies to one agent's own reading. If
-one agent can read all the evidence itself, that is cheaper and the skill is
-not needed.
+one agent can read all the evidence itself, that is about three times cheaper
+than a panel and the skill's decision rule still applies.
 
 ## Use
 

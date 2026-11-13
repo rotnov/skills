@@ -41,17 +41,15 @@ def skill_texts() -> dict[Path, str]:
 
 
 class EvidenceLedgerSkillTests(unittest.TestCase):
-    def test_references_are_linked_with_read_conditions(self) -> None:
-        skill = SKILL.read_text(encoding="utf-8")
-        linked = set(LINK_RE.findall(skill))
-        present = {
-            f"references/{path.name}" for path in (SKILL_DIR / "references").iterdir()
-        }
-        self.assertEqual(linked, present)
-        for relative in present:
-            text = (SKILL_DIR / relative).read_text(encoding="utf-8")
-            first_paragraph = text.split("\n\n", 2)[1]
-            self.assertTrue(first_paragraph.startswith("Read this when"), relative)
+    def test_skill_is_one_file_with_no_references(self) -> None:
+        # The lane brief was the last reference; it changed no decision and
+        # its effect on cost was inconsistent, so it was cut.
+        self.assertFalse((SKILL_DIR / "references").exists())
+        self.assertEqual(LINK_RE.findall(SKILL.read_text(encoding="utf-8")), [])
+        self.assertEqual(
+            sorted(path.name for path in SKILL_DIR.iterdir()),
+            ["README.md", "SKILL.md", "evals"],
+        )
 
     def test_skill_is_portable_and_small(self) -> None:
         self.assertFalse((SKILL_DIR / "agents").exists())
@@ -78,7 +76,7 @@ class EvidenceLedgerSkillTests(unittest.TestCase):
             "Do not add conditions, pre-checks or caveats",
             "**Hold** when it is not, and the action is costly to undo",
             "**Split** when the evidence covers part",
-            "Skip it when one agent can read all the evidence itself",
+            "prefer that to a panel",
             "## Without subagents",
         ):
             self.assertIn(phrase, skill)
@@ -87,26 +85,13 @@ class EvidenceLedgerSkillTests(unittest.TestCase):
 
     def test_parts_cut_by_ablation_stay_cut(self) -> None:
         skill = SKILL.read_text(encoding="utf-8")
-        # No planning turn, no pre-framed rivals, no rung ladder: none of them
-        # changed a decision in the ablations.
-        for word in ("Rival", "rival", "Rung", "rung", "observed-elsewhere"):
+        # No planning turn, no pre-framed rivals, no rung ladder, no report
+        # format for lanes: none of them changed a decision in the ablations.
+        for word in ("Rival", "rival", "Rung", "rung", "observed-elsewhere", "claim line"):
             self.assertNotIn(word, skill)
-        self.assertEqual(
-            [path.name for path in (SKILL_DIR / "references").iterdir()],
-            ["lane-brief.md"],
-        )
-
-    def test_lane_brief_asks_for_facts_not_verdicts(self) -> None:
-        brief = (SKILL_DIR / "references" / "lane-brief.md").read_text(encoding="utf-8")
-        for field in ("origin:", "how:", "where:"):
-            self.assertIn(field, brief)
-        self.assertIn("do not conclude", brief)
-        # The harness fills exactly these two placeholders.
-        self.assertIn("<the question as asked>", brief)
-        self.assertIn("<the exact setup or population the decision applies to>", brief)
 
     def test_skill_does_not_name_evaluation_scenarios(self) -> None:
-        for relative in ("SKILL.md", "references/lane-brief.md"):
+        for relative in ("SKILL.md",):
             text = (SKILL_DIR / relative).read_text(encoding="utf-8")
             for name in SCENARIO_NAMES:
                 self.assertNotIn(name, text, f"{relative} mentions {name}")
@@ -191,6 +176,7 @@ class EvidenceLedgerEvaluationTests(unittest.TestCase):
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         source = EVAL_DIR / "ablations" / "v2"
+        self.assertTrue((EVAL_DIR / "ablations" / "v3" / "SKILL.txt").is_file())
         for name, edits in module.VARIANTS.items():
             texts = {
                 str(path.relative_to(source).with_suffix(".md")): path.read_text(encoding="utf-8")
@@ -206,9 +192,9 @@ class EvidenceLedgerEvaluationTests(unittest.TestCase):
                 stored = (EVAL_DIR / "ablations" / name / relative).with_suffix(".txt")
                 self.assertEqual(stored.read_text(encoding="utf-8"), text, f"{name}: {relative}")
 
-    def test_fixed_brief_fills_the_shipped_template(self) -> None:
+    def test_fixed_brief_fills_the_frozen_v3_template(self) -> None:
         scenario = self.scenarios["so1"]
-        brief = self.harness.fixed_brief(SKILL_DIR, scenario)
+        brief = self.harness.fixed_brief(EVAL_DIR / "ablations" / "v3", scenario)
         self.assertIn(scenario["question"], brief)
         self.assertIn(scenario["setup"], brief)
         self.assertNotIn("<the question as asked>", brief)
