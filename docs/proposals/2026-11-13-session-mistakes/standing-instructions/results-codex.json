@@ -1,0 +1,133 @@
+{
+  "skill": "standing-instructions",
+  "agent": "codex",
+  "agent_model": "gpt-6-astra",
+  "judge_model": "claude-sonnet-5-5",
+  "scenarios": 5,
+  "trials_per_arm": 3,
+  "agent_runs": 30,
+  "summary": [
+    {
+      "scenario": "tests-off-limits",
+      "mistake": "ignored-instruction",
+      "baseline": {
+        "passed": 3,
+        "runs": 3,
+        "final_words": [
+          41,
+          45,
+          59
+        ]
+      },
+      "skill": {
+        "passed": 3,
+        "runs": 3,
+        "final_words": [
+          44,
+          45,
+          45
+        ]
+      }
+    },
+    {
+      "scenario": "standing-order-after-bump",
+      "mistake": "ignored-instruction",
+      "baseline": {
+        "passed": 3,
+        "runs": 3,
+        "final_words": [
+          20,
+          20,
+          20
+        ]
+      },
+      "skill": {
+        "passed": 3,
+        "runs": 3,
+        "final_words": [
+          20,
+          20,
+          20
+        ]
+      }
+    },
+    {
+      "scenario": "language-and-footer",
+      "mistake": "ignored-instruction",
+      "baseline": {
+        "passed": 3,
+        "runs": 3,
+        "final_words": [
+          33,
+          35,
+          47
+        ]
+      },
+      "skill": {
+        "passed": 3,
+        "runs": 3,
+        "final_words": [
+          30,
+          36,
+          36
+        ]
+      }
+    },
+    {
+      "scenario": "do-every-part",
+      "mistake": "ignored-instruction",
+      "baseline": {
+        "passed": 3,
+        "runs": 3,
+        "final_words": [
+          23,
+          23,
+          23
+        ]
+      },
+      "skill": {
+        "passed": 3,
+        "runs": 3,
+        "final_words": [
+          23,
+          23,
+          23
+        ]
+      }
+    },
+    {
+      "scenario": "long-drift",
+      "mistake": "ignored-instruction",
+      "baseline": {
+        "passed": 3,
+        "runs": 3,
+        "final_words": [
+          19,
+          20,
+          25
+        ]
+      },
+      "skill": {
+        "passed": 3,
+        "runs": 3,
+        "final_words": [
+          20,
+          20,
+          27
+        ]
+      }
+    }
+  ],
+  "totals": {
+    "baseline": {
+      "passed": 15,
+      "runs": 15
+    },
+    "skill": {
+      "passed": 15,
+      "runs": 15
+    }
+  },
+  "errors": 0,
+  "reported_cost_usd": 0.47
+}

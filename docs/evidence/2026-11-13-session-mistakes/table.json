@@ -7,8 +7,8 @@
       "sessions": 84
     },
     "codex": {
-      "labeled": 3936,
-      "sessions": 96
+      "labeled": 13815,
+      "sessions": 313
     },
     "grok": {
       "labeled": 18,
@@ -22,10 +22,10 @@
   "rows": [
     {
       "category": "ignored-instruction",
-      "count": 83,
-      "sessions": 45,
-      "cost_score": 226,
-      "mean_severity": 1.84,
+      "count": 188,
+      "sessions": 85,
+      "cost_score": 485,
+      "mean_severity": 1.78,
       "by_harness": {
         "claude": {
           "count": 33,
@@ -40,11 +40,15 @@
           }
         },
         "codex": {
-          "count": 50,
-          "sessions": 26,
+          "count": 155,
+          "sessions": 66,
           "models": {
-            "gpt-6.1-sol": 30,
-            "gpt-6-astra": 20
+            "gpt-6-astra": 66,
+            "gpt-5.6-sol": 49,
+            "gpt-6.1-sol": 32,
+            "gpt-5.5": 6,
+            "gpt-5-codex": 1,
+            "gpt-5.1-codex": 1
           }
         },
         "grok": {
@@ -61,10 +65,10 @@
     },
     {
       "category": "false-claim",
-      "count": 25,
-      "sessions": 19,
-      "cost_score": 67,
-      "mean_severity": 1.84,
+      "count": 88,
+      "sessions": 45,
+      "cost_score": 243,
+      "mean_severity": 1.86,
       "by_harness": {
         "claude": {
           "count": 9,
@@ -76,11 +80,15 @@
           }
         },
         "codex": {
-          "count": 16,
-          "sessions": 12,
+          "count": 79,
+          "sessions": 38,
           "models": {
-            "gpt-6.1-sol": 11,
-            "gpt-6-astra": 5
+            "gpt-6-astra": 27,
+            "gpt-5.6-sol": 21,
+            "gpt-5.5": 15,
+            "gpt-6.1-sol": 13,
+            "gpt-5.4-mini": 2,
+            "gpt-5.1-codex": 1
           }
         },
         "grok": {
@@ -97,10 +105,10 @@
     },
     {
       "category": "wrong-fact",
-      "count": 29,
-      "sessions": 22,
-      "cost_score": 61,
-      "mean_severity": 1.55,
+      "count": 96,
+      "sessions": 59,
+      "cost_score": 216,
+      "mean_severity": 1.59,
       "by_harness": {
         "claude": {
           "count": 15,
@@ -115,11 +123,17 @@
           }
         },
         "codex": {
-          "count": 14,
-          "sessions": 11,
+          "count": 81,
+          "sessions": 48,
           "models": {
-            "gpt-6.1-sol": 11,
-            "gpt-6-astra": 3
+            "gpt-5.6-sol": 39,
+            "gpt-6-astra": 22,
+            "gpt-6.1-sol": 13,
+            "gpt-5.5": 3,
+            "gpt-5.4-mini": 1,
+            "gpt-5.6-terra": 1,
+            "gpt-5.2-codex": 1,
+            "gpt-5-codex": 1
           }
         },
         "grok": {
@@ -136,10 +150,10 @@
     },
     {
       "category": "unnecessary-work",
-      "count": 35,
-      "sessions": 22,
-      "cost_score": 75,
-      "mean_severity": 1.57,
+      "count": 102,
+      "sessions": 44,
+      "cost_score": 227,
+      "mean_severity": 1.6,
       "by_harness": {
         "claude": {
           "count": 4,
@@ -150,12 +164,15 @@
           }
         },
         "codex": {
-          "count": 31,
-          "sessions": 20,
+          "count": 98,
+          "sessions": 42,
           "models": {
+            "gpt-5.6-sol": 51,
+            "gpt-6-astra": 24,
             "gpt-6.1-sol": 20,
-            "gpt-6-astra": 10,
-            "gpt-6-sol": 1
+            "gpt-5.5": 1,
+            "gpt-6-sol": 1,
+            "gpt-5.6-terra": 1
           }
         },
         "grok": {
@@ -172,10 +189,10 @@
     },
     {
       "category": "asked-too-much",
-      "count": 23,
-      "sessions": 18,
-      "cost_score": 41,
-      "mean_severity": 1.39,
+      "count": 44,
+      "sessions": 34,
+      "cost_score": 76,
+      "mean_severity": 1.36,
       "by_harness": {
         "claude": {
           "count": 16,
@@ -187,11 +204,16 @@
           }
         },
         "codex": {
-          "count": 7,
-          "sessions": 6,
+          "count": 28,
+          "sessions": 22,
           "models": {
-            "gpt-6-astra": 4,
-            "gpt-6.1-sol": 3
+            "gpt-5.6-sol": 13,
+            "gpt-6-astra": 5,
+            "gpt-6.1-sol": 4,
+            "gpt-5.6-terra": 3,
+            "gpt-5.1-codex": 1,
+            "gpt-6-sol": 1,
+            "gpt-5.4-mini": 1
           }
         },
         "grok": {
@@ -208,10 +230,10 @@
     },
     {
       "category": "acted-without-asking",
-      "count": 6,
-      "sessions": 4,
-      "cost_score": 14,
-      "mean_severity": 1.67,
+      "count": 13,
+      "sessions": 8,
+      "cost_score": 35,
+      "mean_severity": 1.85,
       "by_harness": {
         "claude": {
           "count": 1,
@@ -221,9 +243,10 @@
           }
         },
         "codex": {
-          "count": 5,
-          "sessions": 3,
+          "count": 12,
+          "sessions": 7,
           "models": {
+            "gpt-5.6-sol": 7,
             "gpt-6.1-sol": 5
           }
         },
@@ -241,10 +264,10 @@
     },
     {
       "category": "broke-working-code",
-      "count": 0,
-      "sessions": 0,
-      "cost_score": 0,
-      "mean_severity": 0,
+      "count": 4,
+      "sessions": 4,
+      "cost_score": 12,
+      "mean_severity": 2.0,
       "by_harness": {
         "claude": {
           "count": 0,
@@ -252,9 +275,13 @@
           "models": {}
         },
         "codex": {
-          "count": 0,
-          "sessions": 0,
-          "models": {}
+          "count": 4,
+          "sessions": 4,
+          "models": {
+            "gpt-6-astra": 2,
+            "gpt-5.6-sol": 1,
+            "gpt-5.5": 1
+          }
         },
         "grok": {
           "count": 0,
@@ -270,10 +297,10 @@
     },
     {
       "category": "ignored-repo-rules",
-      "count": 9,
-      "sessions": 8,
-      "cost_score": 27,
-      "mean_severity": 2.0,
+      "count": 31,
+      "sessions": 18,
+      "cost_score": 79,
+      "mean_severity": 1.77,
       "by_harness": {
         "claude": {
           "count": 5,
@@ -285,11 +312,13 @@
           }
         },
         "codex": {
-          "count": 4,
-          "sessions": 4,
+          "count": 26,
+          "sessions": 14,
           "models": {
+            "gpt-5.6-sol": 11,
+            "gpt-6-astra": 11,
             "gpt-6.1-sol": 3,
-            "gpt-6-astra": 1
+            "gpt-5.5": 1
           }
         },
         "grok": {
@@ -306,10 +335,10 @@
     },
     {
       "category": "wrong-approach",
-      "count": 32,
-      "sessions": 20,
-      "cost_score": 92,
-      "mean_severity": 1.94,
+      "count": 123,
+      "sessions": 56,
+      "cost_score": 339,
+      "mean_severity": 1.88,
       "by_harness": {
         "claude": {
           "count": 9,
@@ -323,11 +352,16 @@
           }
         },
         "codex": {
-          "count": 23,
-          "sessions": 15,
+          "count": 114,
+          "sessions": 51,
           "models": {
-            "gpt-6.1-sol": 18,
-            "gpt-6-astra": 5
+            "gpt-5.6-sol": 65,
+            "gpt-6-astra": 25,
+            "gpt-6.1-sol": 19,
+            "gpt-5.6-terra": 2,
+            "gpt-daybreak-blue-latest": 1,
+            "gpt-5.5": 1,
+            "gpt-5-codex": 1
           }
         },
         "grok": {
@@ -344,10 +378,10 @@
     },
     {
       "category": "missed-the-question",
-      "count": 25,
-      "sessions": 20,
-      "cost_score": 57,
-      "mean_severity": 1.64,
+      "count": 81,
+      "sessions": 53,
+      "cost_score": 173,
+      "mean_severity": 1.57,
       "by_harness": {
         "claude": {
           "count": 13,
@@ -360,11 +394,15 @@
           }
         },
         "codex": {
-          "count": 12,
-          "sessions": 10,
+          "count": 68,
+          "sessions": 43,
           "models": {
-            "gpt-6.1-sol": 6,
-            "gpt-6-astra": 6
+            "gpt-5.6-sol": 41,
+            "gpt-6-astra": 16,
+            "gpt-6.1-sol": 7,
+            "gpt-6-sol": 2,
+            "gpt-5.3-codex": 1,
+            "gpt-daybreak-blue-latest": 1
           }
         },
         "grok": {
@@ -381,10 +419,10 @@
     },
     {
       "category": "unclear-report",
-      "count": 32,
-      "sessions": 22,
-      "cost_score": 52,
-      "mean_severity": 1.31,
+      "count": 67,
+      "sessions": 42,
+      "cost_score": 103,
+      "mean_severity": 1.27,
       "by_harness": {
         "claude": {
           "count": 20,
@@ -397,11 +435,14 @@
           }
         },
         "codex": {
-          "count": 12,
-          "sessions": 10,
+          "count": 47,
+          "sessions": 30,
           "models": {
+            "gpt-5.6-sol": 21,
+            "gpt-6-astra": 16,
             "gpt-6.1-sol": 8,
-            "gpt-6-astra": 4
+            "gpt-6-sol": 1,
+            "gpt-5.5": 1
           }
         },
         "grok": {
@@ -418,10 +459,10 @@
     },
     {
       "category": "other",
-      "count": 6,
-      "sessions": 4,
-      "cost_score": 16,
-      "mean_severity": 1.83,
+      "count": 16,
+      "sessions": 10,
+      "cost_score": 40,
+      "mean_severity": 1.75,
       "by_harness": {
         "claude": {
           "count": 0,
@@ -429,11 +470,13 @@
           "models": {}
         },
         "codex": {
-          "count": 6,
-          "sessions": 4,
+          "count": 16,
+          "sessions": 10,
           "models": {
+            "gpt-6-astra": 7,
             "gpt-6.1-sol": 5,
-            "gpt-6-astra": 1
+            "gpt-5.6-sol": 3,
+            "gpt-5.5": 1
           }
         },
         "grok": {

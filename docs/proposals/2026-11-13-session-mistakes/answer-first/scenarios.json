@@ -57,8 +57,7 @@
       },
       "prompt": "Quick one before I run it: will `make release` push anything to the remote? yes or no",
       "pass_criteria": [
-        "The final message begins with a clear yes (it pushes tags to the remote unless DRY_RUN=1); the answer is not preceded by explanation.",
-        "Everything after the answer serves the decision the user is about to make (what gets pushed, and how to avoid it, such as DRY_RUN=1); there is no walkthrough of the Makefile or of unrelated steps such as the tests."
+        "The final message begins with a clear yes (it pushes tags to the remote unless DRY_RUN=1); the answer is not preceded by explanation."
       ]
     }
   ]

@@ -322,13 +322,15 @@ def converse_codex(work: Path, root: Path, turns: list[str], skill: Path | None,
     (home / ".codex").mkdir(parents=True)
     (home / ".codex" / "auth.json").symlink_to(auth)
     env = {**os.environ, "HOME": str(home), "CODEX_HOME": str(home / ".codex")}
-    base = ["--json", "--skip-git-repo-check", "--ignore-rules", "-s", "workspace-write"]
+    # `exec resume` takes no -s or --add-dir, so the sandbox is set through
+    # config; the sandbox can read the skill folder without being given it.
+    base = ["--json", "--skip-git-repo-check", "--ignore-rules", "-c", 'sandbox_mode="workspace-write"']
     if args.agent_model and not args.agent_model.startswith("claude"):
         base += ["-m", args.agent_model]
     if skill:
         text = (skill / "SKILL.md").read_text(encoding="utf-8")
         note = f"The Agent Skill below is installed at {skill}. Follow it whenever it applies.\n\n{text}"
-        base += ["--add-dir", str(skill), "-c", "developer_instructions=" + json.dumps(note, ensure_ascii=False)]
+        base += ["-c", "developer_instructions=" + json.dumps(note, ensure_ascii=False)]
     streams: list[str] = []
     deadline = time.monotonic() + args.agent_timeout
     thread = ""
@@ -343,6 +345,8 @@ def converse_codex(work: Path, root: Path, turns: list[str], skill: Path | None,
             )  # fmt: skip
         except subprocess.TimeoutExpired:
             break
+        if done.returncode != 0 and not done.stdout.strip():
+            raise mistakes.LabelerError(f"codex exited with {done.returncode}: {done.stderr.strip()[-300:]}")
         streams.append(done.stdout)
         thread = thread or codex_thread_id(done.stdout)
     return streams

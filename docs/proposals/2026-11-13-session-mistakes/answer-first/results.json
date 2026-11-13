@@ -1,5 +1,6 @@
 {
   "skill": "answer-first",
+  "agent": "claude",
   "agent_model": "claude-sonnet-5-5",
   "judge_model": "claude-sonnet-5-5",
   "scenarios": 4,
@@ -11,11 +12,21 @@
       "mistake": "missed-the-question",
       "baseline": {
         "passed": 0,
-        "runs": 3
+        "runs": 3,
+        "final_words": [
+          185,
+          203,
+          212
+        ]
       },
       "skill": {
         "passed": 3,
-        "runs": 3
+        "runs": 3,
+        "final_words": [
+          201,
+          212,
+          215
+        ]
       }
     },
     {
@@ -23,48 +34,77 @@
       "mistake": "unclear-report",
       "baseline": {
         "passed": 0,
-        "runs": 3
+        "runs": 3,
+        "final_words": [
+          223,
+          269,
+          278
+        ]
       },
       "skill": {
         "passed": 0,
-        "runs": 3
+        "runs": 2,
+        "final_words": [
+          212,
+          230
+        ]
       }
     },
     {
       "scenario": "where-is-it",
       "mistake": "unclear-report",
       "baseline": {
-        "passed": 1,
-        "runs": 3
+        "passed": 0,
+        "runs": 3,
+        "final_words": [
+          33,
+          38,
+          45
+        ]
       },
       "skill": {
         "passed": 3,
-        "runs": 3
+        "runs": 3,
+        "final_words": [
+          49,
+          56,
+          60
+        ]
       }
     },
     {
       "scenario": "yes-or-no",
       "mistake": "missed-the-question",
       "baseline": {
-        "passed": 1,
-        "runs": 3
+        "passed": 3,
+        "runs": 3,
+        "final_words": [
+          57,
+          66,
+          69
+        ]
       },
       "skill": {
-        "passed": 1,
-        "runs": 3
+        "passed": 3,
+        "runs": 3,
+        "final_words": [
+          76,
+          96,
+          111
+        ]
       }
     }
   ],
   "totals": {
     "baseline": {
-      "passed": 2,
+      "passed": 3,
       "runs": 12
     },
     "skill": {
-      "passed": 7,
-      "runs": 12
+      "passed": 9,
+      "runs": 11
     }
   },
-  "errors": 0,
-  "reported_cost_usd": 1.19
+  "errors": 1,
+  "reported_cost_usd": 1.11
 }

@@ -27,13 +27,16 @@ prose. 5,128 of the Codex files are zstd-compressed and were read through
 ## What was labeled
 
 - Model: `claude-sonnet-5-5` through the signed-in `claude` CLI (subscription;
-  no new spend). 815 calls of 10 messages; reported list-price equivalent
-  about 21 USD.
-- Scope: the newest 4,000 messages per harness that follow an agent reply.
-  That is all of Claude Code (2026-07 to 2026-11), the newest 4,000 of 13,939
-  Codex messages (2026-10 and 2026-11), and all of Grok and Cursor. 7,818
-  messages got a label; 9,941 older Codex messages did not.
-- After removing copies from resumed and forked sessions, 6,393 labeled
+  no new spend). 1,810 calls of 10 messages in two passes; reported
+  list-price equivalent about 44 USD.
+- First pass: the newest 4,000 messages per harness that follow an agent
+  reply (7,818 labels). Second pass, added before the pull request: the
+  remaining 9,941 older Codex messages, with no failed calls.
+- Scope now: every message that follows an agent reply, on all four
+  harnesses. 17,759 messages have a label; 8 newer Claude Code messages
+  arrived after the first pass and do not. Codex labels run from 2025-10 to
+  2026-11, with 97 percent of them from 2026-07 onward.
+- After removing copies from resumed and forked sessions, 16,272 labeled
   messages remain.
 - Taxonomy: version 2. Version 1 was the draft; a 312-message pilot put 15 of
   61 mistakes into "Other", which became three new types (see
@@ -41,9 +44,10 @@ prose. 5,128 of the Codex files are zstd-compressed and were read through
 
 ## Labeling quality
 
-A blind hand check: 80 labeled messages (40 flagged, 40 not flagged) were
-shuffled and judged without the model's labels by a second agent, not by the
-user.
+A blind check by a second agent, not by the user: 80 labeled messages (40
+flagged, 40 not flagged) were shuffled and judged without the model's
+labels. The sample was drawn after the first pass, so none of the 9,941
+older Codex messages is in it.
 
 | Flags counted | Extraction precision | Classification precision |
 | --- | --- | --- |
@@ -60,41 +64,53 @@ So the committed table counts only flags at confidence 0.7 or higher. Read it
 as "about four in five rows are real corrections, and about two in three of
 those carry the right type". The sample at that threshold is 11 messages:
 the precision figure is a direction, not a measurement. At 0.6 the table is
-2.6 times larger (796 mistakes) and less precise; its order of types differs
-(see below).
+2.4 times larger (2,058 mistakes) and less precise; its order of types
+differs (see below).
 
 ## Top types
 
-At confidence 0.7 (305 mistakes in 6,393 labeled messages):
+At confidence 0.7 (853 mistakes in 16,272 labeled messages):
 
 | Rank by cost | Type | Cost score | Mistakes | Sessions | Claude | Codex |
 | --- | --- | --- | --- | --- | --- | --- |
-| 1 | Ignored instruction | 226 | 83 | 45 | 33 | 50 |
-| 2 | Wrong tool or approach | 92 | 32 | 20 | 9 | 23 |
-| 3 | Unnecessary work | 75 | 35 | 22 | 4 | 31 |
-| 4 | False or overstated claim of result | 67 | 25 | 19 | 9 | 16 |
-| 5 | Wrong fact or unchecked assumption | 61 | 29 | 22 | 15 | 14 |
-| 6 | Missed the question | 57 | 25 | 20 | 13 | 12 |
-| 7 | Unclear or overlong report | 52 | 32 | 22 | 20 | 12 |
-| 8 | Asked too much | 41 | 23 | 18 | 16 | 7 |
+| 1 | Ignored instruction | 485 | 188 | 85 | 33 | 155 |
+| 2 | Wrong tool or approach | 339 | 123 | 56 | 9 | 114 |
+| 3 | False or overstated claim of result | 243 | 88 | 45 | 9 | 79 |
+| 4 | Unnecessary work | 227 | 102 | 44 | 4 | 98 |
+| 5 | Wrong fact or unchecked assumption | 216 | 96 | 59 | 15 | 81 |
+| 6 | Missed the question | 173 | 81 | 53 | 13 | 68 |
+| 7 | Unclear or overlong report | 103 | 67 | 42 | 20 | 47 |
+| 8 | Ignored repository or standing rules | 79 | 31 | 18 | 5 | 26 |
 
 The cost score adds 1, 3 or 8 per mistake for severity 1, 2 or 3 as judged
 by the labeling model. Grok and Cursor have no rows at this threshold.
 
-At confidence 0.6 (796 mistakes) the order is: ignored instruction 183,
-missed the question 124, wrong approach 84, unclear report 83, false claim
-71, asked too much 65, wrong fact 64, unnecessary work 63.
+At confidence 0.6 (2,058 mistakes) the order by cost, with counts, is: ignored
+instruction 495, wrong approach 260, missed the question 289, false claim
+186, wrong fact 208, unnecessary work 166, unclear report 191, asked too
+much 113.
 
 Rates are close across the two large harnesses: 5.1 flagged corrections per
-100 labeled messages for Claude Code and 4.6 for Codex. Grok (18 labeled
-messages) and Cursor (3) are too small to say anything.
+100 labeled messages for Claude Code and 5.3 for Codex. The Codex columns
+are larger because Codex has 5.7 times as many labeled messages, not because
+it errs more often. Grok (18 labeled messages) and Cursor (3) are too small
+to say anything.
+
+Against the first pass (305 mistakes in 6,393 messages), the top type is
+unchanged, "False or overstated claim" rose from fourth to third, and
+"Unnecessary work" fell from third to fourth.
 
 ## Not verified
 
 - The user has not reviewed any label; both the labels and the hand check
   come from models.
 - Recall is unknown. A mistake the user fixed silently leaves no message.
-- Codex before 2026-10 is collected but not labeled.
+- The hand check does not cover the second labeling pass (Codex before
+  2026-10).
+- Near-identical examples can appear twice (ex-8f8bf697 and ex-de04ba47
+  describe one incident). Copies from forked sessions are removed; whether
+  this pair is two real corrections or a copy the removal missed has not
+  been checked.
 - Whether a message came from the person or from an orchestrating agent is
   decided by harness markers and text rules; the labeling model marked a
-  further 1.5 percent of messages as not human.
+  further 0.9 percent of messages as not human.

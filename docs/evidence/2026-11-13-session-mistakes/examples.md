@@ -1,6 +1,9 @@
 # Anonymized examples
 
-Descriptions are written by the labeling model; quotes are redacted.
+Descriptions are written by the labeling model and no user quotes are
+included. Six descriptions were generalized by hand to remove the subject
+matter of the project they came from. Two examples from the first pass
+(ex-b5abf60b, ex-d21c7793) are kept because the proposals cite them.
 
 ## Ignored instruction
 
@@ -8,6 +11,11 @@ Descriptions are written by the labeling model; quotes are redacted.
 
 - Harness: codex; model: gpt-6.1-sol; month: 2026-10; severity: 3
 - What went wrong: The agent and its sub-agents kept stalling and needed manual nudging, and it reached a messy state with endless checks and approvals, angering the user.
+
+### ex-97de3b9b
+
+- Harness: codex; model: gpt-5.6-sol; month: 2026-08; severity: 2
+- What went wrong: The agent reverted a tool version bump the user had explicitly asked for, because an automated review flagged it, forcing the user to restate the request.
 
 ### ex-a7b3fd5e
 
@@ -19,75 +27,68 @@ Descriptions are written by the labeling model; quotes are redacted.
 - Harness: claude; model: claude-opus-5-5; month: 2026-11; severity: 2
 - What went wrong: The agent replied in English although the user had been communicating in Russian and needed a Russian answer.
 
-## Unnecessary work
-
-### ex-7d191368
-
-- Harness: codex; model: gpt-6-astra; month: 2026-11; severity: 2
-- What went wrong: Agent posted repeated status messages every minute with no new information, wasting tokens.
-
-### ex-3e03a94a
-
-- Harness: codex; model: gpt-6-astra; month: 2026-10; severity: 2
-- What went wrong: The agent added extra protection logic and changed the version scheme beyond restoring the original implementation, when the user wanted the develop implementation kept as is.
-
-### ex-ace6d039
-
-- Harness: codex; model: gpt-6.1-sol; month: 2026-10; severity: 2
-- What went wrong: The agent's pull request still contained many unneeded scripts despite the user asking for no clutter.
-
 ## Wrong tool or approach
+
+### ex-cbace820
+
+- Harness: codex; model: gpt-6-astra; month: 2026-09; severity: 2
+- What went wrong: The agent reviewed and corrected its output from only one viewing angle, leaving visible artifacts, instead of checking the other angles too.
 
 ### ex-27dd7757
 
 - Harness: codex; model: gpt-6.1-sol; month: 2026-10; severity: 2
 - What went wrong: The agent generated each state separately so the images differed from each other, instead of taking one base image and overlaying masks.
 
-### ex-876fbe90
+### ex-94726464
+
+- Harness: codex; model: gpt-5.6-sol; month: 2026-09; severity: 2
+- What went wrong: The agent's delegated work put all label definitions in one huge shared file, which is hard for a human to read.
+
+## Unnecessary work
+
+### ex-9ec9a4e3
+
+- Harness: codex; model: gpt-5.6-sol; month: 2026-07; severity: 3
+- What went wrong: The agent made far more changes than the task required, altering fixtures, warnings, comments and tests, so the user abandoned the whole pull request.
+
+### ex-7d191368
 
 - Harness: codex; model: gpt-6-astra; month: 2026-11; severity: 2
-- What went wrong: The agent proposed a separate private repository for the test run when the user only wanted a manually triggerable indexing flow.
+- What went wrong: Agent posted repeated status messages every minute with no new information, wasting tokens.
 
-### ex-ebde67ca
+### ex-b076ff48
 
-- Harness: codex; model: gpt-6.1-sol; month: 2026-10; severity: 2
-- What went wrong: The agent set up a scheduled polling job to check on agents although it already had an internal tool to track agent status and nudge them.
-
-## Unclear or overlong report
-
-### ex-8b098981
-
-- Harness: codex; model: gpt-6.1-sol; month: 2026-10; severity: 2
-- What went wrong: The report focused on runner internals instead of stating whether product bugs were found, so the user had to ask what the report was and restate the goal.
-
-### ex-a951d599
-
-- Harness: claude; model: claude-fable-5; month: 2026-08; severity: 2
-- What went wrong: The agent produced a long, over-stylized answer with jargon and tables when the user wanted simple, concise output.
-
-### ex-88146674
-
-- Harness: claude; model: claude-opus-5; month: 2026-08; severity: 2
-- What went wrong: The agent's long, dense report was incomprehensible to the user and focused on the wrong signal (tool failures) instead of the question about model misbehavior.
+- Harness: codex; model: gpt-5.6-sol; month: 2026-08; severity: 2
+- What went wrong: The agent wrote a pointless test that pins an exception to one specific file path instead of testing the actual rule.
 
 ## Wrong fact or unchecked assumption
+
+### ex-8f8bf697
+
+- Harness: codex; model: gpt-5.6-sol; month: 2026-08; severity: 3
+- What went wrong: The agent misread a remark as a decision to abandon the documentation tool and deleted its config, generator and dependencies, then the user had to restore it.
+
+### ex-de04ba47
+
+- Harness: codex; model: gpt-5.6-sol; month: 2026-08; severity: 3
+- What went wrong: The agent misread a remark as a decision to abandon the documentation tool and deleted its config, generator and dependencies, so the user had to clarify.
 
 ### ex-04be4fc9
 
 - Harness: codex; model: gpt-6.1-sol; month: 2026-10; severity: 2
 - What went wrong: The agent created the repository with a misspelled name rather than the name the user dictated.
 
-### ex-300875ad
-
-- Harness: claude; model: claude-opus-5; month: 2026-08; severity: 2
-- What went wrong: The agent asserted Python is available everywhere and proposed rewriting scripts around it without checking harness recommendations or actual availability.
-
-### ex-51025914
-
-- Harness: codex; model: gpt-6.1-sol; month: 2026-10; severity: 2
-- What went wrong: The agent claimed a login was needed when the tab actually had a hung search, misreading the page state.
-
 ## False or overstated claim of result
+
+### ex-300b9387
+
+- Harness: codex; model: gpt-5.5; month: 2026-05; severity: 3
+- What went wrong: The agent claimed a view was fixed, but it still behaved the old way, so the user called the claim deceptive.
+
+### ex-ccffabd5
+
+- Harness: codex; model: gpt-5.5; month: 2026-05; severity: 2
+- What went wrong: The agent claimed the views were fixed and verified, but they still behaved the old way and the requested version and position labels were missing.
 
 ### ex-8b82bfe8
 
@@ -99,27 +100,39 @@ Descriptions are written by the labeling model; quotes are redacted.
 - Harness: claude; model: claude-sonnet-5; month: 2026-08; severity: 2
 - What went wrong: The agent claimed a background subagent was running and awaited its report, but no such agent existed; it had simply stopped working.
 
-### ex-60b625db
-
-- Harness: claude; model: claude-opus-4-8; month: 2026-07; severity: 2
-- What went wrong: Agent claimed a manual was real software report output without actually checking the document contents.
-
 ## Missed the question
+
+### ex-a505a053
+
+- Harness: codex; model: gpt-6-astra; month: 2026-09; severity: 2
+- What went wrong: The agent answered with a technical audit instead of the strategy discussion the user asked for, so the user had to restate the question.
+
+### ex-e355e513
+
+- Harness: codex; model: gpt-5.6-sol; month: 2026-07; severity: 2
+- What went wrong: The agent prepared the documentation change in the wrong repository, though the user had asked for it in the other one.
 
 ### ex-c318705e
 
 - Harness: codex; model: gpt-6.1-sol; month: 2026-10; severity: 2
 - What went wrong: The agent regenerated the logo with a different font instead of offering a conceptually different idea as the user needed.
 
-### ex-aa991b6a
+## Unclear or overlong report
 
-- Harness: claude; model: claude-sonnet-5; month: 2026-08; severity: 2
-- What went wrong: The agent built a skill for a single next milestone, but the user wanted a skill that loops through all milestones until everything is released.
+### ex-38c52baf
 
-### ex-44b1778b
+- Harness: codex; model: gpt-6-astra; month: 2026-09; severity: 2
+- What went wrong: The owner summary was confusing and did not say what is affected or what efficiency is reduced.
 
-- Harness: claude; model: claude-opus-5-5; month: 2026-10; severity: 2
-- What went wrong: The agent misread the user's goal of testing latency in the target region and suggested proxies and the wrong test region instead of the minimal-latency region.
+### ex-8b098981
+
+- Harness: codex; model: gpt-6.1-sol; month: 2026-10; severity: 2
+- What went wrong: The report focused on runner internals instead of stating whether product bugs were found, so the user had to ask what the report was and restate the goal.
+
+### ex-a951d599
+
+- Harness: claude; model: claude-fable-5; month: 2026-08; severity: 2
+- What went wrong: The agent produced a long, over-stylized answer with jargon and tables when the user wanted simple, concise output.
 
 ## Asked too much
 
@@ -140,37 +153,20 @@ Descriptions are written by the labeling model; quotes are redacted.
 
 ## Ignored repository or standing rules
 
-### ex-9783a581
+### ex-d6cf05fb
 
-- Harness: codex; model: gpt-6.1-sol; month: 2026-10; severity: 2
-- What went wrong: The agent committed review report files into the product PR/git where they did not belong.
+- Harness: codex; model: gpt-5.6-sol; month: 2026-09; severity: 2
+- What went wrong: Agent drove the Simulator in the foreground and kept taking over the user's mouse instead of working offscreen.
 
-### ex-7a7a2dce
+### ex-7c627c13
 
-- Harness: claude; model: claude-sonnet-5; month: 2026-08; severity: 2
-- What went wrong: The agent waited on CI polling manually instead of using the available CI-watch skill that the project provides for this purpose.
+- Harness: codex; model: gpt-6-astra; month: 2026-09; severity: 2
+- What went wrong: Agent sent a long single formal message in the user's name instead of matching the user's short-reply chat style, which made it look fake.
 
-### ex-1ae0dfac
+### ex-23d2bd36
 
-- Harness: codex; model: gpt-6.1-sol; month: 2026-10; severity: 2
-- What went wrong: The agent let disks fill up on both machines by not cleaning up temporary data, which it was expected to do routinely.
-
-## Acted without asking
-
-### ex-cb20a8b3
-
-- Harness: codex; model: gpt-6.1-sol; month: 2026-10; severity: 2
-- What went wrong: The agent archived chats whose work was not actually completed, treating reports and plans as finished results.
-
-### ex-12e4696c
-
-- Harness: codex; model: gpt-6.1-sol; month: 2026-10; severity: 2
-- What went wrong: The agent planned to prepare a support request to a vendor, which the user never asked for.
-
-### ex-dc89ee49
-
-- Harness: codex; model: gpt-6.1-sol; month: 2026-10; severity: 2
-- What went wrong: The agent accessed the system keychain, triggering a password prompt, when it was not asked or expected to do so.
+- Harness: codex; model: gpt-5.6-sol; month: 2026-09; severity: 2
+- What went wrong: The agent kept using the simulator in a way that grabs the user's mouse instead of running it offscreen, so the user had to ask for offscreen work.
 
 ## Other
 
@@ -184,7 +180,41 @@ Descriptions are written by the labeling model; quotes are redacted.
 - Harness: codex; model: gpt-6.1-sol; month: 2026-10; severity: 2
 - What went wrong: The agent produced lyrics with boring choruses; the user wanted a driving continuous chat flow without choruses, with highlights from each day.
 
-### ex-24b0cdca
+### ex-a1d94bf3
+
+- Harness: codex; model: gpt-6-astra; month: 2026-09; severity: 2
+- What went wrong: When updating a tracker issue, the agent hid an important link under a generic label, making it effectively lost, which the user had to point out.
+
+## Acted without asking
+
+### ex-db6624a2
+
+- Harness: codex; model: gpt-5.6-sol; month: 2026-09; severity: 2
+- What went wrong: The agent automatically applied fixes after a deep review found issues, without consulting the user on each finding first.
+
+### ex-dde1c6f7
+
+- Harness: codex; model: gpt-5.6-sol; month: 2026-09; severity: 2
+- What went wrong: The agent replaced an agreed approach (casts) with a different one without confirming, when the answer was ambiguous and it should have asked.
+
+### ex-cb20a8b3
 
 - Harness: codex; model: gpt-6.1-sol; month: 2026-10; severity: 2
-- What went wrong: The generated sketch was unsuitable in tone and look, resembling a memorial rather than the intended achievement art.
+- What went wrong: The agent archived chats whose work was not actually completed, treating reports and plans as finished results.
+
+## Broke something that worked
+
+### ex-f204dc69
+
+- Harness: codex; model: gpt-6-astra; month: 2026-09; severity: 2
+- What went wrong: The agent's build changes damaged the chat notification, removing the online installer link and commit history, and it claimed the message was verified.
+
+### ex-1ca189bf
+
+- Harness: codex; model: gpt-5.6-sol; month: 2026-09; severity: 2
+- What went wrong: The agent made a class with a cached computed value that is not frozen, so the cache can become stale after mutation.
+
+### ex-71f7a280
+
+- Harness: codex; model: gpt-6-astra; month: 2026-10; severity: 2
+- What went wrong: After the agent's changes the page design shifted and the soft blue background from the original became white, regressing the visual design.
