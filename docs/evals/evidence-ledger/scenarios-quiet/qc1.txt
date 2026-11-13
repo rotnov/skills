@@ -1,0 +1,20 @@
+id: qc1
+class: control
+question: Reports say the Halden connection pooler cuts database connection overhead sharply. Can we roll Halden out in front of the remaining order-service databases this sprint?
+setup: Order service on eight regional Postgres clusters. Halden is already in front of two of them.
+slices: D1 D4 | D2 D5 | D3 D6
+truth: Yes, roll it out. The outside reports differ from us in several ways (database size, cloud, language), but none of that touches how a pooler works, and it does not matter anyway: Halden has run in front of two of our own eight clusters, same service and same configuration, for five weeks, with connection time down, no errors and no feature we use that it does not support. The change is reversible in minutes.
+check decision yes: Does the memo give a clear approval to roll Halden out to the remaining clusters this sprint?
+check hedge no: Does the memo withhold approval or require further testing or investigation before the rollout (a staged rollout with routine monitoring does not count)?
+== D1: Halden project blog
+A ride-hailing company put Halden in front of a 2 TB Postgres 14 database on bare metal. Connection set-up time fell from 38 ms to 2 ms and the database's connection count dropped from 4,000 to 200. Their services are written in Go. They ran in session pooling mode. The post also covers their dashboard layout and alert thresholds in some detail.
+== D2: Engineering blog of an online bookshop
+We adopted Halden for a 300 GB Postgres 15 database on a different cloud from most readers of this blog. Checkout latency at the 95th percentile improved by 11% because connections are no longer opened per request. Our stack is Ruby. We use transaction pooling and had to move two LISTEN/NOTIFY consumers to direct connections. No incidents in four months.
+== D3: Our trial record
+Halden has run in front of the order-service clusters eu-north and us-east (two of eight; same schema, same service build, same Halden configuration: transaction pooling) for five weeks of normal traffic including the month-end peak. Connection set-up: 31 ms to 2 ms. Database connections per cluster: 2,900 to 180. Order-service error rate: unchanged at 0.02%. Order-service p95: 212 ms to 196 ms. No Halden restarts.
+== D4: Order-service database usage review
+The order service uses plain queries and transactions through the standard driver. It does not use LISTEN/NOTIFY, session-level advisory locks, session variables or server-side prepared statements (the driver is configured for simple protocol). Reviewed against the Halden transaction-pooling compatibility list: no unsupported feature in use.
+== D5: Rollout and rollback plan
+Per cluster: point the service's connection string at Halden, restart pods in a rolling fashion (about 10 minutes). Rollback: point the connection string back (about 5 minutes). The six remaining clusters run the same order-service build and schema as the two trial clusters. Proposed pace: two clusters a day.
+== D6: Question from the review thread
+"The blog posts are about much bigger or smaller databases than ours, on other clouds and in other languages. Does that matter?" No reply yet.

@@ -1,0 +1,21 @@
+id: el4
+class: evidence-level
+question: The new one-page checkout showed +4% conversion. Product wants to ship it to web and to the mobile apps on Monday. Go?
+setup: Shop with desktop web, mobile web and native iOS and Android apps.
+slices: D1 D3 | D2 D3 D5 | D4 D6 D5
+truth: Ship on desktop web, where it was tested. Do not ship to the apps on Monday: the test ran on desktop web only, the "reproduction" re-ran the same query on the same data, the apps already use a one-step native pay sheet that the change would replace with a web view, and a past test of a web-view checkout in the app cut conversion by 9%. Mobile web is untested too.
+check decision no: Does the memo recommend shipping the new checkout to the mobile apps on Monday?
+check decision2 yes: Does the memo allow or recommend shipping the new checkout on desktop web?
+check aware yes: Does the memo note that the +4% was measured on desktop web only and is untested for the apps?
+== D1: Experiment dashboard, test CHK-7
+14 days, desktop web only, 50/50 split. Conversion 3.12% to 3.25% (+4.2% relative), p = 0.03, n = 410k sessions.
+== D2: Message from Bo (analyst)
+Reproduced: I re-ran the CHK-7 query against the warehouse and get the same +4.2%. Solid.
+== D3: PM summary
+Result confirmed twice (dashboard plus Bo's reproduction). Recommend shipping everywhere on Monday.
+== D4: Note from the mobile lead
+App checkout is a native flow: the Apple Pay or Google Pay sheet already handles address and payment in one step. The one-page redesign replaces our 3-step web form. In the apps it would replace the native pay sheet with a web view.
+== D5: Order split by platform
+Desktop web 38%, mobile web 21%, iOS and Android apps 41%.
+== D6: Past experiment note, CHK-3 (2025)
+Web-view checkout in the app reduced app conversion by 9% against the native sheet. Rolled back.

@@ -1,0 +1,30 @@
+{
+  "skill_name": "evidence-ledger",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Three agents each looked at part of the evidence on whether to roll a setting out to the remaining nodes. Each says the case is not established from what it saw. Pooled, their facts show the setting has run on one production node with the same hardware and workload for three weeks with the problem gone and no regressions. Merge their reports.",
+      "expected_output": "Pools the facts and sets the lanes' verdicts and gap lists aside, finds the crux observed on a representative part of the asker's own setup with no better-fitting answer, and commits plainly: Not verified is 'nothing that would change the decision', Next check is 'none needed', and no pre-check is demanded."
+    },
+    {
+      "id": 2,
+      "prompt": "Three agents looked into whether upgrading fixes the duplicate-job bug for us. One says the maintainer verified it, one says staging reproduced the fix, one found that production connects in a mode neither of the others tested and that the fix depends on. Merge their findings.",
+      "expected_output": "Does not count two agreeing agents as two confirmations and does not write 'verified': the crux was observed only on setups other than the asker's, in a way that matters. Holds, names the one cheapest check on the production setup, and says what is safe meanwhile."
+    },
+    {
+      "id": 3,
+      "prompt": "Use three agents to work out whether to ship the new checkout everywhere. The test showing the gain ran on one of our three platforms only.",
+      "expected_output": "Runs the lanes apart, pools their facts, and splits the decision: go on the platform where the gain was observed, hold on the others with the cheapest check named."
+    },
+    {
+      "id": 4,
+      "prompt": "This host has no subagents. Four articles say the new queue is three times faster and I have their texts here; decide whether we migrate.",
+      "expected_output": "Skips the lanes, reads the evidence once and lists the facts, notices when the articles repeat one observation and counts it once, applies the same commit, hold or split rule, and ends with the four-line report."
+    },
+    {
+      "id": 5,
+      "prompt": "What is the default port for PostgreSQL?",
+      "expected_output": "Does not trigger: nothing was investigated by several lanes and there is nothing to merge, so the question is answered directly."
+    }
+  ]
+}

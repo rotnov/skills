@@ -1,0 +1,106 @@
+id: so2
+class: shared-origin
+question: We are sizing the market for our clinic scheduling product. Can we use "60% of mid-size clinics plan to switch scheduling software within 12 months" as the headline assumption in the board plan?
+setup: Board plan is due next week. The headline assumption drives the revenue forecast.
+slices: D2 D5 | D3 D6 | D1 D4 D7
+truth: No. The 60% figure has one origin: a Schedulo poll of 212 registrants of its own "Time to Switch?" webinars, repeated down a chain of articles. Two unrelated sources (the association census of 1,840 clinics at 11%, and our own discovery calls at 5 of 40) agree on roughly 11 to 13%. Use about 11%.
+check decision no: Does the memo approve using 60% as the headline assumption in the board plan?
+check aware yes: Does the memo recognise that the 60% reports trace back to one source (the Schedulo webinar poll, or one unnamed report repeated by the articles) rather than being multiple independent studies?
+== D1: Schedulo report "State of Clinic Scheduling 2026"
+Schedulo report "State of Clinic Scheduling 2026"
+
+Published by the Schedulo Insights Team, Austin, Texas.
+
+Welcome to this year's report. Since our last edition, the Schedulo team has grown to 48 people across offices in Austin and Lisbon, and our support desk now operates from 7 a.m. to 9 p.m. Central on weekdays. We also moved our documentation to a new help center, so older bookmarks may need updating. Thank you to the customers and partners who sent feedback on last year's layout. We have moved to a single-column format and larger charts for easier reading on tablets.
+
+Inside you will find sections on front-desk staffing, reminder message preferences, and room utilization, along with a short glossary of terms used throughout.
+
+Key finding: 60% of mid-size clinics plan to switch scheduling software within 12 months. Methodology: online poll of 212 registrants of Schedulo's "Time to Switch?" webinar series.
+
+Front-desk notes: reception teams we spoke with continue to favor text reminders over voice calls. Several practices mentioned that color-coded calendars help new staff learn the daily layout faster. Room utilization charts appear on pages 14 through 19.
+
+Glossary: "No-show" refers to a booked appointment the patient did not attend without notice. "Buffer" means time blocked between appointments for cleaning or charting. "Template" refers to a reusable weekly schedule pattern for a provider or room.
+
+Upcoming: Schedulo will host its annual customer meetup in Lisbon on March 18, 2027, and registration opens in January. Press inquiries can be sent to our communications team through the contact form on our website. This report may be shared freely with attribution.
+== D2: Trade magazine ClinicOps Today
+ClinicOps Today
+Weekly Briefing, November Edition
+
+Welcome back to the briefing. This week our editors are on the road, so the roundup is a little shorter than usual, and the letters page returns next issue.
+
+Facilities: A regional dental group in Ohio finished retrofitting its waiting rooms with quieter HVAC units, cutting measured background noise by roughly eight decibels. The practice manager told us patients noticed within the first week, and front-desk staff reported fewer complaints about drafts near the entrance.
+
+Staffing: Medical assistant wages rose about 4 percent year over year in several Midwest metros, according to figures shared at a state association meeting. Recruiters say evening shifts remain the hardest to fill.
+
+Six in ten mid-size clinics are preparing to change scheduling vendors in the next year, a new industry report finds.
+
+Events: Registration is open for the ClinicOps Spring Summit in Denver, March 18 to 20. Early-bird pricing ends January 9, and the hotel block at the convention center fills quickly, so book soon. Sessions this year include supply chain planning, infection control audits, and a hands-on workshop on writing better job descriptions.
+
+Supplies: Several readers wrote in about glove shortages. Distributors tell us nitrile inventory has stabilized, though some sizes remain backordered into December.
+
+Corrections: Last month's profile of a pediatric practice in Tucson misstated the number of exam rooms. The clinic has fourteen, not twelve. We regret the error.
+
+Next issue: our annual parking and patient-access survey results.
+== D3: HealthTech Ledger article
+HealthTech Ledger, Weekly Roundup
+
+Welcome back to the Ledger. This week brought a busy run of conference announcements, a handful of funding rounds, and the usual stream of product updates landing in our inbox. Before we get to the briefs, a note on logistics: our reader meetup in Austin has moved from Thursday evening to Friday at noon, and the venue is now the hotel's second-floor terrace. Lunch is provided, and seats are limited to forty, so please reply to the invite if you plan to attend. We also want to thank the dozens of readers who sent corrections and story tips last month. Several of them shaped the pieces below.
+
+A wave of switching: 60% of mid-size clinics will change scheduling software within a year, according to ClinicOps Today.
+
+Elsewhere, a remote patient monitoring startup in Denver closed a $14 million Series A led by two regional health systems. The company says it will use the money to expand its nurse support team. A pharmacy benefits analytics firm announced it has moved its headquarters from Chicago to Minneapolis, citing lower office costs. On the policy front, comment periods for two proposed interoperability rules close at the end of the month, and trade groups are already circulating draft letters. Finally, our editorial team is hiring a part-time data reporter, and the posting stays on our careers page through December 1. As always, send tips and feedback to the newsroom, and we will see you next week.
+== D4: Competitor investor deck, slide 6
+Slide 6 of 18. Why Now. Series A Deck, Confidential, Draft v4.
+
+Speaker notes appear beneath the slide body and are for presenters only. Please do not forward this file outside the partner meeting.
+
+Left column, Product momentum:
+Calendar sync rebuilt on our new event engine, shipped in March.
+Native mobile apps now live on iOS and Android, average store rating 4.7.
+SMS reminder module available in English, Spanish and Portuguese.
+Support response time under two hours on business days.
+Average onboarding call length is now forty minutes.
+Customer success team now covers three time zones.
+Office move to Lisbon completed in May.
+
+Center callout:
+Market tailwind: 60% switching intent among mid-size clinics (HealthTech Ledger, 2026).
+
+Right column, Team:
+Headcount grew from 14 to 31 over the past year.
+New VP Engineering joined from a payments company in September.
+Two open roles: product designer and solutions engineer.
+
+Footer: Icons by in-house design team. Fonts licensed under company agreement. Slide template revised after feedback from the January offsite.
+
+Speaker notes: Keep this slide to under ninety seconds. Transition to slide 7, the pricing overview, by mentioning the mobile apps. If asked about the Lisbon office, refer questions to the operations lead, who will cover lease terms and the commute stipend separately. Remember to set the clicker to presenter mode before starting. Coffee and lunch for the meeting will be served in room B at noon; dietary requests go to the events coordinator by Friday.
+== D5: Post by an independent healthcare IT consultant
+Quick roundup from a busy week on the road. I spent Monday and Tuesday in Columbus helping a two-site dermatology group untangle their Wi-Fi. The access points in the back hallway were installed in 2014 and nobody had touched the firmware since. We replaced four units, moved the guest network onto its own VLAN, and the front desk stopped complaining about the card reader dropping out. Total bill came in under the estimate, which almost never happens. Wednesday was a webinar on fax-to-email gateways, and yes, people still ask about fax. About forty attendees, good questions on retention settings.
+
+Multiple studies now agree that roughly 60% of clinics are about to switch scheduling systems. I have seen the number in three places this month.
+
+On a different note, I am booked solid through the first week of December, so if you need a security risk assessment before year end, send me a message soon. I can still fit in remote reviews on Fridays. Also, a reminder that several payers are updating their portal login requirements next quarter, so make sure your billing staff have authenticator apps set up on work phones rather than personal ones. I have a short checklist for that and will share it with anyone who asks. Finally, thanks to everyone who came out to the regional meetup last Thursday. The coffee was terrible but the conversation was great, and I picked up two new ideas for printer management that I will write about later this month.
+== D6: National Association of Ambulatory Clinics, annual member census
+National Association of Ambulatory Clinics, annual member census
+
+This year's census report is being distributed to members ahead of the autumn regional meetings. Printed copies will be available at the registration desk in each host city, and the full tables can be requested through the member services office. We thank the volunteers from the Northeast and Mountain chapters who helped assemble the mailing lists and answered member questions by phone during the collection period. Staffing results this year show median front-desk headcount holding steady at four positions, while the share of members reporting at least one unfilled nursing role rose to 38%.
+
+1,840 responding mid-size clinics (response rate 71%). 11% report plans to replace scheduling software in the next 12 months. 23% say "within three years".
+
+Elsewhere in the census, 64% of members reported adding at least one exam room since the previous year, and average weekly operating hours rose slightly to 52. Parking and patient transport remain the most frequently cited facility concerns in rural chapters. Dues for the coming year will remain unchanged at the current tier rates, and the board has approved a small increase in the travel stipend for chapter delegates. The spring policy forum will be held in Columbus; hotel blocks open in January. Members with corrections to their listed contact details or chapter assignment should write to member services before the end of the quarter so the directory can be updated in time for printing.
+== D7: Our sales notes, this quarter
+Our sales notes, this quarter
+
+Housekeeping first. The CRM migration finished on the 3rd, so please stop logging activity in the old spreadsheet. Priya has archived it read-only. If a contact record looks duplicated, flag it in the ops channel rather than merging it yourself; we lost two email threads last time someone did that by hand.
+
+Team changes: Marco moves from inbound to partnerships starting Monday, and we have one open SDR seat that should be filled by early next month. Shadowing slots for the new hire are on the shared calendar, two per rep.
+
+Events. The regional health IT expo is booked for the 21st. We have a 3x3 booth, one monitor, and roughly 400 printed one-pagers left from spring. Bring your own lanyard. Travel requests go through Jonas by Friday.
+
+Of 40 discovery calls with mid-size clinics, 5 said they are actively evaluating a replacement for their scheduling system.
+
+Other notes from the floor. Several prospects asked whether we support SMS reminders in Portuguese; product says it is on the roadmap but has no date, so please do not promise one. The new pricing page went live on Tuesday and bounce rate dropped from 71% to 58% in the first week, per marketing. Demo environment resets nightly at 2 a.m., so do not schedule late-evening demos in Asia-Pacific time zones without checking with support.
+
+Reminder that commission statements for last quarter will be out on the 25th. Questions to finance, not to Lena.
+
+Next sync is Thursday at 10. Bring one lost-deal story and one objection you could not answer.

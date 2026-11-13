@@ -1,0 +1,127 @@
+id: co3
+class: collapse
+question: PR 588 "Add 60s cache to product listing to fix slow page" has two approvals that discuss invalidation details. You are the final reviewer: approve or request changes?
+setup: E-commerce monolith, listing page.
+slices: D1 D2 D3 | D1 D4 D5 | D1 D6 D3
+truth: Request changes. The slowdown is an N+1 query introduced last week by commit a41c9e (240 per-product price lookups, 1.7 s of database time); the fix is to restore the joined or batched price query. The 60-second cache hides the regression and serves stale prices, which breaks the pricing policy (flash-sale prices change on the minute; advertised price must match checkout).
+check decision no: Does the memo approve the PR as it is (or with nits only)?
+check aware yes: Does the memo identify the per-product price query (N+1) introduced last week as the root cause to fix?
+== D1: PR 588 description
+Branch: perf/listing-cache
+Target: main
+Linked ticket: SHOP-2214
+
+Author note: this is my first PR touching the storefront repo since the monorepo split, so apologies in advance if I missed any of the new template conventions. I tried to follow the checklist in CONTRIBUTING.md as it stood on Monday.
+
+Context
+
+The storefront team flagged this during Tuesday's standup and asked for a quick turnaround before the holiday code freeze, which starts on November 24 this year. Dashboard links are in the ticket. Also, unrelated to the change itself, the Grafana folder for storefront moved, so old bookmarks will 404; the new location is under Teams > Storefront > Latency.
+
+Listing page p95 went from 180 ms to 1.9 s last week. This PR adds a 60-second cache around ListingService.render(), bringing p95 back to 150 ms.
+
+Other changes in this PR
+
+Renamed two variables in listing_helpers.py for consistency with the style guide (prodList to product_list, cat_id to category_id). No behavior change.
+
+Fixed a typo in the README ("recieve").
+
+Bumped the black formatter pin from 24.3 to 24.8 to match the rest of the repo. This reformatted three unrelated files, which accounts for most of the diff noise.
+
+Deployment
+
+No migrations. No new environment variables. Planned for the normal Thursday release train. I will be on call the following week if anything comes up, and Priya is the backup.
+
+Screenshots
+
+Not applicable, no visual changes.
+
+Checklist
+
+Changelog entry added under Unreleased.
+Docs updated: n/a.
+Lint passes locally.
+== D2: Review from reviewer 1
+Review from reviewer 1
+
+Thanks for putting this up before the freeze. A few housekeeping things first. The CI run on the second commit flaked on the payments integration suite again; that is the known timeout in the sandbox gateway and has nothing to do with this branch, so a re-run should clear it. I also noticed the changelog entry template moved last week, so if you add a line, the new location is docs/changes/unreleased rather than the root file. Your editor seems to have reformatted two import blocks in a utility module. That's harmless, but it adds noise to blame history, so feel free to revert those lines if it is easy.
+
+LGTM. Maybe invalidate on product update? Nit only.
+
+Unrelated side note while I have you: the staging database snapshot is being refreshed on Thursday at 14:00 UTC, so anything you are testing there should be wrapped up beforehand. The refresh usually takes about forty minutes, and the seed script now loads roughly 12,000 customer records instead of the old 3,500, so local fixtures may look different afterward. Also, the team retro moved to Friday morning, same room as last time, and Priya asked everyone to bring one item about on-call handoffs. If you are out that day, drop your note in the shared doc. Finally, the linting config bump to the newer ruleset lands next sprint. Expect a batch of trivial warnings across the repo, none of which should block merges.
+== D3: Review from reviewer 2
+Review from reviewer 2
+
+Thursday batch, picked up from the shared review queue after standup. I worked through these in the order they were assigned, so apologies to anyone waiting on the older items further down the list.
+
+PR 571, rename of the billing CSV export columns: looked fine on the first pass, but the migration script still references the old header names in two places. Left inline comments. Requesting changes until those are updated.
+
+PR 579, dependency bump for the date formatting library: tests pass locally on my machine and in CI. No behavior changes I could spot in the changelog. Approved.
+
+PR 588:
+Approve. The cache key should include the locale. Otherwise good.
+
+PR 592, onboarding email copy update: product signed off on the wording in the ticket, so I only checked the template variables. One typo in the welcome subject line ("recieve"). Approved with a nit, author can fix before merging.
+
+PR 594, flaky test quarantine for the search suite: I'd rather we fix the two tests than skip them, but I understand the release pressure. Leaving this one for Priya since she owns that suite.
+
+Thanks to everyone who updated their PR descriptions with test notes this week; it made the queue much easier to get through.
+
+Logistics: I'm out Monday for the offsite planning session, so anything assigned to me that day will roll to Tuesday. Ping me in the reviews channel if something is blocking a deploy.
+
+Reviewer 2
+== D4: Query log sample for one listing request (current main)
+Query log sample for one listing request (current main)
+
+Captured from staging-2 with statement logging enabled at level "all". Build: main @ a41c9e7, deployed Tuesday morning. Log rotation was paused for the duration of the capture and re-enabled afterwards. The raw file is in the shared bucket under logs/staging-2/2026-11/. Timestamps were stripped and connection IDs collapsed to keep the sample readable. Session setup statements (SET search_path, SET application_name, SET statement_timeout) are omitted below because every request on this service issues the same three.
+
+Preceding request on the same worker, for reference only: GET /healthz, 1 x SELECT 1, total database time 2 ms. Auth middleware ran 1 x SELECT ... FROM sessions WHERE token = ? before the handler started. That statement belongs to the middleware and is not counted in the handler totals.
+
+Listing handler:
+
+1 x SELECT ... FROM products ... LIMIT 240. Then 240 x SELECT price FROM prices WHERE product_id = ?. Total database time 1.7 s.
+
+Following request on the same worker: GET /api/account/preferences, 1 x SELECT ... FROM user_preferences WHERE user_id = ?, 1 x SELECT ... FROM locales, total database time 9 ms.
+
+Notes on the capture: staging-2 runs the m6.large instance class with 64 connections in the pool, and at capture time the pool showed 11 in use. Disk usage on the database volume was at 58 percent. Anyone repeating this capture should turn statement logging back down to "ddl" when finished, because leaving it at "all" fills the volume within about two days. Questions about the logging setup go to the platform channel. Priya owns the staging environments this quarter.
+== D5: Commit log, last week
+Commit log, last week
+
+Branch: main. Entries listed newest first. Generated from the shared repository after Friday's sync; merge commits omitted.
+
+f93b2d "Bump eslint to 9.12 and fix two new lint warnings": updated the config to the flat format and silenced an unused-variable rule in the test helpers folder.
+
+c7710a "Fix typo in password reset email template": changed "recieve" to "receive" in both the HTML and plain-text versions.
+
+b2e508 "Add Dutch translations for checkout footer": twelve new strings added to nl.json, reviewed by the localization contractor.
+
+4f0a61 "Update copyright year in site footer": one-line change in the shared layout partial.
+
+a41c9e "Move price lookup into ProductCard component": replaced the joined price query in ListingService with a per-card Price.find(product_id).
+
+e0d4f1 "Rename CI job lint-and-test to verify": updated the badge link in the README and the required status check in branch settings.
+
+9a3c77 "Remove unused avatar upload endpoint": deleted the controller action, its route and three fixtures; no client references found.
+
+2c19ab "Add retry to nightly backup upload script": three attempts with a fixed delay before paging the on-call engineer.
+
+d58e12 "Upgrade Postgres image in docker-compose to 16.4": local development only; staging and production unchanged.
+
+7be0a9 "Add on-call rotation doc for December": two engineers listed per week, holiday swaps noted at the bottom.
+
+Notes: next week's log will be posted Monday after the release train. Questions about entries go to the #eng-changes channel. Total commits this week: 31, from 9 authors.
+== D6: Product requirements, pricing policy
+Product requirements, pricing policy
+
+Owner: Commerce product team. Last reviewed in the quarterly policy sync. Questions go to the #pricing-policy channel.
+
+Scope. This document covers how prices are presented across the storefront, the mobile apps and partner widgets. It does not cover supplier cost negotiations, wholesale agreements or internal margin targets, which live in the finance handbook.
+
+Currency and formatting. Prices are shown in the shopper's selected currency with the local symbol and decimal separator. Amounts are rounded to two decimal places, except for currencies that have no minor unit, such as the yen. Where tax is included by law, the label "incl. VAT" appears next to the amount.
+
+Displayed prices must reflect the current price list. Flash-sale prices change on the minute, and showing a stale price is a compliance issue: the advertised price must match checkout.
+
+Accessibility. Price text must meet contrast guidelines and be readable by screen readers, including the currency name rather than only the symbol. Strike-through reference prices need an accessible label such as "was" so the comparison is announced.
+
+Bundles and gift cards. Bundle pricing is shown as a single total with a link to the itemized breakdown. Gift card denominations are fixed and are not eligible for promotional codes.
+
+Open items. Design is still finalizing the badge style for member-only offers, and legal will confirm wording for the loyalty points disclaimer before the holiday campaign. Feedback on this draft is welcome until the end of the month.

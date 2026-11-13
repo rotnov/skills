@@ -1,0 +1,110 @@
+id: ct3
+class: control
+question: We need to pick a JSON schema validation library for the ingest service: Vesta or Quill. Can we commit to Vesta?
+setup: Ingest service, see requirements.
+slices: D1 D4 | D2 D3 D4 | D5 D6 D4
+truth: Yes, commit to Vesta. It meets every requirement on our own hardware, schemas and production data (41k docs/s against a 25k target, full agreement with the golden set, MIT licence, draft 2020-12), two unrelated security assessments are clean, and it is better maintained. Quill misses the throughput requirement. The 2023 blog complaint concerns an old version and deeper schemas than ours, and our benchmark covers our schemas.
+check decision yes: Does the memo give a clear commitment to Vesta?
+check hedge no: Does the memo withhold the commitment or require further evaluation before committing?
+== D1: Our benchmark
+Our benchmark
+
+Notes from the Thursday platform sync, written up by the ingest team. Apologies for the delay; half of us were out for the offsite planning and the shared calendar ate two of the follow-up invites.
+
+Housekeeping first. The staging cluster migration to the new region is now scheduled for the week of the 23rd, so expect a short freeze on deploys to the staging namespace. Priya is still collecting names for the on-call rotation swap in December; if you have travel plans, add them to the sheet before Friday.
+
+On the log retention ticket, we agreed to keep 30 days hot and move everything older to cold storage. Marco estimates this saves roughly 18 percent on the storage line item, though he wants another month of billing data before he signs off on that figure.
+
+Ingest hardware, our real schemas, a 2.1M-document sample from production. Vesta 3.4: 41k docs/s. Quill: 17k docs/s. Both agree 100% with our golden set of 12k labelled documents on accept or reject.
+
+Other items. The dashboard refresh for the support team is about two-thirds done; the remaining work is mostly the latency panels and a dark mode toggle that somebody very much wants. Tom found a flaky test in the auth module that fails roughly once in forty runs and is tracking it in the usual channel. We still need a volunteer to update the onboarding doc, which references a build tool we retired last spring.
+
+Next sync is the 20th, same room, 10:30. Bring questions for the security review, which is now confirmed for early January.
+== D2: Security audit by the firm Norrin (commissioned by the Vesta foundation, 2026)
+Norrin Security Assessment Report
+Prepared for the Vesta Foundation
+Document reference NR-2026-118
+
+Document control
+This report was prepared by Norrin and delivered to the Vesta Foundation board via the foundation's secure document portal. Distribution beyond the foundation's maintainers and steering committee is at the foundation's discretion. Questions about the contents of this report may be directed to the Norrin engagement coordinator listed in Appendix C.
+
+Engagement logistics
+Kickoff took place by video call on a Tuesday morning, with a follow-up session scheduled two days later to confirm repository access and communication channels. Status updates were exchanged weekly through a shared ticket queue. The closing meeting was held in Norrin's Lisbon office, with two foundation representatives attending in person and three joining remotely. Travel and room bookings for the closing meeting were handled by the foundation's office manager.
+
+No critical findings. Two medium findings, both fixed in 3.4.
+
+Report structure
+Section 2 describes the general approach Norrin applies across engagements. Section 3 contains the detailed finding write-ups in Norrin's standard template. Section 4 lists glossary terms used throughout the document. Appendix A contains the full list of personnel involved, Appendix B reproduces the engagement letter, and Appendix C lists contact details for both parties.
+
+Acknowledgements
+Norrin thanks the foundation's staff for their prompt responses during scheduling and for arranging meeting rooms at short notice. Coffee and pastries at the closing meeting were provided by the foundation, which the team appreciated.
+
+Feedback on the format or layout of this report is welcome and may be submitted through the same portal used for delivery. Norrin aims to respond to such feedback within ten business days.
+== D3: University fuzzing study of six validators (not affiliated with any of them)
+University fuzzing study of six validators (not affiliated with any of them)
+
+Systems Security Reading Group, Department of Computer Science
+Interim notes, autumn term
+
+These notes accompany the group's Thursday seminar series and are circulated to members, visiting students, and anyone who signed up at the open lab day in September. The full write-up is being prepared for the spring workshop deadline, so treat this page as a working summary rather than a citable source. Room 4.12 remains booked for the reading group through December; the projector cable has been replaced, and the whiteboard markers are now in the drawer under the window. Coffee is supplied by the department on alternate weeks.
+
+Current status of the campaign:
+
+Vesta 3.4: 0 crashes in 72 CPU-days. Quill: 3 crashes, reported upstream.
+
+Other business. The cluster allocation for next term has been confirmed, and the queue scripts will move to the new scheduler in January, so please update any personal job files before the break. Two master's students are joining in February to work on a separate grammar-inference project unrelated to this study. The group's archive of past seminar slides has been moved to the shared drive; links on the old wiki will stop working at the end of the month. Next week's talk is on side channels in embedded bootloaders, followed by a short discussion of reading assignments for the holiday period. Questions about room access or cluster accounts should go to the lab coordinator rather than the mailing list. Minutes are taken in rotation; this week's volunteer is listed on the door.
+== D4: Requirements
+Requirements
+Ingest service, Q1 platform work. Owner: data platform team. Last edited Tuesday after the sync with storage.
+
+This page collects the requirements we agreed on for the components being swapped or added to the ingest service this quarter. Each section lists the constraints first and any notes underneath. Please add comments inline rather than editing someone else's notes, and tag the section owner if something changes.
+
+Message queue client
+Must support consumer groups and manual offset commits; reconnect with backoff capped at 30 seconds. Notes: current client is fine, revisit only if we change brokers.
+
+Schema validation library
+JSON Schema draft 2020-12 support; throughput at least 25k docs/s; Apache or MIT licence. Notes: Vesta is MIT and passes our golden set, which uses 2020-12 features. Quill is Apache.
+
+Structured logging
+JSON output with request ID and tenant fields; log level configurable at runtime without a restart. Notes: the existing logger already does most of this, needs a small wrapper.
+
+Metrics
+Prometheus endpoint; per-tenant counters for accepted and rejected batches; histogram of end-to-end ingest latency. Notes: dashboards will be rebuilt by the observability folks once the names are stable.
+
+Deployment
+Container image under 400 MB; health and readiness probes; config via environment variables only.
+
+Open items
+Storage team to confirm retention for the dead-letter bucket. Next review is in the Thursday platform slot; bring any blockers to that meeting or post them in the channel beforehand.
+== D5: Maintenance signals
+Maintenance signals
+
+Running notes from the platform guild's dependency review. Each line records what we observed during the quarterly sweep; nobody has to act on these unless a ticket says so. Entries are grouped roughly by the service area that raised them, and anything older than two quarters gets archived to the wiki.
+
+Logging: Larch has 6 maintainers and ships patch releases about every three weeks. Pinewood, the structured formatter we bolted on last year, has been quiet since spring but still builds cleanly on our toolchain.
+
+Date handling: Tempora published a major version in August. The migration notes are long; the billing team volunteered to try it first on the invoice worker.
+
+Vesta: 14 maintainers, monthly releases. Quill: 2 maintainers, last release 9 months ago.
+
+HTTP clients: Ferry has 9 maintainers and a security contact listed in its repository. Our fork of Driftwood is still pinned at the version from two years ago and should be revisited when someone has time.
+
+Logistics: the next sweep is scheduled for the second week of February. Please add observations directly to this page rather than in chat, and include the date you checked. If a project's repository has moved, note the new location so the link checker stops flagging it.
+
+Side remark from Priya: the release-feed bot double-posted on Tuesday and has been restarted. Total time spent on this sweep was roughly five hours across four people. Thanks to everyone who covered on-call during the review.
+== D6: Blog post from 2023
+Notes from the Platform Corner, Spring 2023
+
+It has been a busy few weeks, so this post is a grab bag. First, the office move is done. The third floor now has the quiet room by the windows, and the standing desks finally arrived after a six-week delay. Please book the large meeting room through the shared calendar rather than taping paper signs to the door.
+
+Second, the on-call rotation changes on the first of next month. Shifts drop from two weeks to one, and handoffs move to Tuesday mornings so nobody inherits a pager right before a weekend. Thanks to everyone who answered the survey; forty-one of you replied.
+
+Third, CI. The migration to the new runners shaved roughly four minutes off the average pipeline, which adds up quickly across a few hundred builds a day.
+
+"Vesta 2.x is slow on deeply nested schemas (depth 30 and more)." Our schemas have a maximum depth of 6.
+
+Fourth, hiring. We have two open roles on the platform team, one for an SRE and one for a frontend engineer who enjoys internal tooling. Referrals are welcome, and the referral bonus is unchanged from last year.
+
+Finally, the local meetup is back. We are hosting in May, pizza is on us, and we still need two speakers for twenty-minute slots. If you have a war story about a migration, a flaky test, or a memorable outage, send me a note.
+
+See you at Thursday's demo hour. Bring snacks.
