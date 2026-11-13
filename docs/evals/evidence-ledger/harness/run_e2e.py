@@ -28,9 +28,18 @@ SKILL_NAME = "evidence-ledger"
 
 
 def prompt_for(scenario: dict, mode: str, with_skill: bool) -> str:
+    split = "; ".join(
+        f"subagent {index} reads only " + ", ".join(f"evidence/{doc}.txt" for doc in lane)
+        for index, lane in enumerate(scenario["slices"], 1)
+    )
     helpers = {
         "agents": "Use three subagents.",
         "solo": "Work alone: do not start subagents.",
+        # The harness's slices, in a real host: each lane sees part of the evidence.
+        "sliced": (
+            f"Use three subagents and split the reading between them: {split}. "
+            "Do not read the evidence files yourself; work from their reports."
+        ),
     }[mode]
     skill = f"Use the {SKILL_NAME} skill. " if with_skill else ""
     return (
@@ -124,7 +133,7 @@ def run_codex(root: Path, prompt: str, mode: str) -> dict:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host", choices=("claude", "codex"), required=True)
-    parser.add_argument("--mode", choices=("agents", "solo"), required=True)
+    parser.add_argument("--mode", choices=("agents", "solo", "sliced"), required=True)
     parser.add_argument("--no-skill", action="store_true")
     parser.add_argument("--family", choices=tuple(run_eval.FAMILY), default="long")
     parser.add_argument("--scenarios", required=True)
