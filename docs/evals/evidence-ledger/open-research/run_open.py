@@ -303,12 +303,12 @@ def cmd_summary(args: argparse.Namespace) -> None:
     override = {}
     if args.overrides and Path(args.overrides).exists():
         override = json.loads(Path(args.overrides).read_text(encoding="utf-8"))
-    print("| Condition | n | Decision good/acc/wrong | E1 | E2 | E3 | Dropped rival |")
-    print("| --- | --- | --- | --- | --- | --- | --- |")
+    print("| Condition | n | Decision good/acc/wrong | E1 | E2 | E3 | Any error | On the crux | Dropped rival |")
+    print("| --- | --- | --- | --- | --- | --- | --- | --- | --- |")
     conditions = [c for c in ("single", *COORDS) if any(r["condition"] == c for r in records)]
     for condition in conditions:
         rows = [r for r in records if r["condition"] == condition]
-        count = {k: 0 for k in ("good", "acceptable", "wrong", "E1", "E2", "E3", "drop")}
+        count = {k: 0 for k in ("good", "acceptable", "wrong", "E1", "E2", "E3", "drop", "any", "crux")}
         applicable_e1 = 0
         for r in rows:
             g = dict(r["grade"])
@@ -317,12 +317,16 @@ def cmd_summary(args: argparse.Namespace) -> None:
             for e in ("E1", "E2", "E3"):
                 count[e] += g[e] == "yes"
             applicable_e1 += g["E1"] != "na"
+            if any(g[e] == "yes" for e in ("E1", "E2", "E3")):
+                count["any"] += 1
+                count["crux"] += g.get("crux") == "yes"
             if condition != "single":
                 lanes = {x.lower() for x in g.get("rivals_in_lanes", [])}
                 answer = {x.lower() for x in g.get("rivals_in_answer", [])}
                 count["drop"] += bool(lanes - answer)
         print(f"| {condition} | {len(rows)} | {count['good']}/{count['acceptable']}/{count['wrong']} "
               f"| {count['E1']}/{applicable_e1} | {count['E2']}/{len(rows)} | {count['E3']}/{len(rows)} "
+              f"| {count['any']}/{len(rows)} | {count['crux']}/{len(rows)} "
               f"| {count['drop'] if condition != 'single' else '-'} |")
     print()
     print("| Condition | Calls | Tokens in | Tokens out | Cost USD | Seconds (wall) |")

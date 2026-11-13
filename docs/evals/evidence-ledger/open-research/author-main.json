@@ -1,0 +1,124 @@
+{
+ "_note": "Author adjudication of the judge's grades on runs/judged.jsonl. Keys are task/run/condition. 'crux' marks an error in the claim the decision rests on (the answer's basis line or the part the asker explicitly needs); otherwise the error is on a side claim. Blackout decisions are re-marked 'good' after the key correction in the protocol addendum.",
+ "ft313/1/single": {
+  "E3": "yes",
+  "crux": "no"
+ },
+ "ft313/2/single": {
+  "E3": "yes",
+  "crux": "no"
+ },
+ "ft313/3/single": {
+  "E3": "yes",
+  "crux": "no"
+ },
+ "ft313/1/flat": {
+  "E3": "yes",
+  "crux": "no"
+ },
+ "ft313/2/flat": {
+  "E3": "yes",
+  "crux": "no"
+ },
+ "ft313/3/flat": {
+  "E3": "yes",
+  "crux": "no"
+ },
+ "docker/2/flat": {
+  "E3": "yes",
+  "crux": "no"
+ },
+ "unsafe/3/flat": {
+  "E3": "yes",
+  "crux": "no"
+ },
+ "sqlite/3/flat": {
+  "E3": "no",
+  "_why": "the EFS test is attributed to its own setup; the prediction is labelled an expectation"
+ },
+ "tre/1/ledger": {
+  "E1": "no",
+  "E3": "yes",
+  "crux": "no",
+  "_why": "E1: the answer calls the harm evidence weak, it does not claim harm is excluded"
+ },
+ "sqlite/1/ledger": {
+  "E2": "yes",
+  "crux": "no"
+ },
+ "blackout/1/ledger": {
+  "E3": "yes",
+  "crux": "yes",
+  "decision": "good",
+  "_why": "press summaries listed as the panel's findings, in the section the asker needs attributable"
+ },
+ "ft313/2/ledger": {
+  "E2": "yes",
+  "E3": "yes",
+  "crux": "yes",
+  "_why": "basis line 'all three researchers independently found' over one shared post"
+ },
+ "docker/2/ledger": {
+  "E3": "yes",
+  "crux": "no"
+ },
+ "tre/2/ledger": {
+  "E3": "yes",
+  "crux": "yes",
+  "_why": "speculation and a news retelling in the basis line"
+ },
+ "unsafe/2/ledger": {
+  "E3": "no",
+  "_why": "both measurements were read in their own text; the figure is dated; confidence matches the flat answer's"
+ },
+ "blackout/2/ledger": {
+  "E3": "yes",
+  "crux": "yes",
+  "decision": "good",
+  "_why": "'all read directly by our researchers' contradicted by report 1; the inertia point is not an error after the key correction"
+ },
+ "blackout/3/ledger": {
+  "E3": "yes",
+  "crux": "no",
+  "decision": "good"
+ },
+ "tre/3/ledger": {
+  "E3": "yes",
+  "crux": "no"
+ },
+ "blackout/1/flat": {
+  "decision": "good"
+ },
+ "blackout/2/flat": {
+  "decision": "good"
+ },
+ "blackout/3/flat": {
+  "decision": "good"
+ },
+ "blackout/1/ledger_prov": {
+  "E3": "yes",
+  "crux": "no",
+  "decision": "good"
+ },
+ "blackout/2/ledger_prov": {
+  "decision": "good"
+ },
+ "blackout/3/ledger_prov": {
+  "E3": "yes",
+  "crux": "no",
+  "decision": "good"
+ },
+ "tre/1/ledger_prov": {
+  "E3": "yes",
+  "crux": "no"
+ },
+ "unsafe/2/ledger_prov": {
+  "E3": "yes",
+  "crux": "yes",
+  "_why": "calls an arXiv preprint peer research and the figure settled"
+ },
+ "docker/3/ledger_prov": {
+  "E3": "yes",
+  "crux": "no"
+ }
+}

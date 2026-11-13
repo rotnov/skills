@@ -1,0 +1,80 @@
+{
+ "_note": "Author adjudication of runs/deep-judged.jsonl; same rules as author-main.json.",
+ "ft313/1/flat": {
+  "E3": "yes",
+  "crux": "no"
+ },
+ "ft313/1/ledger": {
+  "E2": "yes",
+  "E3": "yes",
+  "crux": "yes",
+  "_why": "'all three researchers read these primary sources independently', contradicted by report 3"
+ },
+ "docker/1/single": {
+  "E3": "yes",
+  "crux": "yes",
+  "_why": "ranks emulation as the biggest cost from blog and vendor figures, not the asker's setup"
+ },
+ "docker/2/single": {
+  "E3": "yes",
+  "crux": "yes"
+ },
+ "docker/2/flat": {
+  "E3": "yes",
+  "crux": "yes",
+  "_why": "ranks bind mounts as the main cost from a native arm64 benchmark"
+ },
+ "docker/2/ledger": {
+  "E3": "yes",
+  "crux": "no"
+ },
+ "unsafe/1/flat": {
+  "E3": "yes",
+  "crux": "yes",
+  "_why": "suggested citation '21-29% in peer-reviewed studies' rests on figures the answer itself says are unchecked"
+ },
+ "blackout/1/ledger": {
+  "E3": "yes",
+  "crux": "yes",
+  "decision": "good",
+  "_why": "'both read by researchers', contradicted by report 1"
+ },
+ "blackout/1/ledger_prov": {
+  "E1": "no",
+  "decision": "good"
+ },
+ "blackout/1/flat": {
+  "decision": "good"
+ },
+ "blackout/2/flat": {
+  "decision": "good"
+ },
+ "blackout/2/ledger": {
+  "decision": "good"
+ },
+ "blackout/2/single": {
+  "decision": "good"
+ },
+ "tre/2/ledger": {
+  "E3": "yes",
+  "crux": "yes",
+  "_why": "news-only baseline figures in the basis line"
+ },
+ "ft313/2/flat": {
+  "E3": "yes",
+  "crux": "no"
+ },
+ "ft313/2/ledger": {
+  "E2": "yes",
+  "crux": "yes",
+  "_why": "'all three researchers found this independently' over one shared source"
+ },
+ "unsafe/2/ledger_prov": {
+  "E3": "no",
+  "_why": "the figure was read in its primary source; confidence wording matches other conditions"
+ },
+ "sqlite/2/ledger": {
+  "E3": "no",
+  "_why": "SQLite's own corruption page supports it"
+ }
+}
