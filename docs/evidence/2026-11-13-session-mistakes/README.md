@@ -90,11 +90,35 @@ instruction 495, wrong approach 260, missed the question 289, false claim
 186, wrong fact 208, unnecessary work 166, unclear report 191, asked too
 much 113.
 
-Rates are close across the two large harnesses: 5.1 flagged corrections per
-100 labeled messages for Claude Code and 5.3 for Codex. The Codex columns
-are larger because Codex has 5.7 times as many labeled messages, not because
-it errs more often. Grok (18 labeled messages) and Cursor (3) are too small
-to say anything.
+## Rates by harness
+
+Share of labeled messages that are a flagged correction of each type, at
+confidence 0.7 (Claude Code: 2,436 labeled messages; Codex: 13,815). This is
+the comparison to read across harnesses; the counts above are larger for
+Codex only because it has 5.7 times as many labeled messages.
+
+| Type | Claude Code | Codex | Higher on |
+| --- | --- | --- | --- |
+| Ignored instruction | 1.35% | 1.12% | Claude Code, 1.2 times |
+| Wrong tool or approach | 0.37% | 0.83% | Codex, 2.2 times |
+| Unnecessary work | 0.16% | 0.71% | too few cases to compare |
+| Wrong fact or unchecked assumption | 0.62% | 0.59% | about equal |
+| False or overstated claim of result | 0.37% | 0.57% | Codex, 1.5 times |
+| Missed the question | 0.53% | 0.49% | about equal |
+| Unclear or overlong report | 0.82% | 0.34% | Claude Code, 2.4 times |
+| Asked too much | 0.66% | 0.20% | Claude Code, 3.2 times |
+| Ignored repository or standing rules | 0.21% | 0.19% | about equal |
+| Other | 0.00% | 0.12% | too few cases to compare |
+| Acted without asking | 0.04% | 0.09% | too few cases to compare |
+| Broke something that worked | 0.00% | 0.03% | too few cases to compare |
+| **All types** | **5.1%** | **5.3%** | about equal |
+
+The overall rate is the same; the mix differs. Codex is flagged more for
+unnecessary work, a wrong approach and false claims; Claude Code for
+unclear reports and asking too much. Rows with fewer than ten Claude Code
+cases (wrong approach 9, false claim 9) give a rough ratio only, and with
+fewer than five (unnecessary work: 4 against 98 on Codex) no ratio is shown. Grok (18
+labeled messages) and Cursor (3) are too small to say anything.
 
 Against the first pass (305 mistakes in 6,393 messages), the top type is
 unchanged, "False or overstated claim" rose from fourth to third, and

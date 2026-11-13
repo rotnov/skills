@@ -52,7 +52,8 @@ against the scenario's criteria without knowing the arm; file checks and
 word counts are done in code.
 
 Where a Codex column is shown, the same scenarios also ran through
-`codex exec` with `gpt-6-astra` (`compare --agent codex`), signed in as
+`codex exec` (`compare --agent codex`), once with `gpt-6.1-sol` and once
+with `gpt-6-astra`, signed in as
 usual but with a throwaway home folder, so no user config, AGENTS.md,
 installed skills or history were loaded; Codex's four bundled system skills
 remain. The skill text goes in as developer instructions. The judge is the
@@ -83,8 +84,10 @@ Limits that apply to every number below:
   scenarios in [answer-first/scenarios.json](answer-first/scenarios.json).
 
 Passes out of runs, without the skill and with it. Claude Code runs
-`claude-sonnet-5-5`; Codex runs `gpt-6-astra` (added after the first
-hand-off, see "How the comparisons were run").
+`claude-sonnet-5-5`. Codex was run twice: on `gpt-6.1-sol`, the workhorse
+model that is the closer match to Sonnet and the line most Codex mistakes
+came from, and on `gpt-6-astra`, the frontier model. Both Codex models
+gave the same row-by-row result, so they share two columns.
 
 | Scenario | Claude without | Claude with | Codex without | Codex with |
 | --- | --- | --- | --- | --- |
@@ -92,7 +95,7 @@ hand-off, see "How the comparisons were run").
 | where-is-it: report a built file | 0 / 3 | 3 / 3 | 3 / 3 | 3 / 3 |
 | incident-for-outsider: explain an incident to a non-technical reader | 0 / 3 | 0 / 2 | 1 / 3 | 2 / 3 |
 | yes-or-no: a yes/no question | 3 / 3 | 3 / 3 | 3 / 3 | 3 / 3 |
-| **Total** | **3 / 12** | **9 / 11** | **7 / 12** | **11 / 12** |
+| **Total** | **3 / 12 (25%)** | **9 / 11 (82%)** | **7 / 12 (58%)** | **11 / 12 (92%)** |
 
 One Claude run with the skill is missing because the judge's reply was not
 valid JSON; it is counted as an error, not as a pass or a fail.
@@ -123,10 +126,10 @@ What the numbers say:
 - The incident report stays unsolved on Claude (0 / 3 and 0 / 2): with the
   skill the customer impact moves up and jargon goes, but bold headings,
   clock times and a person's initials remain. On Codex it moves from 1 / 3
-  to 2 / 3, which three runs cannot tell from noise.
+  to 2 / 3 on each model, which three runs cannot tell from noise.
 - Length, reported but no longer judged: Claude's incident report is 223 to
-  278 words without the skill and 212 to 230 with it; Codex's is 113 to 134
-  and 108 to 115. The skill does not make answers short.
+  278 words without the skill and 212 to 230 with it; Codex's is 113 to 149
+  and 88 to 115 across both models. The skill does not make answers short.
 
 **Recommendation**: worth adopting after the owner reviews the text. If
 plain, short reports for outside readers matter, the draft needs a stronger
@@ -155,12 +158,12 @@ rule on formatting and length first, and a re-run.
 | long-drift: two rules, tested eight turns later | 8 | 3 / 3 | 3 / 3 |
 | **Total** | | **15 / 15** | **15 / 15** |
 
-The same five scenarios on Codex with `gpt-6-astra` (the harness with the
-most mistakes of this type) gave the same result: 15 / 15 without the skill
-and 15 / 15 with it.
+The same five scenarios on Codex (the harness with the most mistakes of
+this type) gave the same result on both `gpt-6.1-sol` and `gpt-6-astra`:
+15 / 15 without the skill and 15 / 15 with it.
 
-The scenarios do not reproduce the mistake: Sonnet 5.5 and `gpt-6-astra`
-both keep the rules without the skill, even eight turns on. So there is
+The scenarios do not reproduce the mistake: Sonnet 5.5, `gpt-6.1-sol` and
+`gpt-6-astra` all keep the rules without the skill, even eight turns on. So there is
 **no measured evidence that this skill helps**. The mistake is the most frequent one in the real
 sessions, which were far longer, crossed context compaction, and ran on other
 models; this setup cannot recreate that.
@@ -203,11 +206,12 @@ belongs upstream and needs the owner's explicit approval to be sent.
 
 Passes out of runs, without the skill and with it.
 
-| Proposal | Kind | Claude Code, Sonnet 5.5 | Codex, `gpt-6-astra` |
-| --- | --- | --- | --- |
-| `answer-first` | new skill | 3 / 12 and 9 / 11 | 7 / 12 and 11 / 12 |
-| `standing-instructions` | new skill | 15 / 15 and 15 / 15 | 15 / 15 and 15 / 15 |
-| false claims | existing installed skill, no change | 6 / 6 and 6 / 6 | not run |
+| Proposal | Kind | Claude Code, Sonnet 5.5 | Codex, `gpt-6.1-sol` | Codex, `gpt-6-astra` |
+| --- | --- | --- | --- | --- |
+| `answer-first` | new skill | 3 / 12 and 9 / 11 | 7 / 12 and 11 / 12 | 7 / 12 and 11 / 12 |
+| `standing-instructions` | new skill | 15 / 15 and 15 / 15 | 15 / 15 and 15 / 15 | 15 / 15 and 15 / 15 |
+| false claims | existing installed skill, no change | 6 / 6 and 6 / 6 | not run | not run |
 
 Machine-readable results are next to each scenario file (`results*.json`;
-Codex runs in `results-codex.json`).
+Codex runs in `results-codex-sol.json` for `gpt-6.1-sol` and
+`results-codex.json` for `gpt-6-astra`).
