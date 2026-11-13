@@ -1,0 +1,20 @@
+id: co4
+class: collapse
+question: Signups fell 30% in week 23, right after the pricing page redesign. Growth wants to roll the redesign back today. Do we roll back?
+setup: SaaS product with EU and non-EU visitors.
+slices: D1 D2 D5 | D1 D3 D6 | D1 D4
+truth: Do not roll back. The drop is a measurement artifact: consent banner v3 (late Wednesday, week 22) made analytics opt-in for EU visitors, and tracked signup events fell only in the EU, to about the 47% opt-in rate, while non-EU events and the backend count of accounts created are flat (4,388 to 4,402). Fix the measurement (count signups server-side) instead.
+check decision no: Does the memo recommend rolling back the pricing page redesign today?
+check aware yes: Does the memo attribute the drop to lost analytics tracking from the EU consent banner, with real account creation flat?
+== D1: Message from the growth lead
+The redesign shipped Monday of week 23. Signups are down 30% the same week. Roll it back.
+== D2: Analytics dashboard (client-side events)
+signup_completed events: week 22 4,210; week 23 2,950 (minus 30%). By region: EU 2,480 to 1,190; non-EU 1,730 to 1,760.
+== D3: Release log
+Wednesday week 22 (late evening): consent banner v3 for EU visitors; analytics scripts now load only after opt-in (previously opt-out). Monday week 23: pricing page redesign, all regions.
+== D4: Backend database report
+Accounts created (users table): week 22 4,388; week 23 4,402. EU: 2,590 to 2,611.
+== D5: Note from the designer
+The new pricing page puts the annual toggle below the fold. That could hurt conversions.
+== D6: Consent statistics
+EU opt-in rate under banner v3: 47%.

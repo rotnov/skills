@@ -1,0 +1,20 @@
+id: el2
+class: evidence-level
+question: Sales wants to promise our enterprise API customers a 20% p95 latency reduction once we enable HTTP/3 on the Vela CDN next month. Can we make that promise?
+setup: Enterprise API served through the Vela CDN. HTTP/3 is currently off.
+slices: D1 D3 D6 | D2 D6 | D4 D5 D6
+truth: No. The 20% (vendor) and 18% (our Lagos probe) results were measured on mobile, lossy networks with HTTP/3-capable clients. Enterprise API traffic is 92% data-centre to data-centre on low-loss keep-alive connections, and the official SDKs that make 88% of calls cannot negotiate HTTP/3 at all, so most traffic will see no change. Do not promise a number.
+check decision no: Does the memo approve promising the 20% reduction to enterprise API customers?
+check aware yes: Does the memo explain that the 20% or 18% results were observed on mobile or lossy networks (or with HTTP/3-capable clients) and do not carry over to the enterprise API traffic?
+== D1: Vela case study
+Customers enabling HTTP/3 saw 20% lower p95 latency. Sample: consumer mobile apps on 4G and 5G networks, median packet loss 1.8%.
+== D2: Message from Ines (performance team)
+We reproduced it! Synthetic test from our Lagos probe over a mobile carrier: p95 dropped 18% with HTTP/3 on.
+== D3: Vela documentation, HTTP/3
+HTTP/3 is negotiated only when the client supports it; other clients continue on HTTP/2 unchanged. Gains come mainly from removing head-of-line blocking under packet loss and from faster handshakes on new connections.
+== D4: Traffic profile, enterprise API
+92% of requests originate from customer data centres over long-lived keep-alive connections. Measured packet loss on these paths: below 0.05%.
+== D5: Client inventory
+The official SDKs (Java, Go, .NET) account for 88% of enterprise API calls. All three use HTTP clients that support HTTP/1.1 and HTTP/2 only. HTTP/3 support is not on the SDK roadmap this year.
+== D6: Sales request
+Draft sentence for the contract addendum: "Customer will see a 20% reduction in p95 API latency from the HTTP/3 upgrade."

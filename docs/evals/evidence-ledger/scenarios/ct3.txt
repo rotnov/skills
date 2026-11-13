@@ -1,0 +1,20 @@
+id: ct3
+class: control
+question: We need to pick a JSON schema validation library for the ingest service: Vesta or Quill. Can we commit to Vesta?
+setup: Ingest service, see requirements.
+slices: D1 D4 | D2 D3 D4 | D5 D6 D4
+truth: Yes, commit to Vesta. It meets every requirement on our own hardware, schemas and production data (41k docs/s against a 25k target, full agreement with the golden set, MIT licence, draft 2020-12), two unrelated security assessments are clean, and it is better maintained. Quill misses the throughput requirement. The 2023 blog complaint concerns an old version and deeper schemas than ours, and our benchmark covers our schemas.
+check decision yes: Does the memo give a clear commitment to Vesta?
+check hedge no: Does the memo withhold the commitment or require further evaluation before committing?
+== D1: Our benchmark
+Ingest hardware, our real schemas, a 2.1M-document sample from production. Vesta 3.4: 41k docs/s. Quill: 17k docs/s. Both agree 100% with our golden set of 12k labelled documents on accept or reject.
+== D2: Security audit by the firm Norrin (commissioned by the Vesta foundation, 2026)
+No critical findings. Two medium findings, both fixed in 3.4.
+== D3: University fuzzing study of six validators (not affiliated with any of them)
+Vesta 3.4: 0 crashes in 72 CPU-days. Quill: 3 crashes, reported upstream.
+== D4: Requirements
+JSON Schema draft 2020-12 support; throughput at least 25k docs/s; Apache or MIT licence. Notes: Vesta is MIT and passes our golden set, which uses 2020-12 features. Quill is Apache.
+== D5: Maintenance signals
+Vesta: 14 maintainers, monthly releases. Quill: 2 maintainers, last release 9 months ago.
+== D6: Blog post from 2023
+"Vesta 2.x is slow on deeply nested schemas (depth 30 and more)." Our schemas have a maximum depth of 6.

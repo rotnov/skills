@@ -1,0 +1,20 @@
+id: ct1
+class: control
+question: Can we approve rolling out the composite index on orders(customer_id, created_at) to all production shards this week to fix the slow order-history endpoint?
+setup: Postgres, 8 production shards.
+slices: D1 D2 D6 | D3 D5 | D4 D5 D6
+truth: Yes, approve. The effect is verified on production itself: shard 3 has carried the index under live traffic for 48 hours, measured by two separate toolchains (database statistics and APM traces), and a replay of production traffic on a production-sized replica agrees, including no write penalty. Disk headroom is ample.
+check decision yes: Does the memo give a clear approval to roll out the index this week?
+check hedge no: Does the memo make the approval conditional on further investigation or testing before the rollout (beyond routine monitoring during the rollout)?
+== D1: DBA analysis
+EXPLAIN ANALYZE on a production replica: the order-history query changes from a sequential scan (2.1 s) to an index scan (9 ms) with the composite index.
+== D2: Load test by the performance team
+Replayed two hours of yesterday's production traffic against a production-sized replica with the index. Order-history p95: 2.3 s to 140 ms. Write latency on orders: unchanged within noise (+0.3 ms).
+== D3: Canary record
+Index built with CREATE INDEX CONCURRENTLY on production shard 3 (of 8) on Tuesday. 48 hours of live traffic since: p95 2.2 s to 150 ms according to pg_stat_statements, no lock incidents, replication lag normal.
+== D4: Application team measurement
+APM traces for shard 3 since Tuesday: order-history p95 160 ms (was 2.2 s). Measured independently of the DBA's database statistics.
+== D5: Capacity note
+Index size 11 GB per shard. Disk headroom 400 GB per shard. Concurrent build takes about 25 minutes per shard.
+== D6: Comment in the review thread
+"Indexes slow down writes. Have we checked?" Reply: see the load test and the shard 3 canary.

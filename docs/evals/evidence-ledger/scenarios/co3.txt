@@ -1,0 +1,20 @@
+id: co3
+class: collapse
+question: PR 588 "Add 60s cache to product listing to fix slow page" has two approvals that discuss invalidation details. You are the final reviewer: approve or request changes?
+setup: E-commerce monolith, listing page.
+slices: D1 D2 D3 | D1 D4 D5 | D1 D6 D3
+truth: Request changes. The slowdown is an N+1 query introduced last week by commit a41c9e (240 per-product price lookups, 1.7 s of database time); the fix is to restore the joined or batched price query. The 60-second cache hides the regression and serves stale prices, which breaks the pricing policy (flash-sale prices change on the minute; advertised price must match checkout).
+check decision no: Does the memo approve the PR as it is (or with nits only)?
+check aware yes: Does the memo identify the per-product price query (N+1) introduced last week as the root cause to fix?
+== D1: PR 588 description
+Listing page p95 went from 180 ms to 1.9 s last week. This PR adds a 60-second cache around ListingService.render(), bringing p95 back to 150 ms.
+== D2: Review from reviewer 1
+LGTM. Maybe invalidate on product update? Nit only.
+== D3: Review from reviewer 2
+Approve. The cache key should include the locale. Otherwise good.
+== D4: Query log sample for one listing request (current main)
+1 x SELECT ... FROM products ... LIMIT 240. Then 240 x SELECT price FROM prices WHERE product_id = ?. Total database time 1.7 s.
+== D5: Commit log, last week
+a41c9e "Move price lookup into ProductCard component": replaced the joined price query in ListingService with a per-card Price.find(product_id).
+== D6: Product requirements, pricing policy
+Displayed prices must reflect the current price list. Flash-sale prices change on the minute, and showing a stale price is a compliance issue: the advertised price must match checkout.
