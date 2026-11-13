@@ -1,0 +1,62 @@
+{
+  "tre": {
+    "question": "A headline says that 8-hour time-restricted eating raises the risk of cardiovascular death by 91%. Should I stop doing it because of this risk, and how strong is the evidence behind the claim?",
+    "setup": "I am 45, healthy, no medication, and have eaten within an 8-hour window (16:8) for a year for weight control.",
+    "key": {
+      "decision": "No strong reason to stop on this evidence alone. The 91% figure comes from one observational analysis (NHANES diet recalls, first shown as a 2024 conference abstract) that was retold by many outlets; it shows an association, not causation, with known confounding and small subgroups. Randomised trials of time-restricted eating show no cardiovascular harm signal on risk markers over their durations. Talking to a doctor is reasonable but not required by this claim.",
+      "rivals": ["the association is confounded or reverse-caused (illness, diet quality, recall error)", "a real small harm cannot be excluded by the data"],
+      "shared_origin": "News and blog reports of the 91% figure all trace to one analysis by one group; they are not independent confirmations.",
+      "level_traps": "A conference abstract or press release is not a peer-reviewed or replicated finding; an association in NHANES is not a causal effect for the asker."
+    }
+  },
+  "ft313": {
+    "question": "We want to run our CPU-bound Python service on the free-threaded (no-GIL) build. Is it production-ready for us now, and what should we do?",
+    "setup": "Our platform pins CPython 3.13, so the build would be 3.13t. The service depends on NumPy, pydantic v2 and lxml. Linux x86-64.",
+    "key": {
+      "decision": "Not for production on 3.13: the free-threaded build is experimental in 3.13 (PEP 703 phase I). The 'supported' status (PEP 779) starts with 3.14. Either stay on the GIL build (with multiprocessing for CPU work) or plan a move to 3.14+ free-threaded after confirming free-threaded wheels for every dependency on that version.",
+      "rivals": ["stay on the GIL build and use processes", "upgrade to 3.14+ and use its supported free-threaded build", "use 3.13t anyway for a non-critical pilot"],
+      "shared_origin": "Blog posts that restate one release note or PEP are one source.",
+      "level_traps": "Support status, benchmarks or library wheels for 3.14/3.15 free-threaded builds do not apply to 3.13t; a library 'supporting free-threading' must be checked for the asker's Python version."
+    }
+  },
+  "docker": {
+    "question": "Our dev container is 5 to 10 times slower on my Mac than on colleagues' Linux laptops (npm install and the dev server both). What is causing it and what should we do?",
+    "setup": "Apple Silicon MacBook (M3), Docker Desktop 4.x with default settings. The image is built FROM node:20 with --platform linux/amd64 because one dependency ships only x86 binaries. The project folder, including node_modules, is bind-mounted into the container.",
+    "key": {
+      "decision": "Two causes are both live and both need addressing: (1) x86 emulation of an amd64 image on Apple Silicon (fix: Rosetta-based emulation enabled, or a native arm64 image with only the x86-only part emulated/replaced); (2) bind-mount file-sharing overhead on macOS, worst for node_modules (fix: keep node_modules in a named volume or use synchronized file shares; VirtioFS). A good answer addresses both, ideally with a quick check that separates them.",
+      "rivals": ["amd64 emulation on Apple Silicon", "bind-mount file sharing overhead (node_modules)"],
+      "shared_origin": "Many blog posts restate Docker's own VirtioFS/synchronized file shares announcements.",
+      "level_traps": "Vendor speed-up figures and Linux-host or arm64-image benchmarks are not observations of the asker's amd64-emulated, bind-mounted setup."
+    }
+  },
+  "unsafe": {
+    "question": "For a supply-chain risk assessment we need a defensible figure: what share of Rust crates on crates.io contain unsafe code? Give the number we should cite and how confident we can be in it.",
+    "setup": "The assessment will be read by auditors who will check the source of every figure.",
+    "key": {
+      "decision": "Cite a figure with its definition, source and snapshot date, and state that independent studies differ by definition: the Rust Foundation (2024) reports about 19% of significant crates use unsafe directly and about 34% call into a crate that does; academic studies from 2020 (e.g. Astrauskas et al., Evans et al.) report roughly a quarter to a third of crates containing unsafe. No single current figure is verified for today's crates.io.",
+      "rivals": ["direct use of the unsafe keyword", "transitive dependence on crates with unsafe", "different crate populations (all vs significant/downloaded)"],
+      "shared_origin": "News and blog articles quoting 19%/34% all retell the Rust Foundation post; they are not independent of it.",
+      "level_traps": "A 2020 or 2024 snapshot is not a verified figure for crates.io today; a retelling is not the study."
+    }
+  },
+  "sqlite": {
+    "question": "Is it safe to put our SQLite database on a shared NFS mount so that all three of our app servers can read and write it directly?",
+    "setup": "Three Linux app servers share an NFS v4 mount. We would use WAL mode for concurrency. Moderate load, about 20 writes per second from all servers together.",
+    "key": {
+      "decision": "No. SQLite's own documentation says WAL mode does not work over a network filesystem (all processes must be on the same host, sharing memory), and SQLite over NFS depends on file locking that is often unreliable, risking corruption. Use a client-server database, or a single writer service in front of SQLite, or a replication layer designed for this.",
+      "rivals": [],
+      "shared_origin": "Forum answers restating the SQLite FAQ are one source.",
+      "level_traps": "'Works fine for us' anecdotes from forums are not verification for the asker's multi-host WAL setup."
+    }
+  },
+  "blackout": {
+    "question": "What caused the blackout of 28 April 2025 on the Iberian Peninsula? We need the cause as established by the official investigations, and what is still contested.",
+    "setup": "We are writing a lessons-learned brief for a transmission system operator; every causal claim must be attributable to an official investigation or clearly marked as contested.",
+    "key": {
+      "decision": "Official investigations (Spanish government committee, June 2025; ENTSO-E expert panel reports) attribute it to an overvoltage cascade: insufficient dynamic voltage control, with generators tripping on overvoltage, after oscillations earlier in the day. A cyberattack was ruled out. Contested: how responsibility divides between the system operator's scheduling of voltage-control capacity and generators that did not provide required voltage control, and what role renewables/low inertia played.",
+      "rivals": ["system operator's scheduling of too little voltage-control capacity", "generators failing to provide required voltage control", "role of renewables/inertia (contested)"],
+      "shared_origin": "The early 'rare atmospheric phenomenon / induced atmospheric vibration' statement attributed to Portugal's REN was denied by REN; the many outlets repeating it are one source. Early 'too much solar' takes repeated commentary, not an investigation.",
+      "level_traps": "Early press statements, commentary and the operator's or companies' own position papers are not findings of the official investigations."
+    }
+  }
+}
