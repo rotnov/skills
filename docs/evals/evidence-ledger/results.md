@@ -29,7 +29,12 @@ Every number below is recomputed from `runs/*.jsonl` by
    action, with explicit commit, hold and split. The planning turn, rivals
    written in advance, the evidence ladder, the lane report format and the
    separate origin, target and rival rules changed no decision and were cut.
-   The shipped skill is one file of under 70 lines.
+   The shipped skill is one file of about 70 lines.
+6. **Open research.** A follow-up probe with live web search
+   ([open-research.md](open-research.md)) found the same: no collapse and
+   no shared-root double counting without the skill. It also found that the
+   skill's report line invited claims about provenance that the lanes did not
+   support; three sentences in step 2 fixed that.
 
 ## What was run
 

@@ -31,7 +31,11 @@ normally would. Reports that already exist are fine as they are.
 
 List the facts from all reports in one ledger before judging anything. Take
 facts from the lanes, not conclusions: a lane's recommendation, and its list
-of what is missing, were written without the other lanes' facts.
+of what is missing, were written without the other lanes' facts. Keep each
+fact's provenance as the lane gave it: read in the primary source, or seen only
+in a summary or retelling, with any doubt the lane attached. Never upgrade it:
+do not write that a source was read, or that lanes agree independently, unless
+the reports show it.
 
 ### 3. Decide
 
