@@ -96,6 +96,22 @@ Install it with the [skills CLI](https://skills.sh/):
 npx skills add rotnov/skills --skill pr-retro
 ```
 
+### `session-mistakes`
+
+Learn from the mistakes local coding agents actually made. It reads the
+Claude Code, Codex, Grok and Cursor session histories on the machine, keeps
+only the messages the user typed, has a cheap model label the ones that
+signal an agent mistake, and counts them by mistake type and harness. A second
+stage ranks the mistakes, checks which skills already cover them, and prepares
+skill changes backed by with-and-without evals. Raw text never leaves the
+private data folder; only anonymized tables are meant for sharing.
+
+Install it with the [skills CLI](https://skills.sh/):
+
+```bash
+npx skills add rotnov/skills --skill session-mistakes
+```
+
 ### `quorum`
 
 Join an authenticated team quorum and exchange durable messages between Claude
@@ -160,6 +176,12 @@ a local roadmap file.
 connector) with read access. It reads local Claude Code and Codex transcripts
 when present and otherwise runs from GitHub alone, reporting the sources it
 could not locate.
+
+`session-mistakes` requires Python 3.9 or newer and a labeling model the user
+already has: by default the signed-in `claude` CLI, otherwise an Anthropic API
+key or any model behind a command. Compressed Codex archives need `zstd`.
+Labeling sends the user's own messages, with secrets stripped, to that model
+and nowhere else.
 
 ## Evolution
 

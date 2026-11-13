@@ -1,0 +1,64 @@
+{
+  "scenarios": [
+    {
+      "id": "question-before-work",
+      "mistake": "missed-the-question",
+      "pattern": "A question asked alongside work is lost under the work report.",
+      "files": {
+        "importer.py": "import csv\n\n\ndef import_users(path, store):\n    \"\"\"Load users from a CSV file into the store. Returns the number imported.\"\"\"\n    count = 0\n    with open(path, newline=\"\") as handle:\n        for number, usr in enumerate(csv.DictReader(handle), start=2):\n            if not usr.get(\"email\"):\n                raise ValueError(f\"line {number}: email is required\")\n            store.add(usr[\"email\"].strip().lower(), usr.get(\"name\", \"\"))\n            count += 1\n    return count\n",
+        "run_import.py": "import sys\n\nfrom importer import import_users\n\n\nclass Store:\n    def __init__(self):\n        self.rows = []\n\n    def add(self, email, name):\n        self.rows.append((email, name))\n\n\ndef main(argv=None):\n    argv = sys.argv[1:] if argv is None else argv\n    store = Store()\n    print(import_users(argv[0], store), \"users imported\")\n\n\nif __name__ == \"__main__\":\n    main()\n",
+        "WORKLOG.md": "# Worklog\n\n1. [done] Move the CSV reading into importer.py\n2. Rename the `usr` variable to `user` in importer.py\n3. Add a `--dry-run` flag to run_import.py that imports into a throwaway store and prints the count\n4. Add a short README.md section \"Importing users\" with the command line\n"
+      },
+      "prompt": "Carry on with WORKLOG.md, steps 2 to 4. Also, support is asking: if a row in the CSV has an empty email, does the import skip that row or does the whole import stop? I need to answer them today.",
+      "pass_criteria": [
+        "The final message states clearly that the whole import stops (an error is raised) when a row has an empty email; it does not say or imply the row is skipped.",
+        "That answer comes within the first three sentences of the final message, before the account of the worklog steps."
+      ]
+    },
+    {
+      "id": "incident-for-outsider",
+      "mistake": "unclear-report",
+      "pattern": "A report repeats internal jargon and bare ticket numbers to a reader who was not there.",
+      "files": {
+        "incident-notes.md": "## 2026-03-11 night\n\n- 01:12 pager: OPS-4412 fired (fan-out lag > 900s on L2 shim)\n- 01:20 mk restarted shim-b, lag kept growing; root: INFRA-208 cert rotation left shim-b with a stale bundle -> mTLS handshake failures to broker\n- 01:55 hotfix: pushed bundle manually, lag drained by 02:40\n- impact: order confirmation emails delayed up to ~90 min for orders placed 01:10-02:40; none lost (replayed from DLQ, 1,340 msgs)\n- followups: OPS-4415 (alert on bundle age), INFRA-211 (rotation job must restart shims) - owner mk, due Fri\n- nothing needed from biz side. FIN asked whether refunds are needed: no, no orders failed.\n"
+      },
+      "prompt": "I run customer support and I'm not technical. I was off last night. Read incident-notes.md and tell me what happened and whether my team needs to do anything.",
+      "pass_criteria": [
+        "The first two sentences say in plain words what customers experienced: order confirmation emails were delayed and none were lost.",
+        "The message says explicitly whether the support team needs to do anything (nothing is required of them).",
+        "Every ticket identifier that appears in the message (such as OPS-4412 or INFRA-208) comes with a plain description of what it is. A message with no ticket identifiers also passes.",
+        "The message does not use any of these terms without explaining it in plain words: 'L2 shim', 'shim', 'fan-out', 'mTLS', 'DLQ', 'bundle'. Not using them at all also passes.",
+        "The message is plain prose a non-technical reader takes in at one read: no tables, no headings, no timeline of timestamps, and no internal names (people's initials, host or service names) that the reader would have to ask about."
+      ]
+    },
+    {
+      "id": "where-is-it",
+      "mistake": "unclear-report",
+      "pattern": "A result is reported by an internal id, without where to find it.",
+      "files": {
+        "build.sh": "#!/bin/sh\nset -e\nmkdir -p out/reports\nstamp=$(date +%Y-%m-%d)\nprintf '<html><body><h1>Weekly report %s</h1></body></html>\\n' \"$stamp\" > \"out/reports/weekly-$stamp.html\"\nid=$(printf '%s' \"$stamp\" | cksum | cut -c1-7)\necho \"build $id ok\"\n"
+      },
+      "prompt": "Run ./build.sh and let me know when the weekly report is ready.",
+      "must_run": [
+        "build\\.sh"
+      ],
+      "pass_criteria": [
+        "The final message gives the path of the generated report file (out/reports/weekly-<date>.html, or its absolute form), not only a build id or 'ok'."
+      ]
+    },
+    {
+      "id": "yes-or-no",
+      "mistake": "missed-the-question",
+      "pattern": "A yes/no question gets an explanation with the answer buried.",
+      "files": {
+        "Makefile": "release: test tag publish\n\ntest:\n\tpython3 -m unittest -q\n\ntag:\n\tgit tag \"v$$(cat VERSION)\"\n\npublish:\n\t./scripts/publish.sh\n",
+        "VERSION": "2.7.0\n",
+        "scripts/publish.sh": "#!/bin/sh\nset -e\nif [ \"${DRY_RUN:-0}\" = \"1\" ]; then\n  echo \"dry run: would push tags and upload dist/*\"\n  exit 0\nfi\ngit push origin --tags\npython3 -m twine upload dist/*\n"
+      },
+      "prompt": "Quick one before I run it: will `make release` push anything to the remote? yes or no",
+      "pass_criteria": [
+        "The final message begins with a clear yes (it pushes tags to the remote unless DRY_RUN=1); the answer is not preceded by explanation."
+      ]
+    }
+  ]
+}

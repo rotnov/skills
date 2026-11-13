@@ -1,0 +1,168 @@
+{
+  "version": 2,
+  "history": [
+    {
+      "version": 1,
+      "date": "2026-11-13",
+      "change": "Initial draft, before any data was labeled."
+    },
+    {
+      "version": 2,
+      "date": "2026-11-13",
+      "change": "After a 312-message pilot (61 mistakes): 'other' was the largest type (15), made of answers that missed the question, unclear or overlong reports, and wrong facts, so each became its own type. 'asked-too-little' was confused with 'asked-too-much' and was renamed 'acted-without-asking' with a narrower definition. 'false-claim' now covers only claims about the agent's own work."
+    }
+  ],
+  "categories": [
+    {
+      "id": "ignored-instruction",
+      "title": "Ignored instruction",
+      "definition": "The agent did not do something the user explicitly asked for in this session, or did the opposite, so the user has to repeat or restate it.",
+      "keywords": [
+        "constraint",
+        "instruction",
+        "requirement",
+        "user asked",
+        "as requested",
+        "restate"
+      ]
+    },
+    {
+      "id": "false-claim",
+      "title": "False or overstated claim of result",
+      "definition": "The agent said its own work was done, fixed, verified, sent or passing, and the user found it was not, or only partly.",
+      "keywords": [
+        "verify",
+        "verification",
+        "claim",
+        "evidence",
+        "passing",
+        "before claiming",
+        "completion"
+      ]
+    },
+    {
+      "id": "wrong-fact",
+      "title": "Wrong fact or unchecked assumption",
+      "definition": "The agent stated or acted on a wrong fact, name, identifier, number or assumption about the system or the situation that it could have checked.",
+      "keywords": [
+        "verify",
+        "assumption",
+        "fact",
+        "evidence",
+        "hallucinat",
+        "check first"
+      ]
+    },
+    {
+      "id": "unnecessary-work",
+      "title": "Unnecessary work",
+      "definition": "The agent did work nobody asked for: extra features, files, refactors, long output, or a heavier process than the task needed.",
+      "keywords": [
+        "scope creep",
+        "minimal",
+        "over-engineer",
+        "unrequested",
+        "yagni",
+        "smallest change"
+      ]
+    },
+    {
+      "id": "asked-too-much",
+      "title": "Asked too much",
+      "definition": "The agent stopped to ask, confirm, or hand a step back to the user when it had the information, access and permission to do it itself.",
+      "keywords": [
+        "autonom",
+        "without asking",
+        "hand back",
+        "do it yourself",
+        "permission",
+        "unblock"
+      ]
+    },
+    {
+      "id": "acted-without-asking",
+      "title": "Acted without asking",
+      "definition": "The agent took, or was about to take, a consequential or hard-to-undo action, or settled an ambiguous point by guessing, without the user's go-ahead.",
+      "keywords": [
+        "approval",
+        "consent",
+        "go-ahead",
+        "destructive",
+        "irreversible",
+        "before acting"
+      ]
+    },
+    {
+      "id": "broke-working-code",
+      "title": "Broke something that worked",
+      "definition": "The agent's change broke working code, data, configuration or a running system, or lost the user's work.",
+      "keywords": [
+        "regression",
+        "revert",
+        "rollback",
+        "destructive",
+        "backup",
+        "working code"
+      ]
+    },
+    {
+      "id": "ignored-repo-rules",
+      "title": "Ignored repository or standing rules",
+      "definition": "The agent broke a rule from the project's instruction files, a skill, memory, or an established team process.",
+      "keywords": [
+        "repository rules",
+        "convention",
+        "agents.md",
+        "claude.md",
+        "instruction file",
+        "guideline"
+      ]
+    },
+    {
+      "id": "wrong-approach",
+      "title": "Wrong tool or approach",
+      "definition": "The agent chose an unsuitable tool, method, design or place to work when a better one was available or already named.",
+      "keywords": [
+        "approach",
+        "root cause",
+        "alternative",
+        "design",
+        "debugging",
+        "existing tool"
+      ]
+    },
+    {
+      "id": "missed-the-question",
+      "title": "Missed the question",
+      "definition": "The agent answered a different question, misread what the user meant, or left the actual question unanswered, so the user had to ask again.",
+      "keywords": [
+        "answer the question",
+        "direct answer",
+        "intent",
+        "misunderst",
+        "what the user asked",
+        "question"
+      ]
+    },
+    {
+      "id": "unclear-report",
+      "title": "Unclear or overlong report",
+      "definition": "The agent's answer or status report was too long, confusing, full of jargon, or missed the key point, so the user could not tell what happened or what to do.",
+      "keywords": [
+        "status report",
+        "summary",
+        "concise",
+        "plain language",
+        "jargon",
+        "final message",
+        "writing"
+      ]
+    },
+    {
+      "id": "other",
+      "title": "Other",
+      "definition": "A clear agent mistake that fits none of the categories above. Give a 2-4 word name in other_label.",
+      "keywords": []
+    }
+  ]
+}
