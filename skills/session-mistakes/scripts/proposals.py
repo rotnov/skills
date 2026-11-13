@@ -233,7 +233,11 @@ def converse(command: list[str], cwd: Path, turns: list[str], timeout: int) -> s
     def read() -> None:
         for line in process.stdout:
             lines.append(line)
-            if '"type":"result"' in line.replace(" ", "")[:200]:
+            try:
+                event = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(event, dict) and event.get("type") == "result":
                 answered.release()
         answered.release()  # the stream ended: wake a waiting sender
 

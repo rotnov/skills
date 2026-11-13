@@ -449,7 +449,8 @@ class ProposalTests(unittest.TestCase):
             "    time.sleep(0.2)\n"
             "    early = bool(select.select([sys.stdin], [], [], 0)[0])\n"
             "    text = json.loads(line)['message']['content']\n"
-            "    print(json.dumps({'type': 'result', 'result': f'{text} early={early}'}), flush=True)\n"
+            # The real CLI does not put "type" first in a result event.
+            "    print(json.dumps({'cost': 1, 'result': f'{text} early={early}', 'type': 'result'}), flush=True)\n"
         )
         with tempfile.TemporaryDirectory() as tmp:
             script = Path(tmp) / "fake.py"
