@@ -83,7 +83,10 @@ and `setup` build a throwaway work directory; `setup` entries are argument
 lists, never shell strings. `read_back` files are shown to the judge after the
 run, and `must_not_change` files must be byte-identical afterwards. Count
 words with `max_final_words`, never with a criterion: a model judge
-miscounts. The judge
+miscounts. Set a word limit only when the user's own messages name one;
+otherwise write a criterion for what they actually objected to (tables,
+jargon, a buried answer) and read the word counts that every run reports.
+The judge
 sees every turn's steps and the last turn's final message. A run passes when
 every check and every criterion passes. Write criteria
 about what can be seen in the transcript ("the final message says the test
@@ -100,6 +103,14 @@ Each scenario runs `--trials` times without the skill and as many with it,
 through the `claude` CLI in a clean temporary folder with customizations
 off. The skill arm gets the skill's `SKILL.md` in the system prompt and its
 folder on disk. `--agent-model` picks the agent, `--model` the judge.
+
+`--agent codex` runs the agent through `codex exec` instead, with the
+existing Codex sign-in. HOME and CODEX_HOME point at a throwaway folder
+that links only the sign-in file, so the user's config, AGENTS.md, skills
+and history are neither loaded nor written; Codex's bundled system skills
+remain. The skill text goes in as developer instructions. Pass a Codex
+model with `--agent-model`, or leave the Claude default to use Codex's own
+default. Codex reports no cost.
 
 Report the totals and every scenario row as `passed / runs` for both arms.
 Also report:

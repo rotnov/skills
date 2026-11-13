@@ -27,7 +27,8 @@ npx --yes "skills@>=1.7.4" add rotnov/skills --skill session-mistakes -a claude-
 - A labeling model you already have access to. By default the scripts call
   the signed-in `claude` CLI with `claude-sonnet-5-5`; `--backend api` uses
   `ANTHROPIC_API_KEY`, and `--labeler-cmd` plugs in any other model.
-- Optional: `zstd`, to read Codex's compressed session archives.
+- Optional: `zstd`, to read Codex's compressed session archives; the signed-in
+  `codex` CLI, to run skill comparisons with Codex as the agent.
 
 ## Privacy
 

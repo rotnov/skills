@@ -36,7 +36,8 @@ for the current session use a session-learning or skill-proposal workflow.
 
 Python 3.9 or newer (standard library only). The `claude` CLI, signed in, for
 labeling and evals; or `--backend api` with `ANTHROPIC_API_KEY`; or any model
-behind `--labeler-cmd`. Optional: `zstd`, to read compressed Codex archives.
+behind `--labeler-cmd`. Optional: `zstd`, to read compressed Codex archives;
+the signed-in `codex` CLI, for `compare --agent codex`.
 
 `TOOL` below is `python3 <this skill's directory>/scripts/mistakes.py`, and
 `PROPOSE` is the same with `proposals.py`. Private data lives in

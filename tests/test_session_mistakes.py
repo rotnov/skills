@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 from urllib.parse import quote
 
@@ -460,6 +461,66 @@ class ProposalTests(unittest.TestCase):
         results = [json.loads(line)["result"] for line in stream.splitlines()]
         self.assertEqual(results[:2], ["one early=False", "two early=False"])
         self.assertTrue(results[2].startswith("three"))
+
+    def test_codex_transcript_rendering(self) -> None:
+        first = "\n".join(json.dumps(event) for event in (
+            {"type": "thread.started", "thread_id": "t-1"},
+            {"type": "item.completed", "item": {"type": "agent_message", "text": "Running tests"}},
+            {"type": "item.completed", "item": {"type": "command_execution", "command": "pytest -q",
+                                                "aggregated_output": "1 failed", "exit_code": 1}},
+            {"type": "item.completed", "item": {"type": "file_change", "changes": [{"path": "a.py", "kind": "update"}]}},
+            {"type": "item.completed", "item": {"type": "agent_message", "text": "One test fails."}},
+        ))
+        second = json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": "Done."}})
+        self.assertEqual(proposals.codex_thread_id(first), "t-1")
+        transcript, final = proposals.render_codex_transcript([first, second])
+        self.assertEqual(transcript.splitlines(), [
+            "AGENT: Running tests", "TOOL Bash: pytest -q", "RESULT: 1 failed", "TOOL Edit: a.py",
+            "AGENT: One test fails.", "--- end of turn 1 ---", "AGENT: Done.",
+        ])
+        self.assertEqual(final, "Done.")
+
+    def test_codex_turns_resume_one_isolated_thread(self) -> None:
+        # A fake codex that records how it was called and answers each turn.
+        fake = (
+            "#!" + sys.executable + "\n"
+            "import json, os, sys\n"
+            "log = os.path.join(os.environ['FAKE_LOG'])\n"
+            "with open(log, 'a') as handle:\n"
+            "    handle.write(json.dumps({'argv': sys.argv[1:], 'home': os.environ['HOME'],\n"
+            "        'codex_home': os.environ['CODEX_HOME'], 'stdin': sys.stdin.read()}) + '\\n')\n"
+            "print(json.dumps({'type': 'thread.started', 'thread_id': 't-9'}))\n"
+            "print(json.dumps({'type': 'item.completed', 'item': {'type': 'agent_message', 'text': 'ok'}}))\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "bin").mkdir()
+            (root / "bin" / "codex").write_text(fake)
+            (root / "bin" / "codex").chmod(0o755)
+            (root / "real").mkdir()
+            (root / "real" / "auth.json").write_text("{}")
+            (root / "run").mkdir()
+            (root / "skill").mkdir()
+            (root / "skill" / "SKILL.md").write_text("Answer first.")
+            env = {"PATH": f"{root / 'bin'}:/usr/bin:/bin", "CODEX_HOME": str(root / "real"),
+                   "FAKE_LOG": str(root / "log.jsonl")}
+            args = proposals.parser().parse_args(["compare", "--agent", "codex", "--agent-model", "gpt-x",
+                                                  "--skill", "s", "--scenarios", "s"])
+            with mock.patch.dict("os.environ", env):
+                streams = proposals.converse_codex(root / "run", root / "run", ["one", "two"], root / "skill", args)
+            calls = [json.loads(line) for line in (root / "log.jsonl").read_text().splitlines()]
+            isolated_home = root / "run" / "home"
+            self.assertTrue((isolated_home / ".codex" / "auth.json").is_symlink())
+        self.assertEqual(len(streams), 2)
+        self.assertEqual([call["stdin"] for call in calls], ["one", "two"])
+        self.assertEqual(calls[0]["argv"][:2], ["exec", "--json"])
+        self.assertEqual(calls[1]["argv"][:2], ["exec", "resume"])
+        self.assertIn("t-9", calls[1]["argv"])
+        self.assertIn("gpt-x", calls[0]["argv"])
+        self.assertTrue(any(a.startswith("developer_instructions=") and "Answer first." in a for a in calls[0]["argv"]))
+        for call in calls:
+            self.assertEqual(call["home"], str(isolated_home))
+            self.assertEqual(call["codex_home"], str(isolated_home / ".codex"))
 
     def test_eval_dry_run_runs_nothing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

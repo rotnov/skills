@@ -263,10 +263,96 @@ def converse(command: list[str], cwd: Path, turns: list[str], timeout: int) -> s
     return "".join(lines)
 
 
+def render_codex_transcript(streams: list[str]) -> tuple[str, str]:
+    """Turn `codex exec --json` output, one stream per user turn, into transcript lines and the final message."""
+    steps: list[str] = []
+    final = ""
+    for number, stream in enumerate(streams, 1):
+        if number > 1:
+            steps.append(f"--- end of turn {number - 1} ---")
+        final = ""
+        for line in stream.splitlines():
+            try:
+                event = json.loads(line)
+            except ValueError:
+                continue
+            item = event.get("item") if isinstance(event, dict) else None
+            if not isinstance(item, dict) or event.get("type") != "item.completed":
+                continue
+            kind = item.get("type")
+            if kind == "agent_message" and str(item.get("text", "")).strip():
+                final = str(item["text"]).strip()
+                steps.append("AGENT: " + final)
+            elif kind == "command_execution":
+                steps.append(f"TOOL Bash: {str(item.get('command', ''))[:400]}")
+                steps.append("RESULT: " + str(item.get("aggregated_output") or "")[:500])
+            elif kind == "file_change":
+                changes = item.get("changes") if isinstance(item.get("changes"), list) else []
+                paths = ", ".join(str(c.get("path", "")) for c in changes if isinstance(c, dict))
+                steps.append(f"TOOL Edit: {paths[:400]}")
+    return "\n".join(steps), final
+
+
+def codex_thread_id(stream: str) -> str:
+    for line in stream.splitlines():
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(event, dict) and event.get("type") == "thread.started":
+            return str(event.get("thread_id") or "")
+    return ""
+
+
+def converse_codex(work: Path, root: Path, turns: list[str], skill: Path | None, args: argparse.Namespace) -> list[str]:
+    """Run each user turn through `codex exec`, resuming the same thread.
+
+    HOME and CODEX_HOME point at a throwaway folder that holds only a link to
+    the existing sign-in, so the user's config, AGENTS.md, skills, memories
+    and session history are neither loaded nor written.
+    """
+    executable = shutil.which("codex")
+    if not executable:
+        raise mistakes.LabelerError("compare --agent codex needs the 'codex' CLI on PATH")
+    real_home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+    auth = real_home / "auth.json"
+    if not auth.is_file():
+        raise mistakes.LabelerError("compare --agent codex needs a signed-in Codex (auth.json not found)")
+    home = root / "home"
+    (home / ".codex").mkdir(parents=True)
+    (home / ".codex" / "auth.json").symlink_to(auth)
+    env = {**os.environ, "HOME": str(home), "CODEX_HOME": str(home / ".codex")}
+    base = ["--json", "--skip-git-repo-check", "--ignore-rules", "-s", "workspace-write"]
+    if args.agent_model and not args.agent_model.startswith("claude"):
+        base += ["-m", args.agent_model]
+    if skill:
+        text = (skill / "SKILL.md").read_text(encoding="utf-8")
+        note = f"The Agent Skill below is installed at {skill}. Follow it whenever it applies.\n\n{text}"
+        base += ["--add-dir", str(skill), "-c", "developer_instructions=" + json.dumps(note, ensure_ascii=False)]
+    streams: list[str] = []
+    deadline = time.monotonic() + args.agent_timeout
+    thread = ""
+    for turn in turns:
+        if streams and not thread:
+            break
+        command = [executable, "exec", *base, "-"] if not thread else [executable, "exec", "resume", *base, thread, "-"]
+        try:
+            done = subprocess.run(
+                command, cwd=work, env=env, input=turn, capture_output=True, text=True,
+                timeout=max(deadline - time.monotonic(), 1),
+            )  # fmt: skip
+        except subprocess.TimeoutExpired:
+            break
+        streams.append(done.stdout)
+        thread = thread or codex_thread_id(done.stdout)
+    return streams
+
+
 def run_agent(scenario: dict, skill_dir: Path | None, args: argparse.Namespace) -> dict:
     """Run one scenario once in a throwaway directory; return the transcript."""
+    agent = getattr(args, "agent", "claude")
     executable = shutil.which("claude")
-    if not executable:
+    if agent == "claude" and not executable:
         raise mistakes.LabelerError("compare needs the 'claude' CLI on PATH")
     with tempfile.TemporaryDirectory(prefix="session-mistakes-eval-") as temporary:
         work = Path(temporary) / "work"
@@ -285,26 +371,33 @@ def run_agent(scenario: dict, skill_dir: Path | None, args: argparse.Namespace) 
             relative: (work / relative).read_bytes() if (work / relative).is_file() else None
             for relative in scenario.get("must_not_change") or []
         }
-        command = [
-            executable, "-p", "--model", args.agent_model, "--safe-mode",
-            "--no-session-persistence", "--strict-mcp-config", "--disable-slash-commands",
-            "--permission-mode", "acceptEdits", "--allowedTools", *AGENT_TOOLS,
-            "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
-        ]  # fmt: skip
-        turns = [
-            json.dumps({"type": "user", "message": {"role": "user", "content": text}}) + "\n"
-            for text in turns_of(scenario)
-        ]
+        installed = None
         if skill_dir:
             installed = Path(temporary) / "skill" / skill_dir.name
             shutil.copytree(skill_dir, installed)
-            text = (installed / "SKILL.md").read_text(encoding="utf-8")
-            command += [
-                "--add-dir", str(installed), "--append-system-prompt",
-                f"The Agent Skill below is installed at {installed}. Follow it whenever it applies.\n\n{text}",
+        if agent == "codex":
+            streams = converse_codex(work, Path(temporary), turns_of(scenario), installed, args)
+            transcript, final = render_codex_transcript(streams)
+            cost = 0.0
+        else:
+            command = [
+                executable, "-p", "--model", args.agent_model, "--safe-mode",
+                "--no-session-persistence", "--strict-mcp-config", "--disable-slash-commands",
+                "--permission-mode", "acceptEdits", "--allowedTools", *AGENT_TOOLS,
+                "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
             ]  # fmt: skip
-        stream = converse(command, work, turns, args.agent_timeout)
-        transcript, final, cost = render_transcript(stream)
+            turns = [
+                json.dumps({"type": "user", "message": {"role": "user", "content": text}}) + "\n"
+                for text in turns_of(scenario)
+            ]
+            if installed:
+                text = (installed / "SKILL.md").read_text(encoding="utf-8")
+                command += [
+                    "--add-dir", str(installed), "--append-system-prompt",
+                    f"The Agent Skill below is installed at {installed}. Follow it whenever it applies.\n\n{text}",
+                ]  # fmt: skip
+            stream = converse(command, work, turns, args.agent_timeout)
+            transcript, final, cost = render_transcript(stream)
         after = {}
         for relative in scenario.get("read_back") or []:
             path = work / relative
@@ -363,6 +456,7 @@ def cmd_eval(args: argparse.Namespace) -> int:
         print(f"error: {skill_dir} holds no SKILL.md", file=sys.stderr)
         return 2
     scenarios = [s for s in spec["scenarios"] if not args.only or s["id"] in args.only]
+    agent = getattr(args, "agent", "claude")
     jobs = [
         (scenario, arm, trial)
         for scenario in scenarios
@@ -370,7 +464,9 @@ def cmd_eval(args: argparse.Namespace) -> int:
         for trial in range(args.trials)
     ]
     plan = {
-        "skill": skill_dir.name, "agent_model": args.agent_model, "judge_model": args.model,
+        "skill": skill_dir.name, "agent": agent,
+        "agent_model": "codex default" if agent == "codex" and args.agent_model.startswith("claude") else args.agent_model,
+        "judge_model": args.model,
         "scenarios": len(scenarios), "trials_per_arm": args.trials, "agent_runs": len(jobs),
     }  # fmt: skip
     if args.dry_run:
@@ -392,6 +488,7 @@ def cmd_eval(args: argparse.Namespace) -> int:
         return {
             "scenario": scenario["id"], "arm": arm, "trial": trial, "pass": graded["pass"],
             "checks": graded["checks"], "error": error, "cost_usd": round(run["cost"], 4),
+            "final_words": len(run["final"].split()),
             "final": run["final"][:1500], "transcript": run["transcript"],
         }  # fmt: skip
 
@@ -402,7 +499,8 @@ def cmd_eval(args: argparse.Namespace) -> int:
         row = {"scenario": scenario["id"], "mistake": scenario.get("mistake", "")}
         for arm in ("baseline", "skill"):
             mine = [r for r in runs if r["scenario"] == scenario["id"] and r["arm"] == arm and not r["error"]]
-            row[arm] = {"passed": sum(r["pass"] for r in mine), "runs": len(mine)}
+            words = sorted(r["final_words"] for r in mine)
+            row[arm] = {"passed": sum(r["pass"] for r in mine), "runs": len(mine), "final_words": words}
         summary.append(row)
     totals = {
         arm: {"passed": sum(r[arm]["passed"] for r in summary), "runs": sum(r[arm]["runs"] for r in summary)}
@@ -444,6 +542,7 @@ def parser() -> argparse.ArgumentParser:
     evaluate.add_argument("--scenarios", required=True, help="JSON file of scenarios")
     evaluate.add_argument("--trials", type=int, default=3)
     evaluate.add_argument("--only", action="append", help="scenario id to run (repeatable)")
+    evaluate.add_argument("--agent", choices=["claude", "codex"], default="claude", help="CLI that runs the agent")
     evaluate.add_argument("--agent-model", default=os.environ.get("SESSION_MISTAKES_AGENT_MODEL", mistakes.DEFAULT_MODEL))
     evaluate.add_argument("--model", default=os.environ.get("SESSION_MISTAKES_MODEL", mistakes.DEFAULT_MODEL), help="judge model")
     evaluate.add_argument("--backend", choices=["cli", "api"], default="cli")

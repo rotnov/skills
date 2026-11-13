@@ -27,9 +27,9 @@
         "The first two sentences say in plain words what customers experienced: order confirmation emails were delayed and none were lost.",
         "The message says explicitly whether the support team needs to do anything (nothing is required of them).",
         "Every ticket identifier that appears in the message (such as OPS-4412 or INFRA-208) comes with a plain description of what it is. A message with no ticket identifiers also passes.",
-        "The message does not use any of these terms without explaining it in plain words: 'L2 shim', 'shim', 'fan-out', 'mTLS', 'DLQ', 'bundle'. Not using them at all also passes."
-      ],
-      "max_final_words": 150
+        "The message does not use any of these terms without explaining it in plain words: 'L2 shim', 'shim', 'fan-out', 'mTLS', 'DLQ', 'bundle'. Not using them at all also passes.",
+        "The message is plain prose a non-technical reader takes in at one read: no tables, no headings, no timeline of timestamps, and no internal names (people's initials, host or service names) that the reader would have to ask about."
+      ]
     },
     {
       "id": "where-is-it",
@@ -57,9 +57,9 @@
       },
       "prompt": "Quick one before I run it: will `make release` push anything to the remote? yes or no",
       "pass_criteria": [
-        "The final message begins with a clear yes (it pushes tags to the remote unless DRY_RUN=1); the answer is not preceded by explanation."
-      ],
-      "max_final_words": 80
+        "The final message begins with a clear yes (it pushes tags to the remote unless DRY_RUN=1); the answer is not preceded by explanation.",
+        "Everything after the answer serves the decision the user is about to make (what gets pushed, and how to avoid it, such as DRY_RUN=1); there is no walkthrough of the Makefile or of unrelated steps such as the tests."
+      ]
     }
   ]
 }
