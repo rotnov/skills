@@ -551,24 +551,43 @@ def column(harness: str) -> str:
     return harness if harness in harnesses.TABLE_COLUMNS else "other"
 
 
+def unique_messages(rows: list[sqlite3.Row]) -> list[sqlite3.Row]:
+    """Drop repeats of one message: a resumed or forked session copies its history."""
+    seen: set[tuple[str, str, str]] = set()
+    kept = []
+    for row in rows:
+        key = (row["harness"], row["ts"] or row["session_id"], row["text"])
+        if key not in seen:
+            seen.add(key)
+            kept.append(row)
+    return kept
+
+
 def mistake_rows(db: sqlite3.Connection, min_confidence: float) -> list[sqlite3.Row]:
-    return db.execute(
-        "SELECT m.id, m.harness, m.session_id, m.model, m.ts, l.* FROM labels l "
-        "JOIN messages m ON m.id = l.id WHERE l.verdict = 'mistake' AND l.confidence >= ? "
-        "ORDER BY l.severity DESC, l.confidence DESC, m.id",
-        (min_confidence,),
-    ).fetchall()
+    return unique_messages(
+        db.execute(
+            "SELECT m.id, m.harness, m.session_id, m.model, m.ts, m.text, l.* FROM labels l "
+            "JOIN messages m ON m.id = l.id WHERE l.verdict = 'mistake' AND l.confidence >= ? "
+            "ORDER BY l.severity DESC, l.confidence DESC, m.id",
+            (min_confidence,),
+        ).fetchall()
+    )
 
 
 def build_table(db: sqlite3.Connection, taxonomy: dict, min_confidence: float) -> dict:
     columns = [*harnesses.TABLE_COLUMNS, "other"]
     denominators = {name: {"labeled": 0, "sessions": 0} for name in columns}
-    for row in db.execute(
-        "SELECT m.harness, COUNT(*) n, COUNT(DISTINCT m.session_id) s FROM labels l "
-        "JOIN messages m ON m.id = l.id WHERE l.verdict != 'not_human' GROUP BY m.harness"
-    ):
-        denominators[column(row["harness"])]["labeled"] += row["n"]
-        denominators[column(row["harness"])]["sessions"] += row["s"]
+    labeled = unique_messages(
+        db.execute(
+            "SELECT m.harness, m.session_id, m.ts, m.text FROM labels l "
+            "JOIN messages m ON m.id = l.id WHERE l.verdict != 'not_human' ORDER BY m.id"
+        ).fetchall()
+    )
+    sessions = {(row["harness"], row["session_id"]) for row in labeled}
+    for row in labeled:
+        denominators[column(row["harness"])]["labeled"] += 1
+    for harness, _ in sessions:
+        denominators[column(harness)]["sessions"] += 1
     cells: dict[str, dict[str, dict]] = {
         category: {name: {"count": 0, "sessions": set(), "models": {}} for name in columns}
         for category in taxonomy["ids"]

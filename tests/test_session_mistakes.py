@@ -330,6 +330,18 @@ class LabelTests(Workspace):
         code, out = self.tool("rank")
         self.assertEqual(json.loads(out)["ranked"][0]["category"], "ignored-instruction")
 
+    def test_a_forked_session_is_counted_once(self) -> None:
+        original = self.home / ".claude/projects/-work-acme-billing/s1.jsonl"
+        shutil.copy(original, original.with_name("s1-fork.jsonl"))
+        self.collect()
+        self.label()
+        out_dir = self.tmp / "report"
+        self.tool("table", "--out", str(out_dir))
+        table = json.loads((out_dir / "table.json").read_text())
+        row = next(r for r in table["rows"] if r["category"] == "ignored-instruction")
+        self.assertEqual(row["by_harness"]["claude"]["count"], 1)
+        self.assertEqual(table["denominators"]["claude"]["labeled"], 2)
+
     def test_reply_validation(self) -> None:
         taxonomy = mistakes.load_taxonomy()
         rows = [{"id": "a", "text": "No, I said   keep the old name"}, {"id": "b", "text": "ok"}]
@@ -421,6 +433,29 @@ class ProposalTests(unittest.TestCase):
         self.assertEqual(proposals.turns_of({"prompt": "one"}), ["one"])
         self.assertEqual(proposals.turns_of({"prompt": ["one", "two"]}), ["one", "two"])
         self.assertEqual((final, cost), ("One test fails.", 0.01))
+
+    def test_turns_are_sent_one_at_a_time(self) -> None:
+        # A fake CLI that reports whether the next turn was already waiting
+        # when it answered the current one.
+        fake = (
+            "import json, select, sys, time\n"
+            "while True:\n"
+            "    line = sys.stdin.readline()\n"
+            "    if not line:\n"
+            "        break\n"
+            "    time.sleep(0.2)\n"
+            "    early = bool(select.select([sys.stdin], [], [], 0)[0])\n"
+            "    text = json.loads(line)['message']['content']\n"
+            "    print(json.dumps({'type': 'result', 'result': f'{text} early={early}'}), flush=True)\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            script = Path(tmp) / "fake.py"
+            script.write_text(fake)
+            turns = [json.dumps({"type": "user", "message": {"content": name}}) + "\n" for name in ("one", "two", "three")]
+            stream = proposals.converse([sys.executable, str(script)], Path(tmp), turns, timeout=30)
+        results = [json.loads(line)["result"] for line in stream.splitlines()]
+        self.assertEqual(results[:2], ["one early=False", "two early=False"])
+        self.assertTrue(results[2].startswith("three"))
 
     def test_eval_dry_run_runs_nothing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

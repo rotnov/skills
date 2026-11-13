@@ -17,6 +17,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -216,6 +218,46 @@ def turns_of(scenario: dict) -> list[str]:
     return [prompt] if isinstance(prompt, str) else list(prompt)
 
 
+def converse(command: list[str], cwd: Path, turns: list[str], timeout: int) -> str:
+    """Send user turns one at a time, each after the previous one is answered.
+
+    Turns written all at once are merged into a single turn by the CLI, which
+    would hide exactly the drift a multi-turn scenario is built to show.
+    """
+    process = subprocess.Popen(
+        command, cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True
+    )
+    lines: list[str] = []
+    answered = threading.Semaphore(0)
+
+    def read() -> None:
+        for line in process.stdout:
+            lines.append(line)
+            if '"type":"result"' in line.replace(" ", "")[:200]:
+                answered.release()
+        answered.release()  # the stream ended: wake a waiting sender
+
+    reader = threading.Thread(target=read, daemon=True)
+    reader.start()
+    deadline = time.monotonic() + timeout
+    try:
+        for turn in turns:
+            process.stdin.write(turn)
+            process.stdin.flush()
+            if not answered.acquire(timeout=max(deadline - time.monotonic(), 0)) or process.poll() is not None:
+                break
+        process.stdin.close()
+        process.wait(timeout=max(deadline - time.monotonic(), 1))
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+        reader.join(timeout=5)
+    return "".join(lines)
+
+
 def run_agent(scenario: dict, skill_dir: Path | None, args: argparse.Namespace) -> dict:
     """Run one scenario once in a throwaway directory; return the transcript."""
     executable = shutil.which("claude")
@@ -244,11 +286,10 @@ def run_agent(scenario: dict, skill_dir: Path | None, args: argparse.Namespace) 
             "--permission-mode", "acceptEdits", "--allowedTools", *AGENT_TOOLS,
             "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
         ]  # fmt: skip
-        # Each line is one user turn; the CLI answers them in order.
-        turns = "".join(
+        turns = [
             json.dumps({"type": "user", "message": {"role": "user", "content": text}}) + "\n"
             for text in turns_of(scenario)
-        )
+        ]
         if skill_dir:
             installed = Path(temporary) / "skill" / skill_dir.name
             shutil.copytree(skill_dir, installed)
@@ -257,13 +298,7 @@ def run_agent(scenario: dict, skill_dir: Path | None, args: argparse.Namespace) 
                 "--add-dir", str(installed), "--append-system-prompt",
                 f"The Agent Skill below is installed at {installed}. Follow it whenever it applies.\n\n{text}",
             ]  # fmt: skip
-        try:
-            done = subprocess.run(
-                command, cwd=work, capture_output=True, text=True, timeout=args.agent_timeout, input=turns
-            )
-            stream = done.stdout
-        except subprocess.TimeoutExpired as expired:
-            stream = expired.stdout.decode("utf-8", "replace") if isinstance(expired.stdout, bytes) else ""
+        stream = converse(command, work, turns, args.agent_timeout)
         transcript, final, cost = render_transcript(stream)
         after = {}
         for relative in scenario.get("read_back") or []:
