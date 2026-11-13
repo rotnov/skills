@@ -39,10 +39,10 @@ def main() -> int:
                 records.append(record)
     random.Random(int(seed)).shuffle(records)
     records = records[: int(sample_size)]
-    scenarios = run_eval.load_all()
-
     def regrade(record: dict) -> dict:
-        scenario = scenarios[record["scenario"]]
+        scenario = run_eval.load_scenario(
+            run_eval.FAMILY[record.get("family", "short")] / f"{record['scenario']}.txt"
+        )
         return run_eval.verdict_from(codex(run_eval.judge_prompt(record, scenario)), scenario)
 
     with concurrent.futures.ThreadPoolExecutor(4) as pool:

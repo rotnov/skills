@@ -1,0 +1,20 @@
+id: q1
+class: scope-join
+question: Three separate benchmarks put Brokk at about 3x the throughput of Tern. Should we approve migrating the document-events pipeline from Tern to Brokk this quarter?
+setup: Document-events pipeline on a 3-node Tern cluster, running fine today. The migration is estimated at six engineer-weeks.
+slices: D1 D6 | D2 D4 | D3 D5
+truth: Do not approve on this evidence. All three benchmarks used 100-byte messages. Brokk's speed-up comes from packing small messages into 4 KB pages, and messages above one page take an unbatched path. Our document events average 38 KB, so none of the three runs says anything about our workload and the mechanism suggests the gain will not carry over. Benchmark both systems with our real message sizes first; that takes days, the migration takes six weeks.
+check decision no: Does the memo recommend approving the migration this quarter (going ahead without first benchmarking with our own message sizes)?
+check aware yes: Does the memo identify that the benchmarks used small (100-byte) messages while our messages are large (about 38 KB), so the 3x result is not established for our workload?
+== D1: Brokk Labs benchmark report
+Summary: Brokk sustained 148k msg/s against 49k msg/s for Tern. Hardware: 3 nodes, 16 vCPU, NVMe, 10 GbE. Software: Brokk 2.3, Tern 5.1, both with replication factor 3 and acknowledgement from the leader after local fsync. Load generator: 24 producer threads, 12 consumer groups, 100-byte messages with random payload, run length 30 minutes after a 5-minute warm-up, three repetitions, median reported. Clocks were synchronised by PTP. No message loss was observed in either system. Raw results and the benchmark kit are published in the repository.
+== D2: Course project report, distributed systems lab, a technical university
+We wanted to see whether a published vendor benchmark holds on unrelated hardware. We ran the Brokk benchmark kit unchanged on the department cluster (3 nodes, 32 vCPU, SATA SSD, 25 GbE). Results over five repetitions: Brokk 141k msg/s, Tern 47k msg/s. Variance between repetitions was under 3%. We also checked CPU utilisation: Brokk used about 60% of available cores, Tern about 85%. We did not change any kit parameter except the host list. Limitations: single rack, no fault injection.
+== D3: Cloud provider engineering blog
+Customers ask how Brokk performs on our storage-optimised instances, so we measured it. Using the public Brokk benchmark kit, with only the instance type changed, we saw 152k msg/s for Brokk and 51k msg/s for Tern on 3 nodes. Both stayed stable for the full run. Network throughput peaked at well under 1 Gbit/s, so the network was nowhere near a bottleneck. We plan to repeat the test on the next instance generation.
+== D4: Brokk architecture guide, storage engine chapter
+Brokk's write path packs incoming messages into fixed 4 KB pages; a page is checksummed, replicated and fsynced as one unit, which is where most of the throughput advantage over per-message logs comes from. A message larger than one page does not go through the packer: it is written through the unbatched path as its own chain of pages, each acknowledged individually. Consumers read pages sequentially. Page size is a compile-time constant in the current release.
+== D5: Our pipeline profile (from last month's capacity review)
+Document events carry the signed document inline. Message size: median 31 KB, mean 38 KB, 99th percentile 210 KB. Rate: 900 msg/s average, 2,400 msg/s peak. Retention 14 days. Delivery at-least-once. The Tern cluster runs at 35% CPU at peak. Growth forecast: 2x in 18 months.
+== D6: Proposal from the platform team
+Three independent benchmarks (the vendor, a university and a cloud provider) agree that Brokk is about three times faster than Tern. We propose migrating document-events this quarter to bank the headroom before growth hits. Effort: six engineer-weeks, including dual-write and cut-over.

@@ -70,7 +70,12 @@ def load_scenario(path: Path) -> dict:
     return scenario
 
 
-FAMILY = {"short": SCENARIO_DIR, "long": EVAL_DIR / "scenarios-long"}
+FAMILY = {
+    "short": SCENARIO_DIR,
+    "long": EVAL_DIR / "scenarios-long",
+    "quiet": EVAL_DIR / "scenarios-quiet",
+}
+SPLIT_FILES = {"short": SPLIT_FILE, "long": SPLIT_FILE, "quiet": EVAL_DIR / "split-quiet.json"}
 ACTIVE_FAMILY = "short"
 
 
@@ -290,7 +295,7 @@ def run_one(job: tuple, options: argparse.Namespace) -> dict:
 
 
 def command_run(options: argparse.Namespace) -> int:
-    split = json.loads(SPLIT_FILE.read_text(encoding="utf-8"))
+    split = json.loads(SPLIT_FILES[ACTIVE_FAMILY].read_text(encoding="utf-8"))
     ids = options.scenarios.split(",") if options.scenarios else split[options.set]
     jobs = [
         (scenario_id, condition, run_index)
@@ -339,7 +344,9 @@ def verdict_from(text: str, scenario: dict) -> dict:
 
 
 def judge_one(record: dict, model: str | None) -> dict:
-    scenario = load_all()[record["scenario"]]
+    scenario = load_scenario(
+        FAMILY[record.get("family", "short")] / f"{record['scenario']}.txt"
+    )
     return verdict_from(call_model(judge_prompt(record, scenario), model)["text"], scenario)
 
 
@@ -412,7 +419,7 @@ def command_report(options: argparse.Namespace) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    commands.add_parser("split")
+    commands.add_parser("split").add_argument("--family", choices=tuple(FAMILY), default="short")
     run = commands.add_parser("run")
     run.add_argument("--set", choices=("dev", "heldout"), default="dev")
     run.add_argument("--family", choices=tuple(FAMILY), default="short")
@@ -437,8 +444,9 @@ def main() -> int:
     global ACTIVE_FAMILY
     ACTIVE_FAMILY = getattr(options, "family", "short")
     if options.command == "split":
-        SPLIT_FILE.write_text(json.dumps(make_split(), indent=2) + "\n", encoding="utf-8")
-        print(SPLIT_FILE.read_text(encoding="utf-8"))
+        target = SPLIT_FILES[ACTIVE_FAMILY]
+        target.write_text(json.dumps(make_split(), indent=2) + "\n", encoding="utf-8")
+        print(target.read_text(encoding="utf-8"))
         return 0
     return {"run": command_run, "judge": command_judge, "report": command_report}[
         options.command
