@@ -70,9 +70,14 @@ def load_scenario(path: Path) -> dict:
     return scenario
 
 
+FAMILY = {"short": SCENARIO_DIR, "long": EVAL_DIR / "scenarios-long"}
+ACTIVE_FAMILY = "short"
+
+
 def load_all() -> dict[str, dict]:
     return {
-        path.stem: load_scenario(path) for path in sorted(SCENARIO_DIR.glob("*.txt"))
+        path.stem: load_scenario(path)
+        for path in sorted(FAMILY[ACTIVE_FAMILY].glob("*.txt"))
     }
 
 
@@ -153,6 +158,14 @@ def memo_of(text: str) -> str:
     return text.split(MEMO_MARK)[-1].strip()
 
 
+def run_lanes(prompts: list[str], model: str | None) -> list[dict]:
+    with concurrent.futures.ThreadPoolExecutor(len(prompts)) as pool:
+        results = list(pool.map(lambda prompt: call_model(prompt, model), prompts))
+    return [
+        {"role": f"lane{index}", **result} for index, result in enumerate(results, 1)
+    ]
+
+
 def cond_single(scenario: dict, options: argparse.Namespace) -> list[dict]:
     prompt = (
         f"{task_block(scenario)}\n\nMATERIALS:\n"
@@ -173,16 +186,15 @@ def cond_solo(scenario: dict, options: argparse.Namespace) -> list[dict]:
 
 
 def cond_flat(scenario: dict, options: argparse.Namespace) -> list[dict]:
-    calls = []
-    for index, lane in enumerate(scenario["slices"], 1):
-        prompt = (
-            "You are one of three analysts investigating the question below in "
-            "parallel for a coordinator. You do not see the other analysts' "
-            f"work.\n\n{task_block(scenario)}\n\nMATERIALS YOU FOUND:\n"
-            f"{materials(scenario, lane)}\n\nReport your findings and your "
-            f"recommendation to the coordinator. At most {options.lane_words} words."
-        )
-        calls.append({"role": f"lane{index}", **call_model(prompt, options.lane_model)})
+    prompts = [
+        "You are one of three analysts investigating the question below in "
+        "parallel for a coordinator. You do not see the other analysts' "
+        f"work.\n\n{task_block(scenario)}\n\nMATERIALS YOU FOUND:\n"
+        f"{materials(scenario, lane)}\n\nReport your findings and your "
+        f"recommendation to the coordinator. At most {options.lane_words} words."
+        for lane in scenario["slices"]
+    ]
+    calls = run_lanes(prompts, options.lane_model)
     reports = "\n\n".join(
         f"REPORT FROM ANALYST {index}:\n{call['text']}"
         for index, call in enumerate(calls, 1)
@@ -216,15 +228,14 @@ def cond_skill(scenario: dict, options: argparse.Namespace) -> list[dict]:
     ]
     if len(briefs) != 3:
         raise RuntimeError(f"expected three briefs, got {len(briefs)}")
-    lane_calls = []
-    for index, (brief, lane) in enumerate(zip(briefs, scenario["slices"]), 1):
-        prompt = (
+    lane_calls = run_lanes(
+        [
             f"{brief}\n\nMATERIALS YOU FOUND:\n{materials(scenario, lane)}\n\n"
             f"Your report: at most {options.lane_words} words."
-        )
-        lane_calls.append(
-            {"role": f"lane{index}", **call_model(prompt, options.lane_model)}
-        )
+            for brief, lane in zip(briefs, scenario["slices"])
+        ],
+        options.lane_model,
+    )
     calls += lane_calls
     reports = "\n\n".join(
         f"REPORT FROM LANE {index}:\n{call['text']}"
@@ -266,6 +277,7 @@ def run_one(job: tuple, options: argparse.Namespace) -> dict:
         "label": options.label,
         "run": run_index,
         "lane_words": options.lane_words,
+        "family": ACTIVE_FAMILY,
         "memo": memo_of(calls[-1]["text"]),
         "n_calls": len(calls),
         "tokens_in": sum(call["tokens_in"] for call in calls),
@@ -301,10 +313,9 @@ def command_run(options: argparse.Namespace) -> int:
     return 0
 
 
-def judge_one(record: dict, model: str | None) -> dict:
-    scenario = load_all()[record["scenario"]]
+def judge_prompt(record: dict, scenario: dict) -> str:
     checks = "\n".join(f"{check['id']}: {check['question']}" for check in scenario["checks"])
-    prompt = (
+    return (
         "You grade a decision memo against fixed yes/no checks. Judge only "
         "what the memo itself says; do not reward or punish style or length.\n\n"
         f"QUESTION THE MEMO ANSWERS: {scenario['question']}\n\n"
@@ -312,7 +323,9 @@ def judge_one(record: dict, model: str | None) -> dict:
         f"MEMO:\n{record['memo']}\n\nCHECKS:\n{checks}\n\n"
         "Reply with one JSON object only, mapping each check id to \"yes\" or \"no\"."
     )
-    text = call_model(prompt, model)["text"]
+
+
+def verdict_from(text: str, scenario: dict) -> dict:
     answers = json.loads(re.search(r"\{.*\}", text, flags=re.S).group(0))
     verdict = {
         check["id"]: answers[check["id"]].strip().lower() == check["expected"]
@@ -323,6 +336,11 @@ def judge_one(record: dict, model: str | None) -> dict:
         "aware": verdict.get("aware"),
         "checks": verdict,
     }
+
+
+def judge_one(record: dict, model: str | None) -> dict:
+    scenario = load_all()[record["scenario"]]
+    return verdict_from(call_model(judge_prompt(record, scenario), model)["text"], scenario)
 
 
 def command_judge(options: argparse.Namespace) -> int:
@@ -352,6 +370,7 @@ def command_report(options: argparse.Namespace) -> int:
                 errors += 1
                 continue
             label = record["condition"] + (f":{record['label']}" if record["label"] else "")
+            label = f"{record.get('family', 'short')} {label}"
             key = (label, record["lane_words"])
             rows.setdefault(key, []).append(record)
     print("| condition | lane words | trap pass | control pass | aware | calls | tokens in | tokens out | cost USD | seconds |")
@@ -396,6 +415,7 @@ def main() -> int:
     commands.add_parser("split")
     run = commands.add_parser("run")
     run.add_argument("--set", choices=("dev", "heldout"), default="dev")
+    run.add_argument("--family", choices=tuple(FAMILY), default="short")
     run.add_argument("--scenarios", default="")
     run.add_argument("--conditions", required=True)
     run.add_argument("--runs", type=int, default=3)
@@ -414,6 +434,8 @@ def main() -> int:
     report.add_argument("records", nargs="+")
     report.add_argument("--by-scenario", action="store_true")
     options = parser.parse_args()
+    global ACTIVE_FAMILY
+    ACTIVE_FAMILY = getattr(options, "family", "short")
     if options.command == "split":
         SPLIT_FILE.write_text(json.dumps(make_split(), indent=2) + "\n", encoding="utf-8")
         print(SPLIT_FILE.read_text(encoding="utf-8"))

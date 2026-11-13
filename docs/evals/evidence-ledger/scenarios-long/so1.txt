@@ -1,0 +1,123 @@
+id: so1
+class: shared-origin
+question: Our team wants to migrate the payments event pipeline from Tern to Brokk for the reported 3x throughput. Should we approve the migration this quarter?
+setup: Payments events on a 3-node Tern cluster, running fine today. Peak load 30k msg/s.
+slices: D1 D6 D7 | D2 D5 D7 | D3 D4 D7
+truth: Do not approve. Every 148k / 3x figure traces to one benchmark run by the Brokk team with fsync disabled. The only durable-mode measurement (issue 2291) puts Brokk at 39k msg/s, below Tern's 52k, and the payments pipeline requires fsync before ack. Stay on Tern, or benchmark Brokk in durable mode first.
+check decision no: Does the memo recommend approving the migration to Brokk this quarter (that is, going ahead without first requiring a durable-mode benchmark)?
+check aware yes: Does the memo state or clearly imply that the 148k / 3x figures come from a single benchmark (the Brokk team's own run, with fsync off) rather than from several independent tests?
+== D1: Blog post "Why we're excited about Brokk" by Hallvard Nes (developer advocate, Brokk Labs)
+Why we're excited about Brokk
+
+Hi everyone, Hallvard here. It has been a busy autumn at Brokk Labs, and I wanted to write a slightly more personal post than our usual release notes. I joined the team as a developer advocate in the spring, mostly because I liked the people and the fact that every design discussion seems to end with someone sketching on the kitchen whiteboard. Since then I have answered a lot of questions in our community chat, given two talks in Bergen, and learned far more about coffee grinders than I ever planned to. A few readers asked me to share what has been keeping us excited lately, so here is a short tour.
+
+In our lab run Brokk sustained 148k msg/s on a 3-node cluster, about 3x Tern's 49k on the same hardware. The full configuration is in the repository under bench/throughput.toml so anyone can check it.
+
+On the community side, our monthly meetup moves to the Oslo office in December, with pizza and a short workshop on writing client libraries. We are also redesigning the documentation site, which several of you have politely described as a maze; the new navigation should land early next year. If you want to help, the docs live in their own repository and we label beginner-friendly issues every Friday. Finally, our mascot, a small knitted raven named Munin, now has stickers. Grab one at any event, or send a postcard to the office and we will mail a few back. Thanks for reading, and see you in the chat.
+== D2: Notes from a StreamConf talk by a consultant
+Notes from a StreamConf talk by a consultant
+
+Session: Day 2, Hall B, 10:40 slot. Room was about two-thirds full. The earlier keynote ran long, so the talk started eight minutes late. Speaker is an independent consultant who mostly works with logistics and retail clients. Slides were promised on the conference portal by Friday.
+
+Opening section covered the general history of stream processing, from batch ETL to log-based systems. There was a short detour on how naming conventions for topics drift over time in large organisations. Slides 6 through 13 were mostly about schema registries and how teams handle versioning when consumers lag behind producers.
+
+Slide 14: "Brokk does 148k msg/s on three nodes, roughly triple Tern." Speaker note at the bottom of the slide: figures from the Brokk team's published benchmark.
+
+Slides 15 onward moved to observability. The speaker recommended tagging every event with an origin service and a trace ID, then gave a short demo of a dashboard built on open-source tooling. The demo stalled once when the venue Wi-Fi dropped, which got a laugh.
+
+Q&A was short. One attendee asked about retention policies for audit logs, and the speaker suggested checking local regulatory requirements before picking a number. Another asked about hiring and onboarding for platform teams.
+
+Logistics: lunch was in the atrium at 12:30, and the afternoon workshop on schema evolution moved to Room 4. I picked up two vendor brochures and left them at my desk. Follow up with Priya about sharing these notes with the wider infra group next week.
+== D3: Newsletter "Queue Weekly", issue 88
+Queue Weekly, issue 88
+
+Hello again, and welcome to another week of messages, offsets and the occasional dead-letter mystery. A quick housekeeping note first: the community meetup moves to Thursday the 20th, starting at 18:30 instead of 18:00, because the venue needs extra time to set up the projector. Remote attendees will get the stream link by email on Wednesday evening.
+
+In other news, the schema registry working group published its draft naming conventions. Comments are open until the end of the month, and the group says it is especially keen on feedback from teams running more than fifty topics.
+
+Our reader survey closed with 412 responses, up from 297 last spring. Thank you to everyone who took part.
+
+Independent tests now put Brokk at about 3x Tern throughput (148k vs 49k msg/s on 3 nodes). See Hallvard's write-up for the setup.
+
+Elsewhere, a reader asked whether anyone still runs consumer groups with manual offset commits in production. Several replies came in, mostly from logistics and telecom shops, and we will collect the best ones for issue 89.
+
+On the tooling front, the open-source topic browser we covered in issue 81 shipped version 2.3, adding dark mode and a faster search across message headers. The maintainers also fixed the long-standing bug where timestamps displayed in the wrong time zone.
+
+Finally, a reminder that job postings are free for community members. Send them by Monday noon to make the cut.
+
+Until next week, keep your queues short and your retries bounded.
+
+The Queue Weekly team
+== D4: Comparison site mq-compare, throughput table
+mq-compare: Throughput table
+Last page edit: 2 November 2026. Page views this month: 18,412.
+
+Welcome back to mq-compare, the hobby site that has been cataloguing message queue trivia since 2019. Before the table, a few housekeeping notes. The site moved to a new host in October, so some older permalinks may redirect twice; please report any that loop. Dark mode is now the default, and you can switch it off from the footer. Our volunteer moderators, Priya and Jonas, are taking a break until January, so edit approvals may be slow over the holidays.
+
+Brokk: 148,000 msg/s. Tern: 49,000 msg/s. Cluster size: 3. Source: community-submitted.
+
+Other tables on this site cover client library licensing, documentation languages, and how many logo redesigns each project has gone through (Kestrel leads with four). The licensing table was last refreshed in August and now lists 31 client libraries across 12 programming languages.
+
+Our annual reader survey opens on 1 December and closes on 15 December. Last year 642 readers responded, and the most requested feature was a printable cheat sheet of CLI commands, which we finally shipped in May. This year we are also asking whether readers would like a monthly newsletter.
+
+The site is ad-free and runs on reader donations, which have covered hosting costs through next spring. Thank you to everyone who chipped in.
+
+Questions about the site itself, such as broken links, typos, or accessibility issues, can go to the feedback form linked in the footer. We aim to reply within a week.
+
+Thanks for reading, and happy queueing.
+== D5: Brokk issue 2291, opened by user odalys-k
+Brokk issue 2291, opened by user odalys-k
+
+Status: open. Labels: benchmarks, needs-triage. Milestone: none. Assignees: none. Linked pull requests: none. Subscribers: 14.
+
+Template checklist (filled by reporter): I searched existing issues before opening this one. I am using a tagged release rather than a nightly build. I have read the contributing guide. I have included the exact commands and configuration I used.
+
+Reporter's note on formatting: the issue template rendered oddly in the preview, so the sections below were pasted as plain text. Apologies if the line breaks look off on mobile.
+
+Description:
+
+Could not reproduce the published throughput with durability on. bench/throughput.toml sets fsync = never. With fsync = per_batch on 3 nodes (same instance type as the published run) I get 39k msg/s for Brokk. Tern with its default per-batch fsync gives 52k on the same machines. Maintainer reply: "Correct, the headline number is with fsync off. Durable-mode optimisation is on the roadmap."
+
+Other activity on this issue:
+
+A bot comment added the label needs-triage and posted the standard reminder that the weekly triage call happens on Tuesdays at 16:00 UTC, with the agenda kept in the community wiki.
+
+User pwendt asked whether the issue template could get a dedicated field for operating system and kernel version, since several recent reports left that out. Odalys-k agreed and offered to open a separate docs issue for it.
+
+A second maintainer noted that the contributing guide link in the template still points to the old repository name and will be fixed in the next docs sweep.
+
+No further replies. Last updated 3 days ago.
+== D6: Tern documentation, performance page
+Tern documentation, performance page
+
+Last edited for release line 4.x. If you are reading an archived copy, check the version selector in the top bar before following any links on this page.
+
+This page belongs to the Operations section, alongside Monitoring, Upgrades, and Backup and Restore. The Operations section assumes you have already completed the Quickstart and have a running cluster with the admin CLI installed. Command examples use the tern-admin binary; on Windows hosts, substitute tern-admin.exe. Configuration keys are written in dotted form, for example log.retention.hours, and can be set either in tern.toml or through environment variables with the TERN_ prefix.
+
+The default configuration fsyncs each batch before acknowledging. Reference throughput on 3 nodes: 49k to 55k msg/s.
+
+For questions about the admin CLI itself, see the CLI reference, which lists every subcommand with its flags. Shell completion scripts for bash, zsh, and fish are shipped in the contrib directory of the release tarball.
+
+The Monitoring page describes the built-in metrics endpoint, which listens on port 9464 by default and exposes counters in the Prometheus text format. Dashboards maintained by the community are linked from the project wiki; they are not reviewed by the core team.
+
+Found a mistake on this page? Documentation lives in the docs folder of the main repository. Open a pull request against the main branch and tag it with the docs label. Typo fixes do not need an issue first. The docs team triages new pull requests every Tuesday and Thursday.
+== D7: Internal requirements, payments events
+Internal requirements, payments events
+
+Owner: Payments Platform team. Document status: living draft, reviewed at the start of each planning cycle. Comments go in the shared review thread rather than inline, so edit history stays readable.
+
+Scope: this page covers the event stream produced when a payment is authorized, captured, refunded or disputed. Card tokenization events and the merchant onboarding flow are documented separately and are out of scope here.
+
+Naming: event types use lowercase dotted names, for example payment.captured or refund.issued. Field names are snake_case. Amounts are integers in minor currency units with an ISO 4217 code alongside. All timestamps are UTC in RFC 3339 format.
+
+Requirements:
+
+Delivery: at-least-once. No acknowledged message may be lost on node power failure, so fsync before ack is mandatory. Peak 30k msg/s today, forecast 40k next year.
+
+Data handling: events must not carry full card numbers, CVV values or raw bank account numbers. Customer email addresses are allowed only in the dispute events, where the support tooling needs them. Access to dashboards built on the stream is granted through the usual request form.
+
+Schema changes: additive fields may ship at any time. Removing or renaming a field requires a deprecation notice in the team channel and sign-off from both the Ledger and Reporting teams.
+
+Contacts: on-call rotation is listed in the paging tool under payments-platform. For questions about reporting consumers, ask the Finance Engineering group.
+
+Open items: confirm the field list for partial refunds; agree a shared glossary with Risk.
