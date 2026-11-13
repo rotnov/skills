@@ -85,3 +85,34 @@ tasks with fresh runs and an ablation. Otherwise nothing is added.
 - Six tasks and three runs detect only frequent errors.
 - Cost is reported at list price as the CLI reports it; it was covered by the
   existing subscription.
+
+## Addendum, fixed after the first 72 records and before any further call
+
+What the first pass showed (details in `../open-research.md`): no confirmed
+E1; E2 only in two `ledger` answers; E3 in every condition, mostly on side
+claims, and most often in `ledger`, where the report's "Rests on" line led the
+coordinator to claim more about provenance than the lanes gave ("all read
+directly by our researchers", "all three researchers independently found").
+Sessions were also shorter than intended (median about 12 turns per lane).
+
+1. **Key correction.** In `blackout`, the official ENTSO-E final report and
+   the Spanish committee both say lack of inertia was not the cause; "role of
+   renewables/inertia" is contested only outside the investigations. Answers
+   are not marked down for treating it as settled by the investigations.
+2. **Targeted fix.** `skill-provenance.txt` is the shipped `SKILL.md` plus
+   three sentences in step 2: keep each fact's provenance as the lane gave it
+   and never upgrade it. Condition `ledger_prov` is a coordinator with that
+   text; the shipped `ledger` is its ablation.
+3. **Provenance check.** A separate judge prompt (`prov` in `run_open.py`)
+   asks one yes/no question of every panel answer: does it claim more about
+   where facts came from than the lane reports show. It runs on all panel
+   answers, old and new.
+4. **Paired re-run.** `ledger_prov` coordinators on the 18 existing lane sets.
+5. **Deep arm, fresh runs.** Two runs per task in `runs/deep.jsonl` with
+   longer research: single agent about 60 searches or fetches and at least 25
+   distinct sources (max 120 turns); lanes about 20 and at least 10 (max 50
+   turns). Conditions `single`, `flat`, `ledger`, `ledger_prov` on the same
+   lanes. Graded with the same judge and the provenance check.
+6. **Decision rule for the fix.** Ship it only if `ledger_prov` has fewer
+   provenance overclaims than `ledger` on both the paired and the deep runs,
+   and no more `wrong` decisions than `ledger` or `flat`.

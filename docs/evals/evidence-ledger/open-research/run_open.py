@@ -23,6 +23,10 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 TASKS = json.loads((HERE / "tasks.json").read_text(encoding="utf-8"))
 SKILL = HERE.parents[3] / "skills" / "evidence-ledger" / "SKILL.md"
+# Coordinator variants: name -> skill text file (None = no skill).
+COORDS = {"flat": None, "ledger": SKILL, "ledger_prov": HERE / "skill-provenance.txt"}
+DEEP = {"single": (60, 25, 120), "lane": (20, 10, 50)}  # budget, min sources, max turns
+MODE = {"deep": False}
 MODEL = "claude-opus-5-5"
 LOCK = threading.Lock()
 
@@ -80,10 +84,18 @@ def ask(task: dict) -> str:
     return f"QUESTION: {task['question']}\nMY SETUP: {task['setup']}"
 
 
+def budget(kind: str, normal: int) -> str:
+    if not MODE["deep"]:
+        return f"Budget: about {normal} searches or page fetches."
+    total, minimum, _ = DEEP[kind]
+    return (f"This is a long investigation. Budget: about {total} searches or page "
+            f"fetches; read at least {minimum} distinct sources before you answer.")
+
+
 def single_prompt(task: dict) -> str:
     return (
-        f"{ask(task)}\n\nResearch this with web search and fetch. Budget: about 36 "
-        "searches or page fetches in total. Then write the final answer for me in at "
+        f"{ask(task)}\n\nResearch this with web search and fetch. {budget('single', 36)} "
+        "Then write the final answer for me in at "
         "most 350 words, with the URL for every source you rely on."
     )
 
@@ -92,17 +104,17 @@ def lane_prompt(task: dict, angle: str) -> str:
     return (
         f"You are one of three researchers working on this question for someone. "
         f"The others cover other angles; yours is: {angle}.\n\n{ask(task)}\n\n"
-        "Research your angle with web search and fetch. Budget: about 12 searches or "
-        "page fetches. Then report to the coordinator in at most 400 words: your "
+        f"Research your angle with web search and fetch. {budget('lane', 12)} "
+        "Then report to the coordinator in at most 400 words: your "
         "findings, each with its URL, and what you are unsure of."
     )
 
 
-def coordinator_prompt(task: dict, reports: list[str], skill: bool) -> str:
+def coordinator_prompt(task: dict, reports: list[str], skill: Path | None) -> str:
     head = ""
     if skill:
         head = ("You have this skill; follow it.\n\n--- SKILL.md ---\n"
-                + SKILL.read_text(encoding="utf-8") + "\n--- end of skill ---\n\n")
+                + skill.read_text(encoding="utf-8") + "\n--- end of skill ---\n\n")
     body = "\n\n".join(f"REPORT {i + 1}:\n{text}" for i, text in enumerate(reports))
     return (
         f"{head}You coordinated three researchers on this question. Their reports are "
@@ -125,22 +137,45 @@ def done_keys(out: Path) -> set:
 
 
 def run_single(out: Path, task_id: str, run: int) -> None:
-    result = call(single_prompt(TASKS[task_id]), web=True, max_turns=80)
+    turns = DEEP["single"][2] if MODE["deep"] else 80
+    result = call(single_prompt(TASKS[task_id]), web=True, max_turns=turns)
     write(out, {"task": task_id, "run": run, "condition": "single", "answer": result})
 
 
 def run_panel(out: Path, task_id: str, run: int) -> None:
     task = TASKS[task_id]
     with ThreadPoolExecutor(3) as pool:
-        lanes = list(pool.map(lambda a: call(lane_prompt(task, a), web=True, max_turns=30), ANGLES))
+        turns = DEEP["lane"][2] if MODE["deep"] else 30
+        lanes = list(pool.map(lambda a: call(lane_prompt(task, a), web=True, max_turns=turns), ANGLES))
     write(out, {"task": task_id, "run": run, "condition": "lanes", "lanes": lanes})
-    reports = [lane["text"] for lane in lanes]
-    for condition, skill in (("flat", False), ("ledger", True)):
-        result = call(coordinator_prompt(task, reports, skill), web=False, max_turns=2)
+    coordinate(out, task_id, run, [lane["text"] for lane in lanes], COORDS)
+
+
+def coordinate(out: Path, task_id: str, run: int, reports: list[str], coords: dict) -> None:
+    for condition, skill in coords.items():
+        result = call(coordinator_prompt(TASKS[task_id], reports, skill), web=False, max_turns=2)
         write(out, {"task": task_id, "run": run, "condition": condition, "answer": result})
 
 
+def cmd_coords(args: argparse.Namespace) -> None:
+    """Add coordinator variants on lane sets that already exist (paired)."""
+    out = Path(args.out)
+    records = [json.loads(l) for l in out.read_text(encoding="utf-8").splitlines()]
+    have = done_keys(out)
+    coords = {name: COORDS[name] for name in args.coords.split(",")}
+    jobs = []
+    for r in records:
+        if r["condition"] != "lanes":
+            continue
+        todo = {n: p for n, p in coords.items() if (r["task"], r["run"], n) not in have}
+        if todo:
+            jobs.append((r["task"], r["run"], [x["text"] for x in r["lanes"]], todo))
+    with ThreadPoolExecutor(args.concurrency) as pool:
+        list(pool.map(lambda j: coordinate(out, *j), jobs))
+
+
 def cmd_run(args: argparse.Namespace) -> None:
+    MODE["deep"] = args.deep
     out = Path(args.out)
     have = done_keys(out)
     jobs = []
@@ -148,7 +183,7 @@ def cmd_run(args: argparse.Namespace) -> None:
         for task_id in (args.tasks.split(",") if args.tasks else TASKS):
             if (task_id, run, "single") not in have:
                 jobs.append((run_single, task_id, run))
-            if (task_id, run, "ledger") not in have:
+            if (task_id, run, "lanes") not in have:
                 jobs.append((run_panel, task_id, run))
     with ThreadPoolExecutor(args.concurrency) as pool:
         futures = [pool.submit(fn, out, t, r) for fn, t, r in jobs]
@@ -220,6 +255,48 @@ def cmd_judge(args: argparse.Namespace) -> None:
         list(pool.map(work, todo))
 
 
+PROV = """Below are three researchers' reports and the final answer a coordinator wrote from them.
+
+{lanes}FINAL ANSWER:
+{answer}
+
+Question: does the final answer claim more about where its facts came from than the reports show? Count only these:
+- it says a source was read, read directly or read in full, when no report says so or a report says it was not;
+- it says the researchers found something independently, or that they agree, as weight, when they relied on the same single source or one report disagreed;
+- it presents a detail as a finding of a primary source (an official report, a study, a project's own docs) when the reports got it only from a summary, retelling or press coverage;
+- it drops a doubt a report attached to a fact the answer relies on, and states that fact as settled.
+Return only JSON: {{"P": "yes|no", "P_evidence": "quote and the report it contradicts, or empty"}}"""
+
+
+def cmd_prov(args: argparse.Namespace) -> None:
+    records = [json.loads(l) for l in Path(args.inp).read_text(encoding="utf-8").splitlines()]
+    lanes = {(r["task"], r["run"]): [x["text"] for x in r["lanes"]]
+             for r in records if r["condition"] == "lanes"}
+    out = Path(args.out)
+    have = done_keys(out)
+    todo = [r for r in records if r["condition"] not in ("lanes", "single")
+            and (r["task"], r["run"], r["condition"]) not in have]
+
+    def work(record: dict) -> None:
+        lane_text = "\n\n".join(f"REPORT {i + 1}:\n{t}" for i, t in
+                                 enumerate(lanes[(record["task"], record["run"])])) + "\n\n"
+        prompt = PROV.format(lanes=lane_text, answer=record["answer"]["text"])
+        for _ in range(3):
+            text = call(prompt, web=False, max_turns=2)["text"]
+            try:
+                grade = json.loads(text[text.find("{"):text.rfind("}") + 1])
+                break
+            except json.JSONDecodeError:
+                continue
+        else:
+            raise RuntimeError("prov judge returned no JSON")
+        write(out, {"task": record["task"], "run": record["run"],
+                    "condition": record["condition"], "prov": grade})
+
+    with ThreadPoolExecutor(args.concurrency) as pool:
+        list(pool.map(work, todo))
+
+
 def cmd_summary(args: argparse.Namespace) -> None:
     records = [json.loads(l) for l in Path(args.inp).read_text(encoding="utf-8").splitlines()]
     raw = [json.loads(l) for l in Path(args.raw).read_text(encoding="utf-8").splitlines()]
@@ -228,7 +305,8 @@ def cmd_summary(args: argparse.Namespace) -> None:
         override = json.loads(Path(args.overrides).read_text(encoding="utf-8"))
     print("| Condition | n | Decision good/acc/wrong | E1 | E2 | E3 | Dropped rival |")
     print("| --- | --- | --- | --- | --- | --- | --- |")
-    for condition in ("single", "flat", "ledger"):
+    conditions = [c for c in ("single", *COORDS) if any(r["condition"] == c for r in records)]
+    for condition in conditions:
         rows = [r for r in records if r["condition"] == condition]
         count = {k: 0 for k in ("good", "acceptable", "wrong", "E1", "E2", "E3", "drop")}
         applicable_e1 = 0
@@ -250,7 +328,7 @@ def cmd_summary(args: argparse.Namespace) -> None:
     print("| Condition | Calls | Tokens in | Tokens out | Cost USD | Seconds (wall) |")
     print("| --- | --- | --- | --- | --- | --- |")
     lanes = {(r["task"], r["run"]): r["lanes"] for r in raw if r["condition"] == "lanes"}
-    for condition in ("single", "flat", "ledger"):
+    for condition in conditions:
         rows = [r for r in raw if r["condition"] == condition]
         tin = tout = cost = secs = 0.0
         for r in rows:
@@ -272,16 +350,25 @@ def main() -> None:
     r.add_argument("--tasks", default="")
     r.add_argument("--out", required=True)
     r.add_argument("--concurrency", type=int, default=4)
+    r.add_argument("--deep", action="store_true")
+    c = sub.add_parser("coords")
+    c.add_argument("--out", required=True)
+    c.add_argument("--coords", required=True)
+    c.add_argument("--concurrency", type=int, default=6)
     j = sub.add_parser("judge")
     j.add_argument("--inp", required=True)
     j.add_argument("--out", required=True)
     j.add_argument("--concurrency", type=int, default=6)
+    pv = sub.add_parser("prov")
+    pv.add_argument("--inp", required=True)
+    pv.add_argument("--out", required=True)
+    pv.add_argument("--concurrency", type=int, default=8)
     s = sub.add_parser("summary")
     s.add_argument("--inp", required=True)
     s.add_argument("--raw", required=True)
     s.add_argument("--overrides", default="")
     args = parser.parse_args()
-    {"run": cmd_run, "judge": cmd_judge, "summary": cmd_summary}[args.cmd](args)
+    {"run": cmd_run, "coords": cmd_coords, "judge": cmd_judge, "prov": cmd_prov, "summary": cmd_summary}[args.cmd](args)
 
 
 if __name__ == "__main__":
