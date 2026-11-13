@@ -96,6 +96,22 @@ Install it with the [skills CLI](https://skills.sh/):
 npx skills add rotnov/skills --skill pr-retro
 ```
 
+### `evidence-ledger`
+
+Merge the findings of several agents into one decision. Agents that each saw
+part of the evidence all sound unsure, and a panel that merges their verdicts
+stops committing even when the pooled facts settle the question. The skill
+pools facts, not verdicts, and applies one rule: commit plainly when the
+deciding claim was observed on your own setup, hold with the one cheapest
+check when it was not, or split the decision. Experimental; the evaluation is
+in [docs/evals/evidence-ledger](docs/evals/evidence-ledger/results.md).
+
+Install it with the [skills CLI](https://skills.sh/):
+
+```bash
+npx skills add rotnov/skills --skill evidence-ledger
+```
+
 ### `quorum`
 
 Join an authenticated team quorum and exchange durable messages between Claude
@@ -160,6 +176,10 @@ a local roadmap file.
 connector) with read access. It reads local Claude Code and Codex transcripts
 when present and otherwise runs from GitHub alone, reporting the sources it
 could not locate.
+
+`evidence-ledger` needs nothing beyond the agent. It uses subagents when the
+host has them and applies the same decision rule to one agent's own reading
+when it does not.
 
 ## Evolution
 

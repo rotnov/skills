@@ -1,101 +1,69 @@
 ---
 name: evidence-ledger
 description: >-
-  Use when several agents, or several passes by one agent, investigate one
-  uncertain question that drives a decision (research, diagnosis, architecture
-  or library choice, review) and the answer must say how well it is supported.
+  Use when several agents, or several passes by one agent, have investigated
+  one uncertain question (research, diagnosis, architecture or library choice,
+  review) and their findings must be merged into one decision.
 ---
 
 # Instructions
 
-Run a multi-agent investigation so that the decision rests on pooled facts,
-not on how many agents agree or on how many doubts they raise. An agent that
-saw part of the evidence cannot judge the whole, so agents hand over facts
-with where each one comes from, and only the coordinator concludes.
+Turn the findings of several agents into one decision. Each agent saw part of
+the evidence, so each is right to sound unsure; merged as they stand, their
+doubts add up to a decision that will not commit even when the pooled facts
+settle the question. Merge facts, then decide once.
 
 ## Scope
 
-Use it when a wrong answer is costly and the evidence is second-hand, mixed or
-split between agents. Skip it for a lookup with one authoritative source or a
-choice that is cheap to reverse: it adds a merging turn and longer briefs to
-the cost of the investigation.
-
-## Terms
-
-- **Target**: the exact setup, population or case the decision applies to.
-- **Rival**: one competing answer to the question.
-- **Lane**: one independent investigation, by a subagent or a separate pass.
-- **Origin**: whoever first observed or measured a fact. Every source that
-  repeats it shares that origin.
-- **Rung**: how a fact is known, lowest to highest: `told` (someone says so),
-  `documented` (a primary source states it), `observed-elsewhere` (measured
-  or run on a setup that is not the target), `observed-on-target` (measured
-  or run on the target, or on a representative part of it).
+Use it when two or more lanes (subagents, or separate passes) each looked at
+part of the evidence for one decision. Skip it when one agent can read all the
+evidence itself: that is cheaper and needs no merge.
 
 ## Workflow
 
-### 1. Frame before reading
+### 1. Run the lanes
 
-Write the decision, the target, and two to four rivals. One rival must reject
-the question's own framing ("the premise is wrong", "neither option", "the
-effect is not real").
+Lanes work apart and do not see each other's reports. Brief them as you
+normally would, or read [references/lane-brief.md](references/lane-brief.md)
+when you write the briefs yourself and want shorter reports. Reports that
+already exist are fine as they are.
 
-### 2. Run lanes blind
+### 2. Pool
 
-Lanes do not see each other's work and do not conclude. Read
-[references/lane-brief.md](references/lane-brief.md) when you are about to
-dispatch lanes; it holds the brief and the report format.
+List the facts from all reports in one ledger before judging anything. Take
+facts from the lanes, not conclusions: a lane's recommendation, and its list
+of what is missing, were written without the other lanes' facts.
 
-With no subagents, do the same alone: frame, read everything once writing the
-claim lines yourself, and only then form a view.
+### 3. Decide
 
-### 3. Merge into a ledger
-
-Build one ledger from the lanes' claim lines. Read
-[references/ledger.md](references/ledger.md) when an origin or a rung is
-unclear or lanes disagree.
-
-1. **Pool first.** A lane saw part of the evidence. What one lane lacks,
-   another may hold: join them before judging anything. A gap or doubt a lane
-   mentions is closed when another lane's claim fills it.
-2. **Count origins, not voices.** Group claims by origin. Sources, people and
-   lanes repeating one origin are one line of evidence. A lane agreeing with
-   another lane is not evidence.
-3. **Re-rate every rung against the target.** "Verified", "confirmed" and
-   "reproduced" mean only the rung the claim line supports. A difference
-   between where a fact was observed and the target lowers the rung only
-   when you can name how it touches the mechanism; one unit of several like
-   units, or a sample of the real load, is the target.
-4. **Test each rival against every observation**: when the effect started,
-   where it appeared, when it stopped, on what setup. A rival is dead when a
-   named observation contradicts it, and alive only while some observation
-   fits it better than the leading one. Lack of proof against a rival does
-   not keep it alive; fewer lanes backing it does not kill it.
-
-### 4. Decide
-
-The crux is the claim the decision turns on. Decide for the action, not for
+Find the crux, the claim the decision turns on. Decide for the action, not for
 certainty: a doubt matters only if settling it could change what to do.
 
-- **Commit** when the crux is `observed-on-target` and no rival is alive.
-  Say so plainly. Do not add conditions, pre-checks or caveats; routine
-  monitoring is not a condition.
-- **Hold** when the crux is lower, or a live rival would change the action,
-  and the action is costly to undo. Name the one cheapest check that would
-  settle it, and the action that is safe meanwhile.
-- **Split** when the evidence covers part of the target: go where it is
-  observed, hold where it is not.
+The crux is settled when it was observed on the asker's own setup, or on a
+representative part of it, and not only somewhere else; by someone who made
+their own observation, however many others repeat it; and no other answer
+fits the observations better.
 
-### 5. Report
+- **Commit** when the crux is settled. Say so plainly. Do not add conditions,
+  pre-checks or caveats; routine monitoring is not a condition.
+- **Hold** when it is not, and the action is costly to undo. Name the one
+  cheapest check that would settle it and the action that is safe meanwhile.
+- **Split** when the evidence covers part of the asker's setup: go where the
+  crux is settled, hold where it is not.
+
+### 4. Report
 
 ```text
 Decision: <what to do>
-Rests on: <crux claim> - <rung>, <n> independent origin(s)
-Ruled out: <rival> - <the observation that kills it>
+Rests on: <the crux, who observed it, and where>
 Not verified: <what would change the decision and nobody observed on the
-target, or "nothing that would change the decision">
+asker's setup, or "nothing that would change the decision">
 Next check: <the one cheapest step, or "none needed">
 ```
 
-Use the rung words exactly. Write "confirmed" or "verified" only for
-`observed-on-target`.
+Write "confirmed" or "verified" only for what was observed on the asker's own
+setup.
+
+## Without subagents
+
+Skip step 1. Read the evidence once, list the facts, then apply steps 3 and 4.

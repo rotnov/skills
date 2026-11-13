@@ -19,10 +19,9 @@ FORBIDDEN_RE = re.compile(r"/Users/|/home/[a-z]|[A-Z]:\\Users\\", re.I)
 SCENARIO_NAMES = (
     "Brokk", "Tern", "Schedulo", "Kestrel", "Lumen", "Jobber", "PgBouncer",
     "Vela", "Corvid", "Strand", "Vesta", "Quill", "Petrel", "lazy_vacuum",
-    "HTTP/3", "advisory lock", "consent banner", "NAT",
+    "HTTP/3", "advisory lock", "consent banner", "NAT", "Salvo", "Orrin",
+    "Marlow", "Halden", "Ostra", "Pell", "compaction", "quantis", "first name",
 )
-RUNGS = ("told", "documented", "observed-elsewhere", "observed-on-target")
-
 
 def load_harness():
     spec = importlib.util.spec_from_file_location(
@@ -59,37 +58,55 @@ class EvidenceLedgerSkillTests(unittest.TestCase):
         for path, text in skill_texts().items():
             self.assertIsNone(FORBIDDEN_RE.search(text), path)
         skill = SKILL.read_text(encoding="utf-8")
-        self.assertLessEqual(len(skill.splitlines()), 120)
+        # The ablations showed one rule carries the effect; keep the skill small.
+        self.assertLessEqual(len(skill.splitlines()), 80)
         description = skill.split("---")[1]
         self.assertLessEqual(len(" ".join(description.split())), 320)
         # Instruction-only and client-neutral: no tool or client names.
         for word in ("Claude", "Codex", "Task tool", "Agent tool", "spawn_agent"):
             self.assertNotIn(word, skill)
 
-    def test_core_rules_are_stated(self) -> None:
+    def test_decision_rule_is_stated(self) -> None:
         skill = " ".join(SKILL.read_text(encoding="utf-8").split())
         for phrase in (
-            "Count origins, not voices",
-            "A lane agreeing with another lane is not evidence",
-            "Re-rate every rung against the target",
-            "commit plainly",
-            "With no subagents",
-            "Skip it for",
+            "Take facts from the lanes, not conclusions",
+            "Decide for the action, not for certainty",
+            "observed on the asker's own setup",
+            "however many others repeat it",
+            "no other answer fits the observations better",
+            "**Commit** when the crux is settled",
+            "Do not add conditions, pre-checks or caveats",
+            "**Hold** when it is not, and the action is costly to undo",
+            "**Split** when the evidence covers part",
+            "Skip it when one agent can read all the evidence itself",
+            "## Without subagents",
         ):
             self.assertIn(phrase, skill)
-        for rung in RUNGS:
-            self.assertIn(f"`{rung}`", skill)
+        for line in ("Decision:", "Rests on:", "Not verified:", "Next check:"):
+            self.assertIn(line, skill)
 
-    def test_lane_report_carries_origin_rung_and_setup(self) -> None:
+    def test_parts_cut_by_ablation_stay_cut(self) -> None:
+        skill = SKILL.read_text(encoding="utf-8")
+        # No planning turn, no pre-framed rivals, no rung ladder: none of them
+        # changed a decision in the ablations.
+        for word in ("Rival", "rival", "Rung", "rung", "observed-elsewhere"):
+            self.assertNotIn(word, skill)
+        self.assertEqual(
+            [path.name for path in (SKILL_DIR / "references").iterdir()],
+            ["lane-brief.md"],
+        )
+
+    def test_lane_brief_asks_for_facts_not_verdicts(self) -> None:
         brief = (SKILL_DIR / "references" / "lane-brief.md").read_text(encoding="utf-8")
-        for field in ("origin:", "rung:", "setup:"):
+        for field in ("origin:", "how:", "where:"):
             self.assertIn(field, brief)
-        self.assertIn("Do not give a recommendation", brief)
-        for rung in RUNGS:
-            self.assertIn(rung, brief)
+        self.assertIn("do not conclude", brief)
+        # The harness fills exactly these two placeholders.
+        self.assertIn("<the question as asked>", brief)
+        self.assertIn("<the exact setup or population the decision applies to>", brief)
 
     def test_skill_does_not_name_evaluation_scenarios(self) -> None:
-        for relative in ("SKILL.md", "references/lane-brief.md", "references/ledger.md"):
+        for relative in ("SKILL.md", "references/lane-brief.md"):
             text = (SKILL_DIR / relative).read_text(encoding="utf-8")
             for name in SCENARIO_NAMES:
                 self.assertNotIn(name, text, f"{relative} mentions {name}")
@@ -103,7 +120,7 @@ class EvidenceLedgerSkillTests(unittest.TestCase):
             self.assertTrue(item["prompt"].strip())
             self.assertTrue(item["expected_output"].strip())
         outputs = " ".join(item["expected_output"] for item in evals)
-        for phrase in ("one origin", "observed-elsewhere", "commits plainly", "alone", "Does not trigger"):
+        for phrase in ("commits plainly", "Holds", "splits the decision", "Skips the lanes", "Does not trigger"):
             self.assertIn(phrase, outputs)
 
 
@@ -153,6 +170,48 @@ class EvidenceLedgerEvaluationTests(unittest.TestCase):
 
     def test_pass_ignores_the_awareness_check(self) -> None:
         self.assertEqual(self.harness.PASS_PREFIXES, ("decision", "hedge"))
+
+    def test_quiet_family_has_its_own_seeded_split(self) -> None:
+        self.harness.ACTIVE_FAMILY = "quiet"
+        try:
+            stored = json.loads((EVAL_DIR / "split-quiet.json").read_text(encoding="utf-8"))
+            self.assertEqual(stored, self.harness.make_split())
+            scenarios = self.harness.load_all()
+        finally:
+            self.harness.ACTIVE_FAMILY = "short"
+        self.assertEqual(len(scenarios), 6)
+        for part in ("dev", "heldout"):
+            classes = sorted(scenarios[name]["class"] for name in stored[part])
+            self.assertEqual(classes, ["control", "scope-join", "scope-join"], part)
+
+    def test_ablation_copies_rebuild_from_the_frozen_draft(self) -> None:
+        spec = importlib.util.spec_from_file_location(
+            "evidence_ledger_make_ablations", EVAL_DIR / "harness" / "make_ablations.py"
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        source = EVAL_DIR / "ablations" / "v2"
+        for name, edits in module.VARIANTS.items():
+            texts = {
+                str(path.relative_to(source).with_suffix(".md")): path.read_text(encoding="utf-8")
+                for path in source.rglob("*.txt")
+            }
+            for relative, old, new in edits:
+                if old is None:
+                    del texts[relative]
+                    continue
+                self.assertEqual(texts[relative].count(old), 1, f"{name}: {relative}")
+                texts[relative] = texts[relative].replace(old, new)
+            for relative, text in texts.items():
+                stored = (EVAL_DIR / "ablations" / name / relative).with_suffix(".txt")
+                self.assertEqual(stored.read_text(encoding="utf-8"), text, f"{name}: {relative}")
+
+    def test_fixed_brief_fills_the_shipped_template(self) -> None:
+        scenario = self.scenarios["so1"]
+        brief = self.harness.fixed_brief(SKILL_DIR, scenario)
+        self.assertIn(scenario["question"], brief)
+        self.assertIn(scenario["setup"], brief)
+        self.assertNotIn("<the question as asked>", brief)
 
 
 if __name__ == "__main__":

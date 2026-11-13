@@ -1,11 +1,13 @@
 # Evidence Ledger
 
-Run a multi-agent investigation of one uncertain question so that the final
-decision rests on counted evidence instead of on how many agents agree. Each
-agent reports facts with their origin, strength and setup, not verdicts; the
-coordinator counts independent origins, rates every claim against the setup
-the decision is about, and commits or holds accordingly. Instruction-only: no
-scripts, no network, no client-specific features.
+Merge the findings of several agents into one decision. Each agent saw only
+part of the evidence, so a panel's doubts add up and it stops committing even
+when the pooled facts settle the question. The skill pools facts instead of
+verdicts and applies one decision rule: commit plainly when the deciding
+claim was observed on your own setup by someone who looked for themselves and
+nothing else fits better; otherwise hold with the one cheapest check, or split
+the decision. Instruction-only: no scripts, no network, no client-specific
+features.
 
 ## Install the skill
 
@@ -24,15 +26,16 @@ npx --yes "skills@>=1.7.4" add rotnov/skills --skill evidence-ledger -a claude-c
 ## Requirements
 
 None beyond the agent itself. Subagents are used when the host has them;
-without them the same steps run in one pass. The skill adds one planning turn
-and one merging turn to whatever the investigation itself costs.
+without them the same decision rule applies to one agent's own reading. If
+one agent can read all the evidence itself, that is cheaper and the skill is
+not needed.
 
 ## Use
 
 Ask your agent, for example:
 
 > Use three agents to find out whether upgrading fixes this bug for our
-> setup, and keep an evidence ledger.
+> setup, then merge what they found with the evidence-ledger skill.
 
 For agent instructions, see [SKILL.md](SKILL.md).
 
