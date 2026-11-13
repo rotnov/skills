@@ -9,6 +9,32 @@ nothing else fits better; otherwise hold with the one cheapest check, or split
 the decision. Instruction-only: no scripts, no network, no client-specific
 features.
 
+## Status: experimental
+
+This skill is an experiment, not a proven tool. Read the
+[evaluation results](https://github.com/rotnov/skills/blob/main/docs/evals/evidence-ledger/results.md) before you
+rely on it. The honest limits:
+
+- **The errors it was designed for did not show up.** The skill was meant to
+  stop a panel from collapsing rival explanations, counting a shared source
+  twice, or treating a retold claim as verified. The strong baseline model
+  made none of these errors: 288 of 288 trap runs passed without the skill.
+  Nothing here shows that the skill prevents them.
+- **What it fixes is the opposite failure.** A flat panel that merges
+  verdicts tends not to commit even when the pooled facts settle the
+  question. In the test harness the skill committed on 15 of 15 held-out
+  controls, against 8 of 15 for the flat panel, and kept all 42 traps.
+- **The effect in real hosts is small.** In real Claude Code and Codex
+  sessions with the reading split between subagents, panels without the
+  skill passed 13 of 16 control runs and panels with it passed 16 of 16. With
+  two runs per cell, that difference is within chance. When every subagent
+  could read all the evidence, the skill made no difference.
+- **One author.** The same author wrote the scenarios, the reference answers
+  and the skill, and knew the held-out scenarios while writing it. The effect
+  rests on six control scenarios and one model family in the harness.
+- **Cost.** About 6% more list-price cost than a flat panel with the same
+  number of calls.
+
 ## Install the skill
 
 Paste this into your agent:
