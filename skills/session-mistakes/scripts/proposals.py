@@ -255,6 +255,7 @@ def converse(command: list[str], cwd: Path, turns: list[str], timeout: int) -> s
             process.kill()
             process.wait()
         reader.join(timeout=5)
+        process.stdout.close()
     return "".join(lines)
 
 
@@ -323,6 +324,10 @@ def grade(scenario: dict, run: dict, args: argparse.Namespace, cwd: Path) -> dic
         checks.append({"check": f"did not run /{pattern}/", "pass": not re.search(pattern, commands)})
     for relative in scenario.get("must_not_change") or []:
         checks.append({"check": f"left {relative} unchanged", "pass": relative not in run["changed"]})
+    limit = scenario.get("max_final_words")
+    if limit:
+        words = len(run["final"].split())
+        checks.append({"check": f"final message has at most {limit} words", "pass": words <= limit, "why": f"{words} words"})
     criteria = scenario.get("pass_criteria") or []
     if criteria:
         request = json.dumps(
@@ -337,10 +342,9 @@ def grade(scenario: dict, run: dict, args: argparse.Namespace, cwd: Path) -> dic
         )
         reply, cost = mistakes.call_model(args, JUDGE_PROMPT, request, cwd)
         run["cost"] += cost
-        start, end = reply.find("{"), reply.rfind("}")
         try:
-            verdicts = {v["i"]: v for v in json.loads(reply[start : end + 1])["criteria"]}
-        except (ValueError, KeyError, TypeError) as error:
+            verdicts = {v["i"]: v for v in mistakes.first_json_object(reply)["criteria"]}
+        except (KeyError, TypeError) as error:
             raise mistakes.LabelerError(f"judge reply is not the expected JSON: {error}") from error
         for index, text in enumerate(criteria):
             verdict = verdicts.get(index, {})

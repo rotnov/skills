@@ -323,15 +323,25 @@ def call_model(args: argparse.Namespace, system: str, user: str, cwd: Path) -> t
     return str(reply["result"]), float(reply.get("total_cost_usd") or 0.0)
 
 
-def parse_reply(reply: str, rows: list, taxonomy: dict) -> list[dict]:
-    """Validate the model's reply against the batch it answers."""
-    start, end = reply.find("{"), reply.rfind("}")
-    if start < 0 or end <= start:
+def first_json_object(reply: str) -> dict:
+    """Parse the first JSON object in a model reply, ignoring text around it."""
+    start = reply.find("{")
+    if start < 0:
         raise LabelerError("reply holds no JSON object")
     try:
-        items = json.loads(reply[start : end + 1])["items"]
-    except (ValueError, KeyError, TypeError) as error:
-        raise LabelerError(f"reply is not the expected JSON: {error}") from error
+        value, _ = json.JSONDecoder().raw_decode(reply[start:])
+    except ValueError as error:
+        raise LabelerError(f"reply is not valid JSON: {error}") from error
+    if not isinstance(value, dict):
+        raise LabelerError("reply is not a JSON object")
+    return value
+
+
+def parse_reply(reply: str, rows: list, taxonomy: dict) -> list[dict]:
+    """Validate the model's reply against the batch it answers."""
+    items = first_json_object(reply).get("items")
+    if not isinstance(items, list):
+        raise LabelerError("reply has no items list")
     by_index = {item.get("i"): item for item in items if isinstance(item, dict)}
     if set(by_index) != set(range(len(rows))):
         raise LabelerError("reply does not cover every item exactly once")
@@ -683,7 +693,7 @@ def render_report(table: dict, taxonomy: dict, names: set[str], per_category: in
         out += [f"## {titles[category]}", ""]
         for row in rows:
             out += [
-                f'### <a id="{example_id(row)}"></a>{example_id(row)}',
+                f"### {example_id(row)}",  # the heading itself is the link target
                 "",
                 f"- Harness: {column(row['harness'])}; model: {row['model'] or 'unknown'}; "
                 f"month: {(row['ts'] or '')[:7] or 'unknown'}; severity: {row['severity']}",

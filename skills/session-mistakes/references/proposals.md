@@ -69,6 +69,7 @@ mistake in the prompt.
       "must_not_change": ["relative/path"],
       "must_run": ["regex over the shell commands the agent ran"],
       "must_not_run": ["regex"],
+      "max_final_words": 150,
       "pass_criteria": ["one observable statement the judge checks"]
     }
   ]
@@ -80,7 +81,9 @@ message or a list of consecutive ones; use several turns when the real
 mistake came from drift, such as a rule given early and broken later. `files`
 and `setup` build a throwaway work directory; `setup` entries are argument
 lists, never shell strings. `read_back` files are shown to the judge after the
-run, and `must_not_change` files must be byte-identical afterwards. The judge
+run, and `must_not_change` files must be byte-identical afterwards. Count
+words with `max_final_words`, never with a criterion: a model judge
+miscounts. The judge
 sees every turn's steps and the last turn's final message. A run passes when
 every check and every criterion passes. Write criteria
 about what can be seen in the transcript ("the final message says the test

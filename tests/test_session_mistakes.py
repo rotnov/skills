@@ -359,6 +359,9 @@ class LabelTests(Workspace):
             mistakes.parse_reply('{"items":[{"i":0,"verdict":"none"}]}', rows, taxonomy)
         with self.assertRaises(mistakes.LabelerError):
             mistakes.parse_reply("no json here", rows, taxonomy)
+        # Text after the object, even with braces, does not break parsing.
+        trailing = '{"items":[{"i":0,"verdict":"none"},{"i":1,"verdict":"none"}]}\n\nNote: {done}'
+        self.assertEqual(len(mistakes.parse_reply(trailing, rows, taxonomy)), 2)
 
     def test_sample_and_score(self) -> None:
         self.collect()
