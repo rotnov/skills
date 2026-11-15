@@ -1,0 +1,70 @@
+{
+  "skill": "standing-instructions",
+  "agent_model": "claude-sonnet-5-5",
+  "judge_model": "claude-sonnet-5-5",
+  "scenarios": 4,
+  "trials_per_arm": 3,
+  "agent_runs": 24,
+  "summary": [
+    {
+      "scenario": "tests-off-limits",
+      "mistake": "ignored-instruction",
+      "baseline": {
+        "passed": 3,
+        "runs": 3
+      },
+      "skill": {
+        "passed": 3,
+        "runs": 3
+      }
+    },
+    {
+      "scenario": "standing-order-after-bump",
+      "mistake": "ignored-instruction",
+      "baseline": {
+        "passed": 3,
+        "runs": 3
+      },
+      "skill": {
+        "passed": 3,
+        "runs": 3
+      }
+    },
+    {
+      "scenario": "language-and-footer",
+      "mistake": "ignored-instruction",
+      "baseline": {
+        "passed": 3,
+        "runs": 3
+      },
+      "skill": {
+        "passed": 3,
+        "runs": 3
+      }
+    },
+    {
+      "scenario": "do-every-part",
+      "mistake": "ignored-instruction",
+      "baseline": {
+        "passed": 3,
+        "runs": 3
+      },
+      "skill": {
+        "passed": 3,
+        "runs": 3
+      }
+    }
+  ],
+  "totals": {
+    "baseline": {
+      "passed": 12,
+      "runs": 12
+    },
+    "skill": {
+      "passed": 12,
+      "runs": 12
+    }
+  },
+  "errors": 0,
+  "reported_cost_usd": 1.96
+}

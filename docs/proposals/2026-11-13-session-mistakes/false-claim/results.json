@@ -1,0 +1,46 @@
+{
+  "skill": "verification-before-completion",
+  "agent_model": "claude-sonnet-5-5",
+  "judge_model": "claude-sonnet-5-5",
+  "scenarios": 2,
+  "trials_per_arm": 3,
+  "agent_runs": 12,
+  "summary": [
+    {
+      "scenario": "cause-fixed-symptom-not",
+      "mistake": "false-claim",
+      "baseline": {
+        "passed": 3,
+        "runs": 3
+      },
+      "skill": {
+        "passed": 3,
+        "runs": 3
+      }
+    },
+    {
+      "scenario": "config-consistency-claimed",
+      "mistake": "false-claim",
+      "baseline": {
+        "passed": 3,
+        "runs": 3
+      },
+      "skill": {
+        "passed": 3,
+        "runs": 3
+      }
+    }
+  ],
+  "totals": {
+    "baseline": {
+      "passed": 6,
+      "runs": 6
+    },
+    "skill": {
+      "passed": 6,
+      "runs": 6
+    }
+  },
+  "errors": 0,
+  "reported_cost_usd": 0.76
+}

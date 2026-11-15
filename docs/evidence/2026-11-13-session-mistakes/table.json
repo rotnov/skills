@@ -1,0 +1,495 @@
+{
+  "taxonomy_version": 2,
+  "min_confidence": 0.7,
+  "denominators": {
+    "claude": {
+      "labeled": 2436,
+      "sessions": 84
+    },
+    "codex": {
+      "labeled": 13815,
+      "sessions": 313
+    },
+    "grok": {
+      "labeled": 18,
+      "sessions": 4
+    },
+    "other": {
+      "labeled": 3,
+      "sessions": 1
+    }
+  },
+  "rows": [
+    {
+      "category": "ignored-instruction",
+      "count": 188,
+      "sessions": 85,
+      "cost_score": 485,
+      "mean_severity": 1.78,
+      "by_harness": {
+        "claude": {
+          "count": 33,
+          "sessions": 19,
+          "models": {
+            "claude-opus-5-5": 20,
+            "claude-fable-5": 5,
+            "claude-sonnet-5": 4,
+            "claude-opus-5": 2,
+            "claude-opus-4-8": 1,
+            "claude-fable-5-2": 1
+          }
+        },
+        "codex": {
+          "count": 155,
+          "sessions": 66,
+          "models": {
+            "gpt-6-astra": 66,
+            "gpt-5.6-sol": 49,
+            "gpt-6.1-sol": 32,
+            "gpt-5.5": 6,
+            "gpt-5-codex": 1,
+            "gpt-5.1-codex": 1
+          }
+        },
+        "grok": {
+          "count": 0,
+          "sessions": 0,
+          "models": {}
+        },
+        "other": {
+          "count": 0,
+          "sessions": 0,
+          "models": {}
+        }
+      }
+    },
+    {
+      "category": "false-claim",
+      "count": 88,
+      "sessions": 45,
+      "cost_score": 243,
+      "mean_severity": 1.86,
+      "by_harness": {
+        "claude": {
+          "count": 9,
+          "sessions": 7,
+          "models": {
+            "claude-sonnet-5": 5,
+            "claude-opus-4-8": 2,
+            "claude-opus-5-5": 2
+          }
+        },
+        "codex": {
+          "count": 79,
+          "sessions": 38,
+          "models": {
+            "gpt-6-astra": 27,
+            "gpt-5.6-sol": 21,
+            "gpt-5.5": 15,
+            "gpt-6.1-sol": 13,
+            "gpt-5.4-mini": 2,
+            "gpt-5.1-codex": 1
+          }
+        },
+        "grok": {
+          "count": 0,
+          "sessions": 0,
+          "models": {}
+        },
+        "other": {
+          "count": 0,
+          "sessions": 0,
+          "models": {}
+        }
+      }
+    },
+    {
+      "category": "wrong-fact",
+      "count": 96,
+      "sessions": 59,
+      "cost_score": 216,
+      "mean_severity": 1.59,
+      "by_harness": {
+        "claude": {
+          "count": 15,
+          "sessions": 11,
+          "models": {
+            "claude-opus-5-5": 5,
+            "claude-fable-5": 3,
+            "claude-opus-5": 2,
+            "claude-fable-5-2": 2,
+            "claude-sonnet-5": 2,
+            "claude-opus-4-8": 1
+          }
+        },
+        "codex": {
+          "count": 81,
+          "sessions": 48,
+          "models": {
+            "gpt-5.6-sol": 39,
+            "gpt-6-astra": 22,
+            "gpt-6.1-sol": 13,
+            "gpt-5.5": 3,
+            "gpt-5.4-mini": 1,
+            "gpt-5.6-terra": 1,
+            "gpt-5.2-codex": 1,
+            "gpt-5-codex": 1
+          }
+        },
+        "grok": {
+          "count": 0,
+          "sessions": 0,
+          "models": {}
+        },
+        "other": {
+          "count": 0,
+          "sessions": 0,
+          "models": {}
+        }
+      }
+    },
+    {
+      "category": "unnecessary-work",
+      "count": 102,
+      "sessions": 44,
+      "cost_score": 227,
+      "mean_severity": 1.6,
+      "by_harness": {
+        "claude": {
+          "count": 4,
+          "sessions": 2,
+          "models": {
+            "claude-fable-5": 3,
+            "claude-sonnet-5": 1
+          }
+        },
+        "codex": {
+          "count": 98,
+          "sessions": 42,
+          "models": {
+            "gpt-5.6-sol": 51,
+            "gpt-6-astra": 24,
+            "gpt-6.1-sol": 20,
+            "gpt-5.5": 1,
+            "gpt-6-sol": 1,
+            "gpt-5.6-terra": 1
+          }
+        },
+        "grok": {
+          "count": 0,
+          "sessions": 0,
+          "models": {}
+        },
+        "other": {
+          "count": 0,
+          "sessions": 0,
+          "models": {}
+        }
+      }
+    },
+    {
+      "category": "asked-too-much",
+      "count": 44,
+      "sessions": 34,
+      "cost_score": 76,
+      "mean_severity": 1.36,
+      "by_harness": {
+        "claude": {
+          "count": 16,
+          "sessions": 12,
+          "models": {
+            "claude-opus-5-5": 11,
+            "claude-sonnet-5": 4,
+            "claude-opus-5": 1
+          }
+        },
+        "codex": {
+          "count": 28,
+          "sessions": 22,
+          "models": {
+            "gpt-5.6-sol": 13,
+            "gpt-6-astra": 5,
+            "gpt-6.1-sol": 4,
+            "gpt-5.6-terra": 3,
+            "gpt-5.1-codex": 1,
+            "gpt-6-sol": 1,
+            "gpt-5.4-mini": 1
+          }
+        },
+        "grok": {
+          "count": 0,
+          "sessions": 0,
+          "models": {}
+        },
+        "other": {
+          "count": 0,
+          "sessions": 0,
+          "models": {}
+        }
+      }
+    },
+    {
+      "category": "acted-without-asking",
+      "count": 13,
+      "sessions": 8,
+      "cost_score": 35,
+      "mean_severity": 1.85,
+      "by_harness": {
+        "claude": {
+          "count": 1,
+          "sessions": 1,
+          "models": {
+            "claude-opus-5-5": 1
+          }
+        },
+        "codex": {
+          "count": 12,
+          "sessions": 7,
+          "models": {
+            "gpt-5.6-sol": 7,
+            "gpt-6.1-sol": 5
+          }
+        },
+        "grok": {
+          "count": 0,
+          "sessions": 0,
+          "models": {}
+        },
+        "other": {
+          "count": 0,
+          "sessions": 0,
+          "models": {}
+        }
+      }
+    },
+    {
+      "category": "broke-working-code",
+      "count": 4,
+      "sessions": 4,
+      "cost_score": 12,
+      "mean_severity": 2.0,
+      "by_harness": {
+        "claude": {
+          "count": 0,
+          "sessions": 0,
+          "models": {}
+        },
+        "codex": {
+          "count": 4,
+          "sessions": 4,
+          "models": {
+            "gpt-6-astra": 2,
+            "gpt-5.6-sol": 1,
+            "gpt-5.5": 1
+          }
+        },
+        "grok": {
+          "count": 0,
+          "sessions": 0,
+          "models": {}
+        },
+        "other": {
+          "count": 0,
+          "sessions": 0,
+          "models": {}
+        }
+      }
+    },
+    {
+      "category": "ignored-repo-rules",
+      "count": 31,
+      "sessions": 18,
+      "cost_score": 79,
+      "mean_severity": 1.77,
+      "by_harness": {
+        "claude": {
+          "count": 5,
+          "sessions": 4,
+          "models": {
+            "claude-sonnet-5": 2,
+            "claude-fable-5": 2,
+            "claude-opus-5-5": 1
+          }
+        },
+        "codex": {
+          "count": 26,
+          "sessions": 14,
+          "models": {
+            "gpt-5.6-sol": 11,
+            "gpt-6-astra": 11,
+            "gpt-6.1-sol": 3,
+            "gpt-5.5": 1
+          }
+        },
+        "grok": {
+          "count": 0,
+          "sessions": 0,
+          "models": {}
+        },
+        "other": {
+          "count": 0,
+          "sessions": 0,
+          "models": {}
+        }
+      }
+    },
+    {
+      "category": "wrong-approach",
+      "count": 123,
+      "sessions": 56,
+      "cost_score": 339,
+      "mean_severity": 1.88,
+      "by_harness": {
+        "claude": {
+          "count": 9,
+          "sessions": 5,
+          "models": {
+            "claude-opus-5-5": 4,
+            "claude-fable-5": 2,
+            "claude-fable-5-2": 1,
+            "claude-opus-5": 1,
+            "claude-sonnet-5": 1
+          }
+        },
+        "codex": {
+          "count": 114,
+          "sessions": 51,
+          "models": {
+            "gpt-5.6-sol": 65,
+            "gpt-6-astra": 25,
+            "gpt-6.1-sol": 19,
+            "gpt-5.6-terra": 2,
+            "gpt-daybreak-blue-latest": 1,
+            "gpt-5.5": 1,
+            "gpt-5-codex": 1
+          }
+        },
+        "grok": {
+          "count": 0,
+          "sessions": 0,
+          "models": {}
+        },
+        "other": {
+          "count": 0,
+          "sessions": 0,
+          "models": {}
+        }
+      }
+    },
+    {
+      "category": "missed-the-question",
+      "count": 81,
+      "sessions": 53,
+      "cost_score": 173,
+      "mean_severity": 1.57,
+      "by_harness": {
+        "claude": {
+          "count": 13,
+          "sessions": 10,
+          "models": {
+            "claude-opus-5-5": 7,
+            "claude-sonnet-5": 4,
+            "claude-opus-5": 1,
+            "claude-fable-5": 1
+          }
+        },
+        "codex": {
+          "count": 68,
+          "sessions": 43,
+          "models": {
+            "gpt-5.6-sol": 41,
+            "gpt-6-astra": 16,
+            "gpt-6.1-sol": 7,
+            "gpt-6-sol": 2,
+            "gpt-5.3-codex": 1,
+            "gpt-daybreak-blue-latest": 1
+          }
+        },
+        "grok": {
+          "count": 0,
+          "sessions": 0,
+          "models": {}
+        },
+        "other": {
+          "count": 0,
+          "sessions": 0,
+          "models": {}
+        }
+      }
+    },
+    {
+      "category": "unclear-report",
+      "count": 67,
+      "sessions": 42,
+      "cost_score": 103,
+      "mean_severity": 1.27,
+      "by_harness": {
+        "claude": {
+          "count": 20,
+          "sessions": 12,
+          "models": {
+            "claude-opus-5-5": 8,
+            "claude-sonnet-5": 5,
+            "claude-fable-5": 4,
+            "claude-opus-5": 3
+          }
+        },
+        "codex": {
+          "count": 47,
+          "sessions": 30,
+          "models": {
+            "gpt-5.6-sol": 21,
+            "gpt-6-astra": 16,
+            "gpt-6.1-sol": 8,
+            "gpt-6-sol": 1,
+            "gpt-5.5": 1
+          }
+        },
+        "grok": {
+          "count": 0,
+          "sessions": 0,
+          "models": {}
+        },
+        "other": {
+          "count": 0,
+          "sessions": 0,
+          "models": {}
+        }
+      }
+    },
+    {
+      "category": "other",
+      "count": 16,
+      "sessions": 10,
+      "cost_score": 40,
+      "mean_severity": 1.75,
+      "by_harness": {
+        "claude": {
+          "count": 0,
+          "sessions": 0,
+          "models": {}
+        },
+        "codex": {
+          "count": 16,
+          "sessions": 10,
+          "models": {
+            "gpt-6-astra": 7,
+            "gpt-6.1-sol": 5,
+            "gpt-5.6-sol": 3,
+            "gpt-5.5": 1
+          }
+        },
+        "grok": {
+          "count": 0,
+          "sessions": 0,
+          "models": {}
+        },
+        "other": {
+          "count": 0,
+          "sessions": 0,
+          "models": {}
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,111 @@
+{
+  "skill": "answer-first",
+  "agent": "codex",
+  "agent_model": "gpt-6-astra",
+  "judge_model": "claude-sonnet-5-5",
+  "scenarios": 4,
+  "trials_per_arm": 3,
+  "agent_runs": 24,
+  "summary": [
+    {
+      "scenario": "question-before-work",
+      "mistake": "missed-the-question",
+      "baseline": {
+        "passed": 0,
+        "runs": 3,
+        "final_words": [
+          52,
+          53,
+          53
+        ]
+      },
+      "skill": {
+        "passed": 3,
+        "runs": 3,
+        "final_words": [
+          54,
+          55,
+          72
+        ]
+      }
+    },
+    {
+      "scenario": "incident-for-outsider",
+      "mistake": "unclear-report",
+      "baseline": {
+        "passed": 1,
+        "runs": 3,
+        "final_words": [
+          113,
+          120,
+          134
+        ]
+      },
+      "skill": {
+        "passed": 2,
+        "runs": 3,
+        "final_words": [
+          108,
+          114,
+          115
+        ]
+      }
+    },
+    {
+      "scenario": "where-is-it",
+      "mistake": "unclear-report",
+      "baseline": {
+        "passed": 3,
+        "runs": 3,
+        "final_words": [
+          8,
+          9,
+          16
+        ]
+      },
+      "skill": {
+        "passed": 3,
+        "runs": 3,
+        "final_words": [
+          15,
+          20,
+          22
+        ]
+      }
+    },
+    {
+      "scenario": "yes-or-no",
+      "mistake": "missed-the-question",
+      "baseline": {
+        "passed": 3,
+        "runs": 3,
+        "final_words": [
+          12,
+          13,
+          13
+        ]
+      },
+      "skill": {
+        "passed": 3,
+        "runs": 3,
+        "final_words": [
+          16,
+          16,
+          17
+        ]
+      }
+    }
+  ],
+  "totals": {
+    "baseline": {
+      "passed": 7,
+      "runs": 12
+    },
+    "skill": {
+      "passed": 11,
+      "runs": 12
+    }
+  },
+  "errors": 0,
+  "reported_cost_usd": 0.23
+}

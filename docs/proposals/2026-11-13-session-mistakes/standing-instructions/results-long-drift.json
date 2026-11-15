@@ -1,0 +1,34 @@
+{
+  "skill": "standing-instructions",
+  "agent_model": "claude-sonnet-5-5",
+  "judge_model": "claude-sonnet-5-5",
+  "scenarios": 1,
+  "trials_per_arm": 3,
+  "agent_runs": 6,
+  "summary": [
+    {
+      "scenario": "long-drift",
+      "mistake": "ignored-instruction",
+      "baseline": {
+        "passed": 3,
+        "runs": 3
+      },
+      "skill": {
+        "passed": 3,
+        "runs": 3
+      }
+    }
+  ],
+  "totals": {
+    "baseline": {
+      "passed": 3,
+      "runs": 3
+    },
+    "skill": {
+      "passed": 3,
+      "runs": 3
+    }
+  },
+  "errors": 0,
+  "reported_cost_usd": 1.15
+}
