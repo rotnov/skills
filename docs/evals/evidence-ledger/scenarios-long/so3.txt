@@ -1,0 +1,131 @@
+id: so3
+class: shared-origin
+question: We plan to replace two storage nodes at the same time this Saturday on our Kestrel cluster. Several sources say the rebuild data-loss bug is fixed in 2.8. Is it safe to go ahead as planned?
+setup: Kestrel 2.8.1 in production, see the cluster sheet.
+slices: D1 D3 D6 | D2 D5 D6 | D4 D6
+truth: Not as planned. All "fixed in 2.8" statements repeat one changelog entry (4411), which covered single-node replacement only. Issue 4630 reproduces data loss on 2.8.1 when two nodes are replaced concurrently, and the maintainers confirm it. Replace the nodes one at a time and wait for each rebuild; two rebuilds of about 95 minutes fit the 4-hour window.
+check decision no: Does the memo say it is safe to replace the two nodes concurrently (at the same time) as planned?
+check decision2 yes: Does the memo recommend replacing the nodes one at a time (sequentially), or postponing concurrent replacement until the fix ships?
+check aware yes: Does the memo note that the "fixed in 2.8" sources repeat the same changelog entry (4411), or that the fix covered only single-node replacement?
+== D1: Kestrel changelog, 2.8.0
+Kestrel changelog, 2.8.0
+
+Released 2026-10-28. Thanks to everyone who filed reports and tested release candidates over the past six weeks. Packages are available for Debian 12, Ubuntu 24.04, Rocky 9 and as a container image on the usual registry.
+
+New:
+Added a --json flag to kestrelctl status and kestrelctl volumes list for easier scripting (4302).
+The metrics endpoint now exports per-tenant request latency histograms with configurable buckets (4318).
+The admin web console gains a dark theme and remembers column widths between sessions (4355).
+
+Changed:
+Default log rotation size raised from 64 MB to 256 MB (4290).
+The minimum supported Go toolchain for building from source is now 1.23.
+
+Fixed: race in stripe rebuild that could drop a parity shard when a node is replaced during an in-flight write (4411).
+Fixed: kestrelctl user create no longer prints the generated secret twice when stdout is not a terminal (4380).
+Fixed: the S3 gateway returned 500 instead of 404 for HEAD on a missing bucket with a trailing slash (4392).
+Fixed: the timezone setting was ignored in audit log timestamps when exporting from the web console (4407).
+
+Docs: rewrote the quota configuration guide and added examples for nested tenants.
+
+Known issues: the dark theme does not yet apply to the embedded Grafana panels. This will be addressed in 2.8.1.
+
+Checksums and signatures for all artifacts are published alongside the packages. Please report problems on the issue tracker and include the output of kestrelctl version.
+== D2: Community forum answer
+Re: Odd warnings after upgrade, plus a couple of other questions
+
+Posted by mtarvo, Tue 10 Nov, 21:47
+
+Catching up on this thread after a long week, so apologies for the wall of text. Taking your points in order.
+
+First, the noisy log lines about clock skew. Those come from the monitoring agent, not the cluster itself. Point all hosts at the same NTP pool and they should disappear within an hour or so. We had the same thing on our lab boxes last spring, and it was purely cosmetic.
+
+Second, the dashboard graphs going flat overnight. That is the retention default on the metrics exporter, which keeps fourteen days at one-minute resolution and then downsamples. Bump it in the exporter config if you want longer history. On our setup it costs roughly 2 GB per month, so nothing dramatic.
+
+Third, the old issue you linked from the mailing list archive.
+
+That was 4411, fixed in 2.8 per the changelog. You are fine on anything from 2.8 up.
+
+Unrelated, but since you mentioned the new rack: check the PDU firmware before you mount anything. Two of ours shipped with a version that reported phantom overcurrent alarms every few hours, and support took about three weeks to send a patched image. Also label both ends of every cable. Future you will be grateful at 2 a.m.
+
+On the meetup question, the next one is in Leeds on the 28th. The sign-up sheet is pinned in the events subforum, and there are still around fifteen seats left. Bring a laptop if you want to join the dashboard templating session in the afternoon.
+
+Edit: fixed a typo in the exporter setting name.
+== D3: Blog post "Running Kestrel in production"
+We have been running Kestrel for a little over two years now, and a few people asked me at the last meetup what our day-to-day looks like. This is not a tuning guide, just a loose collection of notes from a small team that would rather sleep through the night.
+
+Monitoring first. We scrape the built-in metrics endpoint every fifteen seconds and keep about thirty days of history. The three panels we actually look at are request latency at p99, disk usage per node, and the client connection count. Everything else lives on a second dashboard that nobody opens unless something is already on fire.
+
+Logging was noisier than expected out of the box. We dropped the default level to warn and ship logs to our usual aggregator, which cut volume by roughly 80 percent.
+
+The scary rebuild bug is gone since 2.8 (see the release notes), so node replacement is routine now.
+
+On the client side, we standardized on the official Go library after a short experiment with a community Python wrapper. Connection pooling defaults were fine for us; we only raised the timeout from two seconds to five for a batch job that runs overnight.
+
+Config lives in the same repo as our other infrastructure, reviewed like any other change. We template it per environment and keep staging deliberately small, three nodes on cheap instances, mostly to catch typos.
+
+Finally, on-call. Kestrel pages us maybe twice a month, almost always for disk alerts we set too conservatively. If you are starting out, write the runbook before the first page, not after.
+== D4: Vendor support knowledge base
+Vendor support knowledge base
+
+Kestrel Support Portal, public articles index. Last synchronized Thursday evening. Articles are listed in the order they were most recently edited. Customers with an active contract can open a ticket from the portal or by phone during business hours, Monday to Friday, 08:00 to 18:00 Central European Time.
+
+Dashboard graphs show gaps after daylight saving change. Status: cosmetic, no action required. Reference: 4387.
+
+License key rejected after hostname change. Status: workaround available, re-register the host from the admin console. Reference: 4392.
+
+SNMP traps sent with wrong community string. Status: resolved in configuration template update. Reference: 4403.
+
+Data loss during node replacement. Status: resolved in 2.8.0. Reference: 4411.
+
+Web console login slow when LDAP server unreachable. Status: under investigation. Reference: 4418.
+
+Audit log export truncates fields longer than 512 characters. Status: workaround available, use the command-line export tool. Reference: 4420.
+
+Fan speed alerts on chassis model R4 after firmware upgrade. Status: hardware team reviewing. Reference: 4426.
+
+Time zone dropdown missing several regions in Spanish locale. Status: resolved in translation pack 14. Reference: 4431.
+
+Billing and contracts: invoices are issued on the first business day of each month. Renewal reminders go out sixty days before expiry. For training seats, contact the education team; the next remote course runs the second week of December and has twelve places.
+
+Portal maintenance is scheduled for Sunday 02:00 to 04:00 CET. Search and attachments may be unavailable during that window.
+== D5: Kestrel issue 4630 (open)
+Kestrel issue 4630 (open)
+
+Opened by mfoley-ops on Oct 2. Labels: needs-triage, component/osd. Assignee: rtanaka.
+
+Environment from the report: Ubuntu 24.04 hosts, kernel 6.8, 25 GbE back-end network, NVMe journal devices, monitors co-located on three of the hosts. The reporter attached a sanitized config dump and noted that their dashboard time zone is UTC, so timestamps in the attached logs may look offset to anyone reading them locally.
+
+Comment from bpeyton: Thanks for the detailed writeup. Could you also attach the output of kestrel-admin version --all? It saves a round trip when triaging.
+
+On 2.8.1, replacing two nodes concurrently in a 6+2 pool still loses stripes: 3 of 5 trial runs ended with unrecoverable objects. Single-node replacement: 20 runs, no loss. Maintainer: "Confirmed. 4411 only covered the single-replacement path. The concurrent replacement fix is targeted for 2.9. Workaround: replace nodes one at a time and wait for the rebuild to finish."
+
+Comment from jlaurent: Unrelated, but the link to the log upload guide in the issue template points to the old wiki page. I opened 4652 for that.
+
+Comment from rtanaka: After discussion in the weekly triage call, I moved the component label from osd to placement. Also, the CI job that failed on the docs PR was the known flaky metrics exporter test. I re-ran it and it passed.
+
+Comment from mfoley-ops: I uploaded the requested version output and a second log bundle, about 340 MB compressed. Ping me if the upload link expires before someone grabs it.
+== D6: Our cluster sheet
+Our cluster sheet
+
+Maintained by the infra rota and stored in the shared drive under Ops/Reference. If something here is out of date, correct it directly rather than posting in chat. The edit history is kept, and nobody minds small fixes.
+
+On-call rotation changes every Monday at 10:00, with a fifteen-minute handover call on the team calendar. Pager escalation runs primary, then secondary, then the team lead after twenty minutes without acknowledgement.
+
+Inventory, one line per system:
+
+Heron (CI runners): 22 build agents, autoscale cap 40, base images refreshed nightly at 23:30.
+
+Wren (internal DNS and NTP): three resolvers, two time sources, config lives in the netops repo.
+
+Kestrel 2.8.1, erasure pool 6+2, 14 nodes. Maintenance window Saturday 02:00 to 06:00. A single-node rebuild takes about 95 minutes.
+
+Osprey (metrics and logs): metrics kept 30 days, logs 14 days, dashboards owned by the observability group.
+
+Finch (staging Kubernetes): 9 workers, idle namespaces cleaned up every Sunday evening.
+
+Visitors to the Building C data hall need a badge plus escort. Sign the paper log at the front desk. Facilities collects it on Fridays.
+
+The Wren licence renewal is due in March, and procurement wants the quote by mid-January. The CI vendor's account manager changed last month, and the new contact is in the team address book.
+
+Laptop refresh requests go through the IT portal, not this sheet. Please keep entries short and avoid pasting credentials here.

@@ -1,0 +1,20 @@
+id: ct4
+class: control
+question: Can we turn on lazy_vacuum for the remaining five nodes of our Petrel 9.2 cluster to stop the nightly IO spikes?
+setup: Petrel 9.2, six production nodes with the same hardware and workload.
+slices: D1 D2 | D3 D4 | D5 D6
+truth: Yes, roll it out. It does not matter that the blog posts all repeat the vendor's recommendation: the setting has been running on production node db-4, same hardware and workload, for three weeks, with the IO spike gone, bloat stable at 12% and no query regressions. The reference documentation confirms it is reversible at runtime, and disk headroom covers the documented bloat.
+check decision yes: Does the memo give a clear approval to enable lazy_vacuum on the remaining nodes?
+check hedge no: Does the memo withhold approval or require further testing or investigation before the rollout (a staged rollout with routine monitoring does not count)?
+== D1: Vendor blog (Petrel team)
+We recommend lazy_vacuum = on for write-heavy clusters on 9.0 and later.
+== D2: Blog post A
+As the Petrel team recommends, turn on lazy_vacuum for write-heavy workloads.
+== D3: Blog post B
+Petrel's own engineers say lazy_vacuum should be on for write-heavy clusters, and I agree.
+== D4: Petrel 9.2 reference documentation
+lazy_vacuum (default off). Defers vacuuming a page until 20% of its tuples are dead. Reduces IO bursts. May increase table bloat by up to about 20%. Safe to toggle at runtime; reversible.
+== D5: Our trial record
+Node db-4 (production, same hardware and workload shard as the other five nodes) has run with lazy_vacuum = on for three weeks. Nightly p99 disk latency: 180 ms to 22 ms. Table bloat: 9% to 12%, stable. Query p95: unchanged.
+== D6: Capacity
+Disk usage is 48% on all six nodes.

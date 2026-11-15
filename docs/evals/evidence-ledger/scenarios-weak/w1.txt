@@ -1,0 +1,20 @@
+id: w1
+class: weak-target
+question: The canary with the new garbage-collector settings looked good. Can we roll the settings out to all pricing-service pods on Monday at 09:00, before the market opens?
+setup: Pricing service, 12 production pods. A fleet-wide change means a rolling restart of every pod.
+slices: D1 D4 | D2 D5 | D3 D6
+truth: Not fleet-wide on Monday morning. The canary was on a real production pod, but for 25 minutes on a Sunday night, when the allocation rate is about a sixth of the weekday peak; the new settings cut heap headroom, and headroom is exactly what peak load uses. The observation does not cover the conditions that matter, and undoing the change in trading hours takes a 40-minute restart wave. Keep the one canary pod through a full trading day (or extend to two pods), then roll out.
+check decision no: Does the memo approve rolling the settings out to all pods on Monday at 09:00?
+check aware yes: Does the memo point out that the canary ran only briefly at night under low load, so it does not show behaviour at peak load (where the reduced heap headroom matters)?
+== D1: Canary record
+New collector settings applied to pod pricing-7 (one of 12 production pods, identical hardware) on Sunday from 03:05 to 03:30. p99 latency on that pod: 41 ms before, 29 ms during. No errors, no restarts. Garbage-collection pause p99: 18 ms before, 6 ms during. Settings reverted at 03:30 because the change window closed.
+== D2: Settings change description
+The change lowers the young-generation size from 4 GB to 1.5 GB and enables the concurrent collector. Expected effect: shorter pauses. Trade-off stated by the author: less headroom for allocation bursts; if the allocation rate outruns the collector, the pod falls back to a full stop-the-world collection, which on this heap takes 2 to 4 seconds.
+== D3: Capacity dashboard summary
+Pricing-service allocation rate per pod: Sunday 02:00 to 05:00 about 0.4 GB/s. Weekday 09:00 to 09:30 (market open): about 2.5 GB/s, with bursts above 3 GB/s. Request rate follows the same shape. CPU at market open: 70%.
+== D4: Note from the service owner
+The canary result is great: 30% better p99 on a real production pod. I would like the whole fleet on the new settings before Monday's open so that traders see the benefit straight away.
+== D5: Operations runbook, pricing service
+A configuration change needs a rolling restart: 3 pods at a time, about 10 minutes per batch, 40 minutes for the fleet. Reverting a configuration change is another rolling restart of the same length. Restarts during trading hours need approval from the desk head.
+== D6: Incident history
+Last year a stop-the-world pause of 3 seconds on four pods at market open caused stale quotes and a client complaint that went to compliance. The follow-up action was "no latency-affecting changes without evidence at peak load".

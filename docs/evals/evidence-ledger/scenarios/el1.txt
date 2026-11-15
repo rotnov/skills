@@ -1,0 +1,20 @@
+id: el1
+class: evidence-level
+question: After upgrading production to Jobber 4.2, can we close incident INC-311 (duplicate job execution) as fixed?
+setup: Production was upgraded to Jobber 4.2 this morning. See the infrastructure inventory.
+slices: D1 D2 D6 | D3 D6 | D4 D5 D6
+truth: No. The 4.2 fix relies on session-level advisory locks. The maintainer test and the staging run both used direct Postgres connections; production goes through PgBouncer in transaction pooling mode, where session-level advisory locks are not effective. The fix is unverified in the production configuration, which is the ticket's closure criterion. Test under the production configuration (or move the workers off transaction pooling) before closing.
+check decision no: Does the memo say the incident can be closed as fixed now (without a further check in the production configuration)?
+check aware yes: Does the memo identify that the fix was only tested with direct Postgres connections while production uses PgBouncer transaction pooling, where the advisory-lock fix may not work?
+== D1: Jobber changelog, 4.2
+Fixed duplicate execution when two workers poll simultaneously (902). Workers now take a session-level advisory lock on the job id before claiming the job.
+== D2: Maintainer comment on 902
+Verified: 10,000 jobs across 8 workers, zero duplicates on 4.2. Test rig: workers connect straight to Postgres 15.
+== D3: Staging report from Ravi
+Upgraded staging to 4.2 on Monday. Three days, 1,900 jobs, no duplicates. I would call it reproduced-fixed.
+== D4: Infrastructure inventory
+staging: 2 workers, direct connection to Postgres. production: 24 workers, all database connections via PgBouncer in transaction pooling mode (pool size 40).
+== D5: Internal wiki, PgBouncer notes
+Transaction pooling: a server connection is assigned per transaction and returned afterwards. Session state does not persist between transactions. SET, LISTEN, prepared statements and session-level advisory locks are unsafe or ineffective in this mode.
+== D6: Incident ticket INC-311
+0.3% of billing jobs ran twice in production over two weeks. Closure criterion: fix verified in the production configuration.

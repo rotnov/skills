@@ -1,0 +1,21 @@
+id: co1
+class: collapse
+question: Write the root-cause conclusion for yesterday's 502 incident and the one preventive action we should prioritise.
+setup: API served from three zones: eu-a, eu-b, eu-c.
+slices: D1 D2 | D1 D3 D4 | D1 D5 D6
+truth: Root cause is NAT port exhaustion in eu-b caused by the monthly ledger-reconcile batch job (13:18 to 14:38), which shares the NAT gateway with API egress. It is not the v212 deploy: errors began at about 13:25, 40 minutes before the 14:05 deploy; only eu-b was affected although v212 went to all zones; and recovery at 14:40 matches the batch finishing at 14:38, not the 14:30 rollback. Preventive action: separate or cap the batch job's egress (own NAT, concurrency limit, port alerting).
+check decision yes: Does the memo name NAT port exhaustion caused by the batch job in eu-b as the root cause?
+check decision2 no: Does the memo name the v212 deploy as the root cause (or as the most likely cause)?
+check aware yes: Does the memo cite at least one observation that rules out v212 (errors began before the deploy, only one zone was affected, or recovery matched the batch end rather than the rollback)?
+== D1: On-call chat
+14:20 "502s climbing. We shipped v212 at 14:05 with the new connection-pool code. Has to be that. Rolling back." 14:45 "Rolled back at 14:30, errors gone by 14:41. Confirmed v212."
+== D2: Deploy diff, v212
+Changes the upstream keep-alive pool: max idle 64 to 256, adds retry on connection reset. Reviewer comment: "Risky, could exhaust upstream connections."
+== D3: Error graph export, 502 rate by zone, 5-minute buckets
+eu-a: baseline 0.1% all day. eu-b: 13:20 0.1%, 13:25 2.4%, 13:40 6.8%, 14:05 7.1%, 14:30 7.0%, 14:40 0.4%, 14:45 0.1%. eu-c: baseline 0.1% all day.
+== D4: Rollout record
+v212 deployed at 14:05 to all zones simultaneously (eu-a, eu-b, eu-c). Rollback at 14:30, all zones.
+== D5: Batch scheduler log
+ledger-reconcile (monthly) started 13:18 in eu-b with 600 parallel workers calling the external tax API. Finished 14:38.
+== D6: Cloud NAT metrics, eu-b
+Port allocation failures: 0 until 13:21; about 1.1k per minute from 13:25 to 14:38; 0 after 14:39. The eu-b NAT gateway has 64k ports, shared by API egress and batch workloads.

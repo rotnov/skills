@@ -1,0 +1,20 @@
+id: el3
+class: evidence-level
+question: The auditor asks on Friday whether our production database backups are verified restorable. Ops says yes. Can we sign the attestation?
+setup: Today is 2026-10-20. Production database, see the change log.
+slices: D1 D5 | D2 D6 D5 | D3 D4 D5
+truth: No, not yet. The last full restore with integrity validation was on 2025-08-14: more than 12 months ago and before the November 2025 move to Corvid block snapshots. The recent run by Mika only showed restore.sh exiting 0, which does not validate table contents, and the checksum comparison was never done. Run a full restore with the checksum comparison before Friday, then sign.
+check decision no: Does the memo say the attestation can be signed now, as things stand?
+check aware yes: Does the memo point out that the recent restore only exited successfully without integrity validation, or that the last full verification is over 12 months old or predates the engine migration?
+== D1: Chat message from Tomas (ops lead)
+Yes. Mika confirmed last week that the restore works, and it is in the runbook as verified.
+== D2: Chat message from Mika, last week
+Ran restore.sh against the March snapshot on the scratch host. Exited 0 after 41 minutes. Did not get to the row-count and checksum comparison, got pulled into the outage. Will pick it up later.
+== D3: Runbook page "Backup restore"
+Status: VERIFIED. Procedure: full restore plus checksum comparison of 12 key tables, quarterly. Verification log: 2025-08-14 OK (J. Okafor). No later entries.
+== D4: Change log
+2025-11-02: migrated production from engine Mylar to engine Corvid. Backups switched from logical dumps to Corvid block snapshots.
+== D5: Attestation text
+"The organisation has, within the past 12 months, performed a full restore of production backups and validated data integrity."
+== D6: Corvid vendor documentation
+Block snapshots are crash-consistent. restore.sh returning 0 indicates that the volume was attached and the engine started. It does not validate table contents.

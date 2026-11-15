@@ -1,0 +1,22 @@
+id: so2
+class: shared-origin
+question: We are sizing the market for our clinic scheduling product. Can we use "60% of mid-size clinics plan to switch scheduling software within 12 months" as the headline assumption in the board plan?
+setup: Board plan is due next week. The headline assumption drives the revenue forecast.
+slices: D2 D5 | D3 D6 | D1 D4 D7
+truth: No. The 60% figure has one origin: a Schedulo poll of 212 registrants of its own "Time to Switch?" webinars, repeated down a chain of articles. Two unrelated sources (the association census of 1,840 clinics at 11%, and our own discovery calls at 5 of 40) agree on roughly 11 to 13%. Use about 11%.
+check decision no: Does the memo approve using 60% as the headline assumption in the board plan?
+check aware yes: Does the memo recognise that the 60% reports trace back to one source (the Schedulo webinar poll, or one unnamed report repeated by the articles) rather than being multiple independent studies?
+== D1: Schedulo report "State of Clinic Scheduling 2026"
+Key finding: 60% of mid-size clinics plan to switch scheduling software within 12 months. Methodology: online poll of 212 registrants of Schedulo's "Time to Switch?" webinar series.
+== D2: Trade magazine ClinicOps Today
+Six in ten mid-size clinics are preparing to change scheduling vendors in the next year, a new industry report finds.
+== D3: HealthTech Ledger article
+A wave of switching: 60% of mid-size clinics will change scheduling software within a year, according to ClinicOps Today.
+== D4: Competitor investor deck, slide 6
+Market tailwind: 60% switching intent among mid-size clinics (HealthTech Ledger, 2026).
+== D5: Post by an independent healthcare IT consultant
+Multiple studies now agree that roughly 60% of clinics are about to switch scheduling systems. I have seen the number in three places this month.
+== D6: National Association of Ambulatory Clinics, annual member census
+1,840 responding mid-size clinics (response rate 71%). 11% report plans to replace scheduling software in the next 12 months. 23% say "within three years".
+== D7: Our sales notes, this quarter
+Of 40 discovery calls with mid-size clinics, 5 said they are actively evaluating a replacement for their scheduling system.

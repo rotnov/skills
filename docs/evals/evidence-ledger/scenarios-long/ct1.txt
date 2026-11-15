@@ -1,0 +1,112 @@
+id: ct1
+class: control
+question: Can we approve rolling out the composite index on orders(customer_id, created_at) to all production shards this week to fix the slow order-history endpoint?
+setup: Postgres, 8 production shards.
+slices: D1 D2 D6 | D3 D5 | D4 D5 D6
+truth: Yes, approve. The effect is verified on production itself: shard 3 has carried the index under live traffic for 48 hours, measured by two separate toolchains (database statistics and APM traces), and a replay of production traffic on a production-sized replica agrees, including no write penalty. Disk headroom is ample.
+check decision yes: Does the memo give a clear approval to roll out the index this week?
+check hedge no: Does the memo make the approval conditional on further investigation or testing before the rollout (beyond routine monitoring during the rollout)?
+== D1: DBA analysis
+DBA analysis
+Weekly notes, platform data team
+
+Housekeeping first. The nightly logical backups for the billing database finished inside their window every night this week. The longest run was 47 minutes on Tuesday. Retention on the cold-storage bucket stays at 35 days until finance confirms the new audit requirement. Autovacuum on the sessions table in the auth database is now keeping dead tuples below 4 percent after last month's threshold tweak, so that ticket is closed.
+
+The pgbouncer upgrade on the reporting cluster went to 1.23 on Monday with no client errors logged. We are keeping the old binary on the hosts for another two weeks in case anyone spots odd behaviour with prepared statements from the BI tool.
+
+EXPLAIN ANALYZE on a production replica: the order-history query changes from a sequential scan (2.1 s) to an index scan (9 ms) with the composite index.
+
+Other items. The disk alert on the metrics archive host fired twice at 85 percent. We expanded the volume by 200 GB and adjusted the alert to page at 90 percent. The analytics team asked for read access to the marketing schema, and the access request is with security for sign-off. Certificate rotation for internal database endpoints is scheduled for 2 December.
+
+Open questions for next sync: whether to move the weekly slow-query report from Monday to Wednesday, and who covers the on-call rotation during the holiday week. Priya volunteered for 23 to 27 December. We still need someone for the following week.
+
+Notes compiled by the DBA rota. Reply in the team channel with corrections.
+== D2: Load test by the performance team
+Performance team weekly log, week of November 9. Compiled by the rotation lead for anyone who missed standup.
+
+Search autocomplete: ran the usual ramp to 4,000 requests per second against staging. p99 held at 85 ms until about 3,600 rps, then the suggestion cache started evicting and tail latency climbed to 310 ms. Ticket filed with the search squad; they think the cache size was never bumped after the catalog grew in September.
+
+Static assets: CDN cache hit ratio for the marketing site recovered to 97 percent after the header fix went out on Tuesday. No further action from us.
+
+Tooling: k6 runners upgraded to the latest release. Two old scenario scripts needed small syntax changes.
+
+Replayed two hours of yesterday's production traffic against a production-sized replica with the index. Order-history p95: 2.3 s to 140 ms. Write latency on orders: unchanged within noise (+0.3 ms).
+
+Thumbnail service: still waiting on the image team to tag a build we can test. Pushed to next week.
+
+Notification fan-out: the queue consumers now autoscale, so we want a soak test of at least eight hours before the holiday campaign. Draft scenario is in the shared repo under soak/notifications; reviews welcome.
+
+Logistics: the load-generation cluster is booked Monday and Wednesday mornings. Please add your slot to the calendar rather than messaging in the channel. Priya is out Thursday and Friday; Marco covers the rotation. Reminder that the quarterly cost report for load-test infrastructure is due on the 20th, and last quarter we spent about 1,900 dollars on runner instances.
+
+Next log goes out Friday.
+== D3: Canary record
+Canary record
+Platform team, week 46
+
+Entries are appended in the order they are logged. Owners update their own lines; please do not edit someone else's entry. The weekly review is Thursday at 14:00 in the small meeting room, and the dial-in link is pinned in the team channel.
+
+Logrotate config change on the bastion hosts, bastion-02 only, deployed Monday morning. Rotated files are now compressed with zstd instead of gzip. Disk usage on /var/log dropped from 61 percent to 38 percent. No complaints from the on-call rotation so far, and the audit export job still parses the archives correctly. Owner: Priya.
+
+New base image for the internal docs site, staging only for now. Build time went from 7 min to 4 min 40 s. Fonts render the same in the screenshots. Owner: Marco.
+
+Index built with CREATE INDEX CONCURRENTLY on production shard 3 (of 8) on Tuesday. 48 hours of live traffic since: p95 2.2 s to 150 ms according to pg_stat_statements, no lock incidents, replication lag normal.
+
+Alerting rule tweak for the CI runner pool: the "runner queue backed up" alert now fires after 10 minutes instead of 5. Two pages last week were for queues that cleared on their own within 8 minutes. Owner: Lena.
+
+TLS certificate for the status page was renewed manually after the automation missed it. A ticket is open to find out why. The new expiry is next October.
+
+Housekeeping: the coffee machine on the third floor is out of service until Monday, and the expense deadline for October travel is the 20th. Anyone still holding a loaner laptop from the offsite, please return it to IT.
+== D4: Application team measurement
+Application team measurement
+
+Weekly notes compiled by the application team for the Friday sync. Items are listed in the order they came in; owners are noted where known.
+
+Checkout service: the client-side timeout on the payment-provider call was raised from 8 s to 10 s on Monday after a burst of retries during the evening peak. Retry volume dropped from roughly 1,400 per hour to about 300. Priya is watching the dashboard through next week before we close the ticket.
+
+Search suggestions: the frontend debounce change shipped Wednesday. Keystroke-to-request ratio fell from 1.0 to 0.35, which should help the autocomplete cache hit rate. No user complaints so far.
+
+APM traces for shard 3 since Tuesday: order-history p95 160 ms (was 2.2 s). Measured independently of the DBA's database statistics.
+
+Mobile builds: Android release 4.18 is in staged rollout at 20 percent. Crash-free sessions are at 99.6 percent, in line with the previous version. iOS submission is waiting on the updated privacy labels from legal.
+
+Logging costs: ingest volume for the notification workers rose about 12 percent after the verbose flag was left on in staging config that got copied forward. Marco will revert it Monday.
+
+Housekeeping: the on-call rotation swap for the week of the 23rd is confirmed. Reminder that the quarterly game day is scheduled for December 4; please add scenarios to the shared doc by the end of next week. Next sync is Friday at 10:30 in the usual room.
+== D5: Capacity note
+Capacity note, platform team, weekly roundup. Compiled from the Thursday sync; corrections go to the shared channel rather than replies to this note.
+
+Search cluster: the staging Elasticsearch nodes are sitting at roughly 62 percent heap after last month's mapping cleanup. No action needed, but we will revisit if the product catalog import grows again in January. The Redis cache for session data is holding steady at about 3.1 GB, well under the 8 GB instance limit.
+
+CI runners: the macOS build pool is still short two machines while the replacements ship. Average queue time on iOS builds rose to around nine minutes on Tuesday afternoon. Mobile folks have been asked to batch non-urgent pipelines overnight where possible.
+
+Index size 11 GB per shard. Disk headroom 400 GB per shard. Concurrent build takes about 25 minutes per shard.
+
+Log retention: application logs in the analytics bucket now roll to cold storage after 30 days instead of 45. That should trim the monthly storage bill by a small but noticeable amount. Audit logs are unaffected and stay on the existing policy.
+
+Office network: the second floor access point swap is scheduled for the morning of the 19th. Expect brief Wi-Fi drops near the meeting rooms.
+
+On-call: Priya covers next week and Tomás the week after. Please update the rotation sheet if you swap shifts, and remember the pager handoff happens Mondays at 10:00.
+
+Thanks to everyone who helped clean up the stale dashboards last sprint. The next capacity note goes out after the December planning session.
+== D6: Comment in the review thread
+Review thread, PR #4127, comments as of Thursday afternoon
+
+Priya (10:02): Small nit on the README diff: the setup section still says Python 3.10, but the toolchain file was bumped to 3.12 last month. Can we fix that while we're here?
+
+Marco (10:15): Fixed in the latest push. Also renamed the helper script from run_local.sh to dev_up.sh to match the other repos.
+
+Priya (10:31): Thanks. The CI job "lint-frontend" failed once on the first run and passed on retry. That's the known flaky one, and the ticket for it is already open.
+
+Owen (11:08): The changelog entry is missing. Please add a line under "Unreleased" so the release notes pick it up.
+
+Sam (11:22): "Indexes slow down writes. Have we checked?" Reply: see the load test and the shard 3 canary.
+
+Marco (11:40): Changelog line added. I also squashed the two "wip" commits so the history is cleaner.
+
+Lena (12:05): Heads up for whoever merges: the release freeze for the mobile app starts Monday, but backend repos aren't affected. On-call this week is Tomasz, and next week it rotates to me.
+
+Owen (12:20): The docs and changelog parts look fine to me. One more nit: the license header year in two of the new files says 2025, and it should be 2026.
+
+Marco (12:34): Good catch, both are updated. I'll leave the thread open until the remaining reviewers have commented.
+
+Priya (12:50): Reminder that the team retro moved to Friday at 15:00 in room 4B, since the usual slot clashes with the all-hands.

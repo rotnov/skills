@@ -1,0 +1,110 @@
+id: el3
+class: evidence-level
+question: The auditor asks on Friday whether our production database backups are verified restorable. Ops says yes. Can we sign the attestation?
+setup: Today is 2026-10-20. Production database, see the change log.
+slices: D1 D5 | D2 D6 D5 | D3 D4 D5
+truth: No, not yet. The last full restore with integrity validation was on 2025-08-14: more than 12 months ago and before the November 2025 move to Corvid block snapshots. The recent run by Mika only showed restore.sh exiting 0, which does not validate table contents, and the checksum comparison was never done. Run a full restore with the checksum comparison before Friday, then sign.
+check decision no: Does the memo say the attestation can be signed now, as things stand?
+check aware yes: Does the memo point out that the recent restore only exited successfully without integrity validation, or that the last full verification is over 12 months old or predates the engine migration?
+== D1: Chat message from Tomas (ops lead)
+Hey, catching up on the thread now, sorry for the slow reply. I was stuck in the vendor call about the new office badge readers most of the morning and only just got back to my desk. Quick notes on a few things people pinged me about while I was out.
+
+First, the on-call swap for the week of the 23rd is approved. Priya takes Monday through Wednesday, Jonas covers Thursday and Friday, and I'll update the calendar after lunch. Second, the laptop refresh order went through, eleven machines, delivery estimate is early December. Anyone who hasn't filled in the keyboard layout form yet, please do it by Tuesday.
+
+On your question:
+
+Yes. Mika confirmed last week that the restore works, and it is in the runbook as verified.
+
+Separately, the third floor kitchen is getting its dishwasher replaced on Wednesday, so expect some noise and no hot water near the coffee machine between ten and two. Facilities asked us to keep the corridor clear for the installers.
+
+Also, the team lunch is moved from Thursday to Friday because half the group is at the conference in Lisbon. I booked the Thai place on the corner for twelve people at 12:30. If you have dietary requirements, reply in the lunch thread, not here, so I don't lose track.
+
+Last thing, the monitor arms we ordered back in September finally arrived. They're in boxes behind my desk, grab one if you asked for it. Ping me if anything else is urgent, otherwise I'm heads down on the budget sheet until four.
+== D2: Chat message from Mika, last week
+Morning all, catching up after a weird week. Quick roundup so nobody has to scroll. The new monitors for the second floor arrived Tuesday, six of them, still boxed by the printer; grab one if your old screen flickers. I swapped my Thursday on-call with Priya, so ping her for that slot instead of me. The parking garage card readers are being replaced next Wednesday, so bring your paper permit just in case. Also the coffee grinder in the kitchen is jammed again, I left a note for facilities and a sign on it.
+
+Ran restore.sh against the March snapshot on the scratch host. Exited 0 after 41 minutes. Did not get to the row-count and checksum comparison, got pulled into the outage. Will pick it up later.
+
+Other stuff: the team offsite is still penciled in for the 4th, and Jonas is collecting dietary restrictions by Monday, so reply in his thread rather than here. I renewed the shared design tool licence for another year, eleven seats, same price as before. If anyone borrowed the spare USB-C hub from my desk, I'd love it back, no questions asked. The kitchen fridge gets cleared out Friday at four, so label anything you want to keep. Lastly, the wiki page for onboarding still links to the old VPN guide; I'll fix it when I have a quiet hour, unless someone beats me to it. Thanks, and have a good weekend everyone.
+== D3: Runbook page "Backup restore"
+Runbook page: Backup restore
+Space: Platform Operations / Data Services. Page owner: Data Platform team. Labels: runbook, database, tier-1.
+
+How to use this page: runbooks in this space follow the house template agreed at the March style review. Each page carries a status line, a short procedure summary and a log, followed by contacts and related links. Please keep edits small and leave a comment in the page history explaining what changed. Store screenshots in the shared assets folder rather than pasting them inline, because inline images slow the wiki search index considerably. If you spot a broken link anywhere in this space, report it in the wiki-housekeeping channel and someone will tidy it during the Thursday cleanup hour.
+
+Status: VERIFIED. Procedure: full restore plus checksum comparison of 12 key tables, quarterly. Verification log: 2025-08-14 OK (J. Okafor). No later entries.
+
+Contacts: for questions about this space's template, ask the wiki maintainers in the wiki-housekeeping channel. Escalation for on-call paging issues goes through the incident commander rota, which rotates every Monday at 09:00 local time. The pager app was updated last month. If notifications arrive silently, check that the new version has permission to override do-not-disturb on your phone.
+
+Related pages: Onboarding checklist for new SREs, Office VPN setup, Cost allocation tags guide, Incident postmortem template.
+
+Housekeeping notes: the Data Platform team offsite is booked for the second week of December in meeting room 4B, which seats 14. Lunch orders close two days ahead. The team's shared calendar has moved to the new resource booking system, so please re-add any recurring holds you created before October.
+== D4: Change log
+Change log
+
+2025-09-14: upgraded the internal wiki to version 4.2. Old page links redirect automatically; report any broken anchors to the docs channel.
+
+2025-09-22: rotated TLS certificates for the public marketing site and the status page. New expiry is September 2026. Calendar reminder set for August.
+
+2025-10-03: moved CI runners from the shared pool to two dedicated machines. Average pipeline time dropped from 14 minutes to about 9.
+
+2025-10-17: replaced the office printer queue server. Printers on the third floor now appear under the name "floor3-color".
+
+2025-10-28: bumped the Node runtime on the frontend build image from 18 to 20. Two lint rules were relaxed temporarily; ticket FE-412 tracks reinstating them.
+
+2025-11-02: migrated production from engine Mylar to engine Corvid. Backups switched from logical dumps to Corvid block snapshots.
+
+2025-11-09: switched the team chat bot to the new webhook format. Old slash commands keep working until the end of the quarter.
+
+2025-11-18: added a dark mode toggle to the admin dashboard. Feedback welcome; the contrast on chart labels still needs work.
+
+2025-12-01: renewed the domain registration for three years. Billing contact updated to the finance shared inbox.
+
+2025-12-10: retired the legacy metrics exporter. Priya rebuilt the Grafana panels that depended on it, so let her know if anything looks off.
+
+2026-01-06: holiday freeze lifted. Normal deploy windows resume Tuesdays and Thursdays.
+
+2026-01-14: updated the onboarding checklist with the new laptop setup script. New hires should start there instead of the old README.
+== D5: Attestation text
+Annual Control Attestation, Fiscal Year 2026
+
+Prepared for submission to the external audit firm. Please return the signed copy to the compliance mailbox by the date shown in the cover letter.
+
+Section 1. Scope
+
+This attestation covers the entity's corporate offices in Leeds and Rotterdam and the shared services team. Subsidiaries acquired after 1 April are excluded and will be addressed in a separate letter.
+
+Section 2. Statements
+
+2.1 All staff with system access have completed the annual information security awareness module, with completion records retained by Human Resources.
+
+2.2 User access reviews for finance applications were completed quarterly, and accounts belonging to leavers were removed within five working days.
+
+2.3 "The organisation has, within the past 12 months, performed a full restore of production backups and validated data integrity."
+
+2.4 Third-party suppliers handling personal data have signed data processing agreements, which are held in the central contract register.
+
+2.5 The whistleblowing policy has been communicated to all employees and remains available on the intranet.
+
+Section 3. Exceptions
+
+List any exception to the statements above here, with a short description and the expected remediation date. If there are no exceptions, write "None" in the box provided.
+
+Section 4. Signatory
+
+Name:
+Title:
+Date:
+Signature:
+
+By signing, the signatory confirms they have authority to make these statements on behalf of the organisation. Send any questions about wording to the compliance lead before signing. Typed signatures are accepted. Retain a copy for the board pack.
+
+Page 2 of 2
+== D6: Corvid vendor documentation
+Corvid vendor documentation
+
+Corvid agents run on Linux hosts with kernel 5.10 or later. Each agent requires 2 vCPUs and 4 GB of memory at minimum; larger fleets should allocate 8 GB to accommodate the metrics buffer. The agent listens on TCP port 7710 for control traffic and on port 7711 for the local health endpoint. Firewall rules should permit outbound HTTPS to the Corvid control plane in your selected region. Supported regions are currently us-east, eu-west and ap-south. Configuration lives in /etc/corvid/agent.yaml, and changes are picked up on the next service reload without a full restart.
+
+Block snapshots are crash-consistent. restore.sh returning 0 indicates that the volume was attached and the engine started. It does not validate table contents.
+
+Logging defaults to the INFO level and writes to /var/log/corvid/agent.log, rotating at 100 MB with seven files retained. Set log_level: debug in the configuration file when opening a support case, and revert it afterwards, as debug output can grow quickly on busy hosts. Licenses are issued per host and are checked against the control plane once every 24 hours; an agent that cannot reach the control plane continues to operate for a 14-day grace period. Upgrades are published on the second Tuesday of each month. Release notes, known issues and the deprecation schedule are available in the customer portal. For billing questions, contact your account manager rather than the support queue.

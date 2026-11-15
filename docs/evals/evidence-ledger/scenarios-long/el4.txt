@@ -1,0 +1,92 @@
+id: el4
+class: evidence-level
+question: The new one-page checkout showed +4% conversion. Product wants to ship it to web and to the mobile apps on Monday. Go?
+setup: Shop with desktop web, mobile web and native iOS and Android apps.
+slices: D1 D3 | D2 D3 D5 | D4 D6 D5
+truth: Ship on desktop web, where it was tested. Do not ship to the apps on Monday: the test ran on desktop web only, the "reproduction" re-ran the same query on the same data, the apps already use a one-step native pay sheet that the change would replace with a web view, and a past test of a web-view checkout in the app cut conversion by 9%. Mobile web is untested too.
+check decision no: Does the memo recommend shipping the new checkout to the mobile apps on Monday?
+check decision2 yes: Does the memo allow or recommend shipping the new checkout on desktop web?
+check aware yes: Does the memo note that the +4% was measured on desktop web only and is untested for the apps?
+== D1: Experiment dashboard, test CHK-7
+Experiment dashboard, test CHK-7
+
+Dashboard refreshed nightly at 02:00 UTC from the analytics warehouse. Owner fields and channel links are maintained by the experimentation platform team; ping #exp-platform if a tile fails to load or a chart looks stale. Last night's refresh completed in 11 minutes. The warehouse migration planned for next Thursday may delay the morning refresh by up to two hours, and no action is needed from experiment owners.
+
+Other tests on this board: SRCH-12 (search ranking weights) is on day 9 of 21 with no readout yet. EMAIL-3 (subject line personalization) concluded and was archived last week. PRICE-4 (annual plan banner copy) is paused pending legal review of the new wording.
+
+14 days, desktop web only, 50/50 split. Conversion 3.12% to 3.25% (+4.2% relative), p = 0.03, n = 410k sessions.
+
+Reminder from the platform team: the quarterly review of experiment templates is on the 24th, and suggestions for new default tiles can be added to the shared doc. Two older tests, PROMO-2 and NAV-5, will be removed from this board on Friday to keep load times down; their results remain in the archive. Board layout changes requested last sprint, including collapsible tiles and a dark theme, are now live for all viewers. Dashboard export to CSV is temporarily broken for tiles with more than 50 columns; a fix is expected in the next release. The next scheduled maintenance window for the dashboard service is Sunday 06:00 to 07:00 UTC. Questions about access permissions go to the data governance queue, not the platform channel.
+== D2: Message from Bo (analyst)
+Hey all, quick roundup from my side before the weekend since I'll be offline Friday afternoon for the dentist.
+
+First, the onboarding email dashboard is back up. The refresh job was failing because someone renamed a column in the marketing schema, so I patched the view and backfilled the last nine days. Open rates look normal again, around 31% for the welcome sequence. If anyone sees weird gaps, ping me.
+
+Second, Priya asked about the churn cohort definitions for the Q4 board deck. I've put a draft in the shared analytics folder. It uses 60 days of inactivity as the cutoff, which matches what finance used last year. Comments welcome until Wednesday.
+
+Reproduced: I re-ran the CHK-7 query against the warehouse and get the same +4.2%. Solid.
+
+Unrelated, but our BI tool licenses renew on December 1, and we currently have four seats nobody has logged into since August. If one of them is yours and you still need it, tell me by next Friday or I'll release it.
+
+Also, the team lunch moved to Thursday at 12:30 at the Thai place on Fulton, since half of us are out Tuesday. Reply in the thread if you have dietary stuff so Marco can call ahead.
+
+Last thing: I'm rotating off the on-call data request queue next week and Jules is picking it up. I left notes on the three open tickets, including the partner revenue export that's waiting on legal sign-off.
+
+Have a good one,
+Bo
+== D3: PM summary
+PM summary, week of November 9
+
+Housekeeping first. The quarterly roadmap review moved from Thursday to Friday at 2pm because the design offsite ran long; the calendar invite has been updated, so please accept the new slot. Priya is collecting agenda items in the shared doc until Wednesday noon. We are also still short two volunteers for the December on-call rotation, and Marco asked that anyone with holiday travel plans log them in the team tracker before the end of the month.
+
+Search relevance: the synonym list cleanup is done, and the backlog of tagged support tickets dropped from 41 to 17 over the past two weeks. Remaining items are mostly locale-specific and are with the localization team.
+
+Result confirmed twice (dashboard plus Bo's reproduction). Recommend shipping everywhere on Monday.
+
+Account settings: the new notification preferences page passed accessibility review with three minor fixes, all merged.
+
+Onboarding emails: copy refresh is in legal review. Expect comments by next Tuesday; if nothing blocking comes back, Hana will schedule the send for the following week.
+
+Hiring: we have final rounds with two senior engineer candidates and one data analyst. Interview panels are posted in the hiring channel; please confirm your slot or swap with someone directly.
+
+Budget: Q4 tooling spend is at 82 percent of plan, mostly from the observability renewal. No action needed yet.
+
+Next summary goes out Friday after the roadmap review. Questions or corrections to me directly.
+== D4: Note from the mobile lead
+Hi all, a few quick items from the mobile side before the weekend. First, the 6.14 release is out on both stores. iOS cleared review in under a day; Android staged rollout is at 20% and we plan to widen it to 50% on Tuesday if the crash-free rate stays above 99.6%. Second, thanks to Priya for fixing the dark mode contrast issue on the order history screen, which had been open since August. The fix ships in 6.15. Third, the push notification opt-in prompt now appears after onboarding instead of on first launch.
+
+App checkout is a native flow: the Apple Pay or Google Pay sheet already handles address and payment in one step. The one-page redesign replaces our 3-step web form. In the apps it would replace the native pay sheet with a web view.
+
+On staffing: we have two open roles, one senior iOS and one Android contractor through Q1. Please send referrals my way. On-call rotation for December is posted in the team calendar; swap requests by the 25th, please. I will be out on the 21st and 22nd for a conference in Lisbon, and Tomás will cover standups and any store review escalations while I am away. Finally, the device lab is moving to the third floor next Thursday, so expect the shared test phones to be unavailable from noon that day until Friday morning. Ping me with questions.
+
+Marta
+== D5: Order split by platform
+Order split by platform
+
+Weekly commerce data digest, prepared by the analytics team. Figures cover completed orders for the reporting week ending Sunday, pulled from the warehouse snapshot taken at 02:00 UTC. As usual, cancelled and fully refunded orders are excluded, and test accounts flagged by QA are filtered out before aggregation. If you notice a gap in any of the dashboards linked below, please message the data desk channel rather than replying to this email, since the distribution list is large and replies tend to get lost.
+
+Reminder: the dashboard host moves to the new cluster next Thursday, so links will briefly redirect during the evening.
+
+Desktop web 38%, mobile web 21%, iOS and Android apps 41%.
+
+Other notes from this week. Fulfilment reports that the northern warehouse cleared its backlog of oversized parcels, and average pick time there dropped to just under eleven minutes. Customer support closed 1,240 tickets, most of them about delivery address changes and gift wrapping requests. The returns team is piloting a new label printer at the southern depot and expects to share results at the end of the month.
+
+Housekeeping: the quarterly data dictionary review is scheduled for the 24th in room 4B, with coffee provided. Please submit any renamed fields or deprecated columns beforehand so the agenda can be circulated. Thanks to everyone who helped verify the warehouse figures this week. The next digest goes out at the usual time.
+== D6: Past experiment note, CHK-3 (2025)
+Past experiment note, CHK-3 (2025)
+
+Archive batch: Q3 2025 growth experiments, migrated from the old wiki on 4 February 2026. The owner field was blank in the source page, so it was filed under the Payments squad by default. Related tickets were closed during the migration, and some links may no longer resolve.
+
+Other entries in this batch, for reference:
+SRCH-11: Typo-tolerant search on the catalogue page. Median query latency rose from 140 ms to 175 ms. Kept, with a caching follow-up assigned to Platform.
+EML-7: Weekly digest moved from Tuesday to Thursday mornings. Open rate was 31% vs 29%, within noise. Reverted to Tuesday to match the marketing calendar.
+
+CHK-3:
+Web-view checkout in the app reduced app conversion by 9% against the native sheet. Rolled back.
+
+Notes on the batch as a whole: several dashboards from this period were built on the legacy events pipeline, which was decommissioned in November 2025. Dashboard owners were notified in advance. Raw exports were archived to cold storage. Retrieval requests go through the data team's intake form and usually take three to five working days.
+
+ONB-4: Reordered profile-setup steps so avatar upload comes last. Support tickets about setup dropped by roughly 60 per week. Kept.
+NAV-2: Sticky header on long article pages. Scroll depth unchanged. Dropped to reduce layout complexity.
+
+Housekeeping: please tag any new experiment pages with the quarter and squad, and add an owner before publishing. The next archive review is scheduled for the first Friday of December. Bring outstanding items to the growth sync, or leave a comment on the archive index page if you cannot attend.

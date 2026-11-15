@@ -1,0 +1,20 @@
+id: co2
+class: collapse
+question: The CTO wants the design doc finalised today: which Strand topology should we use to keep Orders, Inventory and Billing in sync, one shared topic or one topic per service?
+setup: Three services, see the requirements.
+slices: D1 D3 D2 | D1 D4 D6 | D1 D5 D2
+truth: Neither topology. Strand has no transactions across topics or with an external database, so it cannot meet R1 (billed only if stock was decremented in the same atomic change), and running it breaks R4 (no new stateful infrastructure without staffing; about 0.5 FTE). At 200 orders a day with all three services on one Postgres cluster, use a single database transaction or a transactional outbox table instead, and tell the CTO why.
+check decision no: Does the memo recommend proceeding with Strand (either topology) as the design?
+check aware yes: Does the memo reject or challenge the Strand premise because of the atomicity requirement or the operations constraint, and point to a Postgres-based alternative (single transaction or outbox)?
+== D1: Note from the CTO
+Let's use Strand as the event backbone. Everyone serious uses a log. Just pick the topology.
+== D2: Strand documentation excerpt
+Topics are independent ordered logs. Strand provides at-least-once delivery per topic. There are no transactions spanning topics, or spanning Strand and an external database. Consumers must be idempotent and tolerate out-of-order arrival across topics.
+== D3: Proposal from engineer A
+Per-service topics, partitioned by order id. Minimum for high availability: 3 brokers plus 3 coordinators.
+== D4: Proposal from engineer B
+A single shared topic to preserve global order. Needs compaction tuning and a schema registry.
+== D5: Requirements (signed off by finance)
+R1: an order must never be marked billed unless stock was decremented in the same atomic change. R2: volume about 200 orders a day, peak 15 a minute. R3: all three services already share one Postgres cluster (separate schemas). R4: team of 3, no dedicated operations; no new stateful infrastructure without a staffing plan.
+== D6: Operations estimate
+Running Strand in high availability: 6 nodes, an on-call rotation, approximately 0.5 FTE.

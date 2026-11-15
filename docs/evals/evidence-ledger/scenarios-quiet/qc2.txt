@@ -1,0 +1,20 @@
+id: qc2
+class: control
+question: Should we switch the nightly image-resize job from the Pell library to the Ostra library, which is reported to be about twice as fast?
+setup: Nightly batch job that resizes product photos. It runs on our build farm.
+slices: D1 D5 | D2 D4 | D3 D6
+truth: Yes, switch. Two unrelated outside measurements agree on roughly 2x, and the differences from our setup (CPU vendor, operating system) do not touch how the resize works. More to the point, we ran Ostra on our own farm against last Tuesday's real batch: 3 h 10 min down to 1 h 35 min, with output images matching Pell's within the visual threshold on all 212,000 files. The switch is one configuration line and can be reverted the next night.
+check decision yes: Does the memo give a clear recommendation to switch to Ostra?
+check hedge no: Does the memo withhold the recommendation or require further testing or investigation before switching?
+== D1: Ostra release notes
+Version 4 uses a new separable resampling kernel with vector instructions. On our reference machine (x86, 16 cores, Linux) a batch of 10,000 JPEG photos at 4000 by 3000 pixels resized to 800 by 600 takes 61 seconds against 124 seconds for version 3. Output is bit-identical to version 3. The release also adds AVIF output and drops support for an obsolete colour profile format.
+== D2: Blog post by a photo-printing startup
+We swapped Pell for Ostra 4 in our upload pipeline, which runs on ARM servers under a BSD. Resizing a customer album of 500 photos went from 21 seconds to 10 seconds. We compared outputs by structural similarity and found no visible difference. Memory use was about the same. The migration was a small pull request because both libraries offer the same resize call.
+== D3: Our own trial (build farm, last week)
+We re-ran Tuesday night's real batch on the farm with Ostra 4 instead of Pell: 212,000 product photos, same machines, same job configuration. Wall time 3 h 10 min with Pell, 1 h 35 min with Ostra. We compared every output with Pell's by structural similarity: all 212,000 above our 0.98 threshold, minimum 0.991. No crashes, no skipped files.
+== D4: Job configuration note
+The resize job selects its library with one line in the job configuration (resizer: pell). Changing it takes effect at the next nightly run. The previous night's outputs are kept for seven days, so a bad run can be redone with the old setting the following night.
+== D5: Licence and maintenance check
+Ostra: permissive licence, compatible with our policy. 11 maintainers, releases every two months, security contact listed. Pell: same licence, 3 maintainers, last release 14 months ago.
+== D6: Comment from a team member
+"The outside numbers are from different CPUs and operating systems than our farm. Not sure they transfer." No reply yet.

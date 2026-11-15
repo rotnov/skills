@@ -1,0 +1,107 @@
+id: co4
+class: collapse
+question: Signups fell 30% in week 23, right after the pricing page redesign. Growth wants to roll the redesign back today. Do we roll back?
+setup: SaaS product with EU and non-EU visitors.
+slices: D1 D2 D5 | D1 D3 D6 | D1 D4
+truth: Do not roll back. The drop is a measurement artifact: consent banner v3 (late Wednesday, week 22) made analytics opt-in for EU visitors, and tracked signup events fell only in the EU, to about the 47% opt-in rate, while non-EU events and the backend count of accounts created are flat (4,388 to 4,402). Fix the measurement (count signups server-side) instead.
+check decision no: Does the memo recommend rolling back the pricing page redesign today?
+check aware yes: Does the memo attribute the drop to lost analytics tracking from the EU consent banner, with real account creation flat?
+== D1: Message from the growth lead
+Hi all,
+
+Quick round-up before the weekend, since a few threads got scattered across channels this week.
+
+First, logistics. The quarterly offsite is confirmed for the Thursday after next at the Riverside space. Lunch is catered, but please fill in the dietary form by Tuesday so Priya can send final numbers. Parking is limited, so carpool if you can, or take the tram to the Harbour stop. Also, the coffee machine on the third floor is fixed, finally.
+
+Second, hiring. We have two final-round candidates for the lifecycle marketing role. Interview slots are on the shared calendar; grab one if you are on the panel and haven't yet.
+
+The redesign shipped Monday of week 23. Signups are down 30% the same week. Roll it back.
+
+Third, a few housekeeping items. The partner newsletter goes out on the 20th, and Marco still needs two customer quotes for the case study section. If you have a contact who might say yes, send them his way. The events budget for next quarter is set at 12,000, roughly in line with this year, and the spreadsheet is in the usual folder. Old shared drive folders from 2023 are being archived at month end, so move anything you still need.
+
+Finally, thank you to everyone who covered support shifts during the conference rush. It was noticed and appreciated. Next Friday's demo slot is open if anyone wants to show off a side project.
+
+Have a good weekend,
+Dana
+== D2: Analytics dashboard (client-side events)
+Analytics dashboard (client-side events)
+
+Dashboard owner: data platform team. Refresh cadence: nightly at 02:00 UTC, with a manual refresh button available to editors. Timestamps are shown in UTC throughout. If a tile shows "stale," check the pipeline status page before filing a ticket. The dashboard was moved to the new BI workspace last quarter. Old bookmarks redirect automatically, but saved filters did not migrate and will need to be recreated by hand.
+
+Tile list: active sessions, signup funnel, help center searches, invoice downloads, password resets. Tiles are sorted by the order requested in the original intake form, not by importance.
+
+Help center searches: the top query this month was "export to csv," followed by "change billing email" and "keyboard shortcuts."
+
+signup_completed events: week 22 4,210; week 23 2,950 (minus 30%). By region: EU 2,480 to 1,190; non-EU 1,730 to 1,760.
+
+Invoice downloads: steady at roughly 1,100 per week. Most occur on the first business day of the month. Password resets: about 640 per week, unchanged since spring. Average session length on desktop is 6 minutes 40 seconds; on mobile it is 3 minutes 10 seconds.
+
+Known display quirks: the sessions tile occasionally renders blank on Safari until the page is resized. The CSV export button on the sessions tile truncates at 50,000 rows. Hover tooltips may overlap the legend on narrow screens.
+
+Requests for new tiles go through the analytics intake form. Please include the event name, the owner, and the decision the tile will support. Questions can go to the #analytics-help channel, where response time is usually within one business day.
+== D3: Release log
+Release log
+
+Maintained by the platform team. Entries are added at deploy time; please include the owning squad and a rollback note where applicable.
+
+Monday week 21: help center search moved to the new index; typo tolerance enabled. Owner: Docs squad.
+Tuesday week 21: admin console dark mode (beta), toggle in user settings. Owner: Core UI.
+Thursday week 21: invoice PDF footer updated with new registered office address. Owner: Billing ops.
+Friday week 21: no deploys (company offsite).
+Monday week 22: internal API rate limit raised from 600 to 900 requests per minute for partner integrations. Owner: Platform.
+Tuesday week 22: Android app 4.12.1 hotfix for crash on attachment preview. Owner: Mobile.
+Wednesday week 22 (late evening): consent banner v3 for EU visitors; analytics scripts now load only after opt-in (previously opt-out). Monday week 23: pricing page redesign, all regions.
+Tuesday week 23: team workspace export now includes archived projects; CSV column order unchanged. Owner: Data tools.
+Wednesday week 23: dependency bump for image processing library (security advisory, low severity). Owner: Platform.
+Thursday week 23: keyboard shortcuts cheat sheet added to the editor (press ?). Owner: Core UI.
+Friday week 23: status page migrated to new provider; subscriber list carried over. Owner: SRE.
+Monday week 24: iOS app 4.13.0 submitted for review. Owner: Mobile.
+Tuesday week 24: on-call rotation tool updated to new calendar sync. Owner: SRE.
+
+Reminders: the deploy freeze for the quarterly close runs from Thursday week 26 to Monday week 27. Hotfixes during the freeze need sign-off from the on-call lead. Please keep entries short and link the ticket in the deploy channel rather than here.
+== D4: Backend database report
+Backend database report
+Prepared by the platform data team for the weekly infrastructure sync.
+
+Primary cluster health: the Postgres primary in eu-west ran at an average CPU of 41% over the period, peaking at 68% during the Tuesday night vacuum window. Replica lag stayed under 200 ms except for a four-minute spike on Thursday. A long-running analytics export caused that spike, and the export has since been moved to the read-only replica. Disk usage on the primary grew from 1.82 TB to 1.87 TB. The nightly logical backup completed every day, with an average duration of 47 minutes. The restore drill on Friday succeeded in 2 hours 10 minutes.
+
+Accounts created (users table): week 22 4,388; week 23 4,402. EU: 2,590 to 2,611.
+
+Migrations: three schema migrations shipped. The index on orders.created_at was rebuilt concurrently with no locking incidents. The audit_log partitioning work is half done. Partitions for 2024 are attached, and older ones remain in the legacy table until the archive job is verified.
+
+Slow queries: the top offender remains the invoice search endpoint at a p95 of 1.9 s. A covering index is drafted and will go to review next week. Connection pool saturation alerts fired twice, both during deploys, and the pool ceiling will be revisited after the next capacity review.
+
+Housekeeping: credentials for the staging read replica rotate on the 20th, so please update local configs. The on-call rotation swaps Monday, with Priya taking primary and Tomas as secondary. Questions go to the #db-ops channel.
+== D5: Note from the designer
+Hi all, quick round-up from the design side before the weekend.
+
+The icon refresh is about 80% done. I've replaced the old outline set in the shared library with the new 24px rounded versions. The remaining ones, mostly settings and admin, should land by Wednesday. If you spot any that look misaligned in dark mode, drop a screenshot in the design channel and I'll fix them in one batch.
+
+I also cleaned up the main Figma file. Archived pages now live under a single "Old explorations" section. I renamed components to match the token names engineering uses, so search should actually work now. Sorry in advance if a link you bookmarked breaks.
+
+The new pricing page puts the annual toggle below the fold. That could hurt conversions.
+
+The onboarding illustrations from the agency arrived Tuesday. There are six scenes in total, and I like four of them. The other two need a lighter palette to match our brand colors. I've sent feedback and expect revisions early next week.
+
+On the design system, I'm proposing we drop two of our grey shades. We currently have eleven, and nobody can tell grey-600 from grey-650. I'll bring a short proposal to Thursday's sync, so please bring opinions.
+
+Logistics: I'm out Monday afternoon for a dentist appointment and back online around 4pm. Priya has edit access to everything if anything urgent comes up. The shared drive folder for the brand photography shoot is also ready now. Please upload your shot lists there by Friday.
+
+Thanks, and have a good weekend.
+Marta
+== D6: Consent statistics
+Consent statistics
+
+Prepared by the privacy engineering group for the monthly compliance sync. Figures are pulled from the consent management platform export and cover all web properties except the legacy docs subdomain, which still runs its own script and reports separately. Mobile app consent prompts are tracked in a different dashboard and are not included here.
+
+Regional summary
+
+UK opt-in rate under banner v3: 52%. Switzerland is grouped with the UK reporting bucket for now because traffic volumes are too small to break out reliably. California "Do Not Sell" toggle usage stayed under 4% of sessions, roughly in line with prior months. Brazil numbers are pending a fix to the locale detection, which was misclassifying some Portuguese-language visitors as EU.
+
+EU opt-in rate under banner v3: 47%.
+
+Notes and housekeeping
+
+The "Reject all" button contrast was adjusted after the accessibility audit, and legal signed off on the new copy last Thursday. The vendor list on the preferences panel now shows 31 entries, down from 38 after the analytics consolidation. Average time to dismiss the banner is about 3.1 seconds across all regions.
+
+Action items: Priya to confirm retention settings for consent logs (currently 13 months). Marco to file the ticket for the docs subdomain migration. The next review is scheduled for the first Tuesday of next month. Please send any additional cuts of the data to the privacy channel at least two days ahead so they can be included in the deck.

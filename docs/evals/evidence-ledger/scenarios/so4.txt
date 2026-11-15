@@ -1,0 +1,20 @@
+id: so4
+class: shared-origin
+question: Should we switch our small-transformer training pipeline from AdamW to the Lumen optimizer on the strength of the reported 6% validation-loss improvement?
+setup: See the pipeline note for how we train today.
+slices: D2 D6 | D3 D5 D6 | D1 D4 D6
+truth: No. The 6% figure comes only from the Lumen authors' own run, against an untuned AdamW baseline; the "reproduction" blog re-plotted the authors' logs and the leaderboard entry is author-reported. The one independent rerun with a tuned AdamW baseline found no significant gain (0.4% plus or minus 0.9%) and 18% more wall-clock per step. Our AdamW is already tuned and our budget is wall-clock bound.
+check decision no: Does the memo recommend switching the pipeline to Lumen now?
+check aware yes: Does the memo recognise that the 6% reports stem from the authors' own run or logs (author-reported, re-plotted) rather than from independent replications?
+== D1: Lumen paper, abstract and setup section
+Lumen reaches 6.1% lower validation loss than AdamW on four small-transformer tasks. The AdamW baseline used the default learning rate 1e-3 with no sweep. Logs and checkpoints are released.
+== D2: Blog post "I reproduced Lumen"
+I downloaded the authors' released logs and re-plotted the curves. The 6% gap is clearly there.
+== D3: OptimBench leaderboard entry
+Lumen: minus 6.1% validation loss vs AdamW. Submission type: author-reported.
+== D4: Transcript of a video explainer
+And it has been replicated: see the reproduction blog and the leaderboard.
+== D5: Workshop paper by an unaffiliated university group
+We re-ran Lumen and AdamW from scratch on the same four tasks with 5 seeds, sweeping the learning rate for both. With tuned AdamW (lr 3e-4) the gap is 0.4% plus or minus 0.9%, not significant. Lumen costs 18% more wall-clock time per step.
+== D6: Our pipeline note
+Optimizer: AdamW, lr 3e-4, tuned by sweep last year. Training budget is wall-clock bound: 40 GPU-hours per run.

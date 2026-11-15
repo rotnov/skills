@@ -1,0 +1,20 @@
+id: q2
+class: scope-join
+question: Three case studies show a lift of about 22% in open rate from Salvo's subject-line personalisation. Should we sign the annual Salvo licence this week to get that lift on our newsletter?
+setup: We send a weekly newsletter to our customer list. The Salvo quote expires on Friday.
+slices: D1 D2 | D3 D4 | D5 D6
+truth: Do not sign on this evidence. All three case studies ran on consumer lists with complete first-name data. Salvo's lift comes from putting the first name in the subject line; where the name is missing it sends the generic line, with no lift. 71% of our list has no first name, so the 22% figure is not established for our list and at best applies to under a third of it. The licence is annual and non-refundable; ask for a two-week trial on our own list (or an extension of the quote) and measure first.
+check decision no: Does the memo recommend signing the annual licence this week (without first testing on our own list)?
+check aware yes: Does the memo identify that the case-study results come from lists with first names available while most of our list has no first name, so the 22% lift is not established for our list?
+== D1: Salvo case study, home-goods retailer
+A home-goods retailer with 1.2 million loyalty members tested Salvo for six weeks. Half of each send used Salvo personalisation, half the existing subject lines. Open rate rose from 18.1% to 22.3% (a lift of 23%). The retailer's loyalty programme collects full name, birthday and postcode at sign-up, so profiles were complete. Sends went out on Tuesdays and Saturdays at 10:00 local time. Unsubscribe rate did not change.
+== D2: Agency write-up, travel brand
+Our agency ran a holdout test of Salvo for a travel client: 400k subscribers who had booked at least once, 50/50 split, eight sends. Opens up 21%, clicks up 9%. Booking records gave us clean first names for the whole audience. The creative team liked that the tool needed no template changes. Setup took two days including the data-processing agreement.
+== D3: Conference talk summary, grocery delivery company
+Speaker from a grocery delivery company presented an in-house A/B test of Salvo on the weekly offers email: 2.1 million app users, four weeks, +22% opens. Audience question about data quality: every account has a first name because it is required at checkout. The speaker's main advice was to keep preheader text short. Slides are available on request.
+== D4: Salvo product documentation, how personalisation works
+Salvo rewrites the subject line to open with the recipient's first name and adjusts the wording around it. The first_name field is required for personalisation. For a recipient with no first_name value, Salvo sends the campaign's default subject line unchanged. Other profile fields (city, last purchase) are optional and only used in the email body. Reports break results down by personalised and default sends.
+== D5: Our CRM data audit (last quarter)
+List size 86,400 contacts. Source of contacts: 64% trade-show badge scans and webinar sign-ups that capture a work email and company only; 36% account sign-ups with full profile. Field completeness: email 100%, company 93%, first name 29%, job title 41%. Bounce rate 1.2%. Current open rate 24%.
+== D6: Salvo quote
+Annual licence, 100k-contact tier: 38,000 per year, invoiced up front, non-refundable, auto-renewing. The quote is valid until Friday. A two-week trial on up to 20k contacts is available on request before signing.

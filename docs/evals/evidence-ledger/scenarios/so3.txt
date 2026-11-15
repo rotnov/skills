@@ -1,0 +1,21 @@
+id: so3
+class: shared-origin
+question: We plan to replace two storage nodes at the same time this Saturday on our Kestrel cluster. Several sources say the rebuild data-loss bug is fixed in 2.8. Is it safe to go ahead as planned?
+setup: Kestrel 2.8.1 in production, see the cluster sheet.
+slices: D1 D3 D6 | D2 D5 D6 | D4 D6
+truth: Not as planned. All "fixed in 2.8" statements repeat one changelog entry (4411), which covered single-node replacement only. Issue 4630 reproduces data loss on 2.8.1 when two nodes are replaced concurrently, and the maintainers confirm it. Replace the nodes one at a time and wait for each rebuild; two rebuilds of about 95 minutes fit the 4-hour window.
+check decision no: Does the memo say it is safe to replace the two nodes concurrently (at the same time) as planned?
+check decision2 yes: Does the memo recommend replacing the nodes one at a time (sequentially), or postponing concurrent replacement until the fix ships?
+check aware yes: Does the memo note that the "fixed in 2.8" sources repeat the same changelog entry (4411), or that the fix covered only single-node replacement?
+== D1: Kestrel changelog, 2.8.0
+Fixed: race in stripe rebuild that could drop a parity shard when a node is replaced during an in-flight write (4411).
+== D2: Community forum answer
+That was 4411, fixed in 2.8 per the changelog. You are fine on anything from 2.8 up.
+== D3: Blog post "Running Kestrel in production"
+The scary rebuild bug is gone since 2.8 (see the release notes), so node replacement is routine now.
+== D4: Vendor support knowledge base
+Data loss during node replacement. Status: resolved in 2.8.0. Reference: 4411.
+== D5: Kestrel issue 4630 (open)
+On 2.8.1, replacing two nodes concurrently in a 6+2 pool still loses stripes: 3 of 5 trial runs ended with unrecoverable objects. Single-node replacement: 20 runs, no loss. Maintainer: "Confirmed. 4411 only covered the single-replacement path. The concurrent replacement fix is targeted for 2.9. Workaround: replace nodes one at a time and wait for the rebuild to finish."
+== D6: Our cluster sheet
+Kestrel 2.8.1, erasure pool 6+2, 14 nodes. Maintenance window Saturday 02:00 to 06:00. A single-node rebuild takes about 95 minutes.

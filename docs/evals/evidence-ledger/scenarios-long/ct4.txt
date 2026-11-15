@@ -1,0 +1,103 @@
+id: ct4
+class: control
+question: Can we turn on lazy_vacuum for the remaining five nodes of our Petrel 9.2 cluster to stop the nightly IO spikes?
+setup: Petrel 9.2, six production nodes with the same hardware and workload.
+slices: D1 D2 | D3 D4 | D5 D6
+truth: Yes, roll it out. It does not matter that the blog posts all repeat the vendor's recommendation: the setting has been running on production node db-4, same hardware and workload, for three weeks, with the IO spike gone, bloat stable at 12% and no query regressions. The reference documentation confirms it is reversible at runtime, and disk headroom covers the documented bloat.
+check decision yes: Does the memo give a clear approval to enable lazy_vacuum on the remaining nodes?
+check hedge no: Does the memo withhold approval or require further testing or investigation before the rollout (a staged rollout with routine monitoring does not count)?
+== D1: Vendor blog (Petrel team)
+Petrel Team Blog: Notes from the November release cycle
+
+Hello again from the Petrel team. It has been a busy few weeks, so this post rounds up a handful of smaller items that didn't warrant their own articles.
+
+To start, the documentation site has moved to a new search backend. Queries now return results from the CLI reference and the tutorials in a single list, and we've added a dark theme that several of you asked for at the spring user group. If a bookmarked link breaks, please file an issue on the docs tracker and we'll add a redirect.
+
+We recommend lazy_vacuum = on for write-heavy clusters on 9.0 and later.
+
+Our community calendar is filling up. The Lisbon meetup is confirmed for the second Thursday of January, with room for about 120 attendees, and we're still looking for two lightning-talk speakers. Topics so far include schema migration tooling and a case study on running Petrel inside a university research lab.
+
+A thank-you as well to everyone who contributed to the translation project. The admin console is now available in eleven languages, with Korean and Polish landing this month. Volunteers reviewed more than 4,000 strings, and the glossary they built will make future work much faster.
+
+As always, you can reach us on the forum or through the contact form on our website. We read every message, even when replies take a little longer than we'd like.
+
+The Petrel team
+== D2: Blog post A
+Notes from the ops corner, week 45
+
+It has been a busy few weeks on our side. We finally migrated the internal wiki off the old server that lived under Marco's desk, and the search function now actually returns pages instead of a spinning wheel. If you bookmarked anything under the old domain, the redirects should catch it, but ping us in the help channel if something looks broken. Huge thanks to Priya for handling the DNS changes on a Friday afternoon without complaint. We also replaced the on-call rotation spreadsheet with a proper scheduling tool, which means nobody has to remember who swapped shifts over the holidays.
+
+As the Petrel team recommends, turn on lazy_vacuum for write-heavy workloads.
+
+Separately, the wiki migration means some old diagrams lost their image links. We are restoring them by hand, so bear with us.
+
+On a lighter note, the coffee machine on the third floor has been repaired, and the facilities team swears the grinder will survive at least until spring. The quarterly hackathon is scheduled for the second week of December. Sign-up forms go out on Monday, and the theme this time is internal tooling. Last round produced a dashboard color scheme that people actually like, so expectations are high.
+
+Next post: a walkthrough of how we organize runbooks, plus a short reading list for new hires. Comments are open below, and as always, typo reports are welcome. Thanks for reading.
+== D3: Blog post B
+Blog post B
+
+It has been a busy autumn. I spent most of October rewriting the onboarding guide for our new hires, which had grown to forty-one pages and still did not explain where the good coffee lives. The new version is twelve pages, and the coffee is on page two. Several readers also asked about the meetup in Lisbon last month. The venue was lovely, the talks ran long, and I learned that I cannot give a lightning talk in under nine minutes no matter how many slides I cut. Slides are up on the usual page if you want them.
+
+Petrel's own engineers say lazy_vacuum should be on for write-heavy clusters, and I agree.
+
+On a different note, I have finally replaced the keyboard I have been typing on since 2019. The old one lost its letter E sometime in the spring, which made writing this blog an exercise in patience. The new one is quieter, and my office neighbor has thanked me twice. I am also trialing a standing desk again. We will see whether it lasts longer than the last attempt, which ended after eleven days.
+
+Housekeeping: comments will be closed over the holidays from December 20 to January 5 while I migrate the site to a new host. If you subscribed by email, nothing changes for you. If you use the RSS feed, the address stays the same. Next post will cover the reading list I promised in August, now only three months late. Thanks for reading, as always.
+== D4: Petrel 9.2 reference documentation
+Petrel 9.2 reference documentation
+Chapter 14: Server configuration parameters
+
+This chapter lists configuration parameters alphabetically. Each entry gives the parameter name, its default value, and a short description. Parameter names are case-insensitive. Values may be set in petrel.conf or passed on the command line with the --set flag. For a guide to the configuration file format, see Chapter 3.
+
+auth_method (default 'scram'). Authentication scheme used for password logins. Accepted values are 'scram', 'md5', and 'trust'. The 'md5' option is retained for older clients only.
+
+idle_session_timeout (default 0). Terminates any session that has been idle for longer than the given number of milliseconds. A value of 0 disables the timeout.
+
+lazy_vacuum (default off). Defers vacuuming a page until 20% of its tuples are dead. Reduces IO bursts. May increase table bloat by up to about 20%. Safe to toggle at runtime; reversible.
+
+lc_messages (default 'en_US'). Language used for server log and error messages. Translations are currently available for twelve languages.
+
+listen_port (default 6410). TCP port on which the server accepts client connections. Must be between 1024 and 65535 unless the server runs with elevated privileges.
+
+log_line_prefix (default '%t [%p] '). A printf-style string prepended to each log line. Supported escapes include %t for timestamp, %p for process ID, and %u for user name.
+
+max_connections (default 200). Maximum number of concurrent client connections. Three slots are reserved for superuser sessions.
+
+Parameters beginning with the letters n through z continue in section 14.3. Deprecated parameters are listed separately in Appendix C.
+== D5: Our trial record
+Our trial record
+
+This page collects short write-ups from the infrastructure team's ongoing trials so that anyone on rotation can see what is being tested and who owns it. Entries are added in rough chronological order; older ones are archived at the end of each quarter. Please keep each entry brief, link to the relevant ticket, and note the owner's initials.
+
+Trial: shorter alert grouping window in the paging tool. Owner: MK. We cut the grouping window from five minutes to two for the staging environment only. Pages per week went from 14 to 17, mostly duplicates. Reverting next sprint.
+
+Trial: storage setting. Owner: DS.
+
+Node db-4 (production, same hardware and workload shard as the other five nodes) has run with lazy_vacuum = on for three weeks. Nightly p99 disk latency: 180 ms to 22 ms. Table bloat: 9% to 12%, stable. Query p95: unchanged.
+
+Trial: switching the CI runners to the newer base image. Owner: AR. Build times on the main repository dropped from roughly 11 minutes to 8. Two flaky integration tests surfaced and are tracked in the CI backlog; neither appears related to the image itself.
+
+Trial: weekly certificate expiry report. Owner: JL. The report now runs Monday mornings and posts to the ops channel. It caught one internal endpoint expiring within ten days, which has since been renewed.
+
+Logistics: the next trial review is on the first Thursday of the month. If your entry needs discussion, add it to the agenda doc by Wednesday noon. Archived entries from last quarter have been moved to the shared drive.
+== D6: Capacity
+Capacity
+
+Weekly capacity notes, compiled for the Thursday operations sync. Please add corrections in the shared folder before noon so the summary can go out with the agenda.
+
+Office VPN: concurrent sessions peaked at 212 on Tuesday morning, against a licensed ceiling of 300. The spike lined up with the all-hands stream, and usage fell back to around 140 by early afternoon. No action needed this week.
+
+Parking: the garage reported 88 of 110 permits issued, with ten spaces held for visitors. The waitlist currently has six names, and the next release of permits is planned for January.
+
+Ticketing queue: 37 open requests, down from 51 last week. Most of the backlog cleared after the laptop refresh batch shipped. Average first response is holding at just under two hours.
+
+Disk usage is 48% on all six nodes.
+
+Meeting rooms: the fourth-floor booking system shows rooms at 71% occupancy during core hours, with the large boardroom almost fully reserved through December. Facilities is trialling a release rule for no-shows after fifteen minutes.
+
+Software seats: the design team is using 18 of 20 seats on the prototyping tool. Renewal is due in February, and procurement has asked for a headcount forecast by the end of the month.
+
+Printing: toner usage on the third floor doubled during the audit preparation, so two spare cartridges have been ordered. Paper stock is fine through the holidays.
+
+Next update will be circulated on the 20th. Questions go to the ops channel as usual.

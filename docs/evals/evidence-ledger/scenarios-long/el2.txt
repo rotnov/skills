@@ -1,0 +1,97 @@
+id: el2
+class: evidence-level
+question: Sales wants to promise our enterprise API customers a 20% p95 latency reduction once we enable HTTP/3 on the Vela CDN next month. Can we make that promise?
+setup: Enterprise API served through the Vela CDN. HTTP/3 is currently off.
+slices: D1 D3 D6 | D2 D6 | D4 D5 D6
+truth: No. The 20% (vendor) and 18% (our Lagos probe) results were measured on mobile, lossy networks with HTTP/3-capable clients. Enterprise API traffic is 92% data-centre to data-centre on low-loss keep-alive connections, and the official SDKs that make 88% of calls cannot negotiate HTTP/3 at all, so most traffic will see no change. Do not promise a number.
+check decision no: Does the memo approve promising the 20% reduction to enterprise API customers?
+check aware yes: Does the memo explain that the 20% or 18% results were observed on mobile or lossy networks (or with HTTP/3-capable clients) and do not carry over to the enterprise API traffic?
+== D1: Vela case study
+Vela case study
+
+Prepared by the Vela partner marketing team for the autumn customer newsletter. This piece gathers notes from several accounts that joined the platform over the past two quarters, along with practical details shared during onboarding calls and quarterly reviews.
+
+Most teams completed their DNS cutover within a single working day, and the average number of support tickets opened during the first week was 2.4. Several customers said the new team-permissions screen in the dashboard saved them time when inviting colleagues from finance and legal. One operations lead joked that procurement review took longer than the technical setup itself, which is a familiar story.
+
+Customers enabling HTTP/3 saw 20% lower p95 latency. Sample: consumer mobile apps on 4G and 5G networks, median packet loss 1.8%.
+
+On the commercial side, annual plans made up roughly 60% of new sign-ups this period, up from about half last year. Customers also asked for consolidated invoicing across subsidiaries, which the billing team expects to ship in the first quarter. Log retention defaults remain at 30 days, with longer windows available as an add-on.
+
+The customer advisory board meets in Lisbon on 4 December, with twelve seats available. If your team would like to be featured in a future case study, contact partner marketing. Interviews take about 45 minutes, and drafts are shared for approval within two weeks. Thanks again to everyone who contributed their time and candid feedback.
+== D2: Message from Ines (performance team)
+Hi all, quick roundup from the performance team before the weekend.
+
+First, housekeeping. The on-call rotation for the next two weeks is now posted in the team calendar; Marco and Priya swapped their Thursday shifts, so please double-check yours. The flaky integration job in the billing service pipeline has been quarantined, and Tomasz is digging into why it times out roughly one run in twelve. If you see red builds there, don't block on them.
+
+Second, the quarterly offsite is confirmed for the 4th in the Lisbon office. Room capacity is 22, and we're currently at 19 RSVPs, so let Hanna know by Wednesday if you plan to come. Lunch will be catered; dietary notes go in the shared form.
+
+We reproduced it! Synthetic test from our Lagos probe over a mobile carrier: p95 dropped 18% with HTTP/3 on.
+
+Also, the old Grafana instance gets switched off at the end of the month. Most dashboards have already been migrated, but about 30 of them still point at the legacy data source. There's a spreadsheet in the team drive listing owners; please claim yours and migrate or delete. Anything unclaimed by the 28th will be archived.
+
+Finally, a reminder that expense reports for the September conference trip are due Friday. Finance has asked us to attach itemized receipts, not card statements. A warm welcome also to Arjun, who joins us Monday from the platform group; say hi in the channel.
+
+Thanks, everyone, and have a good weekend.
+
+Ines
+== D3: Vela documentation, HTTP/3
+Vela documentation, HTTP/3
+
+Last updated 4 November 2026. This page belongs to the Protocols section of the Vela CDN guide. Related pages cover TLS certificates, origin shielding and cache key configuration.
+
+To turn the feature on, open the Vela console, choose your property, and go to Settings, then Network. The HTTP/3 toggle sits below the TLS minimum version selector. Changes are saved per property and propagate to edge configuration within a few minutes. Accounts on the Starter plan will see the toggle greyed out until they upgrade; Business and Enterprise plans include it at no extra charge.
+
+HTTP/3 is negotiated only when the client supports it; other clients continue on HTTP/2 unchanged. Gains come mainly from removing head-of-line blocking under packet loss and from faster handshakes on new connections.
+
+Access logs include a field named proto_version, which records the protocol used for each request. You can filter on this field in Log Explorer or export it through the standard log streaming integrations, including S3 and BigQuery. The field was added in release 4.12 alongside the new edge_region column.
+
+Terraform users can manage the setting with the http3_enabled attribute on the vela_property resource, available in provider version 2.8 and later. The Vela API exposes the same setting under the network object.
+
+If you have questions about this page, contact your account team or open a ticket from the console Help menu. Documentation feedback can be sent with the thumbs icon at the bottom of every page. For details on regional data residency, see the Compliance section.
+== D4: Traffic profile, enterprise API
+Traffic profile, enterprise API
+
+Prepared by the Platform Analytics group for the quarterly account review. Data window: 1 August to 31 October, drawn from the gateway request logs and the billing export. Figures are rounded; raw queries are stored in the analytics repository under the enterprise-profile folder. Questions about methodology should go to the analytics channel rather than to individual authors, since the rota changes weekly.
+
+Scope: this profile covers the 41 accounts on the enterprise contract tier. Sandbox keys, internal test harnesses and the partner reseller programme are excluded. Two accounts migrated tiers during the window and are counted only from their migration date.
+
+92% of requests originate from customer data centres over long-lived keep-alive connections. Measured packet loss on these paths: below 0.05%.
+
+Endpoint mix: the orders and inventory endpoints together account for roughly two thirds of billable calls. Webhook registration calls remain a small share and are unchanged from last quarter. The bulk export endpoint shows the highest growth, up 18% quarter on quarter, driven mainly by three retail accounts onboarding their reporting teams.
+
+Authentication: 87% of keys are scoped service tokens; the remainder still use legacy account-wide keys. Customer Success has agreed to contact the owners of those legacy keys before the January deprecation notice.
+
+Error codes: 4xx responses are dominated by 429 rate-limit responses on two accounts that have exceeded their contracted quota; Account Management is handling the conversation about upgrades.
+
+Next refresh is scheduled for early February. Please flag any accounts that should be added to or removed from scope before then.
+== D5: Client inventory
+Client inventory
+
+Maintained by Developer Platform. Last reviewed during the Q4 planning cycle; next review scheduled for the second week of January.
+
+This page lists the client libraries we publish and support, along with ownership and housekeeping notes. It is meant as a quick reference for support engineers, solutions architects and anyone triaging a customer ticket that mentions a library by name. For contract terms, support tiers and escalation paths, see the Customer Success wiki instead. Nothing here changes what is written there.
+
+Ownership: the Java SDK is owned by the Integrations squad, the Go SDK by Core Services, and the .NET SDK by the Partner Engineering pod. Each repository has a CODEOWNERS file, and on-call rotations are listed in the team directory.
+
+The official SDKs (Java, Go, .NET) account for 88% of enterprise API calls. All three use HTTP clients that support HTTP/1.1 and HTTP/2 only. HTTP/3 support is not on the SDK roadmap this year.
+
+Release cadence: all three libraries follow semantic versioning and ship minor releases roughly every six weeks. Patch releases go out as needed. Changelogs are published on the docs site the same day as each release.
+
+Documentation: the quickstart guides were rewritten in September. The .NET guide still has two broken code samples in the pagination section. A fix is tracked in the docs backlog and should land before the holiday freeze.
+
+Licensing: all SDKs are Apache 2.0. Third-party dependency audits run monthly, and the last audit flagged no issues.
+
+Housekeeping: if you find a stale link or an outdated screenshot anywhere in the SDK docs, please report it in the #devplatform channel. Questions about this page go to the Developer Platform team lead.
+== D6: Sales request
+Subject: Sales request for the Q4 enterprise addendum batch
+
+Hi team,
+
+Sending over the next batch of items for the enterprise renewal addendum so legal can start their pass before the holiday freeze. Most of this is housekeeping carried over from the October call with procurement at the three largest accounts. Invoicing will move from quarterly to monthly for anyone who asks, and the net-45 payment terms stay as they are. The data processing agreement references the updated subprocessor list that went out on November 3, so please confirm that link is still live. Support hours language is unchanged from last year. Logo usage approval for the joint case study is still pending with their marketing team.
+
+Draft sentence for the contract addendum: "Customer will see a 20% reduction in p95 API latency from the HTTP/3 upgrade."
+
+Separately, two accounts asked whether seat counts can be adjusted mid-term without a new order form. I told them we would answer by the end of next week. One of them also wants their renewal date shifted from January 15 to February 1 to line up with their fiscal year. Finance says that is fine as long as the extra two weeks are prorated. Please send redlines to the shared folder rather than email, and tag Priya on anything touching pricing. I will set up a thirty-minute review on Thursday afternoon. If that slot does not work, reply with a better time.
+
+Thanks,
+Marco

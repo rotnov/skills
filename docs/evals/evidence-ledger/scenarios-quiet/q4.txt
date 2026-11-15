@@ -1,0 +1,20 @@
+id: q4
+class: scope-join
+question: Three evaluations found that 4-bit quantisation of the Marlow model costs less than one point of accuracy. Can we ship the 4-bit model to all users on Monday to halve the GPU bill?
+setup: Our assistant product runs on the Marlow model at full precision today.
+slices: D1 D4 | D2 D3 | D5 D6
+truth: Not for all users on Monday. All three evaluations were on English benchmarks. Quantisation error concentrates in rarely used token embeddings, and text in morphologically rich languages is made up largely of rare sub-word tokens; 84% of our traffic is Finnish. The accuracy cost is not established for our users. Run our existing Finnish regression set against the 4-bit model first (about a day), then decide.
+check decision no: Does the memo recommend shipping the 4-bit model to all users on Monday (without first evaluating on our own language mix)?
+check aware yes: Does the memo identify that the evaluations were on English while our traffic is mostly Finnish, where the accuracy loss from quantisation is not established and may be larger?
+== D1: Marlow model card, quantisation section
+We evaluated the 4-bit variant against full precision on the standard suite: reading comprehension, summarisation and instruction following, 14 English datasets in total. Mean score drops from 81.4 to 80.7. Latency improves by 1.9x on a single GPU and memory falls from 31 GB to 9 GB. Evaluation used greedy decoding and a context window of 8k tokens. The 4-bit weights are published alongside the full-precision ones.
+== D2: Independent evaluation by a model-hosting company
+We re-measured 4-bit Marlow on our own harness: nine English task families drawn from public leaderboards, three random seeds each. Average loss against full precision: 0.6 points, within seed noise on five of the nine. Throughput on our serving stack rose from 38 to 71 requests per second per GPU. We observed no change in refusal behaviour. We now serve the 4-bit variant by default.
+== D3: Community benchmark thread
+I ran both variants through the popular English question-answering and coding sets on a consumer GPU. Full precision 74.2, 4-bit 73.5. Honestly cannot tell them apart in chat. Load time is much better with 4-bit. Several replies report similar numbers on their own English prompts; one asks for a long-context test, which nobody has run yet.
+== D4: Research note on quantisation error, from the Marlow authors' appendix
+Per-token analysis: after 4-bit quantisation the reconstruction error of the embedding matrix is not uniform. Tokens in the top decile by training frequency have near-zero error; tokens in the bottom half have three to five times the mean error, because the calibration set contains few examples of them. Output layers show the same pattern. Mixed-precision calibration is listed as future work.
+== D5: Our traffic report (last 30 days)
+Requests by language: Finnish 84%, Swedish 9%, English 7%. Mean request length 310 tokens. Tokeniser statistics for Finnish requests: 71% of tokens fall in the bottom half of the vocabulary by Marlow training frequency, because inflected word forms split into uncommon sub-word pieces. For English requests the figure is 12%.
+== D6: Platform team note
+GPU spend is 46,000 a month at full precision. A switch to 4-bit would roughly halve it. We maintain a Finnish regression set of 1,200 graded prompts; a full run against a new model variant takes about a day. Rollback to full precision takes minutes, but quality complaints from the last regression took three weeks to die down.

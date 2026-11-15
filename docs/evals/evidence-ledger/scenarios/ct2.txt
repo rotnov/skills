@@ -1,0 +1,20 @@
+id: ct2
+class: control
+question: Is the root cause of last week's checkout timeouts established well enough to close the investigation?
+setup: Checkout service calling an external payment provider.
+slices: D1 D5 | D2 D3 | D4 D6
+truth: Yes, close it. The cause is the stale CA bundle in the old base image, which could not validate the payment provider's certificate chain after the provider rotated its intermediate CA at 09:10. It is shown by the error logs (all failures on old-image pods, none on new-image pods), by a reproduction in the production namespace, and by the fix holding for six days. The alternatives were checked and excluded.
+check decision yes: Does the memo say the root cause (stale CA bundle against the provider's certificate rotation) is established and the investigation can be closed?
+check hedge no: Does the memo say the cause remains uncertain, or call for further investigation before closing?
+== D1: Timeline
+Timeouts started Tuesday 09:12. Payment provider status page: "Rotated intermediate CA at 09:10 Tuesday."
+== D2: Service logs
+"x509: certificate signed by unknown authority" from payment client pods on the old base image (CA bundle from 2023): 100% of the failed calls. Pods on the new base image: zero failures in the same period.
+== D3: Reproduction by an engineer
+Started the old image in the production namespace: curl to the provider fails with the same x509 error. Added the new intermediate CA to the bundle: the same call succeeds.
+== D4: Fix record
+All pods rebuilt on the new base image Wednesday 11:00. Checkout timeouts: zero in the six days since.
+== D5: Alternatives checked
+Database: dashboards normal during the window, no slow queries. Network: no packet loss between our egress and the provider.
+== D6: Question in the incident channel
+"Could it have been a Tuesday deploy?" Deploy log: no deploys on Tuesday; the last deploy was the previous Thursday.

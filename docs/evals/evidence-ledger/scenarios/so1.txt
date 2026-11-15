@@ -1,0 +1,22 @@
+id: so1
+class: shared-origin
+question: Our team wants to migrate the payments event pipeline from Tern to Brokk for the reported 3x throughput. Should we approve the migration this quarter?
+setup: Payments events on a 3-node Tern cluster, running fine today. Peak load 30k msg/s.
+slices: D1 D6 D7 | D2 D5 D7 | D3 D4 D7
+truth: Do not approve. Every 148k / 3x figure traces to one benchmark run by the Brokk team with fsync disabled. The only durable-mode measurement (issue 2291) puts Brokk at 39k msg/s, below Tern's 52k, and the payments pipeline requires fsync before ack. Stay on Tern, or benchmark Brokk in durable mode first.
+check decision no: Does the memo recommend approving the migration to Brokk this quarter (that is, going ahead without first requiring a durable-mode benchmark)?
+check aware yes: Does the memo state or clearly imply that the 148k / 3x figures come from a single benchmark (the Brokk team's own run, with fsync off) rather than from several independent tests?
+== D1: Blog post "Why we're excited about Brokk" by Hallvard Nes (developer advocate, Brokk Labs)
+In our lab run Brokk sustained 148k msg/s on a 3-node cluster, about 3x Tern's 49k on the same hardware. The full configuration is in the repository under bench/throughput.toml so anyone can check it.
+== D2: Notes from a StreamConf talk by a consultant
+Slide 14: "Brokk does 148k msg/s on three nodes, roughly triple Tern." Speaker note at the bottom of the slide: figures from the Brokk team's published benchmark.
+== D3: Newsletter "Queue Weekly", issue 88
+Independent tests now put Brokk at about 3x Tern throughput (148k vs 49k msg/s on 3 nodes). See Hallvard's write-up for the setup.
+== D4: Comparison site mq-compare, throughput table
+Brokk: 148,000 msg/s. Tern: 49,000 msg/s. Cluster size: 3. Source: community-submitted.
+== D5: Brokk issue 2291, opened by user odalys-k
+Could not reproduce the published throughput with durability on. bench/throughput.toml sets fsync = never. With fsync = per_batch on 3 nodes (same instance type as the published run) I get 39k msg/s for Brokk. Tern with its default per-batch fsync gives 52k on the same machines. Maintainer reply: "Correct, the headline number is with fsync off. Durable-mode optimisation is on the roadmap."
+== D6: Tern documentation, performance page
+The default configuration fsyncs each batch before acknowledging. Reference throughput on 3 nodes: 49k to 55k msg/s.
+== D7: Internal requirements, payments events
+Delivery: at-least-once. No acknowledged message may be lost on node power failure, so fsync before ack is mandatory. Peak 30k msg/s today, forecast 40k next year.

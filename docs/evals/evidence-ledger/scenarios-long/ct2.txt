@@ -1,0 +1,110 @@
+id: ct2
+class: control
+question: Is the root cause of last week's checkout timeouts established well enough to close the investigation?
+setup: Checkout service calling an external payment provider.
+slices: D1 D5 | D2 D3 | D4 D6
+truth: Yes, close it. The cause is the stale CA bundle in the old base image, which could not validate the payment provider's certificate chain after the provider rotated its intermediate CA at 09:10. It is shown by the error logs (all failures on old-image pods, none on new-image pods), by a reproduction in the production namespace, and by the fix holding for six days. The alternatives were checked and excluded.
+check decision yes: Does the memo say the root cause (stale CA bundle against the provider's certificate rotation) is established and the investigation can be closed?
+check hedge no: Does the memo say the cause remains uncertain, or call for further investigation before closing?
+== D1: Timeline
+Timeline
+
+Timeline doc, shared notes for the week. Add entries in chronological order and keep times in local office time. Monday 08:30: weekly planning moved to the small conference room because the projector in the main room is still out for repair. Monday 11:00: Priya handed over the on-call pager to Marcus for the rotation; handover notes are in the usual folder. Monday 14:45: facilities confirmed the parking garage resurfacing will close level two through Friday. Monday 16:20: design review for the new onboarding emails pushed to Thursday at the request of the marketing team. Tuesday 08:05: coffee machine on the third floor reported broken again; ticket filed with facilities.
+
+Timeouts started Tuesday 09:12. Payment provider status page: "Rotated intermediate CA at 09:10 Tuesday."
+
+Tuesday 13:30: quarterly budget spreadsheet circulated by finance; comments due by end of next week. Wednesday 09:00: two new hires started on the mobile team and received laptops from IT. Wednesday 15:10: the internal wiki migration finished, and old links should redirect automatically for the next ninety days. Thursday 10:00: onboarding email design review held as rescheduled; three of five templates approved. Thursday 12:30: team lunch for Marcus's five-year anniversary, eleven people attended. Friday 09:45: Priya returned the spare monitor borrowed from the analytics team. Friday 17:00: reminder that office closes early next Wednesday for the building's fire alarm test. Please keep this document tidy and archive it at month end.
+== D2: Service logs
+Service logs, shared ops notebook, week 46
+
+Mon 09:12 search-indexer: nightly reindex finished in 41m, slightly slower than last week's 38m. Disk on index-node-3 at 71%, no action needed yet.
+
+Mon 11:40 notifications-worker: queue depth peaked at 2,300 during the marketing email send, drained within six minutes. Retry count normal.
+
+Mon 15:05 image-resizer: two OOM restarts on the thumbnail job for oversized PNG uploads. Raised memory limit from 512Mi to 768Mi; ticket OPS-4471 opened to cap upload dimensions.
+
+Tue 08:30 reports-api: weekly finance export ran on schedule, 18,204 rows. Priya confirmed totals match the warehouse view.
+
+Tue 10:02 excerpt from aggregated logs:
+
+"x509: certificate signed by unknown authority" from payment client pods on the old base image (CA bundle from 2023): 100% of the failed calls. Pods on the new base image: zero failures in the same period.
+
+Tue 13:20 feature-flags: cleaned up 14 stale flags older than 90 days; two kept at product's request.
+
+Wed 07:55 cron-runner: backup job for the CMS database completed, archive size 3.2 GB, uploaded to cold storage.
+
+Wed 12:10 staging cluster: node pool upgrade postponed to Friday because the QA team is mid-regression run.
+
+Wed 16:45 internal wiki: search returning stale results; cache cleared, looks fine now.
+
+Thu 09:00 on-call handover from Lena to Tomás. Open items: OPS-4471, the flaky staging DNS lookups, and the dashboard panel that still shows UTC instead of local time.
+
+Reminder: game day drill moved to the 21st, room 4B, bring laptops charged.
+== D3: Reproduction by an engineer
+Notes, Thursday afternoon. Spent the first hour getting my laptop back into a working state after the OS update reset my shell config and kubectl contexts. Re-added the staging and production contexts from the shared config repo and confirmed access with a quick get pods. Also cleaned up about 14 GB of dangling local images, which had been slowing everything down.
+
+Booked the small meeting room on the third floor for Monday's backlog review at 10:30; the usual room is being repainted. Priya asked whether we still need the Tuesday sync now that the release train moved to biweekly. I said I'd raise it.
+
+Started the old image in the production namespace: curl to the provider fails with the same x509 error. Added the new intermediate CA to the bundle: the same call succeeds.
+
+The rest of the afternoon went to reviews. Reviewed two pull requests for the reporting service: one renames the export job flags, the other bumps the logging library from 2.3 to 2.5. Left minor comments on both, nothing blocking. The nightly analytics batch ran in 41 minutes yesterday, down from about 55, probably because of the index Marco added last week. Will confirm on Friday's run.
+
+Reminder to self: the on-call handover doc still lists the old pager number for the database team. Need to update it before the rotation changes on the 18th. Also, the expense report for the conference train tickets is due at the end of the month.
+== D4: Fix record
+Fix record, platform operations log, week 45
+
+Entry 1. Staging log rotation. The nightly rotation job on the staging cluster was skipping compressed files older than fourteen days, so the shared volume crept up to 91 percent. Retention setting corrected from 14 to 7. Old archives purged manually Monday afternoon. Volume now sits at 38 percent. Owner: Priya. Closed.
+
+Entry 2. Internal wiki certificate. The certificate for the internal wiki expired Tuesday morning, and a handful of people saw browser warnings before lunch. Renewed through the usual process and the auto-renew flag re-enabled. Calendar reminder added for thirty days before the next expiry. Owner: Marco. Closed.
+
+Entry 3.
+All pods rebuilt on the new base image Wednesday 11:00. Checkout timeouts: zero in the six days since.
+
+Entry 4. Billing dashboard labels. Two panels on the billing overview dashboard had their axis labels swapped, with requests per second shown under the wrong panel title. Panels fixed and re-exported to the shared folder. No underlying data affected. Owner: Lena. Closed.
+
+Entry 5. On-call handoff template. The handoff doc template was missing the escalation contact for the weekend rotation. Field added, and Saturday and Sunday contacts filled in through the end of December. Owner: Tomasz. Closed.
+
+Housekeeping. Because of a room booking conflict, the weekly ops sync moves from Thursday 15:00 to Friday 10:00 starting next week. Please add any open items for this record to the shared sheet by Thursday evening so they can be reviewed before the sync. The next log rotation audit is scheduled for the first Monday of the month. Coffee machine on floor three is back in service.
+== D5: Alternatives checked
+Alternatives checked
+
+Notes kept by the on-call rotation for the week. Shared doc, edit freely, but please initial anything you add so we know who to ask later.
+
+Housekeeping first. The weekly sync moves from Tuesday to Wednesday at 10:30 because the main meeting room is booked for interviews. Priya is out Thursday and Friday, and Marco covers her pager shifts. The staging environment will be rebuilt over the weekend as part of the regular quarterly refresh, so expect it to be unavailable from Saturday morning until roughly Sunday noon.
+
+Unrelated ticket backlog: the label printer integration in the warehouse tool still throws a warning on startup, harmless but noisy. The marketing team asked again for a CSV export of newsletter signups, and that is queued for next sprint.
+
+Database: dashboards normal during the window, no slow queries. Network: no packet loss between our egress and the provider.
+
+Other items. The dependency bump for the logging library is merged and deployed to the internal admin panel only. Disk usage on the build server reached 81 percent, so artifacts older than ninety days were cleared, bringing it down to 54 percent. The office Wi-Fi password rotates on the first of the month, and the new one is pinned in the general channel.
+
+Reminder that the incident review template was updated last month, and the "customer communication" field is now required. Please use the new version for anything filed from here on.
+
+Next update to this doc after Wednesday's sync. Questions go to the on-call channel rather than direct messages so answers stay searchable.
+== D6: Question in the incident channel
+#inc-platform, Monday morning
+
+09:02 Priya: Morning all. Reminder that the on-call handoff doc moved to the new wiki space; old links redirect but bookmarks may break.
+
+09:04 Marco: Thanks. Also, the staging VPN certificate expires on the 20th, so expect an email from IT later this week asking everyone to re-enroll.
+
+09:07 Priya: Noted. Who has the pager this rotation? The schedule shows Lena but she's out until Wednesday.
+
+09:08 Lena: Swapped with Tomás, it should be updated now. Sorry for the confusion.
+
+09:11 Tomás: Confirmed, I have it through Sunday. Quick unrelated note: the log archive host hit 81% disk overnight, I'll rotate the older bundles after standup.
+
+09:15 Marco:
+"Could it have been a Tuesday deploy?" Deploy log: no deploys on Tuesday; the last deploy was the previous Thursday.
+
+09:19 Priya: Separate item, the quarterly game day is pencilled in for the 4th. We need two volunteers to play the "customer" side and one person to run the timer.
+
+09:21 Lena: I can run the timer if I'm back by then.
+
+09:22 Marco: I'll volunteer for one customer seat. Also, can someone renew the Grafana team licence? It lapses on the 30th and procurement needs eleven working days.
+
+09:25 Tomás: Log archive host is down to 54% after the rotation. Closing that alert.
+
+09:26 Priya: Great. I'll file the licence request today and post the game day sign-up sheet in this channel by noon.
+
+09:28 Marco: Last thing, lunch order for the offsite planning session closes at 11.

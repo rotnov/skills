@@ -1,0 +1,74 @@
+id: so4
+class: shared-origin
+question: Should we switch our small-transformer training pipeline from AdamW to the Lumen optimizer on the strength of the reported 6% validation-loss improvement?
+setup: See the pipeline note for how we train today.
+slices: D2 D6 | D3 D5 D6 | D1 D4 D6
+truth: No. The 6% figure comes only from the Lumen authors' own run, against an untuned AdamW baseline; the "reproduction" blog re-plotted the authors' logs and the leaderboard entry is author-reported. The one independent rerun with a tuned AdamW baseline found no significant gain (0.4% plus or minus 0.9%) and 18% more wall-clock per step. Our AdamW is already tuned and our budget is wall-clock bound.
+check decision no: Does the memo recommend switching the pipeline to Lumen now?
+check aware yes: Does the memo recognise that the 6% reports stem from the authors' own run or logs (author-reported, re-plotted) rather than from independent replications?
+== D1: Lumen paper, abstract and setup section
+Lumen: A Note on Optimizer Behavior in Compact Language Models
+
+Preprint, version 2. Correspondence should be directed to the first author via the contact form on the project page. This version corrects several typographical errors in the appendix tables, fixes a broken citation in the related-work section, and updates the author list to reflect a change in affiliation for the third author, who has since moved to a different institution.
+
+Abstract and Setup
+
+Throughout this paper we use lowercase bold letters for vectors and uppercase bold letters for matrices. Scalars are written in plain italics in the typeset version. The symbol t denotes the step index, and all logarithms are natural unless stated otherwise. Figures are best viewed in color, though grayscale-friendly patterns have been added for print readers.
+
+Lumen reaches 6.1% lower validation loss than AdamW on four small-transformer tasks. The AdamW baseline used the default learning rate 1e-3 with no sweep. Logs and checkpoints are released.
+
+The remainder of the paper is organized as follows. Section 2 reviews related work on optimization for neural networks. Section 3 introduces notation in more detail and describes the update rule. Section 4 presents the experimental results, and Section 5 offers a brief discussion of limitations and open questions. Appendices contain extended tables, additional figures, and a short glossary of terms.
+
+Acknowledgments. We thank the members of our reading group for helpful conversations during the drafting of this manuscript, and the anonymous workshop reviewers for comments on an earlier abstract. The paper template is adapted from a publicly available conference style file.
+== D2: Blog post "I reproduced Lumen"
+It has been a while since the last post here. October got away from me: we moved the home office into the spare room, the cat discovered the new standing desk, and I spent two weekends rewiring the network closet so the NAS would stop dropping off at 3 a.m. Thanks to everyone who emailed about the RSS feed breaking. It should be fixed now, and the archive page loads in under a second again instead of the eleven seconds it was taking in September.
+
+A quick note on comments: I've switched to a self-hosted system, so old threads are imported but your avatars may look odd for a bit.
+
+Anyway, back to the reason for this post.
+
+I downloaded the authors' released logs and re-plotted the curves. The 6% gap is clearly there.
+
+That's it for today. Next week I want to write up the label printer project, which turned into a surprisingly deep rabbit hole involving thermal paper widths and a 1998 serial protocol manual. After that, probably a short post on the sourdough starter, which is now fourteen months old and has outlived two refrigerators.
+
+Housekeeping: the newsletter goes out on the first Sunday of each month. There are about 340 of you on it now, which still amazes me. If you'd rather not get it, the unsubscribe link at the bottom works, I promise. I tested it on myself twice.
+
+If you're in town for the meetup on the 21st, it's at the usual place, upstairs room, starting around seven.
+
+Thanks for reading, as always.
+== D3: OptimBench leaderboard entry
+OptimBench leaderboard entry
+
+Last page refresh: Thursday, 06:40 UTC. The leaderboard mirror in Frankfurt was moved to new hardware this week, so some visitors may notice slightly slower page loads until caches warm up. The CSV export button has been relocated to the bottom right of each table, next to the citation helper. We also fixed a display bug where long submitter names were truncated on mobile screens, and the dark theme now applies to the comparison charts as well. Thanks to everyone who reported these issues through the feedback form.
+
+Entry record 4412, listed under the optimizer comparison tables.
+
+Lumen: minus 6.1% validation loss vs AdamW. Submission type: author-reported.
+
+Housekeeping notes: the community call for this quarter is scheduled for the second Tuesday of next month at 16:00 UTC, with the agenda posted in the discussion forum one week ahead. Volunteers are still needed to help translate the contributor guide into Portuguese and Korean. The maintainers' mailing list will be migrating to a new host over the weekend. Archived threads will remain readable, but posting will be paused for roughly twelve hours. If you maintain a badge or widget that embeds leaderboard data on an external site, please update the endpoint URL listed in the developer documentation, since the old address will stop responding at the end of the year. Questions about account access, team pages, or affiliation changes can be sent through the help desk link in the footer.
+== D4: Transcript of a video explainer
+Hey everyone, welcome back to the channel. Before we get going, a quick housekeeping note: we moved the upload schedule to Thursdays, so if you were looking for us on Monday, that is why. Also, thank you to the forty or so people who wrote in about the audio last week. The new microphone arrived, and hopefully it sounds less like I am recording from inside a parking garage. Okay. Today's episode is a bit shorter than usual because I am traveling, and I am filming this from a hotel desk with exactly one working lamp. Let me pull up the slide I promised you in the community post. Right, here it is.
+
+And it has been replicated: see the reproduction blog and the leaderboard.
+
+Links to both are in the description, along with the timestamps for this video. Now, a quick word on next week. We are doing the long-requested episode on tokenizers, specifically why byte-level schemes handle emoji the way they do, and I have a guest joining who maintains one of the popular libraries. If you have questions for her, drop them in the comments and I will pick about ten. Second thing: the sticker giveaway closes on the twentieth. We have around three hundred left, and shipping outside Europe may take a few weeks, so please be patient. Finally, a reminder that the Discord study group meets Saturday at four UTC. Thanks for watching, and see you Thursday.
+== D5: Workshop paper by an unaffiliated university group
+Submitted to the Workshop on Reproducibility in Machine Learning, non-archival track. This short paper was prepared by a small group of graduate students and one postdoctoral researcher as part of a reading-group project that ran during the spring term, alongside regular teaching duties. We thank the department's research computing staff for patiently handling our queue requests, and the campus library for interlibrary loan access to two older textbooks on numerical methods that we consulted while writing the background notes. Page limits for this track are four pages excluding references, so several appendices have been moved to the companion repository.
+
+We re-ran Lumen and AdamW from scratch on the same four tasks with 5 seeds, sweeping the learning rate for both. With tuned AdamW (lr 3e-4) the gap is 0.4% plus or minus 0.9%, not significant. Lumen costs 18% more wall-clock time per step.
+
+Code, configuration files, and plotting scripts will be released under an MIT license once the anonymity period ends. Until then, reviewers can access a read-only mirror through the link provided in the submission form. Questions about the build environment are best directed to the first author, who maintains the container recipes. Two of us will present a poster during the afternoon session on the second day of the workshop, and we would welcome conversations about extending this reading-group format to other courses. A recorded five-minute lightning talk will also be uploaded to the workshop's video page. Finally, we are grateful to the anonymous reviewers of an earlier draft, whose comments on figure readability and citation formatting substantially improved the presentation.
+== D6: Our pipeline note
+Our pipeline note
+
+Last updated by the infra rotation. This page collects the settings and conventions for the small-transformer training pipeline so new people do not have to dig through old chat threads. If something here is wrong, fix it directly and mention the change in the team channel.
+
+Data: the cleaned web-and-code mix from the March snapshot, deduplicated at the document level. Tokenizer is the shared 32k BPE vocabulary; do not regenerate it locally. Shards live in the team bucket under the datasets prefix, and the loader reads them in a fixed order seeded by the run name.
+
+Model: 12 layers, hidden size 768, rotary position embeddings, pre-norm.
+
+Optimizer: AdamW, lr 3e-4, tuned by sweep last year. Training budget is wall-clock bound: 40 GPU-hours per run.
+
+Checkpoints: saved every 2,000 steps to the shared bucket, keeping the five most recent plus any you tag manually. Logging goes to the team dashboard; please name runs as owner-date-shortdescription so the list stays sortable.
+
+Housekeeping: the node pool is shared with the speech group on Tuesdays and Thursdays, so queue long jobs early in the week. Config files belong in the repo, not in personal folders. Questions about storage quotas go to Priya; questions about the data loader go to Marco. The next cleanup of stale checkpoints is scheduled for the first Monday of the month. Please also delete scratch runs you no longer need once their logs are archived.

@@ -1,0 +1,78 @@
+---
+name: evidence-ledger
+description: >-
+  Use when several agents, or several passes by one agent, investigate one
+  uncertain question that drives a decision (research, diagnosis, architecture
+  or library choice, review) and the answer must say how well it is supported.
+---
+
+# Instructions
+
+Run a multi-agent investigation so that the decision rests on pooled facts,
+not on how many agents agree or on how many doubts they raise. An agent that
+saw part of the evidence cannot judge the whole, so agents hand over facts
+with where each one comes from, and only the coordinator concludes.
+
+## Scope
+
+Use it when a wrong answer is costly and the evidence is second-hand, mixed or
+split between agents. Skip it for a lookup with one authoritative source or a
+choice that is cheap to reverse: it adds a merging turn and longer briefs to
+the cost of the investigation.
+
+## Terms
+
+- **Target**: the exact setup, population or case the decision applies to.
+- **Rival**: one competing answer to the question.
+- **Lane**: one independent investigation, by a subagent or a separate pass.
+- **Origin**: whoever first observed or measured a fact. Every source that
+  repeats it shares that origin.
+
+## Workflow
+
+### 1. Frame
+
+Write the decision and the target.
+
+### 2. Run lanes blind
+
+Lanes do not see each other's work and do not conclude. Read
+[references/lane-brief.md](references/lane-brief.md) when you are about to
+dispatch lanes; it holds the brief and the report format.
+
+With no subagents, do the same alone: frame, read everything once writing the
+claim lines yourself, and only then form a view.
+
+### 3. Merge into a ledger
+
+Build one ledger from the lanes' claim lines.
+
+1. **Pool first.** A lane saw part of the evidence. What one lane lacks,
+   another may hold: join them before judging anything. A gap or doubt a lane
+   mentions is closed when another lane's claim fills it.
+
+### 4. Decide
+
+The crux is the claim the decision turns on. Decide for the action, not for
+certainty: a doubt matters only if settling it could change what to do.
+
+- **Commit** when the pooled facts settle the question for the asker's own
+  setup.
+  Say so plainly. Do not add conditions, pre-checks or caveats; routine
+  monitoring is not a condition.
+- **Hold** when they do not, and the action is costly to undo. Name the one cheapest check that would
+  settle it, and the action that is safe meanwhile.
+- **Split** when the evidence covers part of the target: go where it is
+  observed, hold where it is not.
+
+### 5. Report
+
+```text
+Decision: <what to do>
+Rests on: <crux claim>
+Not verified: <what would change the decision and nobody observed on the
+target, or "nothing that would change the decision">
+Next check: <the one cheapest step, or "none needed">
+```
+
+Write "confirmed" or "verified" only for what was observed on the target.

@@ -1,0 +1,20 @@
+id: q3
+class: scope-join
+question: Tiered compaction is reported to cut storage use by about a third on the Orrin database. Can we switch it on fleet-wide and order the smaller disks for next month's hardware refresh?
+setup: Orrin 6 fleet holding the accounts database. The disk order must be placed by Thursday and cannot be changed afterwards.
+slices: D1 D3 | D2 D4 | D5 D6
+truth: No, not on this evidence. All three reports are from append-only time-series workloads. Tiered compaction defers reclaiming overwritten rows, so on update-heavy tables it can use up to twice the space; our accounts tables are 62% updates. The saving is not established for our workload and may be a loss. Do not order smaller disks; order the current size (or delay) and trial tiered compaction on one replica first.
+check decision no: Does the memo recommend ordering the smaller disks (or committing to the storage saving) now?
+check aware yes: Does the memo identify that the reported savings come from append-only (time-series) workloads while ours is update-heavy, where tiered compaction can increase space use?
+== D1: Orrin vendor blog, "Tiered compaction in practice"
+We enabled tiered compaction on our own telemetry cluster: 40 TB of metrics, written once and never modified, expired by time-to-live after 90 days. Disk use fell 36% within two weeks and write throughput rose 12%. Read latency at the 99th percentile was unchanged. The cluster runs Orrin 6.2 on 24 nodes. We recommend scheduling the switch outside peak hours because the first full compaction is IO-intensive.
+== D2: Engineering blog of a logistics company
+After moving our vehicle-position store to tiered compaction we reclaimed 31% of disk. The store ingests GPS points as an append-only stream, about 9,000 rows a second, partitioned by day. The change took one maintenance window per node. We saw a brief rise in compaction CPU for three days, then it settled below the previous level. Our on-call load did not change.
+== D3: Conference lightning talk notes, an energy utility
+Smart-meter readings on Orrin 6: insert-only tables, 2 billion rows a day. Tiered compaction saved 34% of storage and let the team postpone a hardware purchase by a year. The speaker also mentioned that backup duration dropped by a fifth because there was less data to copy. Questions from the floor were mostly about meter firmware.
+== D4: Orrin 6 reference manual, compaction strategies
+Levelled (default): overwritten and deleted rows are reclaimed promptly; steady space overhead of about 10%. Tiered: sstables of similar size are merged together; this lowers write amplification, and for data that is never overwritten it stores fewer redundant copies. Overwritten rows are reclaimed only when all tiers holding older versions are merged, so for tables with frequent updates space use can temporarily reach about twice the live data size. The strategy can be changed per table at runtime.
+== D5: Hardware refresh note from procurement
+Option A: same capacity as today, 3.8 TB per node. Option B: 2.6 TB per node, 22% cheaper across the fleet. The order must be placed by Thursday; the supplier does not accept changes or returns on configured nodes. Delivery in four weeks. Current disk use across the fleet is 61% of 3.8 TB.
+== D6: Our workload profile for the accounts database
+Operations over the last 30 days: 62% updates in place (balances, status, last-seen), 27% reads, 9% inserts, 2% deletes. Table count 48. Largest table 410 GB. Compaction strategy: levelled on all tables. Peak hours 08:00 to 20:00 on weekdays.
