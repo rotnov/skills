@@ -5,6 +5,19 @@ engineering.
 
 ## Available skills
 
+### `apple-hig-design`
+
+Design or review interfaces and reusable component systems using Apple Human
+Interface Guidelines. It separates platform recommendations, web accessibility
+criteria, and product choices, with source-backed guidance for layout,
+typography, light/dark themes, and verification.
+
+Read the [setup guide](skills/apple-hig-design/README.md), or install it with:
+
+```bash
+npx --yes "skills@>=1.7.4" add rotnov/skills --skill apple-hig-design -a claude-code codex --global --copy -y
+```
+
 ### `learning`
 
 Run a bounded learning loop over a real work session. It records concise checkpoints

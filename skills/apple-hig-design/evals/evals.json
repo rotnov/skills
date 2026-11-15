@@ -1,0 +1,40 @@
+{
+  "skill_name": "apple-hig-design",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Use Apple HIG to create a design-system brief for our desktop web app. We already use Inter and 40 CSS px buttons. Keep the brand and provide light and dark themes.",
+      "expected_output": "Inspects the existing system, verifies relevant official HIG sections, retains suitable brand choices, separates product values from Apple guidance and web criteria, proposes semantic theme roles and reusable styles, and identifies verification and missing states without claiming that Inter or 40 px is mandated by Apple."
+    },
+    {
+      "id": 2,
+      "prompt": "Review this native iPhone screen against Apple HIG. Someone told me Apple requires an 8 px grid, 6 px radii, Inter, and exactly 44 px icons everywhere. Do not edit the file.",
+      "expected_output": "Performs a read-only review, checks current iPhone guidance and units, distinguishes target size from glyph size and recommended defaults from minimums, and corrects the unsupported universal claims with relevant sources. It does not substitute the optional desktop preset for native iPhone guidance."
+    },
+    {
+      "id": 3,
+      "prompt": "Audit these screenshots using Apple HIG. You have no browser or network access, and the only supplied excerpt is dated two years ago.",
+      "expected_output": "Provides a provisional visual review using the supplied evidence, identifies the date and lack of current-source verification, avoids new numerical mandates, and does not claim live keyboard, screen-reader, or editor checks."
+    },
+    {
+      "id": 4,
+      "prompt": "Turn these existing Figma screens into shared components. Keep both themes, comment locations, navigation destinations, and scientific image content unchanged. The Figma editor is unavailable; you only have exported PNGs.",
+      "expected_output": "Explains that screenshots cannot establish layer identity, instance links, or prototype preservation. Delivers a component/refactor specification and concrete access limitation instead of claiming a Figma edit or flattening PNGs into reusable UI. Does not alter scientific imagery to fit the theme."
+    },
+    {
+      "id": 5,
+      "prompt": "Review our existing web application's manual light/dark switch against Apple HIG. We intentionally let radiologists override the operating system. Keep the switch.",
+      "expected_output": "Verifies Apple's system-appearance recommendation, preserves the explicitly requested override, records the product rationale, and checks semantic colors and readability in both themes without deleting the control or declaring the app fully HIG compliant."
+    },
+    {
+      "id": 6,
+      "prompt": "Only fix the squared fill peeking through this rounded button. The focus ring must remain visible and the attached menu must extend beyond the button. Do not create a full design system.",
+      "expected_output": "Inspects the fill/content boundary, makes a bounded clipping or layering correction that preserves the focus ring and menu, and verifies the rendered result. Does not solve it by globally changing corner radii, clipping every child, or expanding the task into a library rebuild."
+    },
+    {
+      "id": 7,
+      "prompt": "This web design uses 12 CSS px bold text at 3.2:1 contrast and an inactive button at 2:1. Are both automatically WCAG failures? We have only a design file, no running app.",
+      "expected_output": "Checks the applicable WCAG text-size definitions and inactive-component exceptions rather than treating every bold label as large text. Distinguishes the ordinary-text contrast finding from the inactive-control exception, records design-only evidence, and avoids claiming whole-app accessibility or runtime verification."
+    }
+  ]
+}
